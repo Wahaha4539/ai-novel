@@ -1,9 +1,19 @@
-import { Controller, Get, Param } from '@nestjs/common';
+import { Controller, Get, Param, Post, Query } from '@nestjs/common';
 import { ValidationService } from './validation.service';
 
 @Controller()
 export class ValidationController {
   constructor(private readonly validationService: ValidationService) {}
+
+  @Get('projects/:projectId/validation-issues')
+  listByProject(@Param('projectId') projectId: string, @Query('chapterId') chapterId?: string) {
+    return this.validationService.listByProject(projectId, chapterId);
+  }
+
+  @Post('projects/:projectId/validation/run')
+  runFactRules(@Param('projectId') projectId: string, @Query('chapterId') chapterId?: string) {
+    return this.validationService.runFactRules(projectId, chapterId);
+  }
 
   @Get('chapters/:chapterId/validation-issues')
   listByChapter(@Param('chapterId') chapterId: string) {

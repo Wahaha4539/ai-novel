@@ -6,6 +6,11 @@ import { ProjectsService } from './projects.service';
 export class ProjectsController {
   constructor(private readonly projectsService: ProjectsService) {}
 
+  @Get()
+  list() {
+    return this.projectsService.list();
+  }
+
   @Post()
   create(@Body() dto: CreateProjectDto) {
     return this.projectsService.create(dto);

@@ -11,5 +11,6 @@ __pycache__/
 *.pyc
 .pytest_cache/
 .mypy_cache/
+*.tsbuildinfo
 apps/api/prisma/dev.db
 apps/worker/.ruff_cache/

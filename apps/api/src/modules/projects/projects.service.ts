@@ -10,6 +10,41 @@ export class ProjectsService {
     private readonly cacheService: NovelCacheService,
   ) {}
 
+  async list() {
+    const projects = await this.prisma.project.findMany({
+      orderBy: { createdAt: 'desc' },
+      take: 20,
+      include: {
+        _count: {
+          select: {
+            chapters: true,
+            characters: true,
+            lorebookEntries: true,
+            generationJobs: true,
+            memoryChunks: true,
+            storyEvents: true,
+            characterStateSnapshots: true,
+            foreshadowTracks: true,
+          },
+        },
+      },
+    });
+
+    return projects.map(({ _count, ...project }) => ({
+      ...project,
+      stats: {
+        chapterCount: _count.chapters,
+        characterCount: _count.characters,
+        lorebookCount: _count.lorebookEntries,
+        jobCount: _count.generationJobs,
+        memoryChunkCount: _count.memoryChunks,
+        storyEventCount: _count.storyEvents,
+        characterStateSnapshotCount: _count.characterStateSnapshots,
+        foreshadowTrackCount: _count.foreshadowTracks,
+      },
+    }));
+  }
+
   async create(dto: CreateProjectDto) {
     const project = await this.prisma.project.create({
       data: {

@@ -1,6 +1,7 @@
 from dataclasses import asdict
 
 from app.models.dto import RetrievalHit
+from app.models.enums import MemoryStatus
 from app.repositories.lorebook_repo import LorebookRepository
 from app.repositories.memory_repo import MemoryRepository
 from app.services.cache_service import CacheService
@@ -36,7 +37,11 @@ class RetrievalService:
 
     def retrieve_memory(self, project_id: str, context: dict) -> list[RetrievalHit]:
         query_text = context.get("queryText") or context.get("objective") or "章节生成"
-        return self.memory_repo.search(project_id, query_text)
+        return self.memory_repo.search(
+            project_id,
+            query_text,
+            allowed_statuses=[MemoryStatus.AUTO.value, MemoryStatus.USER_CONFIRMED.value],
+        )
 
     def rerank_and_compress(self, lorebook_hits: list[RetrievalHit], memory_hits: list[RetrievalHit]) -> list[RetrievalHit]:
         merged = sorted([*lorebook_hits, *memory_hits], key=lambda item: item.score, reverse=True)

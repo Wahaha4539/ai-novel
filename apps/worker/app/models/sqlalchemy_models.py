@@ -156,11 +156,93 @@ class MemoryChunkModel(Base):
     summary: Mapped[str | None] = mapped_column(Text, nullable=True)
     embedding: Mapped[list[float] | None] = mapped_column(JSON, nullable=True)
     tags: Mapped[list[str]] = mapped_column(JSON, default=list)
+    source_trace: Mapped[dict] = mapped_column("sourceTrace", JSON, default=dict)
     metadata_json: Mapped[dict] = mapped_column("metadata", JSON, default=dict)
     importance_score: Mapped[int] = mapped_column("importanceScore", Integer, default=50)
+    freshness_score: Mapped[int] = mapped_column("freshnessScore", Integer, default=50)
     recency_score: Mapped[int] = mapped_column("recencyScore", Integer, default=50)
-    status: Mapped[str] = mapped_column(String(50), default="active")
+    status: Mapped[str] = mapped_column(String(50), default="auto")
     created_at: Mapped[datetime] = mapped_column("createdAt", DateTime(timezone=True), server_default=func.now())
+    updated_at: Mapped[datetime] = mapped_column(
+        "updatedAt",
+        DateTime(timezone=True),
+        server_default=func.now(),
+        onupdate=func.now(),
+    )
+
+
+class StoryEventModel(TimestampMixin, Base):
+    __tablename__ = "StoryEvent"
+
+    id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
+    project_id: Mapped[uuid.UUID] = mapped_column(
+        "projectId",
+        UUID(as_uuid=True),
+        ForeignKey("Project.id", ondelete="CASCADE"),
+    )
+    chapter_id: Mapped[uuid.UUID] = mapped_column(
+        "chapterId",
+        UUID(as_uuid=True),
+        ForeignKey("Chapter.id", ondelete="CASCADE"),
+    )
+    chapter_no: Mapped[int | None] = mapped_column("chapterNo", Integer, nullable=True)
+    source_draft_id: Mapped[uuid.UUID | None] = mapped_column("sourceDraftId", UUID(as_uuid=True), nullable=True)
+    title: Mapped[str] = mapped_column(String(255))
+    event_type: Mapped[str] = mapped_column("eventType", String(50))
+    description: Mapped[str] = mapped_column(Text)
+    participants: Mapped[list[str]] = mapped_column(JSON, default=list)
+    timeline_seq: Mapped[int | None] = mapped_column("timelineSeq", Integer, nullable=True)
+    status: Mapped[str] = mapped_column(String(50), default="detected")
+    metadata_json: Mapped[dict] = mapped_column("metadata", JSON, default=dict)
+
+
+class CharacterStateSnapshotModel(TimestampMixin, Base):
+    __tablename__ = "CharacterStateSnapshot"
+
+    id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
+    project_id: Mapped[uuid.UUID] = mapped_column(
+        "projectId",
+        UUID(as_uuid=True),
+        ForeignKey("Project.id", ondelete="CASCADE"),
+    )
+    chapter_id: Mapped[uuid.UUID] = mapped_column(
+        "chapterId",
+        UUID(as_uuid=True),
+        ForeignKey("Chapter.id", ondelete="CASCADE"),
+    )
+    chapter_no: Mapped[int | None] = mapped_column("chapterNo", Integer, nullable=True)
+    source_draft_id: Mapped[uuid.UUID | None] = mapped_column("sourceDraftId", UUID(as_uuid=True), nullable=True)
+    character_id: Mapped[uuid.UUID | None] = mapped_column("characterId", UUID(as_uuid=True), nullable=True)
+    character_name: Mapped[str] = mapped_column("characterName", String(100))
+    state_type: Mapped[str] = mapped_column("stateType", String(50))
+    state_value: Mapped[str] = mapped_column("stateValue", Text)
+    summary: Mapped[str | None] = mapped_column(Text, nullable=True)
+    status: Mapped[str] = mapped_column(String(50), default="auto")
+    metadata_json: Mapped[dict] = mapped_column("metadata", JSON, default=dict)
+
+
+class ForeshadowTrackModel(TimestampMixin, Base):
+    __tablename__ = "ForeshadowTrack"
+
+    id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
+    project_id: Mapped[uuid.UUID] = mapped_column(
+        "projectId",
+        UUID(as_uuid=True),
+        ForeignKey("Project.id", ondelete="CASCADE"),
+    )
+    chapter_id: Mapped[uuid.UUID] = mapped_column(
+        "chapterId",
+        UUID(as_uuid=True),
+        ForeignKey("Chapter.id", ondelete="CASCADE"),
+    )
+    chapter_no: Mapped[int | None] = mapped_column("chapterNo", Integer, nullable=True)
+    source_draft_id: Mapped[uuid.UUID | None] = mapped_column("sourceDraftId", UUID(as_uuid=True), nullable=True)
+    title: Mapped[str] = mapped_column(String(255))
+    detail: Mapped[str | None] = mapped_column(Text, nullable=True)
+    status: Mapped[str] = mapped_column(String(50), default="planned")
+    first_seen_chapter_no: Mapped[int | None] = mapped_column("firstSeenChapterNo", Integer, nullable=True)
+    last_seen_chapter_no: Mapped[int | None] = mapped_column("lastSeenChapterNo", Integer, nullable=True)
+    metadata_json: Mapped[dict] = mapped_column("metadata", JSON, default=dict)
 
 
 class ValidationIssueModel(Base):

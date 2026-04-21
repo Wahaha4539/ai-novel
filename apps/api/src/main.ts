@@ -10,6 +10,7 @@ async function bootstrap() {
   const logger = new StructuredLogger('Bootstrap');
   const app = await NestFactory.create(AppModule);
   const prisma = app.get(PrismaService);
+  app.enableCors();
   app.setGlobalPrefix('api');
   app.useGlobalPipes(
     new ValidationPipe({

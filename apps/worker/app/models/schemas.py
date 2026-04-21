@@ -49,3 +49,26 @@ class GenerateChapterJobResult(BaseModel):
     validation_issues: list[ValidationIssue] = Field(default_factory=list, alias="validationIssues")
 
     model_config = ConfigDict(populate_by_name=True)
+
+
+class MemoryRebuildRequest(BaseModel):
+    project_id: str = Field(alias="projectId")
+    chapter_id: str | None = Field(default=None, alias="chapterId")
+    dry_run: bool = Field(default=False, alias="dryRun")
+
+    model_config = ConfigDict(populate_by_name=True)
+
+
+class MemoryRebuildResult(BaseModel):
+    project_id: str = Field(alias="projectId")
+    chapter_id: str | None = Field(default=None, alias="chapterId")
+    dry_run: bool = Field(alias="dryRun")
+    processed_chapter_count: int = Field(alias="processedChapterCount")
+    failed_chapter_count: int = Field(default=0, alias="failedChapterCount")
+    deleted: dict[str, int]
+    created: dict[str, int]
+    failed_chapters: list[dict[str, Any]] = Field(default_factory=list, alias="failedChapters")
+    diff_summary: dict[str, dict[str, int]] = Field(default_factory=dict, alias="diffSummary")
+    chapters: list[dict[str, Any]] = Field(default_factory=list)
+
+    model_config = ConfigDict(populate_by_name=True)

@@ -1,11 +1,18 @@
 from fastapi import APIRouter
 
 from app.core.logging import get_logger, log_event
-from app.models.schemas import GenerateChapterJobRequest, GenerateChapterJobResult
+from app.models.schemas import (
+    GenerateChapterJobRequest,
+    GenerateChapterJobResult,
+    MemoryRebuildRequest,
+    MemoryRebuildResult,
+)
 from app.pipelines.generate_chapter import GenerateChapterPipeline
+from app.pipelines.rebuild_memory import RebuildMemoryPipeline
 
 router = APIRouter()
 pipeline = GenerateChapterPipeline()
+memory_rebuild_pipeline = RebuildMemoryPipeline()
 logger = get_logger(__name__)
 
 
@@ -31,4 +38,27 @@ def generate_chapter_job(payload: GenerateChapterJobRequest) -> GenerateChapterJ
         return result
     except Exception as exc:
         log_event(logger, "generation.request.failed", level="error", **log_context, error=str(exc))
+        raise
+
+
+@router.post("/internal/memory/rebuild", response_model=MemoryRebuildResult)
+def rebuild_memory(payload: MemoryRebuildRequest) -> MemoryRebuildResult:
+    log_context = {
+        "projectId": payload.project_id,
+        "chapterId": payload.chapter_id,
+        "dryRun": payload.dry_run,
+    }
+    log_event(logger, "memory.rebuild.request.received", **log_context)
+
+    try:
+        result = memory_rebuild_pipeline.run(payload)
+        log_event(
+            logger,
+            "memory.rebuild.request.completed",
+            **log_context,
+            processedChapterCount=result.processed_chapter_count,
+        )
+        return result
+    except Exception as exc:
+        log_event(logger, "memory.rebuild.request.failed", level="error", **log_context, error=str(exc))
         raise

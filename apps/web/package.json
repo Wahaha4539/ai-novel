@@ -3,7 +3,7 @@
   "private": true,
   "scripts": {
     "dev": "next dev -p 3000",
-    "build": "next build",
+    "build": "node -r ./scripts/node25-readlink-compat.cjs ../../node_modules/next/dist/bin/next build",
     "start": "next start -p 3000"
   },
   "dependencies": {

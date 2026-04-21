@@ -7,9 +7,12 @@ from app.models.schemas import GenerateChapterJobRequest, GenerateChapterJobResu
 from app.core.config import get_settings
 from app.repositories.chapter_repo import ChapterRepository
 from app.repositories.character_repo import CharacterRepository
+from app.repositories.character_state_repo import CharacterStateRepository
 from app.repositories.draft_repo import DraftRepository
+from app.repositories.foreshadow_repo import ForeshadowRepository
 from app.repositories.memory_repo import MemoryRepository
 from app.repositories.project_repo import ProjectRepository
+from app.repositories.story_event_repo import StoryEventRepository
 from app.repositories.validation_repo import ValidationRepository
 from app.services.fact_extractor import FactExtractor
 from app.services.cache_service import CacheService
@@ -29,9 +32,12 @@ class GenerateChapterPipeline:
         self.project_repo = ProjectRepository()
         self.chapter_repo = ChapterRepository()
         self.character_repo = CharacterRepository()
+        self.character_state_repo = CharacterStateRepository()
         self.draft_repo = DraftRepository()
+        self.foreshadow_repo = ForeshadowRepository()
         self.memory_repo = MemoryRepository()
         self.validation_repo = ValidationRepository()
+        self.story_event_repo = StoryEventRepository()
         self.retrieval_service = RetrievalService()
         self.cache_service = CacheService()
         self.prompt_builder = PromptBuilder()
@@ -175,11 +181,38 @@ class GenerateChapterPipeline:
         )
         self.validation_repo.save_many(request.project_id, request.chapter_id, post_issues)
 
-        summary_memory = self.memory_writer.write_summary_memory(request.project_id, request.chapter_id, summary)
-        event_memories = self.memory_writer.write_event_memories(request.project_id, events)
-        written_memories = self.memory_repo.create_many(
+        character_lookup = {item["name"]: item["id"] for item in related_characters}
+        summary_memory = self.memory_writer.write_summary_memory(request.project_id, chapter, summary)
+        event_memories = self.memory_writer.write_event_memories(request.project_id, chapter, events)
+        state_memories = self.memory_writer.write_character_state_memories(request.project_id, chapter, states)
+        foreshadow_memories = self.memory_writer.write_foreshadow_memories(request.project_id, chapter, foreshadows)
+        memory_write_result = self.memory_repo.replace_for_source(
             request.project_id,
-            [summary_memory, *event_memories],
+            "chapter",
+            request.chapter_id,
+            [summary_memory, *event_memories, *state_memories, *foreshadow_memories],
+        )
+        event_write_result = self.story_event_repo.replace_for_chapter(
+            request.project_id,
+            request.chapter_id,
+            chapter.get("chapterNo"),
+            draft["id"],
+            events,
+        )
+        state_write_result = self.character_state_repo.replace_for_chapter(
+            request.project_id,
+            request.chapter_id,
+            chapter.get("chapterNo"),
+            draft["id"],
+            states,
+            character_lookup,
+        )
+        foreshadow_write_result = self.foreshadow_repo.replace_for_chapter(
+            request.project_id,
+            request.chapter_id,
+            chapter.get("chapterNo"),
+            draft["id"],
+            foreshadows,
         )
         self.cache_service.invalidate_project_recall_results(request.project_id)
 
@@ -189,7 +222,7 @@ class GenerateChapterPipeline:
             **log_context,
             retrievalCount=len(ranked_hits),
             validationIssueCount=len(precheck_issues) + len(post_issues),
-            writtenMemoryCount=len(written_memories),
+            writtenMemoryCount=len(memory_write_result["created"]),
             draftId=draft["id"],
             actualWordCount=len(text),
         )
@@ -204,7 +237,12 @@ class GenerateChapterPipeline:
                 "events": events,
                 "states": states,
                 "foreshadows": foreshadows,
-                "writtenMemories": written_memories,
+                "writtenMemories": memory_write_result["created"],
+                "writtenFacts": {
+                    "storyEvents": event_write_result["created"],
+                    "characterStates": state_write_result["created"],
+                    "foreshadows": foreshadow_write_result["created"],
+                },
             },
             validationIssues=[*precheck_issues, *post_issues],
         )

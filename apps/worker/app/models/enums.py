@@ -18,4 +18,13 @@ class MemoryType(StrEnum):
     SUMMARY = "summary"
     FACT = "fact"
     EVENT = "event"
+    CHARACTER_STATE = "character_state"
+    FORESHADOW = "foreshadow"
     STYLE = "style"
+
+
+class MemoryStatus(StrEnum):
+    AUTO = "auto"
+    PENDING_REVIEW = "pending_review"
+    USER_CONFIRMED = "user_confirmed"
+    REJECTED = "rejected"

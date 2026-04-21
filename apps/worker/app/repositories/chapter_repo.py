@@ -25,10 +25,13 @@ class ChapterRepository:
                 "title": row.title,
                 "objective": row.objective,
                 "conflict": row.conflict,
+                "revealPoints": row.reveal_points,
+                "foreshadowPlan": row.foreshadow_plan,
                 "outline": row.outline,
                 "expectedWordCount": row.expected_word_count,
                 "status": row.status,
                 "actualWordCount": row.actual_word_count,
+                "timelineSeq": row.timeline_seq,
             }
 
     def get(self, chapter_id: str, project_id: str, request_payload: dict) -> dict:

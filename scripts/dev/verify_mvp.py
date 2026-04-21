@@ -250,6 +250,114 @@ def main() -> int:
     summary["memorySearchHttpStatus"] = status
     summary["memorySearch"] = memory_items
 
+    status, rebuild_dry_run = http_json(
+        "POST",
+        f"{API_BASE}/projects/{project_id}/memory/rebuild?dryRun=true",
+        timeout=120,
+    )
+    summary["memoryRebuildDryRunHttpStatus"] = status
+    summary["memoryRebuildDryRun"] = rebuild_dry_run
+
+    status, rebuild_result = http_json(
+        "POST",
+        f"{API_BASE}/projects/{project_id}/memory/rebuild",
+        timeout=120,
+    )
+    summary["memoryRebuildHttpStatus"] = status
+    summary["memoryRebuild"] = rebuild_result
+
+    status, projects_list = http_json("GET", f"{API_BASE}/projects", timeout=30)
+    summary["projectsListHttpStatus"] = status
+    summary["projectsList"] = projects_list
+
+    status, dashboard = http_json(
+        "GET",
+        f"{API_BASE}/projects/{project_id}/memory/dashboard",
+        timeout=30,
+    )
+    summary["memoryDashboardHttpStatus"] = status
+    summary["memoryDashboard"] = dashboard
+
+    status, story_events = http_json(
+        "GET",
+        f"{API_BASE}/projects/{project_id}/story-events",
+        timeout=30,
+    )
+    summary["storyEventsHttpStatus"] = status
+    summary["storyEvents"] = story_events
+
+    status, character_states = http_json(
+        "GET",
+        f"{API_BASE}/projects/{project_id}/character-state-snapshots",
+        timeout=30,
+    )
+    summary["characterStatesHttpStatus"] = status
+    summary["characterStates"] = character_states
+
+    status, foreshadow_tracks = http_json(
+        "GET",
+        f"{API_BASE}/projects/{project_id}/foreshadow-tracks",
+        timeout=30,
+    )
+    summary["foreshadowTracksHttpStatus"] = status
+    summary["foreshadowTracks"] = foreshadow_tracks
+
+    status, review_queue = http_json(
+        "GET",
+        f"{API_BASE}/projects/{project_id}/memory/reviews",
+        timeout=30,
+    )
+    summary["reviewQueueHttpStatus"] = status
+    summary["reviewQueue"] = review_queue
+
+    if status == 200 and isinstance(review_queue, list) and review_queue:
+        first_review = review_queue[0]
+        review_id = first_review.get("id")
+        if isinstance(review_id, str):
+            confirm_status, confirm_result = http_json(
+                "POST",
+                f"{API_BASE}/projects/{project_id}/memory/reviews/{review_id}/confirm",
+                timeout=30,
+            )
+            summary["reviewConfirmHttpStatus"] = confirm_status
+            summary["reviewConfirm"] = confirm_result
+
+        if len(review_queue) > 1:
+            second_review = review_queue[1]
+            second_review_id = second_review.get("id")
+            if isinstance(second_review_id, str):
+                reject_status, reject_result = http_json(
+                    "POST",
+                    f"{API_BASE}/projects/{project_id}/memory/reviews/{second_review_id}/reject",
+                    timeout=30,
+                )
+                summary["reviewRejectHttpStatus"] = reject_status
+                summary["reviewReject"] = reject_result
+
+    status, review_queue_after = http_json(
+        "GET",
+        f"{API_BASE}/projects/{project_id}/memory/reviews",
+        timeout=30,
+    )
+    summary["reviewQueueAfterHttpStatus"] = status
+    summary["reviewQueueAfter"] = review_queue_after
+
+    status, validation_run = http_json(
+        "POST",
+        f"{API_BASE}/projects/{project_id}/validation/run",
+        timeout=60,
+    )
+    summary["validationRunHttpStatus"] = status
+    summary["validationRun"] = validation_run
+
+    status, project_validation_issues = http_json(
+        "GET",
+        f"{API_BASE}/projects/{project_id}/validation-issues",
+        timeout=30,
+    )
+    summary["projectValidationIssuesHttpStatus"] = status
+    summary["projectValidationIssues"] = project_validation_issues
+
     with psycopg.connect(env["DATABASE_URL"]) as conn:
         with conn.cursor() as cur:
             cur.execute('SELECT COUNT(*) FROM "ChapterDraft" WHERE "chapterId" = %s', (chapter_id,))
@@ -261,6 +369,33 @@ def main() -> int:
             cur.execute('SELECT COUNT(*) FROM "MemoryChunk" WHERE "projectId" = %s', (project_id,))
             memory_chunk_count = cur.fetchone()[0]
 
+            cur.execute('SELECT COUNT(*) FROM "StoryEvent" WHERE "projectId" = %s', (project_id,))
+            story_event_count = cur.fetchone()[0]
+
+            cur.execute('SELECT COUNT(*) FROM "CharacterStateSnapshot" WHERE "projectId" = %s', (project_id,))
+            character_state_count = cur.fetchone()[0]
+
+            cur.execute('SELECT COUNT(*) FROM "ForeshadowTrack" WHERE "projectId" = %s', (project_id,))
+            foreshadow_count = cur.fetchone()[0]
+
+            cur.execute(
+                'SELECT COUNT(*) FROM "MemoryChunk" WHERE "projectId" = %s AND status = %s',
+                (project_id, "pending_review"),
+            )
+            pending_review_count = cur.fetchone()[0]
+
+            cur.execute(
+                'SELECT COUNT(*) FROM "MemoryChunk" WHERE "projectId" = %s AND status = %s',
+                (project_id, "user_confirmed"),
+            )
+            confirmed_review_count = cur.fetchone()[0]
+
+            cur.execute(
+                'SELECT COUNT(*) FROM "MemoryChunk" WHERE "projectId" = %s AND status = %s',
+                (project_id, "rejected"),
+            )
+            rejected_review_count = cur.fetchone()[0]
+
             job_status = None
             if isinstance(generation, dict) and generation.get("id"):
                 cur.execute('SELECT "status"::text FROM "GenerationJob" WHERE id = %s', (generation["id"],))
@@ -271,6 +406,12 @@ def main() -> int:
         "chapterDraftCount": chapter_draft_count,
         "validationIssueCount": validation_issue_count,
         "memoryChunkCount": memory_chunk_count,
+        "storyEventCount": story_event_count,
+        "characterStateSnapshotCount": character_state_count,
+        "foreshadowTrackCount": foreshadow_count,
+        "pendingReviewMemoryCount": pending_review_count,
+        "confirmedReviewMemoryCount": confirmed_review_count,
+        "rejectedReviewMemoryCount": rejected_review_count,
         "jobStatus": job_status,
     }
 

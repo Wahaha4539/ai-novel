@@ -13,3 +13,27 @@ body {
 .panel {
   @apply rounded-2xl border border-slate-800 bg-slate-900/70 shadow-lg shadow-black/20;
 }
+
+.input {
+  @apply w-full rounded-xl border border-slate-700 bg-slate-950/70 px-3 py-2 text-sm text-slate-100 outline-none transition focus:border-cyan-500 focus:ring-2 focus:ring-cyan-500/20;
+}
+
+.select {
+  @apply input appearance-none;
+}
+
+.btn {
+  @apply inline-flex items-center justify-center rounded-xl border border-cyan-500/40 bg-cyan-500/15 px-4 py-2 text-sm font-medium text-cyan-100 transition hover:border-cyan-400 hover:bg-cyan-500/25 disabled:cursor-not-allowed disabled:opacity-50;
+}
+
+.btn-secondary {
+  @apply inline-flex items-center justify-center rounded-xl border border-slate-700 bg-slate-800/80 px-4 py-2 text-sm font-medium text-slate-200 transition hover:border-slate-500 hover:bg-slate-800;
+}
+
+.btn-danger {
+  @apply inline-flex items-center justify-center rounded-xl border border-rose-500/40 bg-rose-500/10 px-4 py-2 text-sm font-medium text-rose-100 transition hover:border-rose-400 hover:bg-rose-500/20;
+}
+
+.badge {
+  @apply inline-flex items-center rounded-full border px-2.5 py-1 text-xs font-medium;
+}
