@@ -38,6 +38,7 @@ novel-system/
 4. Prompt Builder、召回、校验、摘要、记忆回写的分层
 5. `generate_chapter` 的真实数据库读写链路
 6. OpenAI-compatible 模型网关接入
+7. 基于 Redis 的章节生成任务队列（默认 `127.0.0.1:6379`）
 
 ## 快速开始
 
@@ -57,6 +58,8 @@ copy .env.example apps\api\.env
 ```
 
 然后将 `.env` 与 `apps/api/.env` 中的数据库密码、模型 key 等改成你自己的真实值。
+
+Redis 默认连接为 `redis://127.0.0.1:6379/0`，如本机地址不同，请同步修改 `REDIS_URL`。
 
 > 注意：如果 PostgreSQL 密码包含 `&`、`^` 等特殊字符，必须先做 URL encode 再写进连接串。
 
@@ -101,16 +104,17 @@ uvicorn main:app --app-dir apps/worker --reload --port 8000
 1. 创建项目
 2. 创建章节
 3. 调用章节生成接口
-4. Worker 从 PostgreSQL 读取项目 / 章节 / 角色 / lorebook / memory
-5. 调用 OpenAI-compatible 模型网关生成正文
-6. 回写 `ChapterDraft` / `ValidationIssue` / `MemoryChunk`
+4. API 先把生成任务写入 PostgreSQL，并投递到 Redis 队列
+5. Worker 从 PostgreSQL 读取项目 / 章节 / 角色 / lorebook / memory
+6. 调用 OpenAI-compatible 模型网关生成正文
+7. 回写 `ChapterDraft` / `ValidationIssue` / `MemoryChunk`
 
 ## 后续建议
 
 优先继续补齐以下内容：
 
-1. Worker 队列（Celery / Arq / Dramatiq 三选一）
-2. API 到 Worker 的异步任务投递
+1. Redis 队列补重试 / 死信 / 可观测性
+2. 独立 Worker Consumer（BullMQ / Redis Streams 等）
 3. Scenes / Drafts / Rollback / Diff 接口补齐
 4. Lorebook / Memory / Validation 面板联调
 5. OpenAPI 自动生成与端到端测试

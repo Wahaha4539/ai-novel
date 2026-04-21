@@ -30,6 +30,7 @@ def main() -> int:
     verify_mvp = load_verify_mvp_module()
     env = verify_mvp.parse_env(ROOT / ".env")
     summary: dict[str, object] = {
+        "redis": verify_mvp.ensure_redis(),
         "worker": verify_mvp.ensure_worker(),
         "api": verify_mvp.ensure_api(),
         "requestCount": REQUEST_COUNT,

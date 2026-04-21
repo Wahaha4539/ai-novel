@@ -16,6 +16,8 @@ import psycopg
 ROOT = Path(__file__).resolve().parents[2]
 WORKER_URL = "http://127.0.0.1:8000/healthz"
 API_BASE = "http://127.0.0.1:3001/api"
+REDIS_HOST = "127.0.0.1"
+REDIS_PORT = 6379
 
 
 def parse_env(path: Path) -> dict[str, str]:
@@ -63,6 +65,17 @@ def tail_text(path: Path, size: int = 4000) -> str:
     if not path.exists():
         return ""
     return path.read_text(encoding="utf-8", errors="replace")[-size:]
+
+
+def ensure_redis() -> dict[str, object]:
+    if is_port_open(REDIS_PORT):
+        return {
+            "status": "already-running",
+            "host": REDIS_HOST,
+            "port": REDIS_PORT,
+        }
+
+    raise RuntimeError(f"Redis 未启动，请先确认 {REDIS_HOST}:{REDIS_PORT} 可访问")
 
 
 def ensure_worker() -> dict[str, object]:
@@ -142,6 +155,7 @@ def ensure_api() -> dict[str, object]:
 def main() -> int:
     env = parse_env(ROOT / ".env")
     summary: dict[str, object] = {
+        "redis": ensure_redis(),
         "worker": ensure_worker(),
         "api": ensure_api(),
     }

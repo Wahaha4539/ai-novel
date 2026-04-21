@@ -44,11 +44,15 @@ export class GenerationService {
     };
 
     if (!created) {
+      if (job.status === 'queued') {
+        await this.generationQueueService.enqueue(job.id);
+      }
+
       this.logger.warn('generation.job.reused', logContext);
       return job;
     }
 
-    this.generationQueueService.enqueue(job.id);
+    await this.generationQueueService.enqueue(job.id);
     this.logger.log('generation.job.accepted', {
       ...logContext,
       status: job.status,

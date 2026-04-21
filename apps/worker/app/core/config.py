@@ -6,7 +6,7 @@ from pydantic_settings import BaseSettings, SettingsConfigDict
 
 class Settings(BaseSettings):
     database_url: str = "postgresql+psycopg://postgres:postgres@localhost:5432/ai_novel_mvp"
-    redis_url: str = "redis://localhost:6379/0"
+    redis_url: str = "redis://127.0.0.1:6379/0"
     llm_base_url: str = "http://localhost:8318/v1"
     llm_api_key: str | None = None
     llm_model: str = "gpt-5.4"
