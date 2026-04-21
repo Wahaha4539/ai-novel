@@ -1,0 +1,15 @@
+{
+  "name": "novel-system",
+  "private": true,
+  "packageManager": "pnpm@10.0.0",
+  "scripts": {
+    "dev:web": "pnpm --filter web dev",
+    "dev:api": "pnpm --filter api start:dev",
+    "dev:worker": "uvicorn main:app --app-dir apps/worker --reload --port 8000",
+    "dev": "pnpm --parallel --filter web --filter api run dev",
+    "db:generate": "pnpm --filter api exec prisma generate",
+    "db:migrate": "pnpm --filter api exec prisma migrate deploy",
+    "db:push": "pnpm --filter api exec prisma db push",
+    "db:create": "python scripts/dev/create_database.py"
+  }
+}

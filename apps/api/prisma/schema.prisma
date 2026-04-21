@@ -1,0 +1,241 @@
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "postgresql"
+  url      = env("DATABASE_URL")
+}
+
+enum ProjectStatus {
+  draft
+  active
+  archived
+}
+
+enum ChapterStatus {
+  planned
+  drafted
+  reviewed
+}
+
+enum JobStatus {
+  queued
+  running
+  completed
+  failed
+}
+
+enum ValidationSeverity {
+  error
+  warning
+  info
+}
+
+model Project {
+  id                    String           @id @default(uuid()) @db.Uuid
+  ownerId               String?          @db.Uuid
+  title                 String           @db.VarChar(255)
+  genre                 String?          @db.VarChar(100)
+  theme                 String?          @db.VarChar(255)
+  tone                  String?          @db.VarChar(100)
+  logline               String?
+  synopsis              String?
+  targetWordCount       Int?
+  status                ProjectStatus    @default(draft)
+  defaultStyleProfileId String?          @db.Uuid
+  defaultModelProfileId String?          @db.Uuid
+  createdAt             DateTime         @default(now())
+  updatedAt             DateTime         @updatedAt
+  characters            Character[]
+  lorebookEntries       LorebookEntry[]
+  chapters              Chapter[]
+  memoryChunks          MemoryChunk[]
+  validationIssues      ValidationIssue[]
+  generationJobs        GenerationJob[]
+  styleProfiles         StyleProfile[]
+  modelProfiles         ModelProfile[]
+}
+
+model StyleProfile {
+  id                 String   @id @default(uuid()) @db.Uuid
+  projectId          String   @db.Uuid
+  name               String   @db.VarChar(100)
+  pov                String?  @db.VarChar(50)
+  tense              String?  @db.VarChar(50)
+  proseStyle         String?  @db.VarChar(100)
+  pacing             String?  @db.VarChar(50)
+  dialogueDensity    Int      @default(50)
+  narrationDensity   Int      @default(50)
+  descriptionDensity Int      @default(50)
+  darknessLevel      Int      @default(50)
+  humorLevel         Int      @default(10)
+  emotionalIntensity Int      @default(50)
+  sentenceStyle      Json     @default("{}")
+  forbiddenPatterns  Json     @default("[]")
+  preferredPatterns  Json     @default("[]")
+  createdAt          DateTime @default(now())
+  updatedAt          DateTime @updatedAt
+  project            Project  @relation(fields: [projectId], references: [id], onDelete: Cascade)
+}
+
+model ModelProfile {
+  id                String   @id @default(uuid()) @db.Uuid
+  projectId         String   @db.Uuid
+  name              String   @db.VarChar(100)
+  plannerProvider   String?  @db.VarChar(50)
+  plannerModel      String?  @db.VarChar(100)
+  writerProvider    String?  @db.VarChar(50)
+  writerModel       String?  @db.VarChar(100)
+  summarizerProvider String? @db.VarChar(50)
+  summarizerModel   String?  @db.VarChar(100)
+  validatorProvider String?  @db.VarChar(50)
+  validatorModel    String?  @db.VarChar(100)
+  embeddingProvider String?  @db.VarChar(50)
+  embeddingModel    String?  @db.VarChar(100)
+  writerParams      Json     @default("{}")
+  plannerParams     Json     @default("{}")
+  summarizerParams  Json     @default("{}")
+  validatorParams   Json     @default("{}")
+  createdAt         DateTime @default(now())
+  updatedAt         DateTime @updatedAt
+  project           Project  @relation(fields: [projectId], references: [id], onDelete: Cascade)
+}
+
+model Character {
+  id              String   @id @default(uuid()) @db.Uuid
+  projectId       String   @db.Uuid
+  name            String   @db.VarChar(100)
+  alias           Json     @default("[]")
+  roleType        String?  @db.VarChar(50)
+  personalityCore String?
+  motivation      String?
+  speechStyle     String?
+  backstory       String?
+  growthArc       String?
+  isDead          Boolean  @default(false)
+  metadata        Json     @default("{}")
+  createdAt       DateTime @default(now())
+  updatedAt       DateTime @updatedAt
+  project         Project  @relation(fields: [projectId], references: [id], onDelete: Cascade)
+
+  @@index([projectId, name])
+}
+
+model LorebookEntry {
+  id               String   @id @default(uuid()) @db.Uuid
+  projectId        String   @db.Uuid
+  title            String   @db.VarChar(255)
+  entryType        String   @db.VarChar(50)
+  content          String
+  summary          String?
+  tags             Json     @default("[]")
+  priority         Int      @default(50)
+  triggerKeywords  Json     @default("[]")
+  relatedEntityIds Json     @default("[]")
+  status           String   @default("active") @db.VarChar(50)
+  sourceType       String   @default("manual") @db.VarChar(50)
+  createdAt        DateTime @default(now())
+  updatedAt        DateTime @updatedAt
+  project          Project  @relation(fields: [projectId], references: [id], onDelete: Cascade)
+
+  @@index([projectId, entryType])
+}
+
+model Chapter {
+  id                String           @id @default(uuid()) @db.Uuid
+  projectId         String           @db.Uuid
+  volumeId          String?          @db.Uuid
+  chapterNo         Int
+  title             String?          @db.VarChar(255)
+  objective         String?
+  conflict          String?
+  revealPoints      String?
+  foreshadowPlan    String?
+  outline           String?
+  status            ChapterStatus    @default(planned)
+  expectedWordCount Int?
+  actualWordCount   Int?
+  timelineSeq       Int?
+  createdAt         DateTime         @default(now())
+  updatedAt         DateTime         @updatedAt
+  project           Project          @relation(fields: [projectId], references: [id], onDelete: Cascade)
+  drafts            ChapterDraft[]
+  validationIssues  ValidationIssue[]
+  generationJobs    GenerationJob[]
+
+  @@unique([projectId, chapterNo])
+}
+
+model ChapterDraft {
+  id                String   @id @default(uuid()) @db.Uuid
+  chapterId         String   @db.Uuid
+  versionNo         Int
+  content           String
+  source            String   @db.VarChar(50)
+  modelInfo         Json     @default("{}")
+  generationContext Json     @default("{}")
+  isCurrent         Boolean  @default(false)
+  createdBy         String?  @db.Uuid
+  createdAt         DateTime @default(now())
+  chapter           Chapter  @relation(fields: [chapterId], references: [id], onDelete: Cascade)
+
+  @@unique([chapterId, versionNo])
+}
+
+model MemoryChunk {
+  id              String                @id @default(uuid()) @db.Uuid
+  projectId       String                @db.Uuid
+  sourceType      String                @db.VarChar(50)
+  sourceId        String                @db.Uuid
+  memoryType      String                @db.VarChar(50)
+  content         String
+  summary         String?
+  embedding       Json?
+  tags            Json                  @default("[]")
+  metadata        Json                  @default("{}")
+  importanceScore Int                   @default(50)
+  recencyScore    Int                   @default(50)
+  status          String                @default("active") @db.VarChar(50)
+  createdAt       DateTime              @default(now())
+  project         Project               @relation(fields: [projectId], references: [id], onDelete: Cascade)
+}
+
+
+model ValidationIssue {
+  id          String              @id @default(uuid()) @db.Uuid
+  projectId   String              @db.Uuid
+  chapterId   String?             @db.Uuid
+  issueType   String              @db.VarChar(100)
+  severity    ValidationSeverity
+  entityType  String?             @db.VarChar(50)
+  entityId    String?             @db.Uuid
+  message     String
+  evidence    Json                @default("[]")
+  suggestion  String?
+  status      String              @default("open") @db.VarChar(50)
+  createdAt   DateTime            @default(now())
+  resolvedAt  DateTime?
+  project     Project             @relation(fields: [projectId], references: [id], onDelete: Cascade)
+  chapter     Chapter?            @relation(fields: [chapterId], references: [id], onDelete: SetNull)
+}
+
+model GenerationJob {
+  id               String    @id @default(uuid()) @db.Uuid
+  projectId        String    @db.Uuid
+  chapterId        String?   @db.Uuid
+  jobType          String    @db.VarChar(50)
+  targetType       String    @db.VarChar(50)
+  targetId         String    @db.Uuid
+  status           JobStatus @default(queued)
+  requestPayload   Json      @default("{}")
+  responsePayload  Json      @default("{}")
+  retrievalPayload Json      @default("{}")
+  promptSnapshot   String?
+  errorMessage     String?
+  startedAt        DateTime?
+  finishedAt       DateTime?
+  createdAt        DateTime  @default(now())
+  project          Project   @relation(fields: [projectId], references: [id], onDelete: Cascade)
+  chapter          Chapter?  @relation(fields: [chapterId], references: [id], onDelete: SetNull)
+}

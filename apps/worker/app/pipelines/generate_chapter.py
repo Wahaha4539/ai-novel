@@ -1,0 +1,193 @@
+from dataclasses import asdict
+
+from app.core.logging import get_logger, log_event
+from app.models.dto import PromptBuildInput
+from app.models.enums import ValidationSeverity
+from app.models.schemas import GenerateChapterJobRequest, GenerateChapterJobResult, ValidationIssue
+from app.core.config import get_settings
+from app.repositories.chapter_repo import ChapterRepository
+from app.repositories.character_repo import CharacterRepository
+from app.repositories.draft_repo import DraftRepository
+from app.repositories.memory_repo import MemoryRepository
+from app.repositories.project_repo import ProjectRepository
+from app.repositories.validation_repo import ValidationRepository
+from app.services.fact_extractor import FactExtractor
+from app.services.llm_gateway import LlmGateway
+from app.services.memory_writer import MemoryWriter
+from app.services.prompt_builder import PromptBuilder
+from app.services.retrieval_service import RetrievalService
+from app.services.summary_service import SummaryService
+from app.services.validation_engine import ValidationEngine
+
+logger = get_logger(__name__)
+
+
+class GenerateChapterPipeline:
+    def __init__(self) -> None:
+        self.settings = get_settings()
+        self.project_repo = ProjectRepository()
+        self.chapter_repo = ChapterRepository()
+        self.character_repo = CharacterRepository()
+        self.draft_repo = DraftRepository()
+        self.memory_repo = MemoryRepository()
+        self.validation_repo = ValidationRepository()
+        self.retrieval_service = RetrievalService()
+        self.prompt_builder = PromptBuilder()
+        self.llm_gateway = LlmGateway()
+        self.summary_service = SummaryService()
+        self.fact_extractor = FactExtractor()
+        self.validation_engine = ValidationEngine()
+        self.memory_writer = MemoryWriter()
+
+    @staticmethod
+    def _serialize_hits(hits: list) -> list[dict]:
+        return [asdict(hit) for hit in hits]
+
+    def run(self, request: GenerateChapterJobRequest) -> GenerateChapterJobResult:
+        log_context = {
+            "requestId": request.request_id,
+            "jobId": request.job_id,
+            "projectId": request.project_id,
+            "chapterId": request.chapter_id,
+        }
+        log_event(logger, "generation.pipeline.started", **log_context)
+
+        project = self.project_repo.get(request.project_id)
+        chapter = self.chapter_repo.get(
+            chapter_id=request.chapter_id,
+            project_id=request.project_id,
+            request_payload=request.request_payload.model_dump(by_alias=True),
+        )
+        related_characters = self.character_repo.list_related(request.project_id)
+
+        context = {
+            "queryText": request.request_payload.instruction or chapter["objective"],
+            "objective": chapter["objective"],
+            "conflict": chapter["conflict"],
+            "characters": [item["name"] for item in related_characters],
+        }
+        hard_facts = [
+            "POV 必须维持克制、压抑的第三人称近距离视角。",
+        ]
+        if related_characters:
+            hard_facts.append(f"当前项目已登记角色：{', '.join(item['name'] for item in related_characters[:6])}。")
+        if chapter.get("conflict"):
+            hard_facts.append(f"本章核心冲突：{chapter['conflict']}")
+
+        lorebook_hits = (
+            self.retrieval_service.retrieve_lorebook(request.project_id, context)
+            if request.request_payload.include_lorebook
+            else []
+        )
+        memory_hits = (
+            self.retrieval_service.retrieve_memory(request.project_id, context)
+            if request.request_payload.include_memory
+            else []
+        )
+        ranked_hits = self.retrieval_service.rerank_and_compress(lorebook_hits, memory_hits)
+
+        precheck_issues = (
+            self.validation_engine.precheck_chapter(context, hard_facts)
+            if request.request_payload.validate_before_write
+            else []
+        )
+        self.validation_repo.save_many(request.project_id, request.chapter_id, precheck_issues)
+        blocking_issues = [issue for issue in precheck_issues if issue.severity == ValidationSeverity.ERROR]
+        if blocking_issues:
+            log_event(
+                logger,
+                "generation.pipeline.precheck_blocked",
+                **log_context,
+                retrievalCount=len(ranked_hits),
+                blockingIssueCount=len(blocking_issues),
+            )
+            return GenerateChapterJobResult(
+                draftId="",
+                summary="precheck_blocked",
+                text="",
+                actualWordCount=0,
+                retrievalPayload={"hits": self._serialize_hits(ranked_hits)},
+                validationIssues=blocking_issues,
+            )
+
+        prompt = self.prompt_builder.build_chapter_prompt(
+            PromptBuildInput(
+                project=project,
+                chapter=chapter,
+                style_profile={
+                    "pov": "third_limited",
+                    "proseStyle": "冷峻、克制",
+                    "pacing": "medium",
+                },
+                hard_facts=hard_facts,
+                lorebook_hits=lorebook_hits,
+                memory_hits=ranked_hits,
+                outline_bundle={"chapterOutline": chapter.get("outline")},
+                user_instruction=request.request_payload.instruction,
+                target_word_count=request.request_payload.word_count,
+            )
+        )
+
+        text = self.llm_gateway.generate(
+            prompt,
+            target_word_count=request.request_payload.word_count,
+        )
+
+        draft = self.draft_repo.create_chapter_draft(
+            chapter_id=request.chapter_id,
+            content=text,
+            model_info={
+                "provider": "openai-compatible",
+                "model": self.settings.llm_model,
+                "baseUrl": self.settings.llm_base_url,
+            },
+            generation_context={
+                "jobId": request.job_id,
+                "retrievalCount": len(ranked_hits),
+                "promptDebug": prompt.debug,
+            },
+        )
+
+        summary = self.summary_service.summarize_chapter(text, project, chapter)
+        events = self.fact_extractor.extract_events(text, project, chapter)
+        states = self.fact_extractor.extract_character_states(text, project, chapter)
+        foreshadows = self.fact_extractor.extract_foreshadows(text, project, chapter)
+        post_issues = (
+            self.validation_engine.validate_generated_text(text, chapter)
+            if request.request_payload.validate_after_write
+            else []
+        )
+        self.validation_repo.save_many(request.project_id, request.chapter_id, post_issues)
+
+        summary_memory = self.memory_writer.write_summary_memory(request.project_id, request.chapter_id, summary)
+        event_memories = self.memory_writer.write_event_memories(request.project_id, events)
+        written_memories = self.memory_repo.create_many(
+            request.project_id,
+            [summary_memory, *event_memories],
+        )
+
+        log_event(
+            logger,
+            "generation.pipeline.completed",
+            **log_context,
+            retrievalCount=len(ranked_hits),
+            validationIssueCount=len(precheck_issues) + len(post_issues),
+            writtenMemoryCount=len(written_memories),
+            draftId=draft["id"],
+            actualWordCount=len(text),
+        )
+
+        return GenerateChapterJobResult(
+            draftId=draft["id"],
+            summary=summary,
+            text=text,
+            actualWordCount=len(text),
+            retrievalPayload={
+                "hits": self._serialize_hits(ranked_hits),
+                "events": events,
+                "states": states,
+                "foreshadows": foreshadows,
+                "writtenMemories": written_memories,
+            },
+            validationIssues=[*precheck_issues, *post_issues],
+        )

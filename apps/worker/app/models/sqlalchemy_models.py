@@ -1,0 +1,226 @@
+from __future__ import annotations
+
+import uuid
+from datetime import datetime
+
+from sqlalchemy import JSON, Boolean, DateTime, Enum as SqlEnum, ForeignKey, Integer, String, Text, func
+from sqlalchemy.dialects.postgresql import UUID
+from sqlalchemy.orm import DeclarativeBase, Mapped, mapped_column, relationship
+
+
+class Base(DeclarativeBase):
+    pass
+
+
+class TimestampMixin:
+    created_at: Mapped[datetime] = mapped_column(
+        "createdAt",
+        DateTime(timezone=True),
+        server_default=func.now(),
+    )
+    updated_at: Mapped[datetime] = mapped_column(
+        "updatedAt",
+        DateTime(timezone=True),
+        server_default=func.now(),
+        onupdate=func.now(),
+    )
+
+
+class ProjectModel(TimestampMixin, Base):
+    __tablename__ = "Project"
+
+    id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
+    owner_id: Mapped[uuid.UUID | None] = mapped_column("ownerId", UUID(as_uuid=True), nullable=True)
+    title: Mapped[str] = mapped_column(String(255))
+    genre: Mapped[str | None] = mapped_column(String(100), nullable=True)
+    theme: Mapped[str | None] = mapped_column(String(255), nullable=True)
+    tone: Mapped[str | None] = mapped_column(String(100), nullable=True)
+    logline: Mapped[str | None] = mapped_column(Text, nullable=True)
+    synopsis: Mapped[str | None] = mapped_column(Text, nullable=True)
+    target_word_count: Mapped[int | None] = mapped_column("targetWordCount", Integer, nullable=True)
+    status: Mapped[str] = mapped_column(
+        SqlEnum("draft", "active", "archived", name="ProjectStatus", create_type=False),
+        default="draft",
+    )
+
+    chapters: Mapped[list[ChapterModel]] = relationship(back_populates="project")
+    characters: Mapped[list[CharacterModel]] = relationship(back_populates="project")
+    lorebook_entries: Mapped[list[LorebookEntryModel]] = relationship(back_populates="project")
+    generation_jobs: Mapped[list[GenerationJobModel]] = relationship(back_populates="project")
+
+
+class CharacterModel(TimestampMixin, Base):
+    __tablename__ = "Character"
+
+    id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
+    project_id: Mapped[uuid.UUID] = mapped_column(
+        "projectId",
+        UUID(as_uuid=True),
+        ForeignKey("Project.id", ondelete="CASCADE"),
+    )
+    name: Mapped[str] = mapped_column(String(100))
+    role_type: Mapped[str | None] = mapped_column("roleType", String(50), nullable=True)
+    personality_core: Mapped[str | None] = mapped_column("personalityCore", Text, nullable=True)
+    motivation: Mapped[str | None] = mapped_column(Text, nullable=True)
+    speech_style: Mapped[str | None] = mapped_column("speechStyle", Text, nullable=True)
+    backstory: Mapped[str | None] = mapped_column(Text, nullable=True)
+    growth_arc: Mapped[str | None] = mapped_column("growthArc", Text, nullable=True)
+    is_dead: Mapped[bool] = mapped_column("isDead", Boolean, default=False)
+    metadata_json: Mapped[dict] = mapped_column("metadata", JSON, default=dict)
+
+    project: Mapped[ProjectModel] = relationship(back_populates="characters")
+
+
+class LorebookEntryModel(TimestampMixin, Base):
+    __tablename__ = "LorebookEntry"
+
+    id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
+    project_id: Mapped[uuid.UUID] = mapped_column(
+        "projectId",
+        UUID(as_uuid=True),
+        ForeignKey("Project.id", ondelete="CASCADE"),
+    )
+    title: Mapped[str] = mapped_column(String(255))
+    entry_type: Mapped[str] = mapped_column("entryType", String(50))
+    content: Mapped[str] = mapped_column(Text)
+    summary: Mapped[str | None] = mapped_column(Text, nullable=True)
+    tags: Mapped[list[str]] = mapped_column(JSON, default=list)
+    priority: Mapped[int] = mapped_column(Integer, default=50)
+
+    project: Mapped[ProjectModel] = relationship(back_populates="lorebook_entries")
+
+
+class ChapterModel(TimestampMixin, Base):
+    __tablename__ = "Chapter"
+
+    id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
+    project_id: Mapped[uuid.UUID] = mapped_column(
+        "projectId",
+        UUID(as_uuid=True),
+        ForeignKey("Project.id", ondelete="CASCADE"),
+    )
+    volume_id: Mapped[uuid.UUID | None] = mapped_column("volumeId", UUID(as_uuid=True), nullable=True)
+    chapter_no: Mapped[int] = mapped_column("chapterNo", Integer)
+    title: Mapped[str | None] = mapped_column(String(255), nullable=True)
+    objective: Mapped[str | None] = mapped_column(Text, nullable=True)
+    conflict: Mapped[str | None] = mapped_column(Text, nullable=True)
+    reveal_points: Mapped[str | None] = mapped_column("revealPoints", Text, nullable=True)
+    foreshadow_plan: Mapped[str | None] = mapped_column("foreshadowPlan", Text, nullable=True)
+    outline: Mapped[str | None] = mapped_column(Text, nullable=True)
+    status: Mapped[str] = mapped_column(
+        SqlEnum("planned", "drafted", "reviewed", name="ChapterStatus", create_type=False),
+        default="planned",
+    )
+    expected_word_count: Mapped[int | None] = mapped_column("expectedWordCount", Integer, nullable=True)
+    actual_word_count: Mapped[int | None] = mapped_column("actualWordCount", Integer, nullable=True)
+    timeline_seq: Mapped[int | None] = mapped_column("timelineSeq", Integer, nullable=True)
+
+    project: Mapped[ProjectModel] = relationship(back_populates="chapters")
+    drafts: Mapped[list[ChapterDraftModel]] = relationship(back_populates="chapter")
+
+
+class ChapterDraftModel(Base):
+    __tablename__ = "ChapterDraft"
+
+    id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
+    chapter_id: Mapped[uuid.UUID] = mapped_column(
+        "chapterId",
+        UUID(as_uuid=True),
+        ForeignKey("Chapter.id", ondelete="CASCADE"),
+    )
+    version_no: Mapped[int] = mapped_column("versionNo", Integer)
+    content: Mapped[str] = mapped_column(Text)
+    source: Mapped[str] = mapped_column(String(50), default="ai")
+    model_info: Mapped[dict] = mapped_column("modelInfo", JSON, default=dict)
+    generation_context: Mapped[dict] = mapped_column("generationContext", JSON, default=dict)
+    is_current: Mapped[bool] = mapped_column("isCurrent", Boolean, default=False)
+    created_by: Mapped[uuid.UUID | None] = mapped_column("createdBy", UUID(as_uuid=True), nullable=True)
+    created_at: Mapped[datetime] = mapped_column("createdAt", DateTime(timezone=True), server_default=func.now())
+
+    chapter: Mapped[ChapterModel] = relationship(back_populates="drafts")
+
+
+class MemoryChunkModel(Base):
+    __tablename__ = "MemoryChunk"
+
+    id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
+    project_id: Mapped[uuid.UUID] = mapped_column(
+        "projectId",
+        UUID(as_uuid=True),
+        ForeignKey("Project.id", ondelete="CASCADE"),
+    )
+    source_type: Mapped[str] = mapped_column("sourceType", String(50))
+    source_id: Mapped[uuid.UUID] = mapped_column("sourceId", UUID(as_uuid=True))
+    memory_type: Mapped[str] = mapped_column("memoryType", String(50))
+    content: Mapped[str] = mapped_column(Text)
+    summary: Mapped[str | None] = mapped_column(Text, nullable=True)
+    embedding: Mapped[list[float] | None] = mapped_column(JSON, nullable=True)
+    tags: Mapped[list[str]] = mapped_column(JSON, default=list)
+    metadata_json: Mapped[dict] = mapped_column("metadata", JSON, default=dict)
+    importance_score: Mapped[int] = mapped_column("importanceScore", Integer, default=50)
+    recency_score: Mapped[int] = mapped_column("recencyScore", Integer, default=50)
+    status: Mapped[str] = mapped_column(String(50), default="active")
+    created_at: Mapped[datetime] = mapped_column("createdAt", DateTime(timezone=True), server_default=func.now())
+
+
+class ValidationIssueModel(Base):
+    __tablename__ = "ValidationIssue"
+
+    id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
+    project_id: Mapped[uuid.UUID] = mapped_column(
+        "projectId",
+        UUID(as_uuid=True),
+        ForeignKey("Project.id", ondelete="CASCADE"),
+    )
+    chapter_id: Mapped[uuid.UUID | None] = mapped_column(
+        "chapterId",
+        UUID(as_uuid=True),
+        ForeignKey("Chapter.id", ondelete="SET NULL"),
+        nullable=True,
+    )
+    issue_type: Mapped[str] = mapped_column("issueType", String(100))
+    severity: Mapped[str] = mapped_column(
+        SqlEnum("error", "warning", "info", name="ValidationSeverity", create_type=False)
+    )
+    entity_type: Mapped[str | None] = mapped_column("entityType", String(50), nullable=True)
+    entity_id: Mapped[uuid.UUID | None] = mapped_column("entityId", UUID(as_uuid=True), nullable=True)
+    message: Mapped[str] = mapped_column(Text)
+    evidence: Mapped[list[dict]] = mapped_column(JSON, default=list)
+    suggestion: Mapped[str | None] = mapped_column(Text, nullable=True)
+    status: Mapped[str] = mapped_column(String(50), default="open")
+    created_at: Mapped[datetime] = mapped_column("createdAt", DateTime(timezone=True), server_default=func.now())
+    resolved_at: Mapped[datetime | None] = mapped_column("resolvedAt", DateTime(timezone=True), nullable=True)
+
+
+class GenerationJobModel(Base):
+    __tablename__ = "GenerationJob"
+
+    id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
+    project_id: Mapped[uuid.UUID] = mapped_column(
+        "projectId",
+        UUID(as_uuid=True),
+        ForeignKey("Project.id", ondelete="CASCADE"),
+    )
+    chapter_id: Mapped[uuid.UUID | None] = mapped_column(
+        "chapterId",
+        UUID(as_uuid=True),
+        ForeignKey("Chapter.id", ondelete="SET NULL"),
+        nullable=True,
+    )
+    job_type: Mapped[str] = mapped_column("jobType", String(50))
+    target_type: Mapped[str] = mapped_column("targetType", String(50))
+    target_id: Mapped[uuid.UUID] = mapped_column("targetId", UUID(as_uuid=True))
+    status: Mapped[str] = mapped_column(
+        SqlEnum("queued", "running", "completed", "failed", name="JobStatus", create_type=False),
+        default="queued",
+    )
+    request_payload: Mapped[dict] = mapped_column("requestPayload", JSON, default=dict)
+    response_payload: Mapped[dict] = mapped_column("responsePayload", JSON, default=dict)
+    retrieval_payload: Mapped[dict] = mapped_column("retrievalPayload", JSON, default=dict)
+    prompt_snapshot: Mapped[str | None] = mapped_column("promptSnapshot", Text, nullable=True)
+    error_message: Mapped[str | None] = mapped_column("errorMessage", Text, nullable=True)
+    started_at: Mapped[datetime | None] = mapped_column("startedAt", DateTime(timezone=True), nullable=True)
+    finished_at: Mapped[datetime | None] = mapped_column("finishedAt", DateTime(timezone=True), nullable=True)
+    created_at: Mapped[datetime] = mapped_column("createdAt", DateTime(timezone=True), server_default=func.now())
+
+    project: Mapped[ProjectModel] = relationship(back_populates="generation_jobs")
