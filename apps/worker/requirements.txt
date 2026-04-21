@@ -7,3 +7,4 @@ sqlalchemy==2.0.31
 psycopg[binary]==3.2.13
 pgvector==0.2.5
 python-dotenv==1.0.1
+redis==5.0.7

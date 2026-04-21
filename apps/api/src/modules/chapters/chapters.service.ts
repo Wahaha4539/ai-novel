@@ -1,10 +1,14 @@
 import { Injectable, NotFoundException } from '@nestjs/common';
+import { NovelCacheService } from '../../common/cache/novel-cache.service';
 import { PrismaService } from '../../prisma/prisma.service';
 import { CreateChapterDto } from './dto/create-chapter.dto';
 
 @Injectable()
 export class ChaptersService {
-  constructor(private readonly prisma: PrismaService) {}
+  constructor(
+    private readonly prisma: PrismaService,
+    private readonly cacheService: NovelCacheService,
+  ) {}
 
   async create(projectId: string, dto: CreateChapterDto) {
     const project = await this.prisma.project.findUnique({ where: { id: projectId } });
@@ -12,7 +16,7 @@ export class ChaptersService {
       throw new NotFoundException(`项目不存在：${projectId}`);
     }
 
-    return this.prisma.chapter.create({
+    const chapter = await this.prisma.chapter.create({
       data: {
         projectId,
         chapterNo: dto.chapterNo,
@@ -23,6 +27,9 @@ export class ChaptersService {
         expectedWordCount: dto.expectedWordCount,
       },
     });
+
+    await this.refreshChapterContext(projectId, chapter.id);
+    return chapter;
   }
 
   listByProject(projectId: string) {
@@ -45,13 +52,54 @@ export class ChaptersService {
   }
 
   async markDrafted(chapterId: string, actualWordCount: number) {
-    await this.getById(chapterId);
-    return this.prisma.chapter.update({
+    const chapter = await this.getById(chapterId);
+    const updatedChapter = await this.prisma.chapter.update({
       where: { id: chapterId },
       data: {
         status: 'drafted',
         actualWordCount,
       },
+    });
+
+    await this.refreshChapterContext(chapter.projectId, updatedChapter.id);
+    return updatedChapter;
+  }
+
+  private async refreshChapterContext(projectId: string, chapterId: string) {
+    const chapter = await this.prisma.chapter.findUnique({
+      where: { id: chapterId },
+    });
+
+    if (!chapter) {
+      await this.cacheService.deleteChapterContext(projectId, chapterId);
+      return;
+    }
+
+    const relatedCharacters = await this.prisma.character.findMany({
+      where: { projectId },
+      orderBy: { createdAt: 'asc' },
+      take: 20,
+    });
+
+    await this.cacheService.setChapterContext(projectId, chapterId, {
+      chapter: {
+        id: chapter.id,
+        projectId: chapter.projectId,
+        chapterNo: chapter.chapterNo,
+        title: chapter.title,
+        objective: chapter.objective,
+        conflict: chapter.conflict,
+        outline: chapter.outline,
+        expectedWordCount: chapter.expectedWordCount ?? null,
+        status: chapter.status,
+        actualWordCount: chapter.actualWordCount ?? null,
+      },
+      relatedCharacters: relatedCharacters.map((item) => ({
+        id: item.id,
+        name: item.name,
+        roleType: item.roleType,
+        speechStyle: item.speechStyle,
+      })),
     });
   }
 }

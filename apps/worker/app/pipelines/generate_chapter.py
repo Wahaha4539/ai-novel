@@ -12,6 +12,7 @@ from app.repositories.memory_repo import MemoryRepository
 from app.repositories.project_repo import ProjectRepository
 from app.repositories.validation_repo import ValidationRepository
 from app.services.fact_extractor import FactExtractor
+from app.services.cache_service import CacheService
 from app.services.llm_gateway import LlmGateway
 from app.services.memory_writer import MemoryWriter
 from app.services.prompt_builder import PromptBuilder
@@ -32,6 +33,7 @@ class GenerateChapterPipeline:
         self.memory_repo = MemoryRepository()
         self.validation_repo = ValidationRepository()
         self.retrieval_service = RetrievalService()
+        self.cache_service = CacheService()
         self.prompt_builder = PromptBuilder()
         self.llm_gateway = LlmGateway()
         self.summary_service = SummaryService()
@@ -52,13 +54,29 @@ class GenerateChapterPipeline:
         }
         log_event(logger, "generation.pipeline.started", **log_context)
 
-        project = self.project_repo.get(request.project_id)
-        chapter = self.chapter_repo.get(
-            chapter_id=request.chapter_id,
-            project_id=request.project_id,
-            request_payload=request.request_payload.model_dump(by_alias=True),
+        project = self.cache_service.get_project_snapshot(
+            request.project_id,
+            lambda: self.project_repo.get(request.project_id),
         )
-        related_characters = self.character_repo.list_related(request.project_id)
+        chapter_context = self.cache_service.get_chapter_context(
+            request.project_id,
+            request.chapter_id,
+            lambda: {
+                "chapter": self.chapter_repo.get_snapshot(
+                    chapter_id=request.chapter_id,
+                    project_id=request.project_id,
+                ),
+                "relatedCharacters": self.character_repo.list_related(request.project_id),
+            },
+        )
+        chapter_snapshot = chapter_context["chapter"]
+        related_characters = chapter_context.get("relatedCharacters", [])
+        chapter = {
+            **chapter_snapshot,
+            "expectedWordCount": chapter_snapshot.get("expectedWordCount")
+            or request.request_payload.word_count
+            or 3500,
+        }
 
         context = {
             "queryText": request.request_payload.instruction or chapter["objective"],
@@ -74,17 +92,15 @@ class GenerateChapterPipeline:
         if chapter.get("conflict"):
             hard_facts.append(f"本章核心冲突：{chapter['conflict']}")
 
-        lorebook_hits = (
-            self.retrieval_service.retrieve_lorebook(request.project_id, context)
-            if request.request_payload.include_lorebook
-            else []
+        retrieval_bundle = self.retrieval_service.retrieve_bundle(
+            request.project_id,
+            context,
+            include_lorebook=request.request_payload.include_lorebook,
+            include_memory=request.request_payload.include_memory,
         )
-        memory_hits = (
-            self.retrieval_service.retrieve_memory(request.project_id, context)
-            if request.request_payload.include_memory
-            else []
-        )
-        ranked_hits = self.retrieval_service.rerank_and_compress(lorebook_hits, memory_hits)
+        lorebook_hits = retrieval_bundle["lorebookHits"]
+        memory_hits = retrieval_bundle["memoryHits"]
+        ranked_hits = retrieval_bundle["rankedHits"]
 
         precheck_issues = (
             self.validation_engine.precheck_chapter(context, hard_facts)
@@ -165,6 +181,7 @@ class GenerateChapterPipeline:
             request.project_id,
             [summary_memory, *event_memories],
         )
+        self.cache_service.invalidate_project_recall_results(request.project_id)
 
         log_event(
             logger,

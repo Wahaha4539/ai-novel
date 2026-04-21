@@ -1,4 +1,5 @@
 import { Module } from '@nestjs/common';
+import { CacheModule } from './common/cache/cache.module';
 import { ChaptersModule } from './modules/chapters/chapters.module';
 import { CharactersModule } from './modules/characters/characters.module';
 import { GenerationModule } from './modules/generation/generation.module';
@@ -12,6 +13,7 @@ import { PrismaModule } from './prisma/prisma.module';
 @Module({
   imports: [
     PrismaModule,
+    CacheModule,
     ProjectsModule,
     ChaptersModule,
     CharactersModule,

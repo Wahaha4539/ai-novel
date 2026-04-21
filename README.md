@@ -39,6 +39,7 @@ novel-system/
 5. `generate_chapter` 的真实数据库读写链路
 6. OpenAI-compatible 模型网关接入
 7. 基于 Redis 的章节生成任务队列（默认 `127.0.0.1:6379`）
+8. Worker 侧对 `project snapshot`、`chapter context`、`lorebook/memory recall result` 的 Redis cache-aside
 
 ## 快速开始
 
@@ -60,6 +61,7 @@ copy .env.example apps\api\.env
 然后将 `.env` 与 `apps/api/.env` 中的数据库密码、模型 key 等改成你自己的真实值。
 
 Redis 默认连接为 `redis://127.0.0.1:6379/0`，如本机地址不同，请同步修改 `REDIS_URL`。
+缓存 TTL 也可通过 `CACHE_PROJECT_SNAPSHOT_TTL_SECONDS`、`CACHE_CHAPTER_CONTEXT_TTL_SECONDS`、`CACHE_RECALL_RESULT_TTL_SECONDS` 调整。
 
 > 注意：如果 PostgreSQL 密码包含 `&`、`^` 等特殊字符，必须先做 URL encode 再写进连接串。
 
@@ -105,9 +107,16 @@ uvicorn main:app --app-dir apps/worker --reload --port 8000
 2. 创建章节
 3. 调用章节生成接口
 4. API 先把生成任务写入 PostgreSQL，并投递到 Redis 队列
-5. Worker 从 PostgreSQL 读取项目 / 章节 / 角色 / lorebook / memory
+5. Worker 优先走 Redis cache-aside 读取 `project snapshot`、`chapter context`、`lorebook/memory recall result`，未命中时回源 PostgreSQL
 6. 调用 OpenAI-compatible 模型网关生成正文
 7. 回写 `ChapterDraft` / `ValidationIssue` / `MemoryChunk`
+
+缓存更新策略：
+
+- 项目创建后回写 `project snapshot` 缓存
+- 章节创建 / drafted 状态更新后回写对应 `chapter context` 缓存
+- 角色新增后失效该项目全部 `chapter context` 缓存
+- lorebook / memory 更新后失效该项目的 recall result 缓存
 
 ## 后续建议
 
