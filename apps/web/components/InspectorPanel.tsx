@@ -35,45 +35,61 @@ export function InspectorPanel(props: Props) {
   const [activeTab, setActiveTab] = useState<'preview' | 'edit'>('preview');
 
   return (
-    <aside className="flex w-96 flex-col border-l border-slate-800 bg-slate-900/60 backdrop-blur-3xl shrink-0 h-full overflow-hidden shadow-2xl relative z-10">
+    <aside className="flex flex-col shrink-0 h-full" style={{ width: '26rem', borderLeft: '1px solid var(--border-light)', background: 'rgba(10, 15, 25, 0.4)', backdropFilter: 'blur(32px)', overflow: 'hidden', position: 'relative', zIndex: 10, boxShadow: '-10px 0 30px rgba(0,0,0,0.5)' }}>
       
-      {/* Inspector Tabs */}
-      <div className="flex shrink-0 border-b border-white/5 bg-slate-950/40 px-2 pt-2 gap-1">
-        <button
-          onClick={() => setActiveTab('preview')}
-          className={`flex-1 rounded-t-lg px-4 py-3 text-xs font-bold uppercase tracking-wider transition-colors ${
-            activeTab === 'preview'
-              ? 'bg-slate-900/80 text-cyan-400 border-t border-x border-white/5 shadow-[0_-4px_15px_-5px_rgba(6,182,212,0.15)]'
-              : 'text-slate-500 hover:text-slate-300 hover:bg-slate-900/40'
-          }`}
-        >
-          剧情 / 设定预览
-        </button>
-        <button
-          onClick={() => setActiveTab('edit')}
-          className={`flex-1 rounded-t-lg px-4 py-3 text-xs font-bold uppercase tracking-wider transition-colors ${
-            activeTab === 'edit'
-              ? 'bg-slate-900/80 text-cyan-400 border-t border-x border-white/5 shadow-[0_-4px_15px_-5px_rgba(6,182,212,0.15)]'
-              : 'text-slate-500 hover:text-slate-300 hover:bg-slate-900/40'
-          }`}
-        >
-          后台审计与操作
-        </button>
+      {/* Inspector Tabs - Sleek Segmented Control */}
+      <div className="shrink-0 flex px-4 pt-4 pb-0" style={{ background: 'rgba(0,0,0,0.2)', borderBottom: '1px solid var(--border-dim)' }}>
+        <div className="flex w-full" style={{ background: 'rgba(0,0,0,0.4)', padding: '4px', borderRadius: '12px 12px 0 0', border: '1px solid var(--border-dim)', borderBottom: 'none' }}>
+          <button
+            onClick={() => setActiveTab('preview')}
+            className="flex-1 text-xs font-bold"
+            style={{
+              padding: '0.6rem 0',
+              textTransform: 'uppercase',
+              letterSpacing: '0.05em',
+              transition: 'all 0.3s ease',
+              borderRadius: '8px',
+              background: activeTab === 'preview' ? 'var(--bg-card-hover)' : 'transparent',
+              color: activeTab === 'preview' ? 'var(--accent-cyan)' : 'var(--text-muted)',
+              border: activeTab === 'preview' ? '1px solid var(--border-light)' : '1px solid transparent',
+              boxShadow: activeTab === 'preview' ? '0 4px 15px rgba(0,0,0,0.4)' : 'none'
+            }}
+          >
+            剧情 / 设定预览
+          </button>
+          <button
+            onClick={() => setActiveTab('edit')}
+            className="flex-1 text-xs font-bold"
+            style={{
+              padding: '0.6rem 0',
+              textTransform: 'uppercase',
+              letterSpacing: '0.05em',
+              transition: 'all 0.3s ease',
+              borderRadius: '8px',
+              background: activeTab === 'edit' ? 'var(--bg-card-hover)' : 'transparent',
+              color: activeTab === 'edit' ? 'var(--accent-cyan)' : 'var(--text-muted)',
+              border: activeTab === 'edit' ? '1px solid var(--border-light)' : '1px solid transparent',
+              boxShadow: activeTab === 'edit' ? '0 4px 15px rgba(0,0,0,0.4)' : 'none'
+            }}
+          >
+            后台审计与操作
+          </button>
+        </div>
       </div>
 
-      <div className="flex-1 overflow-y-auto px-4 py-6 space-y-6 custom-scrollbar bg-slate-900/20">
-        <div className="text-xs text-center text-slate-500 mb-2">
+      <div className="flex-1 px-4 py-6 space-y-6" style={{ overflowY: 'auto' }}>
+        <div className="text-xs text-center mb-2" style={{ color: 'var(--text-dim)' }}>
           {props.loading ? (
-            <span className="flex items-center justify-center gap-2 animate-pulse text-cyan-400">
-              <span className="w-1.5 h-1.5 rounded-full bg-cyan-400" /> 同步数据中...
+            <span className="flex items-center justify-center gap-2 text-cyan-400">
+              <span style={{ width: '6px', height: '6px', borderRadius: '50%', background: 'var(--accent-cyan)', animation: 'pulseGlow 1s infinite' }} /> 同步数据中...
             </span>
           ) : (
-            <span className="opacity-50">数据已同事实层对齐</span>
+            <span style={{ opacity: 0.5 }}>数据已同事实层对齐</span>
           )}
         </div>
 
         {activeTab === 'preview' ? (
-          <div className="space-y-6 animate-in slide-in-from-right-4 duration-300">
+          <div className="space-y-6 animate-slide-right">
             <ProjectOverviewPanel
               selectedProject={props.selectedProject}
               chapters={props.chapters}
@@ -89,7 +105,7 @@ export function InspectorPanel(props: Props) {
             <ForeshadowList foreshadowTracks={props.foreshadowTracks} />
           </div>
         ) : (
-          <div className="space-y-6 animate-in slide-in-from-right-4 duration-300">
+          <div className="space-y-6 animate-slide-right">
             <RebuildToolPanel
               selectedProjectId={props.selectedProjectId}
               loading={props.loading}

@@ -24,50 +24,50 @@ export function ProjectOverviewPanel({
   onRefresh,
 }: Props) {
   return (
-    <article className="panel p-5">
+    <article className="panel p-5 animate-fade-in" style={{ animationDelay: '0.1s', animationFillMode: 'both' }}>
       <SectionHeader
         title="项目概览"
         desc="查看项目统计、当前范围和基本工程状态。"
         action={
-          <button className="btn-secondary" onClick={() => selectedProjectId && onRefresh(selectedProjectId, selectedChapterId)}>
+          <button className="btn-secondary text-xs" style={{ padding: '0.4rem 0.8rem' }} onClick={() => selectedProjectId && onRefresh(selectedProjectId, selectedChapterId)}>
             刷新
           </button>
         }
       />
       {selectedProject ? (
-        <div className="mt-5 space-y-4 text-sm text-slate-300">
+        <div className="mt-5 space-y-4">
           <div>
-            <div className="text-xl font-semibold text-white">{selectedProject.title}</div>
-            <div className="mt-2 flex flex-wrap gap-2">
+            <div className="text-xl font-bold text-white mb-2" style={{ textShadow: '0 2px 10px rgba(255,255,255,0.1)' }}>{selectedProject.title}</div>
+            <div className="flex flex-wrap gap-2 items-center">
               <StatusBadge value={selectedProject.status} />
-              {selectedProject.genre ? <span className="badge border-slate-700 bg-slate-800 text-slate-200">{selectedProject.genre}</span> : null}
-              {selectedProject.theme ? <span className="badge border-slate-700 bg-slate-800 text-slate-200">{selectedProject.theme}</span> : null}
+              {selectedProject.genre ? <span className="badge" style={{ background: 'rgba(0,0,0,0.4)', borderColor: 'var(--border-dim)', color: 'var(--text-dim)' }}>{selectedProject.genre}</span> : null}
+              {selectedProject.theme ? <span className="badge" style={{ background: 'rgba(0,0,0,0.4)', borderColor: 'var(--border-dim)', color: 'var(--text-dim)' }}>{selectedProject.theme}</span> : null}
             </div>
           </div>
-          <div className="grid grid-cols-2 gap-3">
-            <div className="rounded-2xl border border-slate-800 bg-slate-950/70 p-3 shadow-inner">
-              <div className="text-xs text-slate-500">章节</div>
-              <div className="mt-1 text-2xl font-semibold text-white">{selectedProject.stats?.chapterCount ?? chapters.length}</div>
+          <div className="grid grid-cols-2 gap-3 mt-4">
+            <div className="p-3" style={{ background: 'rgba(0,0,0,0.3)', borderRadius: '12px', border: '1px solid var(--border-light)', boxShadow: 'inset 0 2px 10px rgba(0,0,0,0.5)' }}>
+              <div className="text-xs font-semibold" style={{ color: 'var(--text-dim)', textTransform: 'uppercase', letterSpacing: '0.05em' }}>章节</div>
+              <div className="text-2xl font-bold mt-1" style={{ color: 'var(--accent-cyan)' }}>{selectedProject.stats?.chapterCount ?? chapters.length}</div>
             </div>
-            <div className="rounded-2xl border border-slate-800 bg-slate-950/70 p-3 shadow-inner">
-              <div className="text-xs text-slate-500">待审核记忆</div>
-              <div className="mt-1 text-2xl font-semibold text-white">{reviewQueue.length}</div>
+            <div className="p-3" style={{ background: 'rgba(0,0,0,0.3)', borderRadius: '12px', border: '1px solid var(--border-light)', boxShadow: 'inset 0 2px 10px rgba(0,0,0,0.5)' }}>
+              <div className="text-xs font-semibold" style={{ color: 'var(--text-dim)', textTransform: 'uppercase', letterSpacing: '0.05em' }}>待审核记忆</div>
+              <div className="text-2xl font-bold mt-1" style={{ color: reviewQueue.length > 0 ? '#f59e0b' : 'var(--text-main)' }}>{reviewQueue.length}</div>
             </div>
-            <div className="rounded-2xl border border-slate-800 bg-slate-950/70 p-3 shadow-inner">
-              <div className="text-xs text-slate-500">结构化事件</div>
-              <div className="mt-1 text-2xl font-semibold text-white">{storyEvents.length}</div>
+            <div className="p-3" style={{ background: 'rgba(0,0,0,0.3)', borderRadius: '12px', border: '1px solid var(--border-light)', boxShadow: 'inset 0 2px 10px rgba(0,0,0,0.5)' }}>
+              <div className="text-xs font-semibold" style={{ color: 'var(--text-dim)', textTransform: 'uppercase', letterSpacing: '0.05em' }}>结构化事件</div>
+              <div className="text-2xl font-bold mt-1 text-white">{storyEvents.length}</div>
             </div>
-            <div className="rounded-2xl border border-slate-800 bg-slate-950/70 p-3 shadow-inner">
-              <div className="text-xs text-slate-500">校验问题</div>
-              <div className="mt-1 text-2xl font-semibold text-white">{validationIssues.length}</div>
+            <div className="p-3" style={{ background: 'rgba(0,0,0,0.3)', borderRadius: '12px', border: '1px solid var(--border-light)', boxShadow: 'inset 0 2px 10px rgba(0,0,0,0.5)' }}>
+              <div className="text-xs font-semibold" style={{ color: 'var(--text-dim)', textTransform: 'uppercase', letterSpacing: '0.05em' }}>校验问题</div>
+              <div className="text-2xl font-bold mt-1" style={{ color: validationIssues.length > 0 ? 'var(--status-err)' : 'var(--text-main)' }}>{validationIssues.length}</div>
             </div>
           </div>
-          <div className="rounded-2xl border border-slate-800 bg-slate-950/70 p-4 text-slate-400">
+          <div className="p-4 text-xs mt-4" style={{ background: 'rgba(6, 182, 212, 0.05)', borderRadius: '12px', border: '1px solid var(--accent-cyan-glow)', color: 'var(--text-muted)' }}>
             当前支持：StoryEvent / CharacterStateSnapshot / ForeshadowTrack 读取、pending_review 审核、单章/全项目 rebuild、基于事实层硬规则校验。
           </div>
         </div>
       ) : (
-        <div className="mt-5 text-sm text-slate-500 flex h-32 items-center justify-center rounded-2xl border border-dashed border-slate-800">
+        <div className="list-card-empty mt-5 text-center px-4">
           暂无项目，请先通过 API 或验证脚本创建项目数据。
         </div>
       )}

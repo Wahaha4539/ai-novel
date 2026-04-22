@@ -2,12 +2,12 @@ import React from 'react';
 
 export function SectionHeader({ title, desc, action }: { title: string; desc: string; action?: React.ReactNode }) {
   return (
-    <div className="flex items-start justify-between gap-4">
+    <div className="flex justify-between items-center gap-4">
       <div>
-        <h2 className="text-lg font-semibold text-white">{title}</h2>
-        <p className="mt-1 text-sm text-slate-400">{desc}</p>
+        <h2 className="text-lg font-bold text-white mb-1" style={{ letterSpacing: '0.02em' }}>{title}</h2>
+        <p className="text-sm" style={{ color: 'var(--text-dim)' }}>{desc}</p>
       </div>
-      {action}
+      {action && <div>{action}</div>}
     </div>
   );
 }

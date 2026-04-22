@@ -12,7 +12,7 @@ export default function HomePage() {
   const chapters = data.dashboard?.chapters ?? [];
 
   return (
-    <main className="flex h-screen w-full overflow-hidden bg-[#030712] font-sans text-slate-200">
+    <main className="flex h-full w-full">
       
       {/* 1. 左侧：工作台导航侧边栏 */}
       <WorkspaceSidebar
@@ -25,17 +25,23 @@ export default function HomePage() {
       />
 
       {/* 2. 主躯干：沉浸式编辑区 */}
-      <section className="flex-1 overflow-hidden relative">
+      <section className="flex-1" style={{ position: 'relative', overflow: 'hidden' }}>
         <EditorPanel 
           selectedProject={selectedProject}
           selectedChapterId={data.selectedChapterId}
           chapters={chapters}
         />
 
-        {/* 对于全局警告的 Toast 提示位置，如果有报错漂浮在编辑区上方 */}
+        {/* 对于全局警告的 Toast 提示位置 */}
         {(data.error || data.actionMessage) && (
-          <div className="absolute top-4 right-8 z-50 animate-in fade-in slide-in-from-top-4">
-            <div className={`rounded-2xl border px-4 py-3 text-sm shadow-xl ${data.error ? 'border-rose-500/40 bg-rose-500/90 text-white backdrop-blur-md' : 'border-slate-700 bg-slate-800/90 text-emerald-100 backdrop-blur-md'}`}>
+          <div className="animate-slide-top" style={{ position: 'absolute', top: '1rem', right: '2rem', zIndex: 50 }}>
+            <div 
+              className="panel px-4 py-3 text-sm" 
+              style={{ 
+                borderColor: data.error ? 'var(--status-err)' : 'var(--accent-cyan)', 
+                background: data.error ? 'var(--status-err-bg)' : 'var(--accent-cyan-bg)',
+                color: data.error ? '#ffe4e6' : '#ccfbf1' 
+              }}>
               {data.error || data.actionMessage}
             </div>
           </div>

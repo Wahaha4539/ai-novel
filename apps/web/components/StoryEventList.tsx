@@ -8,21 +8,21 @@ interface Props {
 
 export function StoryEventList({ storyEvents }: Props) {
   return (
-    <article className="panel p-5">
+    <article className="panel p-5 animate-fade-in" style={{ animationDelay: '0.2s', animationFillMode: 'both' }}>
       <SectionHeader title="StoryEvent" desc="结构化事件读取接口结果。" />
       <div className="mt-5 space-y-3">
         {storyEvents.length ? (
           storyEvents.map((event) => (
             <div key={event.id} className="list-card text-sm">
-              <div className="flex flex-wrap items-center gap-2">
+              <div className="flex flex-wrap items-center gap-2 mb-2">
                 <span className="text-white font-medium">{event.title}</span>
                 <StatusBadge value={event.status} />
-                <span className="badge border-slate-700 bg-slate-800 text-slate-200">{event.eventType}</span>
+                <span className="badge" style={{ background: 'rgba(0,0,0,0.4)', borderColor: 'var(--border-dim)', color: 'var(--text-dim)' }}>{event.eventType}</span>
               </div>
-              <p className="mt-2 leading-6 text-slate-300">{event.description}</p>
-              <div className="mt-2 text-xs text-slate-500">
-                第{event.chapterNo ?? '?'}章 · timelineSeq {event.timelineSeq ?? '—'} · 参与者：
-                {Array.isArray(event.participants) ? event.participants.join('、') : '—'}
+              <p className="leading-6" style={{ color: 'var(--text-main)', fontSize: '0.9rem' }}>{event.description}</p>
+              <div className="mt-3 text-xs" style={{ color: 'var(--text-dim)', borderTop: '1px solid var(--border-dim)', paddingTop: '0.5rem' }}>
+                <span style={{ color: 'var(--accent-cyan)' }}>第{event.chapterNo ?? '?'}章</span> · timelineSeq {event.timelineSeq ?? '—'} · 参与者：
+                <span style={{ color: 'var(--text-muted)' }}>{Array.isArray(event.participants) ? event.participants.join('、') : '—'}</span>
               </div>
             </div>
           ))
