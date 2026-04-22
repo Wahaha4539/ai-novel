@@ -118,6 +118,7 @@ export class ProjectsService {
         ...(dto.tone !== undefined && { tone: dto.tone }),
         ...(dto.targetWordCount !== undefined && { targetWordCount: dto.targetWordCount }),
         ...(dto.synopsis !== undefined && { synopsis: dto.synopsis }),
+        ...(dto.outline !== undefined && { outline: dto.outline }),
       },
     });
 

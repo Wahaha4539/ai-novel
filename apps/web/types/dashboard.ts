@@ -5,6 +5,7 @@ export type ProjectSummary = {
   theme?: string | null;
   tone?: string | null;
   synopsis?: string | null;
+  outline?: string | null;
   status: string;
   stats?: {
     chapterCount?: number;

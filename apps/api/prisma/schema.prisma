@@ -41,6 +41,7 @@ model Project {
   tone                  String?          @db.VarChar(100)
   logline               String?
   synopsis              String?
+  outline               String?
   targetWordCount       Int?
   status                ProjectStatus    @default(draft)
   defaultStyleProfileId String?          @db.Uuid

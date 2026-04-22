@@ -29,4 +29,8 @@ export class UpdateProjectDto {
   @IsOptional()
   @IsString()
   synopsis?: string;
+
+  @IsOptional()
+  @IsString()
+  outline?: string;
 }
