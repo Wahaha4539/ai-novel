@@ -23,19 +23,19 @@ export function RebuildToolPanel({ selectedProjectId, loading, rebuildResult, on
       {rebuildResult ? (
         <div className="mt-5 space-y-4">
           <div className="grid grid-cols-2 gap-3">
-            <div className="p-3" style={{ background: 'rgba(0,0,0,0.3)', borderRadius: '12px', border: '1px solid var(--border-light)', boxShadow: 'inset 0 2px 10px rgba(0,0,0,0.5)' }}>
-              <div className="text-xs" style={{ color: 'var(--text-dim)' }}>成功章节</div>
-              <div className="mt-1 text-xl font-bold" style={{ color: 'var(--accent-cyan)' }}>{rebuildResult.processedChapterCount}</div>
+            <div className="stat-card">
+              <div className="stat-card__label">成功章节</div>
+              <div className="stat-card__value" style={{ color: 'var(--accent-cyan)' }}>{rebuildResult.processedChapterCount}</div>
             </div>
-            <div className="p-3" style={{ background: 'rgba(0,0,0,0.3)', borderRadius: '12px', border: '1px solid var(--border-light)', boxShadow: 'inset 0 2px 10px rgba(0,0,0,0.5)' }}>
-              <div className="text-xs" style={{ color: 'var(--text-dim)' }}>失败章节</div>
-              <div className="mt-1 text-xl font-bold" style={{ color: rebuildResult.failedChapterCount ? 'var(--status-err)' : 'var(--text-main)' }}>{rebuildResult.failedChapterCount ?? 0}</div>
+            <div className="stat-card">
+              <div className="stat-card__label">失败章节</div>
+              <div className="stat-card__value" style={{ color: rebuildResult.failedChapterCount ? 'var(--status-err)' : 'var(--text-main)' }}>{rebuildResult.failedChapterCount ?? 0}</div>
             </div>
           </div>
           <div className="space-y-2">
             {Object.entries(rebuildResult.diffSummary ?? {}).map(([key, value]) => (
               <div key={key} className="list-card p-3">
-                <div className="font-medium text-white">{key}</div>
+                <div className="font-medium text-heading">{key}</div>
                 <div className="mt-2 flex gap-4 text-xs font-semibold" style={{ color: 'var(--text-dim)' }}>
                   <span style={{ color: '#fb7185' }}>- deleted {value.deleted}</span>
                   <span style={{ color: '#34d399' }}>+ created {value.created}</span>

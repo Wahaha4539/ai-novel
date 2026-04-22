@@ -20,12 +20,11 @@ export function WorkspaceSidebar({
   setSelectedChapterId,
 }: Props) {
   return (
-    <aside className="flex flex-col shrink-0 h-full" style={{ width: '16rem', borderRight: '1px solid var(--border-light)', background: 'rgba(5, 5, 10, 0.6)', backdropFilter: 'blur(24px)', overflow: 'hidden' }}>
+    <aside className="flex flex-col shrink-0 h-full" style={{ width: '16rem', borderRight: '1px solid var(--border-light)', background: 'var(--bg-sidebar)', backdropFilter: 'blur(24px)', overflow: 'hidden' }}>
       <div className="p-5" style={{ borderBottom: '1px solid var(--border-dim)' }}>
         <h2 className="text-sm font-bold mb-3 text-slate-500" style={{ textTransform: 'uppercase', letterSpacing: '0.1em' }}>切换项目</h2>
         <select
           className="select"
-          style={{ background: 'rgba(0,0,0,0.3)' }}
           value={selectedProjectId}
           onChange={(event) => {
             setSelectedProjectId(event.target.value);
@@ -75,7 +74,7 @@ export function WorkspaceSidebar({
         <div>
           <div className="px-3 mb-2 font-bold text-slate-500 flex justify-between items-center" style={{ fontSize: '0.65rem', textTransform: 'uppercase', letterSpacing: '0.2em' }}>
             <span>章节草稿</span>
-            <span style={{ fontSize: '10px', background: 'rgba(255,255,255,0.1)', padding: '2px 6px', borderRadius: '4px' }}>{chapters.length}</span>
+            <span style={{ fontSize: '10px', background: 'var(--bg-hover-subtle)', padding: '2px 6px', borderRadius: '4px' }}>{chapters.length}</span>
           </div>
           <ul className="space-y-1">
             <li>
@@ -109,7 +108,7 @@ export function WorkspaceSidebar({
                       boxShadow: isActive ? 'inset 2px 0 0 var(--accent-cyan)' : 'none',
                       fontWeight: isActive ? 500 : 400
                     }}
-                    onMouseEnter={(e) => { if(!isActive) { e.currentTarget.style.background = 'rgba(255,255,255,0.05)'; e.currentTarget.style.color = '#fff' } }}
+                    onMouseEnter={(e) => { if(!isActive) { e.currentTarget.style.background = 'var(--bg-hover-subtle)'; e.currentTarget.style.color = 'var(--text-main)' } }}
                     onMouseLeave={(e) => { if(!isActive) { e.currentTarget.style.background = 'transparent'; e.currentTarget.style.color = 'var(--text-muted)' } }}
                   >
                     <span className="truncate">
@@ -125,10 +124,10 @@ export function WorkspaceSidebar({
       </nav>
 
       {/* Footer Profile or Settings block */}
-      <div className="p-4" style={{ borderTop: '1px solid var(--border-dim)', background: 'rgba(0,0,0,0.2)' }}>
+      <div className="p-4" style={{ borderTop: '1px solid var(--border-dim)', background: 'var(--bg-sidebar-footer)' }}>
         <div className="flex items-center justify-between px-2">
           <div className="flex items-center gap-3">
-            <div className="flex items-center justify-center shrink-0" style={{ width: '32px', height: '32px', borderRadius: '50%', background: 'linear-gradient(to top right, var(--accent-cyan), #34d399)', padding: '2px', boxShadow: '0 4px 10px rgba(6,182,212,0.3)' }}>
+            <div className="flex items-center justify-center shrink-0" style={{ width: '32px', height: '32px', borderRadius: '50%', background: 'linear-gradient(to top right, var(--accent-cyan), #34d399)', padding: '2px', boxShadow: '0 4px 10px var(--accent-cyan-glow)' }}>
               <div className="w-full h-full flex items-center justify-center" style={{ borderRadius: '50%', background: 'var(--bg-deep)' }}>
                 <span style={{ fontSize: '10px', color: 'var(--accent-cyan)', fontWeight: 'bold' }}>AI</span>
               </div>

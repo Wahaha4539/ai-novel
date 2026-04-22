@@ -4,7 +4,7 @@ export function SectionHeader({ title, desc, action }: { title: string; desc: st
   return (
     <div className="flex justify-between items-center gap-4">
       <div>
-        <h2 className="text-lg font-bold text-white mb-1" style={{ letterSpacing: '0.02em' }}>{title}</h2>
+        <h2 className="text-lg font-bold text-heading mb-1" style={{ letterSpacing: '0.02em' }}>{title}</h2>
         <p className="text-sm" style={{ color: 'var(--text-dim)' }}>{desc}</p>
       </div>
       {action && <div>{action}</div>}

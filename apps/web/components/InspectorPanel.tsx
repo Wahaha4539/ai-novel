@@ -7,7 +7,7 @@ import { ProjectOverviewPanel } from './ProjectOverviewPanel';
 import { RebuildToolPanel } from './RebuildToolPanel';
 import { ValidationConsolePanel } from './ValidationConsolePanel';
 import { ReviewQueueList } from './ReviewQueueList';
-import { DashboardPayload, StoryEventItem, CharacterStateItem, ForeshadowItem, ValidationIssue, RebuildResult, ValidationRunResult, ReviewItem, ProjectSummary, ChapterSummary } from '../types/dashboard';
+import { StoryEventItem, CharacterStateItem, ForeshadowItem, ValidationIssue, RebuildResult, ValidationRunResult, ReviewItem, ProjectSummary, ChapterSummary } from '../types/dashboard';
 
 interface Props {
   // states
@@ -35,11 +35,11 @@ export function InspectorPanel(props: Props) {
   const [activeTab, setActiveTab] = useState<'preview' | 'edit'>('preview');
 
   return (
-    <aside className="flex flex-col shrink-0 h-full" style={{ width: '26rem', borderLeft: '1px solid var(--border-light)', background: 'rgba(10, 15, 25, 0.4)', backdropFilter: 'blur(32px)', overflow: 'hidden', position: 'relative', zIndex: 10, boxShadow: '-10px 0 30px rgba(0,0,0,0.5)' }}>
+    <aside className="flex flex-col shrink-0 h-full" style={{ width: '26rem', borderLeft: '1px solid var(--border-light)', background: 'var(--bg-inspector)', backdropFilter: 'blur(32px)', overflow: 'hidden', position: 'relative', zIndex: 10, boxShadow: '-10px 0 30px rgba(0,0,0,0.3)' }}>
       
       {/* Inspector Tabs - Sleek Segmented Control */}
-      <div className="shrink-0 flex px-4 pt-4 pb-0" style={{ background: 'rgba(0,0,0,0.2)', borderBottom: '1px solid var(--border-dim)' }}>
-        <div className="flex w-full" style={{ background: 'rgba(0,0,0,0.4)', padding: '4px', borderRadius: '12px 12px 0 0', border: '1px solid var(--border-dim)', borderBottom: 'none' }}>
+      <div className="shrink-0 flex px-4 pt-4 pb-0" style={{ background: 'var(--bg-overlay)', borderBottom: '1px solid var(--border-dim)' }}>
+        <div className="flex w-full" style={{ background: 'var(--bg-overlay)', padding: '4px', borderRadius: '12px 12px 0 0', border: '1px solid var(--border-dim)', borderBottom: 'none' }}>
           <button
             onClick={() => setActiveTab('preview')}
             className="flex-1 text-xs font-bold"
@@ -52,7 +52,7 @@ export function InspectorPanel(props: Props) {
               background: activeTab === 'preview' ? 'var(--bg-card-hover)' : 'transparent',
               color: activeTab === 'preview' ? 'var(--accent-cyan)' : 'var(--text-muted)',
               border: activeTab === 'preview' ? '1px solid var(--border-light)' : '1px solid transparent',
-              boxShadow: activeTab === 'preview' ? '0 4px 15px rgba(0,0,0,0.4)' : 'none'
+              boxShadow: activeTab === 'preview' ? '0 4px 15px rgba(0,0,0,0.2)' : 'none'
             }}
           >
             剧情 / 设定预览
@@ -69,7 +69,7 @@ export function InspectorPanel(props: Props) {
               background: activeTab === 'edit' ? 'var(--bg-card-hover)' : 'transparent',
               color: activeTab === 'edit' ? 'var(--accent-cyan)' : 'var(--text-muted)',
               border: activeTab === 'edit' ? '1px solid var(--border-light)' : '1px solid transparent',
-              boxShadow: activeTab === 'edit' ? '0 4px 15px rgba(0,0,0,0.4)' : 'none'
+              boxShadow: activeTab === 'edit' ? '0 4px 15px rgba(0,0,0,0.2)' : 'none'
             }}
           >
             后台审计与操作
@@ -84,7 +84,7 @@ export function InspectorPanel(props: Props) {
               <span style={{ width: '6px', height: '6px', borderRadius: '50%', background: 'var(--accent-cyan)', animation: 'pulseGlow 1s infinite' }} /> 同步数据中...
             </span>
           ) : (
-            <span style={{ opacity: 0.5 }}>数据已同事实层对齐</span>
+            <span style={{ opacity: 0.5 }}>数据已同步至事实层</span>
           )}
         </div>
 

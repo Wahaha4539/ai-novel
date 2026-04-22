@@ -17,12 +17,12 @@ export function EditorPanel({ selectedProject, selectedChapterId, chapters }: Pr
 
   return (
     <article className="flex flex-col h-full" style={{ background: 'var(--bg-deep)' }}>
-      <header className="flex flex-col justify-center shrink-0" style={{ height: '3.5rem', background: 'rgba(5, 5, 10, 0.8)', padding: '0 2rem', borderBottom: '1px solid var(--border-light)', backdropFilter: 'blur(12px)', zIndex: 10 }}>
+      <header className="flex flex-col justify-center shrink-0" style={{ height: '3.5rem', background: 'var(--bg-editor-header)', padding: '0 2rem', borderBottom: '1px solid var(--border-light)', backdropFilter: 'blur(12px)', zIndex: 10 }}>
         <div className="flex items-center justify-between">
           <div className="flex items-center gap-3">
-            <h1 className="text-lg font-bold text-white" style={{ textShadow: '0 2px 10px rgba(255,255,255,0.1)' }}>{title}</h1>
+            <h1 className="text-lg font-bold text-heading" style={{ textShadow: '0 2px 10px var(--accent-cyan-glow)' }}>{title}</h1>
             {!isGlobal && (
-              <span className="badge" style={{ background: 'var(--accent-cyan-bg)', color: 'var(--accent-cyan)', border: 'none', boxShadow: 'inset 0 0 10px rgba(6,182,212,0.1)' }}>草稿状态</span>
+              <span className="badge" style={{ background: 'var(--accent-cyan-bg)', color: 'var(--accent-cyan)', border: 'none', boxShadow: 'inset 0 0 10px var(--accent-cyan-bg)' }}>草稿状态</span>
             )}
           </div>
           <div className="flex items-center gap-4 text-xs font-medium text-slate-500">

@@ -17,12 +17,12 @@ export function ReviewQueueList({ reviewQueue, onRunReviewAction }: Props) {
             <div key={item.id} className="list-card text-sm" style={{ borderLeft: '3px solid rgba(245, 158, 11, 0.5)' }}>
               <div className="flex flex-wrap items-center gap-2 mb-2">
                 <StatusBadge value={item.status} />
-                <span className="badge" style={{ background: 'rgba(0,0,0,0.4)', borderColor: 'var(--border-dim)', color: 'var(--text-dim)' }}>{item.memoryType}</span>
+                <span className="badge" style={{ background: 'var(--bg-overlay)', borderColor: 'var(--border-dim)', color: 'var(--text-dim)' }}>{item.memoryType}</span>
                 {item.sourceTrace?.chapterNo != null ? (
                   <span className="text-xs font-semibold" style={{ color: 'var(--accent-cyan)' }}>第{item.sourceTrace.chapterNo}章</span>
                 ) : null}
               </div>
-              <div className="mt-2 text-white font-medium text-base mb-1">{item.summary || '未命名记忆'}</div>
+              <div className="mt-2 text-heading font-medium text-base mb-1">{item.summary || '未命名记忆'}</div>
               <div className="leading-6" style={{ color: 'var(--text-main)', fontSize: '0.9rem' }}>{item.content}</div>
               <div className="mt-4 flex gap-3">
                 <button className="btn text-xs px-4 py-2" onClick={() => onRunReviewAction(item.id, 'confirm')}>

@@ -15,9 +15,9 @@ export function ForeshadowList({ foreshadowTracks }: Props) {
           foreshadowTracks.map((track) => (
             <div key={track.id} className="list-card text-sm">
               <div className="flex flex-wrap items-center gap-2 mb-2">
-                <span className="text-white font-medium">{track.title}</span>
+                <span className="text-heading font-medium">{track.title}</span>
                 <StatusBadge value={track.reviewStatus ?? track.status} />
-                <span className="badge" style={{ background: 'rgba(0,0,0,0.4)', borderColor: 'var(--border-dim)', color: 'var(--text-dim)' }}>{track.foreshadowStatus ?? track.status}</span>
+                <span className="badge" style={{ background: 'var(--bg-overlay)', borderColor: 'var(--border-dim)', color: 'var(--text-dim)' }}>{track.foreshadowStatus ?? track.status}</span>
               </div>
               {track.detail ? <div className="mt-2" style={{ color: 'var(--text-main)' }}>{track.detail}</div> : null}
               <div className="mt-3 text-xs flex gap-4" style={{ color: 'var(--text-dim)', borderTop: '1px solid var(--border-dim)', paddingTop: '0.5rem' }}>

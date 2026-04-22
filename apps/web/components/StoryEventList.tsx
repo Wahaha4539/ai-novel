@@ -15,9 +15,9 @@ export function StoryEventList({ storyEvents }: Props) {
           storyEvents.map((event) => (
             <div key={event.id} className="list-card text-sm">
               <div className="flex flex-wrap items-center gap-2 mb-2">
-                <span className="text-white font-medium">{event.title}</span>
+                <span className="text-heading font-medium">{event.title}</span>
                 <StatusBadge value={event.status} />
-                <span className="badge" style={{ background: 'rgba(0,0,0,0.4)', borderColor: 'var(--border-dim)', color: 'var(--text-dim)' }}>{event.eventType}</span>
+                <span className="badge" style={{ background: 'var(--bg-overlay)', borderColor: 'var(--border-dim)', color: 'var(--text-dim)' }}>{event.eventType}</span>
               </div>
               <p className="leading-6" style={{ color: 'var(--text-main)', fontSize: '0.9rem' }}>{event.description}</p>
               <div className="mt-3 text-xs" style={{ color: 'var(--text-dim)', borderTop: '1px solid var(--border-dim)', paddingTop: '0.5rem' }}>

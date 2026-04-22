@@ -21,13 +21,13 @@ export function ValidationConsolePanel({ selectedProjectId, loading, validationR
       {validationRunResult ? (
         <div className="mt-5 space-y-3">
           <div className="grid grid-cols-2 gap-3 mb-4">
-            <div className="p-3" style={{ background: 'rgba(0,0,0,0.3)', borderRadius: '12px', border: '1px solid var(--border-light)', boxShadow: 'inset 0 2px 10px rgba(0,0,0,0.5)' }}>
-              <div className="text-xs" style={{ color: 'var(--text-dim)' }}>新增问题</div>
-              <div className="mt-1 text-xl font-bold" style={{ color: 'var(--accent-cyan)' }}>{validationRunResult.createdCount}</div>
+            <div className="stat-card">
+              <div className="stat-card__label">新增问题</div>
+              <div className="stat-card__value" style={{ color: 'var(--accent-cyan)' }}>{validationRunResult.createdCount}</div>
             </div>
-            <div className="p-3" style={{ background: 'rgba(0,0,0,0.3)', borderRadius: '12px', border: '1px solid var(--border-light)', boxShadow: 'inset 0 2px 10px rgba(0,0,0,0.5)' }}>
-              <div className="text-xs" style={{ color: 'var(--text-dim)' }}>替换旧问题</div>
-              <div className="mt-1 text-xl font-bold" style={{ color: 'var(--text-main)' }}>{validationRunResult.deletedCount}</div>
+            <div className="stat-card">
+              <div className="stat-card__label">替换旧问题</div>
+              <div className="stat-card__value">{validationRunResult.deletedCount}</div>
             </div>
           </div>
           <div className="space-y-2">
@@ -35,7 +35,7 @@ export function ValidationConsolePanel({ selectedProjectId, loading, validationR
               <div key={`${issue.issueType}-${index}`} className="list-card">
                 <div className="flex items-center gap-2 mb-2">
                   <StatusBadge value={issue.severity} />
-                  <span className="text-white font-medium text-sm">{issue.issueType}</span>
+                  <span className="text-heading font-medium text-sm">{issue.issueType}</span>
                 </div>
                 <div className="text-sm" style={{ color: 'var(--text-muted)' }}>{issue.message}</div>
               </div>
