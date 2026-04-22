@@ -112,7 +112,9 @@ export function ProjectManagementPanel({
                 color: 'var(--accent-cyan)',
                 border: '1px solid var(--border-light)',
                 marginBottom: '1.5rem',
+                cursor: 'pointer',
               }}
+              onClick={handleOpenCreate}
             >
               <svg xmlns="http://www.w3.org/2000/svg" width="36" height="36" fill="none" viewBox="0 0 24 24" stroke="currentColor">
                 <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={1.5} d="M12 6v12m6-6H6" />
