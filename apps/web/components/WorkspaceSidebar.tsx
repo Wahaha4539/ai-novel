@@ -2,6 +2,8 @@ import React from 'react';
 import { ProjectSummary, ChapterSummary } from '../types/dashboard';
 import { ThemeSwitcher } from './ThemeSwitcher';
 
+type ActiveView = 'editor' | 'outline' | 'lore' | 'projects';
+
 interface Props {
   projects: ProjectSummary[];
   chapters: ChapterSummary[];
@@ -9,7 +11,10 @@ interface Props {
   selectedChapterId: string;
   setSelectedChapterId: (id: string) => void;
   showProjectManagement: boolean;
+  activeView: ActiveView;
   onNavigateToProjects: () => void;
+  onNavigateToOutline: () => void;
+  onNavigateToLore: () => void;
 }
 
 export function WorkspaceSidebar({
@@ -19,7 +24,10 @@ export function WorkspaceSidebar({
   selectedChapterId,
   setSelectedChapterId,
   showProjectManagement,
+  activeView,
   onNavigateToProjects,
+  onNavigateToOutline,
+  onNavigateToLore,
 }: Props) {
   const selectedProject = projects.find((p) => p.id === selectedProjectId);
 
@@ -70,10 +78,18 @@ export function WorkspaceSidebar({
             <ul className="space-y-1">
               <li>
                 <button
-                  disabled
-                  className="w-full flex items-center gap-3 text-sm font-medium text-slate-400 p-2"
-                  style={{ borderRadius: '0.5rem', opacity: 0.6, cursor: 'not-allowed' }}
-                  title="尚未开放大纲树"
+                  onClick={onNavigateToOutline}
+                  className="w-full flex items-center gap-3 text-sm font-medium p-2"
+                  style={{
+                    borderRadius: '0.5rem',
+                    transition: 'all 0.3s ease',
+                    background: activeView === 'outline' ? 'rgba(245,158,11,0.1)' : 'transparent',
+                    color: activeView === 'outline' ? '#f59e0b' : 'var(--text-muted)',
+                    boxShadow: activeView === 'outline' ? 'inset 2px 0 0 #f59e0b' : 'none',
+                    fontWeight: activeView === 'outline' ? 500 : 400,
+                  }}
+                  onMouseEnter={(e) => { if (activeView !== 'outline') { e.currentTarget.style.background = 'var(--bg-hover-subtle)'; e.currentTarget.style.color = 'var(--text-main)'; } }}
+                  onMouseLeave={(e) => { if (activeView !== 'outline') { e.currentTarget.style.background = 'transparent'; e.currentTarget.style.color = 'var(--text-muted)'; } }}
                 >
                   <div style={{ width: '6px', height: '6px', borderRadius: '50%', background: '#f59e0b', boxShadow: '0 0 8px rgba(245,158,11,0.5)' }} />
                   剧情大纲 (Outline)
@@ -81,10 +97,18 @@ export function WorkspaceSidebar({
               </li>
               <li>
                 <button
-                  disabled
-                  className="w-full flex items-center gap-3 text-sm font-medium text-slate-400 p-2"
-                  style={{ borderRadius: '0.5rem', opacity: 0.6, cursor: 'not-allowed' }}
-                  title="尚未开放全局设定模块"
+                  onClick={onNavigateToLore}
+                  className="w-full flex items-center gap-3 text-sm font-medium p-2"
+                  style={{
+                    borderRadius: '0.5rem',
+                    transition: 'all 0.3s ease',
+                    background: activeView === 'lore' ? 'rgba(139,92,246,0.1)' : 'transparent',
+                    color: activeView === 'lore' ? '#8b5cf6' : 'var(--text-muted)',
+                    boxShadow: activeView === 'lore' ? 'inset 2px 0 0 #8b5cf6' : 'none',
+                    fontWeight: activeView === 'lore' ? 500 : 400,
+                  }}
+                  onMouseEnter={(e) => { if (activeView !== 'lore') { e.currentTarget.style.background = 'var(--bg-hover-subtle)'; e.currentTarget.style.color = 'var(--text-main)'; } }}
+                  onMouseLeave={(e) => { if (activeView !== 'lore') { e.currentTarget.style.background = 'transparent'; e.currentTarget.style.color = 'var(--text-muted)'; } }}
                 >
                   <div style={{ width: '6px', height: '6px', borderRadius: '50%', background: '#8b5cf6', boxShadow: '0 0 8px rgba(139,92,246,0.5)' }} />
                   角色与设定 (Lore)

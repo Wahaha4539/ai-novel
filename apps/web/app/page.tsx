@@ -6,10 +6,14 @@ import { WorkspaceSidebar } from '../components/WorkspaceSidebar';
 import { EditorPanel } from '../components/EditorPanel';
 import { InspectorPanel } from '../components/InspectorPanel';
 import { ProjectManagementPanel } from '../components/ProjectManagementPanel';
+import { OutlinePanel } from '../components/OutlinePanel';
+import { LorePanel } from '../components/LorePanel';
+
+type ActiveView = 'editor' | 'outline' | 'lore' | 'projects';
 
 export default function HomePage() {
   const data = useDashboardData();
-  const [showProjectManagement, setShowProjectManagement] = useState(true);
+  const [activeView, setActiveView] = useState<ActiveView>('projects');
 
   const selectedProject = data.projects.find((item) => item.id === data.selectedProjectId) ?? data.dashboard?.project;
   const chapters = data.dashboard?.chapters ?? [];
@@ -18,20 +22,29 @@ export default function HomePage() {
     data.setSelectedProjectId(id);
     data.setSelectedChapterId('all');
     if (id) {
-      setShowProjectManagement(false);
+      setActiveView('editor');
     }
   }, [data]);
 
   const handleNavigateToProjects = useCallback(() => {
-    setShowProjectManagement(true);
+    setActiveView('projects');
+  }, []);
+
+  const handleNavigateToOutline = useCallback(() => {
+    setActiveView('outline');
+  }, []);
+
+  const handleNavigateToLore = useCallback(() => {
+    setActiveView('lore');
   }, []);
 
   const handleProjectsChanged = useCallback(async () => {
     await data.loadProjects();
   }, [data]);
 
+  const showProjectManagement = activeView === 'projects';
   const hasProject = !!data.selectedProjectId;
-  const showEditor = hasProject && !showProjectManagement;
+  const showInspector = hasProject && activeView === 'editor';
 
   return (
     <main className="flex h-full w-full">
@@ -42,20 +55,30 @@ export default function HomePage() {
         chapters={chapters}
         selectedProjectId={data.selectedProjectId}
         selectedChapterId={data.selectedChapterId}
-        setSelectedChapterId={data.setSelectedChapterId}
+        setSelectedChapterId={(id) => {
+          data.setSelectedChapterId(id);
+          setActiveView('editor');
+        }}
         showProjectManagement={showProjectManagement}
+        activeView={activeView}
         onNavigateToProjects={handleNavigateToProjects}
+        onNavigateToOutline={handleNavigateToOutline}
+        onNavigateToLore={handleNavigateToLore}
       />
 
-      {/* 2. 主躯干：项目管理 或 沉浸式编辑区 */}
+      {/* 2. 主躯干：根据 activeView 切换面板 */}
       <section className="flex-1" style={{ position: 'relative', overflow: 'hidden' }}>
-        {showProjectManagement || !hasProject ? (
+        {activeView === 'projects' || !hasProject ? (
           <ProjectManagementPanel
             projects={data.projects}
             selectedProjectId={data.selectedProjectId}
             onSelectProject={handleSelectProject}
             onProjectsChanged={handleProjectsChanged}
           />
+        ) : activeView === 'outline' ? (
+          <OutlinePanel selectedProject={selectedProject} />
+        ) : activeView === 'lore' ? (
+          <LorePanel selectedProject={selectedProject} />
         ) : (
           <EditorPanel
             selectedProject={selectedProject}
@@ -80,8 +103,8 @@ export default function HomePage() {
         )}
       </section>
 
-      {/* 3. 右侧：情报辅助台 — 仅在选中项目且非项目管理模式时显示 */}
-      {showEditor && (
+      {/* 3. 右侧：情报辅助台 — 仅在编辑器视图时显示 */}
+      {showInspector && (
         <InspectorPanel
           selectedProject={selectedProject}
           chapters={chapters}
