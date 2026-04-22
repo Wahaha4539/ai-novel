@@ -1,5 +1,6 @@
 import React from 'react';
 import { ProjectSummary, ChapterSummary } from '../types/dashboard';
+import { ThemeSwitcher } from './ThemeSwitcher';
 
 interface Props {
   projects: ProjectSummary[];
@@ -125,13 +126,16 @@ export function WorkspaceSidebar({
 
       {/* Footer Profile or Settings block */}
       <div className="p-4" style={{ borderTop: '1px solid var(--border-dim)', background: 'rgba(0,0,0,0.2)' }}>
-        <div className="flex items-center gap-3 px-2">
-          <div className="flex items-center justify-center" style={{ width: '32px', height: '32px', borderRadius: '50%', background: 'linear-gradient(to top right, var(--accent-cyan), #34d399)', padding: '2px', boxShadow: '0 4px 10px rgba(6,182,212,0.3)' }}>
-            <div className="w-full h-full flex items-center justify-center" style={{ borderRadius: '50%', background: 'var(--bg-deep)' }}>
-              <span style={{ fontSize: '10px', color: 'var(--accent-cyan)', fontWeight: 'bold' }}>AI</span>
+        <div className="flex items-center justify-between px-2">
+          <div className="flex items-center gap-3">
+            <div className="flex items-center justify-center shrink-0" style={{ width: '32px', height: '32px', borderRadius: '50%', background: 'linear-gradient(to top right, var(--accent-cyan), #34d399)', padding: '2px', boxShadow: '0 4px 10px rgba(6,182,212,0.3)' }}>
+              <div className="w-full h-full flex items-center justify-center" style={{ borderRadius: '50%', background: 'var(--bg-deep)' }}>
+                <span style={{ fontSize: '10px', color: 'var(--accent-cyan)', fontWeight: 'bold' }}>AI</span>
+              </div>
             </div>
+            <div className="text-xs font-medium text-slate-300">小说辅写台</div>
           </div>
-          <div className="text-xs font-medium text-slate-300">小说辅写台</div>
+          <ThemeSwitcher />
         </div>
       </div>
     </aside>

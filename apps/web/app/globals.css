@@ -1,6 +1,6 @@
 @import url('https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&display=swap');
 
-:root {
+:root, .theme-cyberpunk {
   /* Core Colors */
   --bg-deep: #050508;
   --bg-card: rgba(15, 20, 30, 0.6);
@@ -16,7 +16,55 @@
   --border-light: rgba(255, 255, 255, 0.1);
   --status-err: #f43f5e;
   --status-err-bg: rgba(244, 63, 94, 0.1);
+  --ambient-glow-1: rgba(6,182,212,0.15);
+  --ambient-glow-2: rgba(139,92,246,0.15);
+  --scrollbar-thumb: rgba(255, 255, 255, 0.1);
+  --scrollbar-thumb-hover: rgba(255, 255, 255, 0.2);
+}
 
+.theme-light {
+  --bg-deep: #f1f5f9;
+  --bg-card: rgba(255, 255, 255, 0.7);
+  --bg-card-hover: rgba(255, 255, 255, 0.9);
+  --bg-primary: #f8fafc;
+  --text-main: #0f172a;
+  --text-muted: #475569;
+  --text-dim: #94a3b8;
+  --accent-cyan: #3b82f6;
+  --accent-cyan-glow: rgba(59, 130, 246, 0.2);
+  --accent-cyan-bg: rgba(59, 130, 246, 0.1);
+  --border-dim: rgba(0, 0, 0, 0.05);
+  --border-light: rgba(0, 0, 0, 0.1);
+  --status-err: #ef4444;
+  --status-err-bg: rgba(239, 68, 68, 0.1);
+  --ambient-glow-1: rgba(59, 130, 246, 0.15);
+  --ambient-glow-2: rgba(139, 92, 246, 0.15);
+  --scrollbar-thumb: rgba(0, 0, 0, 0.1);
+  --scrollbar-thumb-hover: rgba(0, 0, 0, 0.2);
+}
+
+.theme-matrix {
+  --bg-deep: #000500;
+  --bg-card: rgba(0, 15, 0, 0.6);
+  --bg-card-hover: rgba(0, 25, 0, 0.8);
+  --bg-primary: #000a00;
+  --text-main: #4ade80;
+  --text-muted: #22c55e;
+  --text-dim: #166534;
+  --accent-cyan: #22c55e;
+  --accent-cyan-glow: rgba(34, 197, 94, 0.2);
+  --accent-cyan-bg: rgba(34, 197, 94, 0.1);
+  --border-dim: rgba(74, 222, 128, 0.15);
+  --border-light: rgba(74, 222, 128, 0.3);
+  --status-err: #ef4444;
+  --status-err-bg: rgba(239, 68, 68, 0.1);
+  --ambient-glow-1: rgba(34, 197, 94, 0.15);
+  --ambient-glow-2: rgba(0, 0, 0, 0);
+  --scrollbar-thumb: rgba(74, 222, 128, 0.2);
+  --scrollbar-thumb-hover: rgba(74, 222, 128, 0.4);
+}
+
+:root {
   /* Layout & Spacing */
   --spacing-xs: 0.25rem;
   --spacing-sm: 0.5rem;
@@ -44,6 +92,7 @@ body {
   position: relative;
   overflow: hidden; /* App-like full screen */
   height: 100vh;
+  transition: background-color 0.5s ease, color 0.5s ease;
 }
 
 /* Ambient Background */
@@ -55,18 +104,19 @@ body::before, body::after {
   z-index: -1;
   opacity: 0.4;
   pointer-events: none;
+  transition: background 0.5s ease;
 }
 body::before {
   width: 40vw;
   height: 40vw;
-  background: radial-gradient(circle, rgba(6,182,212,0.15) 0%, rgba(0,0,0,0) 70%);
+  background: radial-gradient(circle, var(--ambient-glow-1) 0%, rgba(0,0,0,0) 70%);
   top: -10%;
   left: -10%;
 }
 body::after {
   width: 60vw;
   height: 60vw;
-  background: radial-gradient(circle, rgba(139,92,246,0.15) 0%, rgba(0,0,0,0) 70%);
+  background: radial-gradient(circle, var(--ambient-glow-2) 0%, rgba(0,0,0,0) 70%);
   bottom: -20%;
   right: -10%;
 }
@@ -80,11 +130,12 @@ body::after {
   background: transparent;
 }
 ::-webkit-scrollbar-thumb {
-  background-color: rgba(255, 255, 255, 0.1);
+  background-color: var(--scrollbar-thumb, rgba(255, 255, 255, 0.1));
   border-radius: 99px;
+  transition: background-color 0.3s ease;
 }
 ::-webkit-scrollbar-thumb:hover {
-  background-color: rgba(255, 255, 255, 0.2);
+  background-color: var(--scrollbar-thumb-hover, rgba(255, 255, 255, 0.2));
 }
 
 /* Base Utility Classes replacing Tailwind structure */
