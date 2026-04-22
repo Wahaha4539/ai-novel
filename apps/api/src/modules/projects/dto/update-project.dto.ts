@@ -25,4 +25,8 @@ export class UpdateProjectDto {
   @IsInt()
   @Min(1)
   targetWordCount?: number;
+
+  @IsOptional()
+  @IsString()
+  synopsis?: string;
 }

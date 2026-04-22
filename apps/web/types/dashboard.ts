@@ -4,6 +4,7 @@ export type ProjectSummary = {
   genre?: string | null;
   theme?: string | null;
   tone?: string | null;
+  synopsis?: string | null;
   status: string;
   stats?: {
     chapterCount?: number;
@@ -13,6 +14,21 @@ export type ProjectSummary = {
     characterStateSnapshotCount?: number;
     foreshadowTrackCount?: number;
   };
+};
+
+export type CharacterCard = {
+  id: string;
+  projectId: string;
+  name: string;
+  roleType?: string | null;
+  personalityCore?: string | null;
+  motivation?: string | null;
+  speechStyle?: string | null;
+  backstory?: string | null;
+  growthArc?: string | null;
+  isDead: boolean;
+  createdAt: string;
+  updatedAt: string;
 };
 
 export type ChapterSummary = {

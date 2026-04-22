@@ -78,7 +78,7 @@ export default function HomePage() {
         ) : activeView === 'outline' ? (
           <OutlinePanel selectedProject={selectedProject} />
         ) : activeView === 'lore' ? (
-          <LorePanel selectedProject={selectedProject} />
+          <LorePanel selectedProject={selectedProject} selectedProjectId={data.selectedProjectId} />
         ) : (
           <EditorPanel
             selectedProject={selectedProject}

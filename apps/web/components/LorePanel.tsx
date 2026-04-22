@@ -1,13 +1,78 @@
-import React from 'react';
-import { ProjectSummary } from '../types/dashboard';
+import React, { useState, useEffect } from 'react';
+import { ProjectSummary, CharacterCard } from '../types/dashboard';
+import { useCharacterActions, CharacterFormData } from '../hooks/useCharacterActions';
+import { CharacterCardList } from './CharacterCardList';
+import { CharacterFormModal } from './CharacterFormModal';
+import { WorldviewEditor } from './WorldviewEditor';
+
+type LoreTab = 'characters' | 'worldview';
 
 interface Props {
   selectedProject?: ProjectSummary;
+  selectedProjectId: string;
 }
 
-export function LorePanel({ selectedProject }: Props) {
+export function LorePanel({ selectedProject, selectedProjectId }: Props) {
+  const [activeTab, setActiveTab] = useState<LoreTab>('characters');
+  const [showForm, setShowForm] = useState(false);
+  const [editingCharacter, setEditingCharacter] = useState<CharacterCard | null>(null);
+  const [deletingCharacter, setDeletingCharacter] = useState<CharacterCard | null>(null);
+
+  const {
+    characters,
+    loading,
+    formLoading,
+    formError,
+    setFormError,
+    loadCharacters,
+    createCharacter,
+    updateCharacter,
+    deleteCharacter,
+  } = useCharacterActions(selectedProjectId);
+
+  // Load characters when project changes
+  useEffect(() => {
+    if (selectedProjectId) {
+      loadCharacters();
+    }
+  }, [selectedProjectId, loadCharacters]);
+
+  const handleOpenCreate = () => {
+    setEditingCharacter(null);
+    setFormError('');
+    setShowForm(true);
+  };
+
+  const handleOpenEdit = (character: CharacterCard) => {
+    setEditingCharacter(character);
+    setFormError('');
+    setShowForm(true);
+  };
+
+  const handleFormSubmit = async (data: CharacterFormData) => {
+    if (editingCharacter) {
+      const ok = await updateCharacter(editingCharacter.id, data);
+      if (ok) setShowForm(false);
+    } else {
+      const ok = await createCharacter(data);
+      if (ok) setShowForm(false);
+    }
+  };
+
+  const handleConfirmDelete = async () => {
+    if (!deletingCharacter) return;
+    const ok = await deleteCharacter(deletingCharacter.id);
+    if (ok) setDeletingCharacter(null);
+  };
+
+  const TABS: { key: LoreTab; label: string; color: string }[] = [
+    { key: 'characters', label: '角色卡', color: '#8b5cf6' },
+    { key: 'worldview', label: '世界观', color: '#10b981' },
+  ];
+
   return (
     <article className="flex flex-col h-full" style={{ background: 'var(--bg-deep)' }}>
+      {/* Header */}
       <header
         className="flex items-center justify-between shrink-0"
         style={{
@@ -51,53 +116,123 @@ export function LorePanel({ selectedProject }: Props) {
         </div>
       </header>
 
-      <div className="flex-1 px-8 py-10" style={{ overflowY: 'auto' }}>
-        <div
-          className="flex flex-col items-center justify-center h-full animate-fade-in"
-          style={{ opacity: 0.7 }}
-        >
-          <div
-            className="flex items-center justify-center animate-pulse-glow"
+      {/* Tab bar */}
+      <div
+        className="flex shrink-0"
+        style={{
+          borderBottom: '1px solid var(--border-dim)',
+          padding: '0 2rem',
+          background: 'var(--bg-card)',
+        }}
+      >
+        {TABS.map((tab) => (
+          <button
+            key={tab.key}
+            onClick={() => setActiveTab(tab.key)}
             style={{
-              width: '5rem',
-              height: '5rem',
-              borderRadius: '1.25rem',
-              background: 'var(--bg-card)',
-              border: '1px solid var(--border-light)',
-              color: '#8b5cf6',
-              marginBottom: '1.5rem',
+              padding: '0.65rem 1.25rem',
+              fontSize: '0.8rem',
+              fontWeight: activeTab === tab.key ? 700 : 500,
+              color: activeTab === tab.key ? tab.color : 'var(--text-dim)',
+              background: 'transparent',
+              border: 'none',
+              borderBottom: activeTab === tab.key ? `2px solid ${tab.color}` : '2px solid transparent',
+              cursor: 'pointer',
+              transition: 'all 0.2s ease',
+              marginBottom: '-1px',
+            }}
+            onMouseEnter={(e) => {
+              if (activeTab !== tab.key) e.currentTarget.style.color = 'var(--text-muted)';
+            }}
+            onMouseLeave={(e) => {
+              if (activeTab !== tab.key) e.currentTarget.style.color = 'var(--text-dim)';
             }}
           >
-            <svg
-              xmlns="http://www.w3.org/2000/svg"
-              width="36"
-              height="36"
-              fill="none"
-              viewBox="0 0 24 24"
-              stroke="currentColor"
-            >
-              <path
-                strokeLinecap="round"
-                strokeLinejoin="round"
-                strokeWidth={1.5}
-                d="M17 20h5v-2a3 3 0 00-5.356-1.857M17 20H7m10 0v-2c0-.656-.126-1.283-.356-1.857M7 20H2v-2a3 3 0 015.356-1.857M7 20v-2c0-.656.126-1.283.356-1.857m0 0a5.002 5.002 0 019.288 0M15 7a3 3 0 11-6 0 3 3 0 016 0zm6 3a2 2 0 11-4 0 2 2 0 014 0zM7 10a2 2 0 11-4 0 2 2 0 014 0z"
-              />
-            </svg>
-          </div>
-          <p
-            className="text-base font-medium mb-2"
-            style={{ color: 'var(--text-muted)' }}
-          >
-            角色与世界设定
-          </p>
-          <p
-            className="text-sm text-center"
-            style={{ color: 'var(--text-dim)', maxWidth: '24rem', lineHeight: 1.6 }}
-          >
-            在这里管理你的角色档案、世界观设定、势力关系与背景知识库，为 AI 提供创作上下文。
-          </p>
-        </div>
+            {tab.label}
+          </button>
+        ))}
       </div>
+
+      {/* Tab content */}
+      <div className="flex-1" style={{ overflowY: 'auto', padding: activeTab === 'worldview' ? 0 : '1.5rem 2rem' }}>
+        {activeTab === 'characters' ? (
+          <CharacterCardList
+            characters={characters}
+            loading={loading}
+            onAdd={handleOpenCreate}
+            onEdit={handleOpenEdit}
+            onDelete={setDeletingCharacter}
+          />
+        ) : selectedProject ? (
+          <WorldviewEditor project={selectedProject} />
+        ) : (
+          <div className="flex items-center justify-center h-full text-sm" style={{ color: 'var(--text-dim)' }}>
+            请先选择一个项目
+          </div>
+        )}
+      </div>
+
+      {/* Character Form Modal */}
+      <CharacterFormModal
+        isOpen={showForm}
+        editingCharacter={editingCharacter}
+        loading={formLoading}
+        error={formError}
+        onSubmit={handleFormSubmit}
+        onClose={() => setShowForm(false)}
+      />
+
+      {/* Delete Confirmation Modal */}
+      {deletingCharacter && (
+        <div
+          className="animate-fade-in"
+          style={{
+            position: 'fixed',
+            inset: 0,
+            zIndex: 100,
+            display: 'flex',
+            alignItems: 'center',
+            justifyContent: 'center',
+            background: 'rgba(0,0,0,0.6)',
+            backdropFilter: 'blur(8px)',
+          }}
+          onClick={() => setDeletingCharacter(null)}
+        >
+          <div
+            className="panel p-5 animate-slide-top"
+            style={{
+              width: '100%',
+              maxWidth: '24rem',
+              background: 'var(--bg-card)',
+              border: '1px solid var(--border-light)',
+            }}
+            onClick={(e) => e.stopPropagation()}
+          >
+            <h2 className="text-base font-bold mb-2" style={{ color: 'var(--status-err)' }}>
+              确认删除角色
+            </h2>
+            <p className="text-sm mb-1" style={{ color: 'var(--text-muted)' }}>
+              即将删除角色 <strong style={{ color: 'var(--text-main)' }}>{deletingCharacter.name}</strong>
+            </p>
+            <p className="text-xs mb-4" style={{ color: 'var(--text-dim)' }}>
+              删除后涉及该角色的状态快照等数据不会自动清理，请谨慎操作。
+            </p>
+            {formError && (
+              <div className="mb-3 text-xs" style={{ color: 'var(--status-err)', padding: '0.5rem', background: 'var(--status-err-bg)', borderRadius: '8px' }}>
+                {formError}
+              </div>
+            )}
+            <div className="flex gap-3 justify-end">
+              <button className="btn-secondary" onClick={() => setDeletingCharacter(null)} disabled={formLoading}>
+                取消
+              </button>
+              <button className="btn-danger" onClick={handleConfirmDelete} disabled={formLoading}>
+                {formLoading ? '删除中…' : '确认删除'}
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
     </article>
   );
 }
