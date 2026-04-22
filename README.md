@@ -41,54 +41,244 @@ novel-system/
 7. 基于 Redis 的章节生成任务队列（默认 `127.0.0.1:6379`）
 8. Worker 侧对 `project snapshot`、`chapter context`、`lorebook/memory recall result` 的 Redis cache-aside
 
-## 快速开始
+## 本地启动方案
 
-### 1. 启动基础设施
+> 以下命令默认在仓库根目录执行，示例以 **Windows PowerShell** 为主。
+> 如果你使用 CMD，请将 `Copy-Item` 替换为 `copy`。
 
-```bash
+### 1. 启动前准备
+
+本地跑通当前 MVP，建议先准备好以下依赖：
+
+- Docker / Docker Desktop：用于启动 PostgreSQL、Redis、MinIO
+- Node.js + pnpm：仓库声明的包管理器为 `pnpm@10.0.0`
+- Python 3：用于 Worker 与开发脚本
+- 一个可访问的 OpenAI-compatible 模型网关：用于章节生成链路
+
+如果本机尚未启用 pnpm，可先执行：
+
+```powershell
+corepack enable
+```
+
+### 2. 启动基础设施
+
+```powershell
 docker compose -f infra/docker/docker-compose.yml up -d
 ```
 
-### 2. 创建环境变量
+默认会启动以下本地依赖：
 
-先复制环境变量模板：
+| 服务 | 默认地址 | 说明 |
+| --- | --- | --- |
+| PostgreSQL (pgvector) | `127.0.0.1:5432` | 主业务数据库 |
+| Redis | `127.0.0.1:6379` | 任务队列与缓存 |
+| MinIO API | `127.0.0.1:9000` | 预留的本地对象存储 |
+| MinIO Console | `http://127.0.0.1:9001` | MinIO 管理后台 |
 
-```bash
-copy .env.example .env
-copy .env.example apps\api\.env
+> `docker-compose.yml` 里的 PostgreSQL 默认库名是 `novel_system`，而应用真正使用的业务库由 `.env` 中的 `DATABASE_NAME` 决定，后续会通过脚本自动创建。
+
+> 当前仓库里的 MinIO **还没有接入现有 MVP 主链路**。现在能看到的只是 Docker 编排与环境变量预留，仓库内 API / Worker / Web 代码目前没有实际读写 MinIO。也就是说，MinIO 更像是为后续对象存储场景预留的基础设施；当前你主要验证“项目 / 章节 / 生成 / 记忆 / 校验”链路时，核心依赖仍然是 PostgreSQL、Redis、LLM 网关。
+
+### 3. 准备环境变量
+
+当前仓库有两套启动时会实际读取的环境文件：
+
+- 根目录 `.env`：给 `apps/worker` 与 `scripts/dev/*.py` 使用
+- `apps/api/.env`：给 NestJS / Prisma 使用
+
+先复制模板，再把 API 环境文件同步一份：
+
+```powershell
+Copy-Item .env.example .env
+Copy-Item .env apps/api/.env
 ```
 
-然后将 `.env` 与 `apps/api/.env` 中的数据库密码、模型 key 等改成你自己的真实值。
+如果你使用 `infra/docker/docker-compose.yml` 里的默认本地端口，建议先把两份环境文件至少改成下面这些值：
 
-Redis 默认连接为 `redis://127.0.0.1:6379/0`，如本机地址不同，请同步修改 `REDIS_URL`。
-缓存 TTL 也可通过 `CACHE_PROJECT_SNAPSHOT_TTL_SECONDS`、`CACHE_CHAPTER_CONTEXT_TTL_SECONDS`、`CACHE_RECALL_RESULT_TTL_SECONDS` 调整。
+```env
+DATABASE_NAME=ai_novel_mvp
+DATABASE_URL=postgresql://postgres:postgres@127.0.0.1:5432/ai_novel_mvp
+POSTGRES_ADMIN_URL=postgresql://postgres:postgres@127.0.0.1:5432/postgres
+REDIS_URL=redis://127.0.0.1:6379/0
+CACHE_PROJECT_SNAPSHOT_TTL_SECONDS=300
+CACHE_CHAPTER_CONTEXT_TTL_SECONDS=300
+CACHE_RECALL_RESULT_TTL_SECONDS=120
+MINIO_ENDPOINT=127.0.0.1:9000
+MINIO_ACCESS_KEY=minioadmin
+MINIO_SECRET_KEY=minioadmin
+API_PORT=3001
+WORKER_BASE_URL=http://127.0.0.1:8000
+LLM_BASE_URL=http://YOUR_LLM_HOST:8318/v1
+LLM_API_KEY=YOUR_LLM_API_KEY
+LLM_MODEL=gpt-5.4
+```
 
-> 注意：如果 PostgreSQL 密码包含 `&`、`^` 等特殊字符，必须先做 URL encode 再写进连接串。
+补充说明：
 
-### 3. 前端 / API / Worker 安装依赖
+- `apps/api/.env` 与根目录 `.env` 中的数据库、Redis、Worker 地址建议保持一致
+- `WORKER_BASE_URL` 必须能被 API 访问到，否则章节生成与 memory rebuild 无法回调 Worker
+- Redis 默认连接为 `redis://127.0.0.1:6379/0`，如本机地址不同，请同步修改 `REDIS_URL`
+- `MINIO_*` 变量目前属于预留配置，当前代码未实际消费；先保留默认值即可
+- 如果 PostgreSQL 密码包含 `&`、`^` 等特殊字符，必须先做 URL encode 再写进连接串
+- 当前 `web` 默认直接回退到 `http://127.0.0.1:3001/api`，只有在你修改 API 地址或端口时，才需要额外创建 `apps/web/.env.local`
 
-```bash
+如果你改了 API 地址或端口，可选地新增：
+
+```env
+# apps/web/.env.local
+NEXT_PUBLIC_API_BASE_URL=http://127.0.0.1:3001/api
+```
+
+### 4. 安装依赖
+
+```powershell
 pnpm install
 python -m venv .venv
-.venv\\Scripts\\activate
-pip install -r apps/worker/requirements.txt
+.\.venv\Scripts\python.exe -m pip install -r apps/worker/requirements.txt
 ```
 
-### 4. 初始化数据库
+> 如果你已经手动激活了虚拟环境，那么下面 README 中出现的 `.\.venv\Scripts\python.exe` 都可以直接替换成 `python`。
 
-```bash
-python scripts/dev/create_database.py
+### 5. 初始化数据库
+
+```powershell
+.\.venv\Scripts\python.exe scripts/dev/create_database.py
 pnpm db:generate
 pnpm db:migrate
 ```
 
-### 5. 启动服务
+这一步会完成三件事：
 
-```bash
+1. `create_database.py` 只负责按 `.env` 中的 `DATABASE_NAME` 创建业务数据库（不存在时才创建），**不会建表**
+2. `pnpm db:generate` 生成 Prisma Client
+3. `pnpm db:migrate` 执行 `apps/api/prisma/migrations` 下已有迁移，真正创建 / 补齐表结构
+
+当前仓库里，表结构初始化主要由两次迁移共同完成：
+
+- `202604220001_init`：创建第一批核心表与枚举，包括 `Project`、`StyleProfile`、`ModelProfile`、`Character`、`LorebookEntry`、`Chapter`、`ChapterDraft`、`MemoryChunk`、`ValidationIssue`、`GenerationJob`
+- `202604220002_phase2_memory_facts`：补充 `MemoryChunk` 的字段 / 索引，并新增 `StoryEvent`、`CharacterStateSnapshot`、`ForeshadowTrack`
+
+按当前 `schema.prisma` 对照，**现有两次 migration 合起来已覆盖全部 13 个核心业务模型**。也就是说：只要 `pnpm db:migrate` 正常执行完成，当前 Prisma schema 对应的业务表就会完整创建出来。
+
+如果你想进一步确认是否已经真实落库，可以在数据库启动后执行下面任一方式检查：
+
+```powershell
+pnpm --filter api exec prisma migrate status
+pnpm --filter api exec prisma studio
+```
+
+也可以直接在 PostgreSQL 中确认这些表是否存在：
+
+- `Project`
+- `StyleProfile`
+- `ModelProfile`
+- `Character`
+- `LorebookEntry`
+- `Chapter`
+- `ChapterDraft`
+- `MemoryChunk`
+- `StoryEvent`
+- `CharacterStateSnapshot`
+- `ForeshadowTrack`
+- `ValidationIssue`
+- `GenerationJob`
+
+### 6. 启动本地服务
+
+推荐使用 **2 个终端**：
+
+#### 终端 A：同时启动 Web + API
+
+```powershell
+pnpm dev
+```
+
+该命令等价于同时执行：
+
+- `pnpm --filter web dev`
+- `pnpm --filter api start:dev`
+
+#### 终端 B：启动 Worker
+
+```powershell
+.\.venv\Scripts\python.exe -m uvicorn main:app --app-dir apps/worker --reload --host 127.0.0.1 --port 8000
+```
+
+如果你更习惯分别启动，也可以使用：
+
+```powershell
 pnpm --filter web dev
 pnpm --filter api start:dev
-uvicorn main:app --app-dir apps/worker --reload --port 8000
+.\.venv\Scripts\python.exe -m uvicorn main:app --app-dir apps/worker --reload --host 127.0.0.1 --port 8000
 ```
+
+### 7. 启动后访问地址
+
+- Web：`http://127.0.0.1:3000`
+- API Base：`http://127.0.0.1:3001/api`
+- Worker 健康检查：`http://127.0.0.1:8000/healthz`
+- MinIO Console：`http://127.0.0.1:9001`
+
+### 8. 自检建议
+
+服务都起来后，建议至少做一次最小验证：
+
+```powershell
+curl http://127.0.0.1:8000/healthz
+curl http://127.0.0.1:3001/api/projects
+```
+
+- `Worker /healthz` 返回 `{"status":"ok"}` 说明 Worker 正常
+- `GET /api/projects` 能返回 `[]` 或项目列表，说明 API + 数据库链路基本可用
+
+如果你已经配置了真实的 `LLM_BASE_URL` / `LLM_API_KEY`，还可以继续执行验证脚本：
+
+```powershell
+.\.venv\Scripts\python.exe scripts/dev/verify_mvp.py
+.\.venv\Scripts\python.exe scripts/dev/verify_idempotency.py
+```
+
+建议在 **API / Worker 已经手动启动** 后再运行这两个脚本。因为当 API 未启动时，`verify_mvp.py` 会尝试使用 `apps/api/dist/main.js` 拉起 API，此时需要你额外先执行一次：
+
+```powershell
+pnpm --filter api build
+```
+
+### 9. 常见问题
+
+#### 1) `pnpm db:migrate` 或 API 启动时报数据库连接错误
+
+优先检查：
+
+- `apps/api/.env` 是否存在
+- `apps/api/.env` 里的 `DATABASE_URL` 是否和根目录 `.env` 保持一致
+- PostgreSQL 容器是否已经启动并监听 `5432`
+
+#### 2) Worker 启动正常，但一生成章节就报 `缺少 LLM_API_KEY`
+
+这是预期保护逻辑。当前 Worker 接的是**真实 OpenAI-compatible 网关**，没有可用的 `LLM_API_KEY` 时，章节生成链路不会继续执行。
+
+#### 3) Web 页面打开了，但请求打不到 API
+
+如果你没有使用默认 `3001` 端口，请显式创建 `apps/web/.env.local` 并设置：
+
+```env
+NEXT_PUBLIC_API_BASE_URL=http://你的API地址/api
+```
+
+#### 4) 改了 `.env` 里的 `WEB_PORT` / `WORKER_PORT`，但服务端口没变化
+
+当前仓库的启动命令里：
+
+- `web` 脚本固定使用 `3000`
+- `worker` 示例命令固定使用 `8000`
+
+也就是说，这两个环境变量目前更像“约定值”，并不会自动改掉启动命令。若你需要改端口，请同时调整：
+
+- 实际启动命令里的 `--port`
+- `WORKER_BASE_URL`
+- `apps/web/.env.local` 中的 `NEXT_PUBLIC_API_BASE_URL`（如果 API 地址也变了）
 
 ## 关键接口
 
