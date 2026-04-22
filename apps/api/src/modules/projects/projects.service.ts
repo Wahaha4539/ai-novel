@@ -2,6 +2,7 @@ import { Injectable, NotFoundException } from '@nestjs/common';
 import { NovelCacheService } from '../../common/cache/novel-cache.service';
 import { PrismaService } from '../../prisma/prisma.service';
 import { CreateProjectDto } from './dto/create-project.dto';
+import { UpdateProjectDto } from './dto/update-project.dto';
 
 @Injectable()
 export class ProjectsService {
@@ -98,4 +99,56 @@ export class ProjectsService {
       },
     };
   }
+
+  async update(projectId: string, dto: UpdateProjectDto) {
+    const existing = await this.prisma.project.findUnique({
+      where: { id: projectId },
+    });
+
+    if (!existing) {
+      throw new NotFoundException(`项目不存在：${projectId}`);
+    }
+
+    const updated = await this.prisma.project.update({
+      where: { id: projectId },
+      data: {
+        ...(dto.title !== undefined && { title: dto.title }),
+        ...(dto.genre !== undefined && { genre: dto.genre }),
+        ...(dto.theme !== undefined && { theme: dto.theme }),
+        ...(dto.tone !== undefined && { tone: dto.tone }),
+        ...(dto.targetWordCount !== undefined && { targetWordCount: dto.targetWordCount }),
+      },
+    });
+
+    await this.cacheService.setProjectSnapshot(updated.id, {
+      id: updated.id,
+      title: updated.title,
+      genre: updated.genre,
+      theme: updated.theme,
+      tone: updated.tone,
+      synopsis: updated.synopsis ?? null,
+    });
+
+    return updated;
+  }
+
+  async remove(projectId: string) {
+    const existing = await this.prisma.project.findUnique({
+      where: { id: projectId },
+    });
+
+    if (!existing) {
+      throw new NotFoundException(`项目不存在：${projectId}`);
+    }
+
+    // Prisma schema has onDelete: Cascade on all relations, so this will cascade delete all related data
+    await this.prisma.project.delete({
+      where: { id: projectId },
+    });
+
+    await this.cacheService.deleteProjectSnapshot(projectId);
+
+    return { deleted: true, id: projectId };
+  }
 }
+

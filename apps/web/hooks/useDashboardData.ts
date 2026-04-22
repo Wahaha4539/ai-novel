@@ -57,9 +57,6 @@ export function useDashboardData() {
   const loadProjects = async () => {
     const data = await apiFetch<ProjectSummary[]>('/projects');
     setProjects(data);
-    if (!selectedProjectId && data[0]?.id) {
-      setSelectedProjectId(data[0].id);
-    }
   };
 
   const loadProjectData = async (projectId: string, chapterId: string) => {
@@ -170,6 +167,7 @@ export function useDashboardData() {
     actionMessage,
     rebuildResult,
     validationRunResult,
+    loadProjects,
     loadProjectData,
     runReviewAction,
     runRebuild,
