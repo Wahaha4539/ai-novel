@@ -18,10 +18,11 @@ class TimestampMixin:
         DateTime(timezone=True),
         server_default=func.now(),
     )
+    # Prisma @updatedAt 不会创建 DB DEFAULT，必须用应用层 default
     updated_at: Mapped[datetime] = mapped_column(
         "updatedAt",
         DateTime(timezone=True),
-        server_default=func.now(),
+        default=func.now(),
         onupdate=func.now(),
     )
 

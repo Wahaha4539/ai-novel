@@ -126,11 +126,13 @@ class MemoryRepository:
                 for row in rows
             ]
 
-    def create_many(self, project_id: str, chunks: list[dict]) -> list[dict]:
-        """Bulk-insert MemoryChunks, including embedding vectors if present."""
+    def create_many(self, project_id: str, chunks: list[dict], session=None) -> list[dict]:
+        """Bulk-insert MemoryChunks, including embedding vectors if present.
+        Accepts an optional session to participate in an external transaction."""
         project_uuid = uuid.UUID(project_id)
         created: list[dict] = []
-        with SessionLocal.begin() as session:
+
+        def _do_insert(sess):
             for chunk in chunks:
                 row = MemoryChunkModel(
                     project_id=project_uuid,
@@ -148,8 +150,8 @@ class MemoryRepository:
                     status=chunk.get("status", "auto"),
                     embedding=chunk.get("embedding"),
                 )
-                session.add(row)
-                session.flush()
+                sess.add(row)
+                sess.flush()
                 created.append(
                     {
                         "id": str(row.id),
@@ -160,14 +162,24 @@ class MemoryRepository:
                     }
                 )
 
+        # 如果调用方传入了 session，在同一事务中执行；否则开启新事务
+        if session:
+            _do_insert(session)
+        else:
+            with SessionLocal.begin() as sess:
+                _do_insert(sess)
+
         return created
 
     def replace_for_source(self, project_id: str, source_type: str, source_id: str, chunks: list[dict]) -> dict:
-        """Delete existing chunks for a source, then insert new ones."""
+        """Delete existing chunks for a source, then insert new ones.
+        DELETE + INSERT 在同一个事务中执行，保证原子性。"""
         project_uuid = uuid.UUID(project_id)
         source_uuid = uuid.UUID(source_id)
         deleted = 0
+        created: list[dict] = []
         with SessionLocal.begin() as session:
+            # 先删除旧记录
             deleted = session.execute(
                 delete(MemoryChunkModel).where(
                     MemoryChunkModel.project_id == project_uuid,
@@ -176,7 +188,10 @@ class MemoryRepository:
                 )
             ).rowcount or 0
 
-        created = self.create_many(project_id, chunks) if chunks else []
+            # 在同一事务中插入新记录
+            if chunks:
+                created = self.create_many(project_id, chunks, session=session)
+
         return {
             "deleted": deleted,
             "created": created,

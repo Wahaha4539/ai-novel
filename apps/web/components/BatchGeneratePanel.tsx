@@ -148,8 +148,37 @@ export function BatchGeneratePanel({ volumes, chapters, onComplete }: Props) {
         id: ch.id,
         chapterNo: ch.chapterNo,
         title: ch.title || `第${ch.chapterNo}章`,
+        status: ch.status,
       }));
+
+    // 检查是否有已生成的章节被选中，弹出覆盖确认
+    const draftedTargets = targets.filter((t) => t.status === 'drafted');
+    if (draftedTargets.length > 0) {
+      const names = draftedTargets.map((t) => `#${t.chapterNo} ${t.title}`).join('、');
+      const confirmed = window.confirm(
+        `以下 ${draftedTargets.length} 章已有生成内容，重新生成将覆盖现有草稿：\n\n${names}\n\n确认覆盖？`,
+      );
+      if (!confirmed) return;
+    }
+
     await gen.generateSequential(targets, () => {});
+
+    // 生成完成后，检查后续是否有已生成章节可能受影响
+    const maxGeneratedNo = Math.max(...targets.map((t) => t.chapterNo));
+    const staleChapters = chapters.filter(
+      (ch) => ch.chapterNo > maxGeneratedNo && ch.status === 'drafted',
+    );
+    if (staleChapters.length > 0) {
+      const staleNames = staleChapters
+        .slice(0, 10) // 最多显示10个
+        .map((ch) => `#${ch.chapterNo} ${ch.title || '未命名'}`)
+        .join('\n');
+      const suffix = staleChapters.length > 10 ? `\n…等共 ${staleChapters.length} 章` : '';
+      window.alert(
+        `⚠️ 以下章节的内容基于旧版生成，角色状态/剧情可能已过期，建议按顺序重新生成：\n\n${staleNames}${suffix}`,
+      );
+    }
+
     onComplete?.();
   }, [selectedChapterIds, chapters, gen, onComplete]);
 
