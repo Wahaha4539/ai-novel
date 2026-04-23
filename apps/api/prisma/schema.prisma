@@ -51,6 +51,7 @@ model Project {
   characters            Character[]
   lorebookEntries       LorebookEntry[]
   chapters              Chapter[]
+  volumes               Volume[]
   memoryChunks          MemoryChunk[]
   storyEvents           StoryEvent[]
   characterStateSnapshots CharacterStateSnapshot[]
@@ -59,6 +60,8 @@ model Project {
   generationJobs        GenerationJob[]
   styleProfiles         StyleProfile[]
   modelProfiles         ModelProfile[]
+  promptTemplates       PromptTemplate[]
+  guidedSession         GuidedSession?
 }
 
 model StyleProfile {
@@ -107,21 +110,25 @@ model ModelProfile {
 }
 
 model Character {
-  id              String   @id @default(uuid()) @db.Uuid
-  projectId       String   @db.Uuid
-  name            String   @db.VarChar(100)
-  alias           Json     @default("[]")
-  roleType        String?  @db.VarChar(50)
-  personalityCore String?
-  motivation      String?
-  speechStyle     String?
-  backstory       String?
-  growthArc       String?
-  isDead          Boolean  @default(false)
-  metadata        Json     @default("{}")
-  createdAt       DateTime @default(now())
-  updatedAt       DateTime @updatedAt
-  project         Project  @relation(fields: [projectId], references: [id], onDelete: Cascade)
+  id                String   @id @default(uuid()) @db.Uuid
+  projectId         String   @db.Uuid
+  name              String   @db.VarChar(100)
+  alias             Json     @default("[]")
+  roleType          String?  @db.VarChar(50)
+  personalityCore   String?
+  motivation        String?
+  speechStyle       String?
+  backstory         String?
+  growthArc         String?
+  isDead            Boolean  @default(false)
+  scope             String?  @db.VarChar(20)   // "global" | "volume" | "chapter"
+  activeFromChapter Int?                        // first appearance chapter number
+  activeToChapter   Int?                        // last appearance chapter number (null = still active)
+  source            String   @default("manual") @db.VarChar(30) // "manual" | "guided" | "auto_extracted"
+  metadata          Json     @default("{}")
+  createdAt         DateTime @default(now())
+  updatedAt         DateTime @updatedAt
+  project           Project  @relation(fields: [projectId], references: [id], onDelete: Cascade)
 
   @@index([projectId, name])
 }
@@ -164,6 +171,7 @@ model Chapter {
   createdAt         DateTime         @default(now())
   updatedAt         DateTime         @updatedAt
   project           Project          @relation(fields: [projectId], references: [id], onDelete: Cascade)
+  volume            Volume?          @relation(fields: [volumeId], references: [id], onDelete: SetNull)
   drafts            ChapterDraft[]
   storyEvents       StoryEvent[]
   characterStateSnapshots CharacterStateSnapshot[]
@@ -261,19 +269,21 @@ model CharacterStateSnapshot {
 model ForeshadowTrack {
   id               String   @id @default(uuid()) @db.Uuid
   projectId        String   @db.Uuid
-  chapterId        String   @db.Uuid
+  chapterId        String?  @db.Uuid
   chapterNo        Int?
   sourceDraftId    String?  @db.Uuid
   title            String   @db.VarChar(255)
   detail           String?
   status           String   @default("planned") @db.VarChar(50)
+  scope            String   @default("chapter") @db.VarChar(20) // "arc" | "volume" | "chapter"
+  source           String   @default("manual") @db.VarChar(30)  // "guided" | "auto_extracted" | "manual"
   firstSeenChapterNo Int?
   lastSeenChapterNo  Int?
   metadata         Json     @default("{}")
   createdAt        DateTime @default(now())
   updatedAt        DateTime @updatedAt
   project          Project  @relation(fields: [projectId], references: [id], onDelete: Cascade)
-  chapter          Chapter  @relation(fields: [chapterId], references: [id], onDelete: Cascade)
+  chapter          Chapter? @relation(fields: [chapterId], references: [id], onDelete: Cascade)
 
   @@index([projectId, title])
   @@index([projectId, status])
@@ -316,4 +326,54 @@ model GenerationJob {
   createdAt        DateTime  @default(now())
   project          Project   @relation(fields: [projectId], references: [id], onDelete: Cascade)
   chapter          Chapter?  @relation(fields: [chapterId], references: [id], onDelete: SetNull)
+}
+
+model Volume {
+  id           String   @id @default(uuid()) @db.Uuid
+  projectId    String   @db.Uuid
+  volumeNo     Int
+  title        String?  @db.VarChar(255)
+  synopsis     String?
+  objective    String?
+  chapterCount Int?
+  status       String   @default("planned") @db.VarChar(50)
+  createdAt    DateTime @default(now())
+  updatedAt    DateTime @updatedAt
+  project      Project  @relation(fields: [projectId], references: [id], onDelete: Cascade)
+  chapters     Chapter[]
+
+  @@unique([projectId, volumeNo])
+}
+
+model PromptTemplate {
+  id            String   @id @default(uuid()) @db.Uuid
+  projectId     String?  @db.Uuid
+  stepKey       String   @db.VarChar(50)
+  name          String   @db.VarChar(100)
+  description   String?
+  systemPrompt  String
+  userTemplate  String
+  version       Int      @default(1)
+  isDefault     Boolean  @default(false)
+  tags          Json     @default("[]")
+  effectPreview String?
+  createdAt     DateTime @default(now())
+  updatedAt     DateTime @updatedAt
+  project       Project? @relation(fields: [projectId], references: [id], onDelete: Cascade)
+
+  @@unique([projectId, stepKey, name])
+  @@index([stepKey, isDefault])
+}
+
+model GuidedSession {
+  id          String   @id @default(uuid()) @db.Uuid
+  projectId   String   @db.Uuid
+  currentStep String   @db.VarChar(50)
+  stepData    Json     @default("{}")
+  isCompleted Boolean  @default(false)
+  createdAt   DateTime @default(now())
+  updatedAt   DateTime @updatedAt
+  project     Project  @relation(fields: [projectId], references: [id], onDelete: Cascade)
+
+  @@unique([projectId])
 }

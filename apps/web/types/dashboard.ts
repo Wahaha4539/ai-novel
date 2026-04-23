@@ -17,6 +17,18 @@ export type ProjectSummary = {
   };
 };
 
+export type VolumeSummary = {
+  id: string;
+  projectId: string;
+  volumeNo: number;
+  title?: string | null;
+  synopsis?: string | null;
+  objective?: string | null;
+  chapterCount?: number | null;
+  status: string;
+  _count?: { chapters: number };
+};
+
 export type CharacterCard = {
   id: string;
   projectId: string;
@@ -28,12 +40,17 @@ export type CharacterCard = {
   backstory?: string | null;
   growthArc?: string | null;
   isDead: boolean;
+  scope?: string | null;
+  activeFromChapter?: number | null;
+  activeToChapter?: number | null;
+  source?: string;
   createdAt: string;
   updatedAt: string;
 };
 
 export type ChapterSummary = {
   id: string;
+  volumeId?: string | null;
   chapterNo: number;
   title?: string | null;
   timelineSeq?: number | null;
@@ -70,6 +87,8 @@ export type ForeshadowItem = {
   title: string;
   detail?: string | null;
   status: string;
+  scope?: string;
+  source?: string;
   reviewStatus?: string;
   foreshadowStatus?: string;
   firstSeenChapterNo?: number | null;
@@ -99,9 +118,36 @@ export type ValidationIssue = {
   chapterId?: string | null;
 };
 
+export type PromptTemplate = {
+  id: string;
+  projectId?: string | null;
+  stepKey: string;
+  name: string;
+  description?: string | null;
+  systemPrompt: string;
+  userTemplate: string;
+  version: number;
+  isDefault: boolean;
+  tags: string[];
+  effectPreview?: string | null;
+  createdAt: string;
+  updatedAt: string;
+};
+
+export type GuidedSession = {
+  id: string;
+  projectId: string;
+  currentStep: string;
+  stepData: Record<string, unknown>;
+  isCompleted: boolean;
+  createdAt: string;
+  updatedAt: string;
+};
+
 export type DashboardPayload = {
   project: ProjectSummary;
   chapters: ChapterSummary[];
+  volumes: VolumeSummary[];
   storyEvents: StoryEventItem[];
   characterStateSnapshots: CharacterStateItem[];
   foreshadowTracks: ForeshadowItem[];
@@ -121,3 +167,4 @@ export type ValidationRunResult = {
   deletedCount: number;
   issues: ValidationIssue[];
 };
+

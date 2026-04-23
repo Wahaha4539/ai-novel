@@ -8,12 +8,18 @@ import { InspectorPanel } from '../components/InspectorPanel';
 import { ProjectManagementPanel } from '../components/ProjectManagementPanel';
 import { OutlinePanel } from '../components/OutlinePanel';
 import { LorePanel } from '../components/LorePanel';
+import { VolumePanel } from '../components/VolumePanel';
+import { GuidedWizard } from '../components/guided/GuidedWizard';
+import { PromptManagerPanel } from '../components/PromptManagerPanel';
+import { ForeshadowBoard } from '../components/ForeshadowBoard';
 
-type ActiveView = 'editor' | 'outline' | 'lore' | 'projects';
+type ActiveView = 'editor' | 'outline' | 'lore' | 'projects' | 'volumes' | 'guided' | 'prompts' | 'foreshadow';
 
 export default function HomePage() {
   const data = useDashboardData();
   const [activeView, setActiveView] = useState<ActiveView>('projects');
+  const [selectedVolumeId, setSelectedVolumeId] = useState('');
+  const [autoStartGuided, setAutoStartGuided] = useState(false);
 
   const selectedProject = data.projects.find((item) => item.id === data.selectedProjectId) ?? data.dashboard?.project;
   const chapters = data.dashboard?.chapters ?? [];
@@ -21,6 +27,7 @@ export default function HomePage() {
   const handleSelectProject = useCallback((id: string) => {
     data.setSelectedProjectId(id);
     data.setSelectedChapterId('all');
+    setSelectedVolumeId('');
     if (id) {
       setActiveView('editor');
     }
@@ -38,8 +45,43 @@ export default function HomePage() {
     setActiveView('lore');
   }, []);
 
+  const handleNavigateToVolumes = useCallback(() => {
+    setActiveView('volumes');
+  }, []);
+
+  const handleNavigateToGuided = useCallback(() => {
+    setActiveView('guided');
+  }, []);
+
+  const handleNavigateToPrompts = useCallback(() => {
+    setActiveView('prompts');
+  }, []);
+
+  const handleNavigateToForeshadow = useCallback(() => {
+    setActiveView('foreshadow');
+  }, []);
+
+  const handleSelectVolume = useCallback((volumeId: string) => {
+    setSelectedVolumeId(volumeId);
+    setActiveView('volumes');
+  }, []);
+
+  const handleSelectChapter = useCallback((chapterId: string) => {
+    data.setSelectedChapterId(chapterId);
+    setSelectedVolumeId('');
+    setActiveView('editor');
+  }, [data]);
+
   const handleProjectsChanged = useCallback(async () => {
     await data.loadProjects();
+  }, [data]);
+
+  const handleGuidedCreate = useCallback((projectId: string) => {
+    data.setSelectedProjectId(projectId);
+    data.setSelectedChapterId('all');
+    setSelectedVolumeId('');
+    setAutoStartGuided(true);
+    setActiveView('guided');
   }, [data]);
 
   const showProjectManagement = activeView === 'projects';
@@ -52,18 +94,22 @@ export default function HomePage() {
       {/* 1. 左侧：工作台导航侧边栏 */}
       <WorkspaceSidebar
         projects={data.projects}
+        volumes={data.volumes}
         chapters={chapters}
         selectedProjectId={data.selectedProjectId}
         selectedChapterId={data.selectedChapterId}
-        setSelectedChapterId={(id) => {
-          data.setSelectedChapterId(id);
-          setActiveView('editor');
-        }}
+        selectedVolumeId={selectedVolumeId}
+        setSelectedChapterId={handleSelectChapter}
         showProjectManagement={showProjectManagement}
         activeView={activeView}
         onNavigateToProjects={handleNavigateToProjects}
         onNavigateToOutline={handleNavigateToOutline}
         onNavigateToLore={handleNavigateToLore}
+        onNavigateToVolumes={handleNavigateToVolumes}
+        onNavigateToGuided={handleNavigateToGuided}
+        onNavigateToPrompts={handleNavigateToPrompts}
+        onNavigateToForeshadow={handleNavigateToForeshadow}
+        onSelectVolume={handleSelectVolume}
       />
 
       {/* 2. 主躯干：根据 activeView 切换面板 */}
@@ -74,11 +120,25 @@ export default function HomePage() {
             selectedProjectId={data.selectedProjectId}
             onSelectProject={handleSelectProject}
             onProjectsChanged={handleProjectsChanged}
+            onGuidedCreate={handleGuidedCreate}
           />
         ) : activeView === 'outline' ? (
           <OutlinePanel selectedProject={selectedProject} />
         ) : activeView === 'lore' ? (
           <LorePanel selectedProject={selectedProject} selectedProjectId={data.selectedProjectId} />
+        ) : activeView === 'volumes' ? (
+          <VolumePanel selectedProject={selectedProject} selectedProjectId={data.selectedProjectId} />
+        ) : activeView === 'guided' ? (
+          <GuidedWizard selectedProject={selectedProject} selectedProjectId={data.selectedProjectId} autoStart={autoStartGuided} />
+        ) : activeView === 'prompts' ? (
+          <PromptManagerPanel selectedProject={selectedProject} selectedProjectId={data.selectedProjectId} />
+        ) : activeView === 'foreshadow' ? (
+          <ForeshadowBoard
+            selectedProject={selectedProject}
+            selectedProjectId={data.selectedProjectId}
+            foreshadowTracks={data.foreshadowTracks}
+            onRefresh={() => data.loadProjectData(data.selectedProjectId, data.selectedChapterId)}
+          />
         ) : (
           <EditorPanel
             selectedProject={selectedProject}

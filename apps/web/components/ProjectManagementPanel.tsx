@@ -9,6 +9,7 @@ interface Props {
   selectedProjectId: string;
   onSelectProject: (id: string) => void;
   onProjectsChanged: () => Promise<void>;
+  onGuidedCreate: (projectId: string) => void;
 }
 
 export function ProjectManagementPanel({
@@ -16,6 +17,7 @@ export function ProjectManagementPanel({
   selectedProjectId,
   onSelectProject,
   onProjectsChanged,
+  onGuidedCreate,
 }: Props) {
   const [showForm, setShowForm] = useState(false);
   const [editingProject, setEditingProject] = useState<ProjectSummary | null>(null);
@@ -28,6 +30,13 @@ export function ProjectManagementPanel({
     setEditingProject(null);
     setFormError('');
     setShowForm(true);
+  };
+
+  const handleGuidedCreate = async () => {
+    const result = await createProject({ title: '新小说（AI引导中…）' });
+    if (result) {
+      onGuidedCreate(result.id);
+    }
   };
 
   const handleOpenEdit = (project: ProjectSummary) => {
@@ -89,10 +98,20 @@ export function ProjectManagementPanel({
             {projects.length} 个项目
           </span>
         </div>
-        <button className="btn" onClick={handleOpenCreate}>
-          <span style={{ marginRight: '6px', fontSize: '1.1rem' }}>+</span>
-          新建项目
-        </button>
+        <div className="flex items-center gap-2">
+          <button className="btn" onClick={handleOpenCreate}>
+            <span style={{ marginRight: '6px', fontSize: '1.1rem' }}>+</span>
+            新建项目
+          </button>
+          <button
+            className="btn-primary"
+            style={{ fontSize: '0.8rem', padding: '0.5rem 1rem' }}
+            onClick={handleGuidedCreate}
+            disabled={formLoading}
+          >
+            ✨ AI 引导创建
+          </button>
+        </div>
       </header>
 
       {/* Project Grid */}
@@ -128,6 +147,14 @@ export function ProjectManagementPanel({
             </p>
             <button className="btn" onClick={handleOpenCreate}>
               创建第一个项目
+            </button>
+            <button
+              className="btn-primary"
+              style={{ marginTop: '0.5rem', fontSize: '0.85rem' }}
+              onClick={handleGuidedCreate}
+              disabled={formLoading}
+            >
+              ✨ AI 引导创建
             </button>
           </div>
         ) : (

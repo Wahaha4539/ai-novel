@@ -1,6 +1,7 @@
 import { useState, useEffect, useMemo } from 'react';
 import {
   ProjectSummary,
+  VolumeSummary,
   DashboardPayload,
   StoryEventItem,
   CharacterStateItem,
@@ -41,6 +42,7 @@ export function useDashboardData() {
   const [foreshadowTracks, setForeshadowTracks] = useState<ForeshadowItem[]>([]);
   const [reviewQueue, setReviewQueue] = useState<ReviewItem[]>([]);
   const [validationIssues, setValidationIssues] = useState<ValidationIssue[]>([]);
+  const [volumes, setVolumes] = useState<VolumeSummary[]>([]);
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState('');
   const [actionMessage, setActionMessage] = useState('');
@@ -66,13 +68,14 @@ export function useDashboardData() {
     setLoading(true);
     setError('');
     try {
-      const [dashboardData, eventData, stateData, foreshadowData, reviewData, validationData] = await Promise.all([
+      const [dashboardData, eventData, stateData, foreshadowData, reviewData, validationData, volumeData] = await Promise.all([
         apiFetch<DashboardPayload>(`/projects/${projectId}/memory/dashboard${query}`),
         apiFetch<StoryEventItem[]>(`/projects/${projectId}/story-events${query}`),
         apiFetch<CharacterStateItem[]>(`/projects/${projectId}/character-state-snapshots${query}`),
         apiFetch<ForeshadowItem[]>(`/projects/${projectId}/foreshadow-tracks${query}`),
         apiFetch<ReviewItem[]>(`/projects/${projectId}/memory/reviews${query}`),
         apiFetch<ValidationIssue[]>(`/projects/${projectId}/validation-issues${query}`),
+        apiFetch<VolumeSummary[]>(`/projects/${projectId}/volumes`),
       ]);
 
       setDashboard(dashboardData);
@@ -81,6 +84,7 @@ export function useDashboardData() {
       setForeshadowTracks(foreshadowData);
       setReviewQueue(reviewData);
       setValidationIssues(validationData);
+      setVolumes(volumeData);
     } catch (loadError) {
       setError(loadError instanceof Error ? loadError.message : '加载失败');
     } finally {
@@ -157,6 +161,7 @@ export function useDashboardData() {
     selectedChapterId,
     setSelectedChapterId,
     dashboard,
+    volumes,
     storyEvents,
     characterStates,
     foreshadowTracks,

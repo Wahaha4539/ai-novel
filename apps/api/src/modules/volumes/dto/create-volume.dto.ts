@@ -1,0 +1,25 @@
+import { IsInt, IsOptional, IsString, MaxLength, Min } from 'class-validator';
+
+export class CreateVolumeDto {
+  @IsInt()
+  @Min(1)
+  volumeNo!: number;
+
+  @IsOptional()
+  @IsString()
+  @MaxLength(255)
+  title?: string;
+
+  @IsOptional()
+  @IsString()
+  synopsis?: string;
+
+  @IsOptional()
+  @IsString()
+  objective?: string;
+
+  @IsOptional()
+  @IsInt()
+  @Min(1)
+  chapterCount?: number;
+}
