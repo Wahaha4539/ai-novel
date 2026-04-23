@@ -25,7 +25,7 @@ export const GUIDED_STEPS = [
   { key: 'guided_outline', label: '总纲生成', icon: '📖', color: '#ef4444' },
   { key: 'guided_volume', label: '卷纲拆分', icon: '📁', color: '#14b8a6' },
   { key: 'guided_chapter', label: '章节细纲', icon: '📝', color: '#f97316' },
-  { key: 'guided_foreshadow', label: '伏笔与配角', icon: '🔮', color: '#ec4899' },
+  { key: 'guided_foreshadow', label: '伏笔设计', icon: '🔮', color: '#ec4899' },
 ] as const;
 
 export type StepKey = (typeof GUIDED_STEPS)[number]['key'];
@@ -156,8 +156,8 @@ export function useGuidedSession(projectId: string) {
       guided_chapter: `根据我们的对话，请输出「章节细纲」的结构化 JSON（只输出JSON）：
 {"chapters":[{"chapterNo":1,"title":"章节标题","objective":"本章目标","conflict":"核心冲突","outline":"章节大纲"}]}`,
 
-      guided_foreshadow: `根据我们的对话，请输出「伏笔与配角」的结构化 JSON（只输出JSON）：
-{"foreshadowTracks":[{"title":"伏笔标题","detail":"描述","scope":"arc/volume/chapter"}],"supportingCharacters":[{"name":"角色名","roleType":"supporting","personalityCore":"性格","motivation":"动机","scope":"volume/chapter"}]}`,
+      guided_foreshadow: `根据我们的对话，请输出「伏笔设计」的结构化 JSON（只输出JSON）：
+{"foreshadowTracks":[{"title":"伏笔标题","detail":"描述","scope":"arc/volume/chapter"}]}`,
     };
 
     const extractionPrompt = jsonPrompts[currentStepKey];

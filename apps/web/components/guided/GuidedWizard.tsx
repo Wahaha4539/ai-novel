@@ -75,13 +75,19 @@ export function GuidedWizard({ selectedProject, selectedProjectId, autoStart, on
         // For guided_chapter: convert flat chapters[] → volumeChapters { [volumeNo]: chapters[] }
         // because finalizeStep saves as { chapters: [...] } but UI reads volumeChapters
         if (step.key === 'guided_chapter' && Array.isArray(result.chapters) && !result.volumeChapters) {
+          // Group flat chapters by volumeNo for UI consumption
           const grouped: Record<number, Array<Record<string, unknown>>> = {};
           for (const ch of result.chapters as Array<Record<string, unknown>>) {
             const vn = (ch.volumeNo as number) ?? 0;
             if (!grouped[vn]) grouped[vn] = [];
             grouped[vn].push(ch);
           }
-          loaded[step.key] = { ...result, volumeChapters: grouped };
+          // Carry over volumeSupportingCharacters if saved by the merge logic
+          loaded[step.key] = {
+            ...result,
+            volumeChapters: grouped,
+            volumeSupportingCharacters: result.volumeSupportingCharacters ?? {},
+          };
         } else {
           loaded[step.key] = result;
         }
@@ -138,47 +144,76 @@ export function GuidedWizard({ selectedProject, selectedProjectId, autoStart, on
       }
 
       // Generate chapters sequentially, volume by volume.
+      // Each volume retries up to MAX_RETRIES times on failure before skipping.
       // try/finally ensures the batch flag is always cleared.
+      const MAX_RETRIES = 3;
+      const RETRY_DELAY_MS = 2000;
       try {
         for (const vol of volumes) {
           // Read current chapter range settings (default 15-20)
           const chapterRange: [number, number] = [15, 20];
           const [minCh, maxCh] = chapterRange;
 
-          const data = await generateStepData(
-            `为第 ${vol.volumeNo} 卷生成章节细纲，请生成 ${minCh}-${maxCh} 章`,
-            'guided_chapter',
-            vol.volumeNo,
-          );
+          // Retry loop: attempt generation up to MAX_RETRIES times
+          let data: Record<string, unknown> | null = null;
+          for (let attempt = 1; attempt <= MAX_RETRIES; attempt++) {
+            try {
+              data = await generateStepData(
+                `为第 ${vol.volumeNo} 卷生成章节细纲，请生成 ${minCh}-${maxCh} 章`,
+                'guided_chapter',
+                vol.volumeNo,
+              );
+              if (data) break; // Success — exit retry loop
+            } catch { /* generateStepData already sets error state */ }
+
+            // Wait before retrying (skip delay on last attempt)
+            if (attempt < MAX_RETRIES) {
+              await new Promise((r) => setTimeout(r, RETRY_DELAY_MS));
+            }
+          }
 
           if (data) {
             const newChapters = (data as Record<string, unknown>).chapters;
+            const newSupportChars = (data as Record<string, unknown>).supportingCharacters;
 
-            // Merge returned chapters into volumeChapters keyed by volumeNo
+            // Merge returned chapters and supporting characters into local state
             setAllStepData((prev) => {
               const existingData = prev['guided_chapter'] ?? {};
               const existingVC = parseVolumeChapters(existingData);
               if (Array.isArray(newChapters)) {
                 existingVC[vol.volumeNo] = newChapters;
               }
+              // Merge supporting characters keyed by volumeNo
+              const existingSC = (existingData.volumeSupportingCharacters ?? {}) as Record<number, unknown[]>;
+              if (Array.isArray(newSupportChars)) {
+                existingSC[vol.volumeNo] = newSupportChars;
+              }
               return {
                 ...prev,
-                guided_chapter: { ...existingData, volumeChapters: existingVC },
+                guided_chapter: {
+                  ...existingData,
+                  volumeChapters: existingVC,
+                  volumeSupportingCharacters: existingSC,
+                },
               };
             });
 
-            // Auto-save: persist this volume's chapters to DB immediately.
+            // Auto-save: persist this volume's chapters + characters to DB immediately.
             // Uses the fresh data from generateStepData (not stale allStepData).
             if (Array.isArray(newChapters) && newChapters.length > 0) {
               const flatChapters = (newChapters as Array<Record<string, unknown>>)
                 .map((ch) => ({ ...ch, volumeNo: vol.volumeNo }));
               await confirmGeneratedData(
-                { chapters: flatChapters },
+                {
+                  chapters: flatChapters,
+                  ...(Array.isArray(newSupportChars) && { supportingCharacters: newSupportChars }),
+                },
                 'guided_chapter',
                 vol.volumeNo,
               );
             }
           }
+          // If all retries failed (data is null), skip this volume and continue
         }
       } finally {
         setBatchGenerating(false);
@@ -202,16 +237,25 @@ export function GuidedWizard({ selectedProject, selectedProjectId, autoStart, on
       volumeNo,
     );
     if (data) {
-      // Merge returned chapters into volumeChapters keyed by volumeNo
+      // Merge returned chapters and supporting characters into local state
       const existingData = allStepData['guided_chapter'] ?? {};
       const existingVC = parseVolumeChapters(existingData);
       const newChapters = (data as Record<string, unknown>).chapters;
+      const newSupportChars = (data as Record<string, unknown>).supportingCharacters;
       if (Array.isArray(newChapters)) {
         existingVC[volumeNo] = newChapters;
       }
+      const existingSC = (existingData.volumeSupportingCharacters ?? {}) as Record<number, unknown[]>;
+      if (Array.isArray(newSupportChars)) {
+        existingSC[volumeNo] = newSupportChars;
+      }
       setAllStepData((prev) => ({
         ...prev,
-        guided_chapter: { ...existingData, volumeChapters: existingVC },
+        guided_chapter: {
+          ...existingData,
+          volumeChapters: existingVC,
+          volumeSupportingCharacters: existingSC,
+        },
       }));
     }
   }, [generateStepData, allStepData]);
@@ -231,7 +275,7 @@ export function GuidedWizard({ selectedProject, selectedProjectId, autoStart, on
       }
     }
 
-    // For guided_chapter, flatten volumeChapters into a single chapters[] with volumeNo
+    // For guided_chapter, flatten volumeChapters + volumeSupportingCharacters
     if (stepKey === 'guided_chapter') {
       const vc = parseVolumeChapters(data);
       const flatChapters: Array<Record<string, unknown>> = [];
@@ -241,8 +285,22 @@ export function GuidedWizard({ selectedProject, selectedProjectId, autoStart, on
           flatChapters.push({ ...ch, volumeNo: volNo });
         }
       }
+
+      // Flatten all volumes' supporting characters into a single array
+      const volumeSC = (data.volumeSupportingCharacters ?? {}) as Record<number, Array<Record<string, unknown>>>;
+      const allSupportChars: Array<Record<string, unknown>> = [];
+      for (const chars of Object.values(volumeSC)) {
+        if (Array.isArray(chars)) allSupportChars.push(...chars);
+      }
+
       if (flatChapters.length > 0) {
-        await confirmGeneratedData({ chapters: flatChapters }, stepKey);
+        await confirmGeneratedData(
+          {
+            chapters: flatChapters,
+            ...(allSupportChars.length > 0 && { supportingCharacters: allSupportChars }),
+          },
+          stepKey,
+        );
         onDataChanged?.();
       }
       return;
@@ -253,16 +311,23 @@ export function GuidedWizard({ selectedProject, selectedProjectId, autoStart, on
     onDataChanged?.();
   }, [allStepData, confirmGeneratedData, onDataChanged]);
 
-  // Handle save for a specific volume's chapters
+  // Handle save for a specific volume's chapters and supporting characters
   const handleSaveVolume = useCallback(async (volumeNo: number) => {
     const rawData = allStepData['guided_chapter'] ?? {};
     const vc = parseVolumeChapters(rawData);
     const chapters = vc[volumeNo];
     if (!chapters || chapters.length === 0) return;
 
+    // Include supporting characters for this volume if available
+    const volumeSC = (rawData.volumeSupportingCharacters ?? {}) as Record<number, Array<Record<string, unknown>>>;
+    const supportChars = volumeSC[volumeNo];
+
     const flatChapters = chapters.map((ch) => ({ ...ch, volumeNo }));
     await confirmGeneratedData(
-      { chapters: flatChapters },
+      {
+        chapters: flatChapters,
+        ...(Array.isArray(supportChars) && supportChars.length > 0 && { supportingCharacters: supportChars }),
+      },
       'guided_chapter',
       volumeNo,
     );

@@ -24,7 +24,6 @@ const SIMPLE_STEP_FIELDS: Partial<Record<StepKey, FieldDef[]>> = {
 
   guided_foreshadow: [
     { field: 'foreshadowPlan', label: '伏笔规划', type: 'textarea' },
-    { field: 'supportingCharacters', label: '新增配角', type: 'textarea' },
   ],
 };
 

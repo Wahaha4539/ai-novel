@@ -39,7 +39,7 @@ const GUIDED_STEPS_LABELS: Record<string, string> = {
   guided_outline: '故事总纲',
   guided_volume: '卷纲拆分',
   guided_chapter: '章节细纲',
-  guided_foreshadow: '伏笔与配角',
+  guided_foreshadow: '伏笔设计',
 };
 
 /** Step-specific system prompts — AI-driven completion with structured output */
@@ -164,16 +164,16 @@ ${INTERACTION_STYLE}
 \`[STEP_COMPLETE]\`{"volumes":[{"volumeNo":1,"title":"卷名","synopsis":"本卷剧情概要(100字以上)","objective":"本卷核心目标(具体可检验)"}]}`,
 
   guided_chapter: `你是一个资深小说创作顾问。你正在引导用户完成「章节细纲」规划步骤。
-帮助用户为当前卷规划具体章节。可以给出章节节奏方案供选择。
+帮助用户为当前卷规划具体章节和本卷新登场的配角。可以给出章节节奏方案供选择。
 ${INTERACTION_STYLE}
 完成时输出的 JSON 格式：
-\`[STEP_COMPLETE]\`{"chapters":[{"chapterNo":1,"title":"章节标题","objective":"本章目标","conflict":"核心冲突","outline":"章节大纲"}]}`,
+\`[STEP_COMPLETE]\`{"chapters":[{"chapterNo":1,"title":"章节标题","objective":"本章目标","conflict":"核心冲突","outline":"章节大纲"}],"supportingCharacters":[{"name":"角色名","roleType":"supporting","personalityCore":"性格核心(含内在矛盾)","motivation":"具体动机","firstAppearChapter":1}]}`,
 
-  guided_foreshadow: `你是一个资深小说创作顾问。你正在引导用户完成「伏笔与配角」规划步骤。
-帮助用户规划伏笔线索和新角色。给出具体伏笔手法选项和角色类型供选择。
+  guided_foreshadow: `你是一个资深小说创作顾问。你正在引导用户完成「伏笔设计」规划步骤。
+帮助用户规划伏笔线索。给出具体伏笔手法选项供选择。
 ${INTERACTION_STYLE}
 完成时输出的 JSON 格式：
-\`[STEP_COMPLETE]\`{"foreshadowTracks":[{"title":"伏笔标题","detail":"描述","scope":"arc/volume/chapter"}],"supportingCharacters":[{"name":"角色名","roleType":"supporting","personalityCore":"性格","motivation":"动机","scope":"volume/chapter"}]}`,
+\`[STEP_COMPLETE]\`{"foreshadowTracks":[{"title":"伏笔标题","detail":"描述","scope":"arc/volume/chapter"}]}`,
 };
 
 @Injectable()
@@ -375,8 +375,8 @@ export class GuidedService {
       guided_characters: '{"characters":[{"name":"角色名","roleType":"protagonist/antagonist/supporting/competitor","personalityCore":"性格核心","motivation":"核心动机","backstory":"背景故事"}]}',
       guided_outline: '{"outline":"完整的故事总纲大纲"}',
       guided_volume: '{"volumes":[{"volumeNo":1,"title":"有文学性的卷名","synopsis":"本卷剧情概要(100字以上，含核心事件/转折/情感变化)","objective":"本卷核心目标(具体可检验)"}]}',
-      guided_chapter: '{"chapters":[{"chapterNo":1,"volumeNo":1,"title":"章节标题","objective":"本章目标","conflict":"核心冲突","outline":"章节大纲"}]}',
-      guided_foreshadow: '{"foreshadowTracks":[{"title":"伏笔标题","detail":"描述","scope":"arc/volume/chapter"}],"supportingCharacters":[{"name":"角色名","roleType":"supporting","personalityCore":"性格","motivation":"动机","scope":"volume/chapter"}]}',
+      guided_chapter: '{"chapters":[{"chapterNo":1,"volumeNo":1,"title":"章节标题","objective":"本章目标","conflict":"核心冲突","outline":"章节大纲"}],"supportingCharacters":[{"name":"角色名","roleType":"supporting","personalityCore":"性格核心(含内在矛盾)","motivation":"具体动机","firstAppearChapter":1}]}',
+      guided_foreshadow: '{"foreshadowTracks":[{"title":"伏笔标题","detail":"描述","scope":"arc/volume/chapter"}]}',
     };
 
     const stepSpecificInstructions: Record<string, string> = {
@@ -433,6 +433,7 @@ export class GuidedService {
 - 每卷 synopsis 不少于 100 字，包含核心事件、关键转折、情感变化
 - objective 要具体可检验（如「揭示反派的真实身份」而非「推进主线」）`,
       guided_chapter: `请为指定卷规划 8-15 个章节，每章有明确的推进目标和核心冲突。
+同时为本卷设计 2-4 个新登场的配角（不要重复核心角色步骤中已有的角色）。
 
 ## 强制结构规则（必须遵守）
 ### 章节节奏设计
@@ -450,10 +451,17 @@ export class GuidedService {
 - 每 3-4 章揭示一个重要信息或推进一条伏笔线
 - 关键信息不要集中在最后几章
 
+### 配角设计规则
+- 每个配角必须服务于本卷的叙事需要（推动冲突、提供信息、制造张力）
+- 禁用网文模板名和性格（参照核心角色的起名和性格规则）
+- 标注每个配角首次登场的章节号（firstAppearChapter）
+- 配角的动机要具体，不能是「帮助主角」或「阻碍主角」这种泛化描述
+- 至少有一个配角与主角的利益或立场存在冲突
+
 ### 质量标准
 - outline 至少 50 字，要包含具体的场景、行为和结果
 - objective 要具体可检验（如「读者了解了 X 的真实身份」而非「推进剧情」）`,
-      guided_foreshadow: '请设计3-5条伏笔线索，并规划2-3个新配角来丰富故事。',
+      guided_foreshadow: '请设计3-5条伏笔线索，包括埋设时机、揭开时机、涉及角色和影响范围。配角已在章节细纲步骤中生成，此步骤不需要再生成配角。',
     };
 
     const schema = stepJsonSchemas[dto.currentStep];
@@ -759,11 +767,40 @@ ${schema}
           }
           written.push(`Chapter × ${chapters.length}`);
         }
+
+        // Create supporting characters generated alongside chapters.
+        // Per-volume: delete old volume-scoped characters first, then create new.
+        const chapterSupportChars = structuredData.supportingCharacters as Array<Record<string, unknown>> | undefined;
+        if (chapterSupportChars?.length) {
+          // Clean up old supporting chars for this volume to prevent duplicates
+          if (volumeNo) {
+            await this.prisma.character.deleteMany({
+              where: { projectId, source: 'guided_chapter', scope: `volume_${volumeNo}` },
+            });
+          }
+
+          for (const char of chapterSupportChars) {
+            await this.prisma.character.create({
+              data: {
+                projectId,
+                name: asString(char.name) ?? '未命名配角',
+                roleType: asString(char.roleType) ?? 'supporting',
+                personalityCore: asString(char.personalityCore),
+                motivation: asString(char.motivation),
+                backstory: asString(char.backstory),
+                // Use volume-specific scope so we can manage per-volume
+                scope: volumeNo ? `volume_${volumeNo}` : 'chapter',
+                source: 'guided_chapter',
+              },
+            });
+          }
+          written.push(`Character(supporting) × ${chapterSupportChars.length}`);
+        }
         break;
       }
 
       case 'guided_foreshadow': {
-        // Create ForeshadowTrack records
+        // Create ForeshadowTrack records (supporting characters are now in guided_chapter)
         const tracks = structuredData.foreshadowTracks as Array<Record<string, unknown>> | undefined;
         if (tracks?.length) {
           for (const track of tracks) {
@@ -780,25 +817,6 @@ ${schema}
           }
           written.push(`ForeshadowTrack × ${tracks.length}`);
         }
-
-        // Also create any supporting characters
-        const supportChars = structuredData.supportingCharacters as Array<Record<string, unknown>> | undefined;
-        if (supportChars?.length) {
-          for (const char of supportChars) {
-            await this.prisma.character.create({
-              data: {
-                projectId,
-                name: asString(char.name) ?? '未命名配角',
-                roleType: asString(char.roleType) ?? 'supporting',
-                personalityCore: asString(char.personalityCore),
-                motivation: asString(char.motivation),
-                scope: asString(char.scope) ?? 'chapter',
-                source: 'guided',
-              },
-            });
-          }
-          written.push(`Character(supporting) × ${supportChars.length}`);
-        }
         break;
       }
 
@@ -806,14 +824,46 @@ ${schema}
         break;
     }
 
-    // Also save to session stepData for reference
+    // Also save to session stepData for reference.
+    // For per-volume chapter saves, merge new chapters into existing result
+    // instead of overwriting, so previously saved volumes are preserved.
     const session = await this.prisma.guidedSession.findUnique({ where: { projectId } });
     if (session) {
       const existingData = (session.stepData as Record<string, unknown>) ?? {};
+
+      let resultToSave: Record<string, unknown> = structuredData;
+
+      // Per-volume chapter save: merge chapters and supportingCharacters into existing result
+      if (step === 'guided_chapter' && volumeNo) {
+        const existingResult = (existingData['guided_chapter_result'] ?? {}) as Record<string, unknown>;
+
+        // Merge chapters: remove old chapters for this volumeNo, append new ones
+        const existingChapters = (existingResult.chapters ?? []) as Array<Record<string, unknown>>;
+        const newChapters = (structuredData.chapters ?? []) as Array<Record<string, unknown>>;
+        const mergedChapters = [
+          ...existingChapters.filter((ch) => (ch.volumeNo as number) !== volumeNo),
+          ...newChapters,
+        ];
+
+        // Merge supporting characters: keyed by volumeNo to prevent cross-volume overwrites
+        const existingSupportChars = (existingResult.volumeSupportingCharacters ?? {}) as Record<string, unknown>;
+        const newSupportChars = (structuredData.supportingCharacters ?? []) as Array<Record<string, unknown>>;
+        const mergedSupportChars = {
+          ...existingSupportChars,
+          [volumeNo]: newSupportChars,
+        };
+
+        resultToSave = {
+          ...existingResult,
+          chapters: mergedChapters,
+          volumeSupportingCharacters: mergedSupportChars,
+        };
+      }
+
       await this.prisma.guidedSession.update({
         where: { projectId },
         data: {
-          stepData: { ...existingData, [`${step}_result`]: structuredData } as object,
+          stepData: { ...existingData, [`${step}_result`]: resultToSave } as object,
         },
       });
     }

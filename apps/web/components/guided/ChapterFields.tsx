@@ -9,6 +9,15 @@ export interface ChapterData {
   outline: string;
 }
 
+/** Supporting character generated alongside chapters */
+export interface SupportingCharacterData {
+  name: string;
+  roleType: string;
+  personalityCore: string;
+  motivation: string;
+  firstAppearChapter?: number;
+}
+
 /** Volume info read from guided_volume step */
 interface VolumeInfo {
   volumeNo: number;
@@ -57,6 +66,17 @@ function parseVolumeChapters(data: Record<string, unknown>): Record<number, Chap
   return {};
 }
 
+/** Parse volumeSupportingCharacters from chapter step data (keyed by volumeNo) */
+function parseVolumeSupportChars(data: Record<string, unknown>): Record<number, SupportingCharacterData[]> {
+  const raw = data?.volumeSupportingCharacters;
+  if (!raw) return {};
+  try {
+    if (typeof raw === 'string') return JSON.parse(raw) as Record<number, SupportingCharacterData[]>;
+    if (typeof raw === 'object' && !Array.isArray(raw)) return raw as Record<number, SupportingCharacterData[]>;
+  } catch { /* ignore */ }
+  return {};
+}
+
 const ACCENT_COLOR = '#f97316';
 
 export function ChapterFields({
@@ -69,6 +89,7 @@ export function ChapterFields({
 }: ChapterFieldsProps) {
   const volumes = parseVolumes(volumeData);
   const volumeChapters = parseVolumeChapters(data);
+  const volumeSupportChars = parseVolumeSupportChars(data);
 
   // Track collapsed state per volume
   const [collapsedVolumes, setCollapsedVolumes] = useState<Record<number, boolean>>({});
@@ -125,6 +146,7 @@ export function ChapterFields({
     <div className="doc-section__fields">
       {volumes.map((vol) => {
         const chapters = volumeChapters[vol.volumeNo] ?? [];
+        const supportChars = volumeSupportChars[vol.volumeNo] ?? [];
         const isCollapsed = collapsedVolumes[vol.volumeNo] ?? false;
         const hasChapters = chapters.length > 0;
 
@@ -133,6 +155,7 @@ export function ChapterFields({
             key={vol.volumeNo}
             volume={vol}
             chapters={chapters}
+            supportingCharacters={supportChars}
             isCollapsed={isCollapsed}
             hasChapters={hasChapters}
             loading={loading}
@@ -155,6 +178,7 @@ export function ChapterFields({
 function VolumeChapterPanel({
   volume,
   chapters,
+  supportingCharacters,
   isCollapsed,
   hasChapters,
   loading,
@@ -169,6 +193,7 @@ function VolumeChapterPanel({
 }: {
   volume: VolumeInfo;
   chapters: ChapterData[];
+  supportingCharacters: SupportingCharacterData[];
   isCollapsed: boolean;
   hasChapters: boolean;
   loading: boolean;
@@ -363,6 +388,42 @@ function VolumeChapterPanel({
           >
             + 添加章节
           </button>
+
+          {/* Supporting characters for this volume */}
+          {supportingCharacters.length > 0 && (
+            <div style={{ marginTop: '0.75rem' }}>
+              <div
+                style={{
+                  fontSize: '0.72rem',
+                  fontWeight: 700,
+                  color: '#8b5cf6',
+                  marginBottom: '0.4rem',
+                  display: 'flex',
+                  alignItems: 'center',
+                  gap: '0.3rem',
+                }}
+              >
+                👤 本卷配角
+                <span
+                  style={{
+                    fontSize: '0.62rem',
+                    fontWeight: 500,
+                    color: 'var(--text-dim)',
+                    background: 'rgba(139,92,246,0.1)',
+                    padding: '0.05rem 0.3rem',
+                    borderRadius: '0.2rem',
+                  }}
+                >
+                  {supportingCharacters.length} 人
+                </span>
+              </div>
+              <div style={{ display: 'flex', flexDirection: 'column', gap: '0.35rem' }}>
+                {supportingCharacters.map((char, idx) => (
+                  <SupportingCharacterCard key={idx} character={char} />
+                ))}
+              </div>
+            </div>
+          )}
         </div>
       )}
     </div>
@@ -501,6 +562,94 @@ function ChapterCard({
             placeholder="章节大纲…"
             style={{ fontSize: '0.78rem', lineHeight: 1.6, resize: 'vertical' }}
           />
+        </div>
+      )}
+    </div>
+  );
+}
+
+/** Compact card displaying a supporting character's key info */
+function SupportingCharacterCard({ character }: { character: SupportingCharacterData }) {
+  const [expanded, setExpanded] = useState(false);
+  const CHAR_COLOR = '#8b5cf6';
+
+  return (
+    <div
+      style={{
+        borderRadius: '0.5rem',
+        border: `1px solid ${CHAR_COLOR}22`,
+        background: `${CHAR_COLOR}08`,
+        overflow: 'hidden',
+      }}
+    >
+      {/* Character header */}
+      <div
+        onClick={() => setExpanded(!expanded)}
+        style={{
+          display: 'flex',
+          alignItems: 'center',
+          justifyContent: 'space-between',
+          padding: '0.35rem 0.6rem',
+          cursor: 'pointer',
+          userSelect: 'none',
+        }}
+      >
+        <div style={{ display: 'flex', alignItems: 'center', gap: '0.4rem', minWidth: 0 }}>
+          <span
+            style={{
+              fontSize: '0.6rem',
+              color: 'var(--text-dim)',
+              transition: 'transform 0.15s ease',
+              transform: expanded ? 'rotate(0deg)' : 'rotate(-90deg)',
+              display: 'inline-block',
+            }}
+          >
+            ▼
+          </span>
+          <span style={{ fontSize: '0.75rem', fontWeight: 700, color: CHAR_COLOR }}>
+            {character.name}
+          </span>
+          <span
+            style={{
+              fontSize: '0.62rem',
+              color: 'var(--text-dim)',
+              background: `${CHAR_COLOR}15`,
+              padding: '0.05rem 0.3rem',
+              borderRadius: '0.15rem',
+            }}
+          >
+            {character.roleType}
+          </span>
+          {character.firstAppearChapter && (
+            <span style={{ fontSize: '0.6rem', color: 'var(--text-dim)' }}>
+              第{character.firstAppearChapter}章登场
+            </span>
+          )}
+        </div>
+      </div>
+
+      {/* Expanded details */}
+      {expanded && (
+        <div
+          style={{
+            padding: '0.35rem 0.6rem 0.5rem',
+            borderTop: `1px solid ${CHAR_COLOR}15`,
+            fontSize: '0.75rem',
+            lineHeight: 1.7,
+            color: 'var(--text-muted)',
+            display: 'flex',
+            flexDirection: 'column',
+            gap: '0.25rem',
+          }}
+        >
+          <div>
+            <span style={{ fontWeight: 600, color: CHAR_COLOR, marginRight: '0.3rem' }}>性格：</span>
+            {character.personalityCore}
+          </div>
+          <div>
+            <span style={{ fontWeight: 600, color: CHAR_COLOR, marginRight: '0.3rem' }}>动机：</span>
+            {character.motivation}
+          </div>
         </div>
       )}
     </div>
