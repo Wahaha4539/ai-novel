@@ -152,11 +152,12 @@ export function GuidedWizard({ selectedProject, selectedProjectId, autoStart, on
           );
 
           if (data) {
+            const newChapters = (data as Record<string, unknown>).chapters;
+
             // Merge returned chapters into volumeChapters keyed by volumeNo
             setAllStepData((prev) => {
               const existingData = prev['guided_chapter'] ?? {};
               const existingVC = parseVolumeChapters(existingData);
-              const newChapters = (data as Record<string, unknown>).chapters;
               if (Array.isArray(newChapters)) {
                 existingVC[vol.volumeNo] = newChapters;
               }
@@ -165,6 +166,18 @@ export function GuidedWizard({ selectedProject, selectedProjectId, autoStart, on
                 guided_chapter: { ...existingData, volumeChapters: existingVC },
               };
             });
+
+            // Auto-save: persist this volume's chapters to DB immediately.
+            // Uses the fresh data from generateStepData (not stale allStepData).
+            if (Array.isArray(newChapters) && newChapters.length > 0) {
+              const flatChapters = (newChapters as Array<Record<string, unknown>>)
+                .map((ch) => ({ ...ch, volumeNo: vol.volumeNo }));
+              await confirmGeneratedData(
+                { chapters: flatChapters },
+                'guided_chapter',
+                vol.volumeNo,
+              );
+            }
           }
         }
       } finally {
@@ -178,7 +191,7 @@ export function GuidedWizard({ selectedProject, selectedProjectId, autoStart, on
     if (data) {
       setAllStepData((prev) => ({ ...prev, [stepKey]: data }));
     }
-  }, [generateStepData, allStepData]);
+  }, [generateStepData, confirmGeneratedData, allStepData]);
 
   // Handle AI generation for a specific volume's chapters
   const handleGenerateForVolume = useCallback(async (volumeNo: number, chapterRange?: [number, number]) => {
