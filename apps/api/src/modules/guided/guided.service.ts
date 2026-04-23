@@ -369,7 +369,7 @@ export class GuidedService {
 - 角色之间关系不能全是「信任的伙伴」，要有信息差、利益冲突或情感错位
 - 至少有一组关系是非对称的（A信任B但B在利用A）`,
       guided_outline: '请根据已有的设定和角色信息，生成一个完整的故事总纲大纲，包含起承转合、主要冲突线索和情感弧线。',
-      guided_volume: '请根据总纲将故事拆分为3-5个卷，每个卷有清晰的剧情目标和阶段性高潮。',
+      guided_volume: '请根据总纲将故事拆分为指定数量的卷，每个卷有清晰的剧情目标和阶段性高潮。用户会在 userHint 中指定卷数，务必严格按照该数量生成，不多不少。',
       guided_chapter: '请为当前卷规划8-15个章节，每章有明确的推进目标和核心冲突。',
       guided_foreshadow: '请设计3-5条伏笔线索，并规划2-3个新配角来丰富故事。',
     };
@@ -430,6 +430,15 @@ ${schema}
 
     if (dto.chatSummary) {
       systemPrompt += `\n\n## 用户在本步骤对话中已确认的偏好（必须严格遵守）\n${dto.chatSummary}`;
+    }
+
+    // For guided_volume, extract the volume count from userHint and reinforce it in the system prompt
+    if (dto.currentStep === 'guided_volume' && dto.userHint) {
+      const countMatch = dto.userHint.match(/(\d+)\s*卷/);
+      if (countMatch) {
+        const volumeCount = parseInt(countMatch[1], 10);
+        systemPrompt += `\n\n## ⚠️ 卷数硬性约束（最高优先级）\n用户明确要求生成 **${volumeCount}** 卷。你必须严格输出恰好 ${volumeCount} 个 volume 对象，volumes 数组长度必须为 ${volumeCount}，不得多也不得少。`;
+      }
     }
 
     // Use DB userTemplate for user message if available, otherwise use default

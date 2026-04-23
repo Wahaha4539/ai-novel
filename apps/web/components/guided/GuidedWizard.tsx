@@ -72,14 +72,29 @@ export function GuidedWizard({ selectedProject, selectedProjectId, autoStart }: 
 
   // Handle AI generation for a specific step
   const handleGenerate = useCallback(async (stepKey: StepKey) => {
-    const data = await generateStepData(undefined, stepKey);
+    // For guided_volume, pass the user-specified volume count as a hint
+    let hint: string | undefined;
+    if (stepKey === 'guided_volume') {
+      const currentVolumes = allStepData[stepKey]?.volumes;
+      let volumeCount = 3; // default
+      try {
+        if (typeof currentVolumes === 'string') {
+          volumeCount = (JSON.parse(currentVolumes) as unknown[]).length;
+        } else if (Array.isArray(currentVolumes)) {
+          volumeCount = currentVolumes.length;
+        }
+      } catch { /* use default */ }
+      hint = `请严格生成 ${volumeCount} 卷，不多不少。`;
+    }
+
+    const data = await generateStepData(hint, stepKey);
     if (data) {
       setAllStepData((prev) => ({
         ...prev,
         [stepKey]: data,
       }));
     }
-  }, [generateStepData]);
+  }, [generateStepData, allStepData]);
 
   // Handle save for a specific step
   const handleSave = useCallback(async (stepKey: StepKey) => {

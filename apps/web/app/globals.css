@@ -505,16 +505,25 @@ textarea.input, textarea.input-field {
   backdrop-filter: blur(12px);
 }
 .doc-toc__item {
+  /* Reset button defaults */
+  appearance: none;
+  background: none;
+  border: none;
+  border-left: 2px solid transparent;
+  outline: none;
+  font-family: inherit;
+  /* Layout */
   display: flex;
   align-items: center;
   gap: 0.5rem;
-  padding: 0.5rem 1rem;
+  width: 100%;
+  padding: 0.55rem 1rem;
   font-size: 0.78rem;
   font-weight: 500;
   color: var(--text-dim);
   cursor: pointer;
   transition: all 0.2s ease;
-  border-left: 2px solid transparent;
+  text-align: left;
   text-decoration: none;
 }
 .doc-toc__item:hover {
@@ -522,7 +531,7 @@ textarea.input, textarea.input-field {
   background: var(--bg-hover-subtle);
 }
 .doc-toc__item--active {
-  color: var(--accent-cyan);
+  color: var(--accent-cyan) !important;
   border-left-color: var(--accent-cyan);
   background: var(--accent-cyan-bg);
   font-weight: 600;
@@ -581,6 +590,11 @@ textarea.input, textarea.input-field {
   gap: 0.5rem;
 }
 .doc-section__btn {
+  /* Reset button defaults */
+  appearance: none;
+  outline: none;
+  font-family: inherit;
+  /* Layout */
   display: inline-flex;
   align-items: center;
   gap: 0.35rem;

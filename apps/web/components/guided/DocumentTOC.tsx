@@ -55,7 +55,6 @@ export function DocumentTOC({ activeStepKey, completedSteps, onStepClick }: Prop
             key={step.key}
             className={itemClass}
             onClick={() => onStepClick(step.key)}
-            style={{ width: '100%', textAlign: 'left' }}
           >
             <span
               className="doc-toc__dot"
