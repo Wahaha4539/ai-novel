@@ -109,9 +109,10 @@ export function GuidedWizard({ selectedProject, selectedProjectId, autoStart, on
   }, [generateStepData, allStepData]);
 
   // Handle AI generation for a specific volume's chapters
-  const handleGenerateForVolume = useCallback(async (volumeNo: number) => {
+  const handleGenerateForVolume = useCallback(async (volumeNo: number, chapterRange?: [number, number]) => {
+    const [minCh, maxCh] = chapterRange ?? [8, 15];
     const data = await generateStepData(
-      `为第 ${volumeNo} 卷生成章节细纲`,
+      `为第 ${volumeNo} 卷生成章节细纲，请生成 ${minCh}-${maxCh} 章`,
       'guided_chapter',
       volumeNo,
     );

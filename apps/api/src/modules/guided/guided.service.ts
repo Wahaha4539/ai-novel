@@ -538,7 +538,14 @@ ${schema}
         }
       } catch { /* non-critical */ }
 
-      systemPrompt += `\n\n## ⚠️ 当前生成目标（最高优先级）\n仅为 **第 ${dto.volumeNo} 卷** 生成章节细纲。${volumeContext}\n\n所有生成的 chapter 对象中 volumeNo 字段必须为 ${dto.volumeNo}。请为本卷规划 8-15 个章节。`;
+      // Extract chapter count range from userHint (e.g. "生成 8-15 章")
+      let chapterRangeStr = '8-15';
+      const rangeMatch = dto.userHint?.match(/(\d+)\s*-\s*(\d+)\s*章/);
+      if (rangeMatch) {
+        chapterRangeStr = `${rangeMatch[1]}-${rangeMatch[2]}`;
+      }
+
+      systemPrompt += `\n\n## ⚠️ 当前生成目标（最高优先级）\n仅为 **第 ${dto.volumeNo} 卷** 生成章节细纲。${volumeContext}\n\n所有生成的 chapter 对象中 volumeNo 字段必须为 ${dto.volumeNo}。请为本卷规划 **${chapterRangeStr}** 个章节（不多不少）。`;
     }
 
     // Use DB userTemplate for user message if available, otherwise use default

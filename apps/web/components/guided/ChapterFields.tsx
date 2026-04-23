@@ -22,7 +22,7 @@ interface ChapterFieldsProps {
   data: Record<string, unknown>;
   volumeData: Record<string, unknown>;
   onChange: (field: string, value: string) => void;
-  onGenerateForVolume: (volumeNo: number) => void;
+  onGenerateForVolume: (volumeNo: number, chapterRange?: [number, number]) => void;
   onSaveVolume: (volumeNo: number) => void;
   loading: boolean;
 }
@@ -72,6 +72,8 @@ export function ChapterFields({
 
   // Track collapsed state per volume
   const [collapsedVolumes, setCollapsedVolumes] = useState<Record<number, boolean>>({});
+  // Track desired chapter count range per volume [min, max]
+  const [chapterRanges, setChapterRanges] = useState<Record<number, [number, number]>>({});
 
   const toggleVolume = (volumeNo: number) => {
     setCollapsedVolumes((prev) => ({ ...prev, [volumeNo]: !prev[volumeNo] }));
@@ -134,8 +136,10 @@ export function ChapterFields({
             isCollapsed={isCollapsed}
             hasChapters={hasChapters}
             loading={loading}
+            chapterRange={chapterRanges[vol.volumeNo] ?? [8, 15]}
+            onChapterRangeChange={(range) => setChapterRanges((prev) => ({ ...prev, [vol.volumeNo]: range }))}
             onToggle={() => toggleVolume(vol.volumeNo)}
-            onGenerateForVolume={() => onGenerateForVolume(vol.volumeNo)}
+            onGenerateForVolume={() => onGenerateForVolume(vol.volumeNo, chapterRanges[vol.volumeNo] ?? [8, 15])}
             onSaveVolume={() => onSaveVolume(vol.volumeNo)}
             onUpdateChapter={(idx, key, value) => updateChapter(vol.volumeNo, idx, key, value)}
             onAddChapter={() => addChapter(vol.volumeNo)}
@@ -154,8 +158,11 @@ function VolumeChapterPanel({
   isCollapsed,
   hasChapters,
   loading,
+  chapterRange,
+  onChapterRangeChange,
   onToggle,
   onGenerateForVolume,
+  onSaveVolume,
   onUpdateChapter,
   onAddChapter,
   onRemoveChapter,
@@ -165,6 +172,8 @@ function VolumeChapterPanel({
   isCollapsed: boolean;
   hasChapters: boolean;
   loading: boolean;
+  chapterRange: [number, number];
+  onChapterRangeChange: (range: [number, number]) => void;
   onToggle: () => void;
   onGenerateForVolume: () => void;
   onSaveVolume: () => void;
@@ -239,6 +248,34 @@ function VolumeChapterPanel({
         </div>
 
         <div style={{ display: 'flex', alignItems: 'center', gap: '0.4rem' }} onClick={(e) => e.stopPropagation()}>
+          <input
+            type="number"
+            className="input-field"
+            min={3}
+            max={30}
+            value={chapterRange[0]}
+            onChange={(e) => {
+              const v = Math.max(3, Math.min(30, parseInt(e.target.value, 10) || 8));
+              onChapterRangeChange([v, Math.max(v, chapterRange[1])]);
+            }}
+            title="最少章节数"
+            style={{ width: '2.5rem', fontSize: '0.7rem', padding: '0.2rem 0.25rem', textAlign: 'center', borderRadius: '0.3rem' }}
+          />
+          <span style={{ fontSize: '0.62rem', color: 'var(--text-dim)' }}>-</span>
+          <input
+            type="number"
+            className="input-field"
+            min={3}
+            max={30}
+            value={chapterRange[1]}
+            onChange={(e) => {
+              const v = Math.max(3, Math.min(30, parseInt(e.target.value, 10) || 15));
+              onChapterRangeChange([Math.min(chapterRange[0], v), v]);
+            }}
+            title="最多章节数"
+            style={{ width: '2.5rem', fontSize: '0.7rem', padding: '0.2rem 0.25rem', textAlign: 'center', borderRadius: '0.3rem' }}
+          />
+          <span style={{ fontSize: '0.62rem', color: 'var(--text-dim)', whiteSpace: 'nowrap' }}>章</span>
           <button
             className="doc-section__btn doc-section__btn--ai"
             onClick={onGenerateForVolume}

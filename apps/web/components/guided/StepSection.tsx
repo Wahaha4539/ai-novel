@@ -75,7 +75,7 @@ interface Props {
   volumeData?: Record<string, unknown>;
   onEditField: (stepKey: StepKey, field: string, value: string) => void;
   onGenerate: (stepKey: StepKey) => void;
-  onGenerateForVolume?: (volumeNo: number) => void;
+  onGenerateForVolume?: (volumeNo: number, chapterRange?: [number, number]) => void;
   onSave: (stepKey: StepKey) => void;
   onSaveVolume?: (volumeNo: number) => void;
   loading: boolean;
