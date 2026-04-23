@@ -27,6 +27,7 @@ export function GuidedWizard({ selectedProject, selectedProjectId, autoStart }: 
     generateStepData,
     confirmGeneratedData,
     autoAdvanceToNextStep,
+    getStepResultData,
   } = useGuidedSession(selectedProjectId);
 
   // Local editable fields for the structured preview
@@ -76,15 +77,23 @@ export function GuidedWizard({ selectedProject, selectedProjectId, autoStart }: 
 
   const isLastStep = currentStepIndex >= GUIDED_STEPS.length - 1;
 
-  // Reset preview data only when the step actually changes (not on loading transitions)
+  // Restore preview data when the step actually changes (navigation)
   const prevStepRef = React.useRef(currentStepIndex);
   useEffect(() => {
     if (prevStepRef.current !== currentStepIndex) {
       prevStepRef.current = currentStepIndex;
-      setPreviewData({});
-      setHasGeneratedData(false);
+
+      // Try to restore persisted result for this step
+      const savedResult = getStepResultData(currentStepKey);
+      if (savedResult && Object.keys(savedResult).length > 0) {
+        setPreviewData(savedResult);
+        setHasGeneratedData(true);
+      } else {
+        setPreviewData({});
+        setHasGeneratedData(false);
+      }
     }
-  }, [currentStepIndex]);
+  }, [currentStepIndex, currentStepKey, getStepResultData]);
 
   // Auto-start session when triggered from guided project creation
   useEffect(() => {
@@ -175,87 +184,91 @@ export function GuidedWizard({ selectedProject, selectedProjectId, autoStart }: 
             stepData={previewData}
             onEditField={handleEditField}
           />
-
-          {/* Confirm generated data button — shown when AI data is pending */}
-          {hasGeneratedData && (
-            <div
-              style={{
-                padding: '0.75rem 1.25rem',
-                borderTop: '1px solid var(--border-dim)',
-                background: 'var(--bg-card)',
-              }}
-            >
-              <button
-                className="btn-primary"
-                onClick={handleConfirmGenerated}
-                disabled={loading}
-                style={{
-                  width: '100%',
-                  padding: '0.6rem',
-                  fontSize: '0.85rem',
-                  background: 'linear-gradient(135deg, #10b981, #059669)',
-                }}
-              >
-                {loading ? '保存中…' : '✅ 确认并保存'}
-              </button>
-            </div>
-          )}
         </div>
       </div>
 
       {/* Bottom navigation */}
       <div
-        className="flex items-center justify-between shrink-0"
+        className="shrink-0"
         style={{
-          padding: '0.75rem 2rem',
+          padding: '0.6rem 1.5rem',
           borderTop: '1px solid var(--border-dim)',
           background: 'var(--bg-card)',
+          display: 'flex',
+          alignItems: 'center',
+          justifyContent: 'space-between',
+          gap: '0.75rem',
+          flexWrap: 'wrap',
         }}
       >
         <button
           className="btn-secondary"
           onClick={goToPrevStep}
           disabled={currentStepIndex <= 0}
-          style={{ opacity: currentStepIndex <= 0 ? 0.4 : 1 }}
+          style={{
+            opacity: currentStepIndex <= 0 ? 0.4 : 1,
+            whiteSpace: 'nowrap',
+          }}
         >
           ← 上一步
         </button>
 
-        <div className="flex items-center gap-3">
+        <div
+          style={{
+            display: 'flex',
+            alignItems: 'center',
+            gap: '0.6rem',
+            flexWrap: 'wrap',
+            justifyContent: 'flex-end',
+          }}
+        >
           {/* One-shot generation button */}
           <button
             onClick={handleGenerate}
             disabled={loading}
             style={{
-              padding: '0.5rem 1.2rem',
+              padding: '0.45rem 1rem',
               borderRadius: '0.5rem',
               border: '1px solid rgba(139, 92, 246, 0.4)',
               background: loading
                 ? 'var(--bg-hover-subtle)'
                 : 'linear-gradient(135deg, rgba(139,92,246,0.15), rgba(14,165,233,0.15))',
               color: loading ? 'var(--text-dim)' : '#a78bfa',
-              fontSize: '0.8rem',
+              fontSize: '0.78rem',
               fontWeight: 600,
               cursor: loading ? 'default' : 'pointer',
               transition: 'all 0.2s ease',
               display: 'flex',
               alignItems: 'center',
               gap: '0.4rem',
+              whiteSpace: 'nowrap',
             }}
           >
             ⚡ AI 一键生成
           </button>
 
-          <div className="text-xs" style={{ color: 'var(--text-dim)' }}>
-            步骤 {currentStepIndex + 1} / {GUIDED_STEPS.length}
+          <div className="text-xs" style={{ color: 'var(--text-dim)', whiteSpace: 'nowrap' }}>
+            {currentStepIndex + 1} / {GUIDED_STEPS.length}
           </div>
 
           <button
             className="btn-primary"
-            onClick={handleConfirmAndNext}
+            onClick={hasGeneratedData ? handleConfirmGenerated : handleConfirmAndNext}
             disabled={loading}
+            style={{
+              whiteSpace: 'nowrap',
+              ...(hasGeneratedData
+                ? { background: 'linear-gradient(135deg, #10b981, #059669)' }
+                : {}),
+            }}
           >
-            {isLastStep ? '🎉 完成引导' : '确认并继续 →'}
+            {loading
+              ? '处理中…'
+              : hasGeneratedData
+                ? '✅ 确认并保存'
+                : isLastStep
+                  ? '🎉 完成引导'
+                  : '确认并继续 →'}
           </button>
         </div>
       </div>

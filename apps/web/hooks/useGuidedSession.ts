@@ -301,13 +301,24 @@ export function useGuidedSession(projectId: string) {
     }
   }, [currentStepIndex, projectId, finalizeCurrentStep, saveStepProgress]);
 
-  // Go to previous step
+  // Retrieve persisted step result from session.stepData
+  const getStepResultData = useCallback((stepKey: string): Record<string, unknown> | null => {
+    const data = (session?.stepData as Record<string, unknown>) ?? {};
+    const result = data[`${stepKey}_result`];
+    if (result && typeof result === 'object' && !Array.isArray(result)) {
+      return result as Record<string, unknown>;
+    }
+    return null;
+  }, [session]);
+
+  // Go to previous step — restore both chat and preview data
   const goToPrevStep = useCallback(() => {
     if (currentStepIndex <= 0) return;
-    setCurrentStepIndex((prev) => prev - 1);
+    const prevIndex = currentStepIndex - 1;
+    const prevKey = GUIDED_STEPS[prevIndex].key;
+    setCurrentStepIndex(prevIndex);
 
     // Restore chat from session stepData if available
-    const prevKey = GUIDED_STEPS[currentStepIndex - 1].key;
     const stepData = (session?.stepData as Record<string, unknown>) ?? {};
     const savedChat = stepData[`${prevKey}_chat`];
     if (Array.isArray(savedChat)) {
@@ -615,5 +626,6 @@ export function useGuidedSession(projectId: string) {
     generateStepData,
     confirmGeneratedData,
     autoAdvanceToNextStep,
+    getStepResultData,
   };
 }
