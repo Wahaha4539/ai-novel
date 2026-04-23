@@ -14,7 +14,8 @@ export class RequestLoggerMiddleware implements NestMiddleware {
       const size = res.get?.('content-length') ?? '-';
       const line = `[HTTP] ${req.method} ${req.originalUrl} ${status} ${ms}ms ${size}b`;
       if (body) {
-        console.log(`${line} body=${body}`);
+        const truncated = body.length > 200 ? body.slice(0, 200) + '…' : body;
+        console.log(`${line} body=${truncated}`);
       } else {
         console.log(line);
       }

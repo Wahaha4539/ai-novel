@@ -5,9 +5,12 @@ interface Props {
   messages: ChatMessage[];
   onSend: (content: string) => void;
   loading?: boolean;
+  isOpen: boolean;
+  onClose: () => void;
+  currentStepLabel?: string;
 }
 
-export function AiChatPanel({ messages, onSend, loading }: Props) {
+export function AiChatPanel({ messages, onSend, loading, isOpen, onClose, currentStepLabel }: Props) {
   const [input, setInput] = useState('');
   const scrollRef = useRef<HTMLDivElement>(null);
 
@@ -33,13 +36,58 @@ export function AiChatPanel({ messages, onSend, loading }: Props) {
   };
 
   return (
-    <div className="flex flex-col h-full">
+    <div className={`ai-drawer ${isOpen ? '' : 'ai-drawer--collapsed'}`}>
+      {/* Drawer Header */}
+      <div className="ai-drawer__header">
+        <div className="ai-drawer__title">
+          <span>🤖</span>
+          <span>AI 助手</span>
+          {currentStepLabel && (
+            <span
+              style={{
+                fontSize: '0.65rem',
+                color: 'var(--text-dim)',
+                fontWeight: 400,
+              }}
+            >
+              · {currentStepLabel}
+            </span>
+          )}
+        </div>
+        <button className="ai-drawer__close" onClick={onClose} title="收起面板">
+          ✕
+        </button>
+      </div>
+
       {/* Messages area */}
       <div
         ref={scrollRef}
-        className="flex-1 p-4 space-y-4"
-        style={{ overflowY: 'auto' }}
+        style={{
+          flex: 1,
+          overflowY: 'auto',
+          padding: '0.75rem',
+          display: 'flex',
+          flexDirection: 'column',
+          gap: '0.5rem',
+        }}
       >
+        {messages.length === 0 && (
+          <div
+            style={{
+              textAlign: 'center',
+              padding: '2rem 0.5rem',
+              color: 'var(--text-dim)',
+              fontSize: '0.75rem',
+              lineHeight: 1.7,
+            }}
+          >
+            <div style={{ fontSize: '1.5rem', marginBottom: '0.5rem' }}>💬</div>
+            向 AI 提问或讨论当前步骤
+            <br />
+            也可直接在文档中手动编辑
+          </div>
+        )}
+
         {messages.map((msg, idx) => (
           <div
             key={idx}
@@ -51,16 +99,18 @@ export function AiChatPanel({ messages, onSend, loading }: Props) {
           >
             <div
               style={{
-                maxWidth: '85%',
-                padding: '0.75rem 1rem',
-                borderRadius: msg.role === 'user' ? '1rem 1rem 0.25rem 1rem' : '1rem 1rem 1rem 0.25rem',
+                maxWidth: '90%',
+                padding: '0.6rem 0.75rem',
+                borderRadius: msg.role === 'user'
+                  ? '0.75rem 0.75rem 0.2rem 0.75rem'
+                  : '0.75rem 0.75rem 0.75rem 0.2rem',
                 background: msg.role === 'user'
                   ? 'linear-gradient(135deg, var(--accent-cyan), #0d9488)'
                   : 'var(--bg-card)',
                 border: msg.role === 'user' ? 'none' : '1px solid var(--border-light)',
                 color: msg.role === 'user' ? '#ffffff' : 'var(--text-main)',
-                fontSize: '0.85rem',
-                lineHeight: 1.7,
+                fontSize: '0.78rem',
+                lineHeight: 1.65,
                 whiteSpace: 'pre-wrap',
                 wordBreak: 'break-word',
               }}
@@ -68,15 +118,15 @@ export function AiChatPanel({ messages, onSend, loading }: Props) {
               {msg.role === 'ai' && (
                 <div
                   style={{
-                    fontSize: '0.65rem',
+                    fontSize: '0.6rem',
                     fontWeight: 700,
                     color: 'var(--accent-cyan)',
-                    marginBottom: '0.35rem',
+                    marginBottom: '0.25rem',
                     textTransform: 'uppercase',
                     letterSpacing: '0.05em',
                   }}
                 >
-                  AI 引导
+                  AI
                 </div>
               )}
               {msg.content}
@@ -85,15 +135,15 @@ export function AiChatPanel({ messages, onSend, loading }: Props) {
         ))}
 
         {loading && (
-          <div className="flex justify-start animate-fade-in">
+          <div className="flex animate-fade-in" style={{ justifyContent: 'flex-start' }}>
             <div
               style={{
-                padding: '0.75rem 1rem',
-                borderRadius: '1rem',
+                padding: '0.6rem 0.75rem',
+                borderRadius: '0.75rem',
                 background: 'var(--bg-card)',
                 border: '1px solid var(--border-light)',
                 color: 'var(--text-dim)',
-                fontSize: '0.85rem',
+                fontSize: '0.78rem',
               }}
             >
               <span className="animate-pulse-glow">AI 正在思考…</span>
@@ -105,9 +155,10 @@ export function AiChatPanel({ messages, onSend, loading }: Props) {
       {/* Input area */}
       <div
         style={{
-          padding: '0.75rem 1rem',
+          padding: '0.5rem 0.75rem',
           borderTop: '1px solid var(--border-dim)',
           background: 'var(--bg-card)',
+          flexShrink: 0,
         }}
       >
         <div className="flex gap-2">
@@ -116,13 +167,14 @@ export function AiChatPanel({ messages, onSend, loading }: Props) {
             value={input}
             onChange={(e) => setInput(e.target.value)}
             onKeyDown={handleKeyDown}
-            placeholder="输入你的想法…（Enter 发送，Shift+Enter 换行）"
+            placeholder="向 AI 提问… (Enter 发送)"
             rows={2}
             style={{
               flex: 1,
               resize: 'none',
-              borderRadius: '0.75rem',
+              borderRadius: '0.5rem',
               background: 'var(--bg-deep)',
+              fontSize: '0.78rem',
             }}
           />
           <button
@@ -130,12 +182,12 @@ export function AiChatPanel({ messages, onSend, loading }: Props) {
             disabled={!input.trim()}
             style={{
               alignSelf: 'flex-end',
-              padding: '0.6rem 1.2rem',
-              borderRadius: '0.75rem',
+              padding: '0.45rem 0.8rem',
+              borderRadius: '0.5rem',
               border: 'none',
               background: input.trim() ? 'var(--accent-cyan)' : 'var(--bg-hover-subtle)',
               color: input.trim() ? '#ffffff' : 'var(--text-dim)',
-              fontSize: '0.8rem',
+              fontSize: '0.72rem',
               fontWeight: 600,
               cursor: input.trim() ? 'pointer' : 'default',
               transition: 'all 0.2s ease',

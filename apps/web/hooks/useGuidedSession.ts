@@ -266,7 +266,7 @@ export function useGuidedSession(projectId: string) {
       const priorKeys = new Set(GUIDED_STEPS.slice(0, nextIndex).map((s) => s.key));
       const contextSummary = Object.entries(freshStepData)
         .filter(([key]) => {
-          if (key.endsWith('_chat')) return false;
+          if (!key.endsWith('_result')) return false;
           return priorKeys.has(key.replace(/_result$/, ''));
         })
         .map(([key, val]) => `${key}: ${JSON.stringify(val)}`)
@@ -414,7 +414,7 @@ export function useGuidedSession(projectId: string) {
       const priorKeys = new Set(GUIDED_STEPS.slice(0, nextIndex).map((s) => s.key));
       const contextSummary = Object.entries(freshStepData)
         .filter(([key]) => {
-          if (key.endsWith('_chat')) return false;
+          if (!key.endsWith('_result')) return false;
           return priorKeys.has(key.replace(/_result$/, ''));
         })
         .map(([key, val]) => `${key}: ${JSON.stringify(val)}`)
@@ -461,10 +461,9 @@ export function useGuidedSession(projectId: string) {
 
     const contextParts = Object.entries(stepData)
       .filter(([key]) => {
-        // Skip chat history entries
-        if (key.endsWith('_chat')) return false;
         // Only include _result entries from prior steps
         // e.g. "guided_setup_result" → step key is "guided_setup"
+        if (!key.endsWith('_result')) return false;
         const stepKey = key.replace(/_result$/, '');
         return priorStepKeys.has(stepKey);
       })
@@ -515,11 +514,15 @@ export function useGuidedSession(projectId: string) {
     }
   }, [projectId, currentStepKey, chatMessages, handleStepComplete, buildProjectContext]);
 
-  // One-shot AI generation: generate all data for current step without Q&A
-  const generateStepData = useCallback(async (userHint?: string): Promise<Record<string, unknown> | null> => {
+  // One-shot AI generation: generate all data for a step without Q&A
+  // Accepts optional targetStepKey to support document-editing mode
+  const generateStepData = useCallback(async (userHint?: string, targetStepKey?: StepKey): Promise<Record<string, unknown> | null> => {
     if (!projectId) return null;
     setLoading(true);
     setError('');
+
+    const stepKey = targetStepKey ?? currentStepKey;
+    const stepIndex = GUIDED_STEPS.findIndex((s) => s.key === stepKey);
 
     try {
       // Build a summary of the current step's conversation so the AI
@@ -535,7 +538,7 @@ export function useGuidedSession(projectId: string) {
         {
           method: 'POST',
           body: JSON.stringify({
-            currentStep: currentStepKey,
+            currentStep: stepKey,
             userHint,
             projectContext: buildProjectContext(),
             chatSummary,
@@ -544,12 +547,12 @@ export function useGuidedSession(projectId: string) {
       );
 
       // Show AI summary in chat
-      const stepLabel = GUIDED_STEPS[currentStepIndex]?.label ?? '';
+      const stepLabel = GUIDED_STEPS[stepIndex]?.label ?? '';
       setChatMessages((prev) => [
         ...prev,
         {
           role: 'ai',
-          content: `⚡ **${stepLabel} · 一键生成完成**\n\n${response.summary}\n\n请在右侧预览面板查看并编辑，确认无误后点击「确认并保存」。`,
+          content: `⚡ **${stepLabel} · 一键生成完成**\n\n${response.summary}\n\n可在文档中查看并编辑，确认无误后点击「✅ 保存」按钮。`,
           timestamp: Date.now(),
         },
       ]);
@@ -561,24 +564,28 @@ export function useGuidedSession(projectId: string) {
     } finally {
       setLoading(false);
     }
-  }, [projectId, currentStepKey, currentStepIndex, chatMessages, buildProjectContext]);
+  }, [projectId, currentStepKey, chatMessages, buildProjectContext]);
 
   // Confirm and persist generated/edited data directly (skip AI extraction)
+  // Accepts optional targetStepKey to support document-editing mode
   const confirmGeneratedData = useCallback(async (
     structuredData: Record<string, unknown>,
+    targetStepKey?: StepKey,
   ): Promise<boolean> => {
     if (!projectId) return false;
     setLoading(true);
 
-    try {
-      const stepLabel = GUIDED_STEPS[currentStepIndex]?.label ?? '';
+    const stepKey = targetStepKey ?? currentStepKey;
+    const stepIndex = GUIDED_STEPS.findIndex((s) => s.key === stepKey);
+    const stepLabel = GUIDED_STEPS[stepIndex]?.label ?? '';
 
+    try {
       const result = await apiFetch<{ written: string[] }>(
         `/projects/${projectId}/guided-session/finalize-step`,
         {
           method: 'POST',
           body: JSON.stringify({
-            currentStep: currentStepKey,
+            currentStep: stepKey,
             structuredData,
           }),
         },
@@ -593,6 +600,9 @@ export function useGuidedSession(projectId: string) {
         },
       ]);
 
+      // Reload session to update completedSteps
+      await loadSession();
+
       return true;
     } catch (confirmError) {
       setError(confirmError instanceof Error ? confirmError.message : '保存失败');
@@ -600,7 +610,7 @@ export function useGuidedSession(projectId: string) {
     } finally {
       setLoading(false);
     }
-  }, [projectId, currentStepIndex, currentStepKey]);
+  }, [projectId, currentStepKey, loadSession]);
 
   // Auto-load session on mount
   useEffect(() => {

@@ -1,9 +1,9 @@
-import React, { useState, useCallback, useEffect } from 'react';
+import React, { useState, useCallback, useEffect, useRef, useMemo } from 'react';
 import { ProjectSummary } from '../../types/dashboard';
-import { useGuidedSession, GUIDED_STEPS } from '../../hooks/useGuidedSession';
-import { StepProgressBar } from './StepProgressBar';
+import { useGuidedSession, GUIDED_STEPS, StepKey } from '../../hooks/useGuidedSession';
+import { DocumentTOC } from './DocumentTOC';
+import { StepSection } from './StepSection';
 import { AiChatPanel } from './AiChatPanel';
-import { StructuredPreview } from './StructuredPreview';
 
 interface Props {
   selectedProject?: ProjectSummary;
@@ -19,81 +19,109 @@ export function GuidedWizard({ selectedProject, selectedProjectId, autoStart }: 
     chatMessages,
     loading,
     error,
+    setError,
     startSession,
-    saveStepProgress,
-    goToNextStep,
-    goToPrevStep,
     sendMessage,
     generateStepData,
     confirmGeneratedData,
-    autoAdvanceToNextStep,
     getStepResultData,
   } = useGuidedSession(selectedProjectId);
 
-  // Local editable fields for the structured preview
-  const [previewData, setPreviewData] = useState<Record<string, unknown>>({});
-  // Track whether we have AI-generated data pending confirmation
-  const [hasGeneratedData, setHasGeneratedData] = useState(false);
+  // Per-step editable data — keyed by stepKey
+  const [allStepData, setAllStepData] = useState<Record<string, Record<string, unknown>>>({});
+  // Active step for TOC highlight (driven by scroll or click)
+  const [activeStepKey, setActiveStepKey] = useState<StepKey>('guided_setup');
+  // AI drawer visibility
+  const [aiDrawerOpen, setAiDrawerOpen] = useState(true);
+  // Section refs for scroll-to
+  const sectionRefs = useRef<Record<string, HTMLDivElement | null>>({});
+  const scrollContainerRef = useRef<HTMLDivElement>(null);
 
-  const handleEditField = useCallback((field: string, value: string) => {
-    setPreviewData((prev) => ({ ...prev, [field]: value }));
+  // Compute completed steps
+  const completedSteps = useMemo(() => {
+    const set = new Set<string>();
+    for (const step of GUIDED_STEPS) {
+      const result = getStepResultData(step.key);
+      if (result && Object.keys(result).length > 0) {
+        set.add(step.key);
+      }
+    }
+    return set;
+  }, [getStepResultData, session]); // eslint-disable-line react-hooks/exhaustive-deps
+
+  // Load persisted step results into allStepData on session load
+  useEffect(() => {
+    if (!session) return;
+    const loaded: Record<string, Record<string, unknown>> = {};
+    for (const step of GUIDED_STEPS) {
+      const result = getStepResultData(step.key);
+      if (result) {
+        loaded[step.key] = result;
+      }
+    }
+    setAllStepData((prev) => ({ ...prev, ...loaded }));
+  }, [session, getStepResultData]);
+
+  // Handle field edits for a specific step
+  const handleEditField = useCallback((stepKey: StepKey, field: string, value: string) => {
+    setAllStepData((prev) => ({
+      ...prev,
+      [stepKey]: { ...(prev[stepKey] ?? {}), [field]: value },
+    }));
   }, []);
 
-  // Unified confirm: persist data then advance to next step
-  const handleConfirmAndNext = useCallback(async () => {
-    if (hasGeneratedData && Object.keys(previewData).length > 0) {
-      // One-shot path: data already generated, just persist and advance
-      const success = await confirmGeneratedData(previewData);
-      if (!success) return;
-      setHasGeneratedData(false);
-      setPreviewData({});
-      await autoAdvanceToNextStep();
-    } else {
-      // Chat path: finalize from conversation then advance
-      await saveStepProgress(previewData);
-      setPreviewData({});
-      setHasGeneratedData(false);
-      await goToNextStep();
-    }
-  }, [hasGeneratedData, previewData, confirmGeneratedData, autoAdvanceToNextStep, saveStepProgress, goToNextStep]);
-
-  // One-shot generation: AI generates everything, user reviews in preview
-  const handleGenerate = useCallback(async () => {
-    const data = await generateStepData();
+  // Handle AI generation for a specific step
+  const handleGenerate = useCallback(async (stepKey: StepKey) => {
+    const data = await generateStepData(undefined, stepKey);
     if (data) {
-      setPreviewData(data);
-      setHasGeneratedData(true);
+      setAllStepData((prev) => ({
+        ...prev,
+        [stepKey]: data,
+      }));
     }
   }, [generateStepData]);
 
-  // Confirm generated/edited data and persist to DB, then advance
-  const handleConfirmGenerated = useCallback(async () => {
-    const success = await confirmGeneratedData(previewData);
-    if (!success) return;
-    setHasGeneratedData(false);
-    setPreviewData({});
-    await autoAdvanceToNextStep();
-  }, [confirmGeneratedData, previewData, autoAdvanceToNextStep]);
+  // Handle save for a specific step
+  const handleSave = useCallback(async (stepKey: StepKey) => {
+    const data = allStepData[stepKey];
+    if (!data || Object.keys(data).length === 0) return;
+    await confirmGeneratedData(data, stepKey);
+  }, [allStepData, confirmGeneratedData]);
 
-  const isLastStep = currentStepIndex >= GUIDED_STEPS.length - 1;
-
-  // Restore preview data when the step actually changes (navigation)
-  const prevStepRef = React.useRef(currentStepIndex);
-  useEffect(() => {
-    if (prevStepRef.current !== currentStepIndex) {
-      prevStepRef.current = currentStepIndex;
-
-      // Try to restore persisted result for this step
-      const savedResult = getStepResultData(currentStepKey);
-      if (savedResult && Object.keys(savedResult).length > 0) {
-        setPreviewData(savedResult);
-        setHasGeneratedData(true);
-      } else {
-        setPreviewData({});
-        setHasGeneratedData(false);
-      }
+  // TOC click — scroll to section
+  const handleTocClick = useCallback((stepKey: StepKey) => {
+    setActiveStepKey(stepKey);
+    const el = sectionRefs.current[stepKey];
+    if (el) {
+      el.scrollIntoView({ behavior: 'smooth', block: 'start' });
     }
-  }, [currentStepIndex, currentStepKey, getStepResultData]);
+  }, []);
+
+  // Scroll spy — update activeStepKey based on scroll position
+  useEffect(() => {
+    const container = scrollContainerRef.current;
+    if (!container) return;
+
+    const handleScroll = () => {
+      const containerTop = container.scrollTop + 80;
+      let closest: StepKey = GUIDED_STEPS[0].key;
+      let minDist = Infinity;
+
+      for (const step of GUIDED_STEPS) {
+        const el = sectionRefs.current[step.key];
+        if (!el) continue;
+        const dist = Math.abs(el.offsetTop - containerTop);
+        if (dist < minDist) {
+          minDist = dist;
+          closest = step.key;
+        }
+      }
+      setActiveStepKey(closest);
+    };
+
+    container.addEventListener('scroll', handleScroll, { passive: true });
+    return () => container.removeEventListener('scroll', handleScroll);
+  }, []);
 
   // Auto-start session when triggered from guided project creation
   useEffect(() => {
@@ -101,6 +129,9 @@ export function GuidedWizard({ selectedProject, selectedProjectId, autoStart }: 
       startSession();
     }
   }, [autoStart, session, loading, startSession]);
+
+  // Get current step label for AI drawer
+  const currentStepLabel = GUIDED_STEPS.find((s) => s.key === activeStepKey)?.label;
 
   // No session yet — show start screen
   if (!session) {
@@ -128,8 +159,8 @@ export function GuidedWizard({ selectedProject, selectedProjectId, autoStart }: 
             <h2 className="text-xl font-bold mb-2" style={{ color: 'var(--text-main)' }}>
               AI 创作引导
             </h2>
-            <p className="text-sm mb-6" style={{ color: 'var(--text-muted)', lineHeight: 1.7 }}>
-              通过 AI 对话一步步完善你的小说设定、风格、角色、大纲和伏笔体系。
+            <p className="text-sm mb-4" style={{ color: 'var(--text-muted)', lineHeight: 1.7 }}>
+              通过 AI 一步步完善你的小说设定、风格、角色、大纲和伏笔体系。
               <br />
               整个过程可以随时中断，下次继续。
             </p>
@@ -137,7 +168,7 @@ export function GuidedWizard({ selectedProject, selectedProjectId, autoStart }: 
               <div className="mb-4 text-xs" style={{ color: 'var(--status-err)' }}>{error}</div>
             )}
             <button
-              className="btn-primary"
+              className="btn"
               onClick={startSession}
               disabled={loading}
               style={{ padding: '0.6rem 2rem', fontSize: '0.9rem' }}
@@ -150,141 +181,141 @@ export function GuidedWizard({ selectedProject, selectedProjectId, autoStart }: 
     );
   }
 
-  // Active session — show wizard
+  // Active session — document editing layout
   return (
     <article className="flex flex-col h-full" style={{ background: 'var(--bg-deep)' }}>
-      <GuidedHeader projectTitle={selectedProject?.title} />
-      <StepProgressBar currentStepIndex={currentStepIndex} />
+      <GuidedHeader
+        projectTitle={selectedProject?.title}
+        aiDrawerOpen={aiDrawerOpen}
+        onToggleAi={() => setAiDrawerOpen((prev) => !prev)}
+      />
 
-      {/* Main content: Chat + Preview split */}
-      <div className="flex flex-1" style={{ minHeight: 0 }}>
-        {/* Left: AI Chat */}
+      {/* Error banner */}
+      {error && (
         <div
-          className="flex flex-col"
+          className="animate-slide-top"
           style={{
-            flex: '1 1 50%',
-            borderRight: '1px solid var(--border-dim)',
-            minWidth: 0,
-          }}
-        >
-          <AiChatPanel
-            messages={chatMessages}
-            onSend={sendMessage}
-            loading={loading}
-          />
-        </div>
-
-        {/* Right: Structured Preview */}
-        <div
-          className="flex flex-col"
-          style={{ flex: '1 1 50%', minWidth: 0 }}
-        >
-          <StructuredPreview
-            currentStepKey={currentStepKey}
-            stepData={previewData}
-            onEditField={handleEditField}
-          />
-        </div>
-      </div>
-
-      {/* Bottom navigation */}
-      <div
-        className="shrink-0"
-        style={{
-          padding: '0.6rem 1.5rem',
-          borderTop: '1px solid var(--border-dim)',
-          background: 'var(--bg-card)',
-          display: 'flex',
-          alignItems: 'center',
-          justifyContent: 'space-between',
-          gap: '0.75rem',
-          flexWrap: 'wrap',
-        }}
-      >
-        <button
-          className="btn-secondary"
-          onClick={goToPrevStep}
-          disabled={currentStepIndex <= 0}
-          style={{
-            opacity: currentStepIndex <= 0 ? 0.4 : 1,
-            whiteSpace: 'nowrap',
-          }}
-        >
-          ← 上一步
-        </button>
-
-        <div
-          style={{
+            padding: '0.5rem 1.5rem',
+            background: 'var(--status-err-bg)',
+            borderBottom: '1px solid rgba(244,63,94,0.2)',
+            color: '#fb7185',
+            fontSize: '0.78rem',
             display: 'flex',
             alignItems: 'center',
-            gap: '0.6rem',
-            flexWrap: 'wrap',
-            justifyContent: 'flex-end',
+            justifyContent: 'space-between',
           }}
         >
-          {/* One-shot generation button */}
+          <span>⚠️ {error}</span>
           <button
-            onClick={handleGenerate}
-            disabled={loading}
-            style={{
-              padding: '0.45rem 1rem',
-              borderRadius: '0.5rem',
-              border: '1px solid rgba(139, 92, 246, 0.4)',
-              background: loading
-                ? 'var(--bg-hover-subtle)'
-                : 'linear-gradient(135deg, rgba(139,92,246,0.15), rgba(14,165,233,0.15))',
-              color: loading ? 'var(--text-dim)' : '#a78bfa',
-              fontSize: '0.78rem',
-              fontWeight: 600,
-              cursor: loading ? 'default' : 'pointer',
-              transition: 'all 0.2s ease',
-              display: 'flex',
-              alignItems: 'center',
-              gap: '0.4rem',
-              whiteSpace: 'nowrap',
-            }}
+            onClick={() => setError('')}
+            style={{ background: 'none', border: 'none', color: '#fb7185', cursor: 'pointer', fontSize: '0.8rem' }}
           >
-            ⚡ AI 一键生成
-          </button>
-
-          <div className="text-xs" style={{ color: 'var(--text-dim)', whiteSpace: 'nowrap' }}>
-            {currentStepIndex + 1} / {GUIDED_STEPS.length}
-          </div>
-
-          <button
-            className="btn-primary"
-            onClick={hasGeneratedData ? handleConfirmGenerated : handleConfirmAndNext}
-            disabled={loading}
-            style={{
-              whiteSpace: 'nowrap',
-              ...(hasGeneratedData
-                ? { background: 'linear-gradient(135deg, #10b981, #059669)' }
-                : {}),
-            }}
-          >
-            {loading
-              ? '处理中…'
-              : hasGeneratedData
-                ? '✅ 确认并保存'
-                : isLastStep
-                  ? '🎉 完成引导'
-                  : '确认并继续 →'}
+            ✕
           </button>
         </div>
+      )}
+
+      {/* Main content: TOC + Document + AI Drawer */}
+      <div className="flex flex-1" style={{ minHeight: 0 }}>
+        {/* Left: Document TOC */}
+        <DocumentTOC
+          activeStepKey={activeStepKey}
+          completedSteps={completedSteps}
+          onStepClick={handleTocClick}
+        />
+
+        {/* Center: Document Body */}
+        <div
+          ref={scrollContainerRef}
+          className="doc-body flex-1"
+          style={{ position: 'relative' }}
+        >
+          <div className="doc-body__sections">
+            {GUIDED_STEPS.map((step) => (
+              <StepSection
+                key={step.key}
+                ref={(el) => { sectionRefs.current[step.key] = el; }}
+                stepKey={step.key}
+                isActive={activeStepKey === step.key}
+                isCompleted={completedSteps.has(step.key)}
+                data={allStepData[step.key] ?? {}}
+                onEditField={handleEditField}
+                onGenerate={handleGenerate}
+                onSave={handleSave}
+                loading={loading}
+              />
+            ))}
+
+            {/* Completion footer */}
+            <div
+              style={{
+                textAlign: 'center',
+                padding: '2rem 0 3rem',
+                color: 'var(--text-dim)',
+                fontSize: '0.8rem',
+              }}
+            >
+              {completedSteps.size === GUIDED_STEPS.length ? (
+                <div className="animate-fade-in">
+                  <span style={{ fontSize: '1.5rem' }}>🎉</span>
+                  <div className="mt-2 font-semibold" style={{ color: '#34d399' }}>
+                    所有步骤已完成！
+                  </div>
+                  <div className="mt-1" style={{ color: 'var(--text-dim)' }}>
+                    你可以随时回来修改任何章节
+                  </div>
+                </div>
+              ) : (
+                <span>
+                  已完成 {completedSteps.size} / {GUIDED_STEPS.length} 步骤
+                </span>
+              )}
+            </div>
+          </div>
+        </div>
+
+        {/* Right: AI Chat Drawer */}
+        <AiChatPanel
+          messages={chatMessages}
+          onSend={sendMessage}
+          loading={loading}
+          isOpen={aiDrawerOpen}
+          onClose={() => setAiDrawerOpen(false)}
+          currentStepLabel={currentStepLabel}
+        />
+
+        {/* AI Drawer toggle button (visible when closed) */}
+        {!aiDrawerOpen && (
+          <button
+            className="ai-drawer__toggle"
+            onClick={() => setAiDrawerOpen(true)}
+            title="打开 AI 助手"
+          >
+            💬
+          </button>
+        )}
       </div>
     </article>
   );
 }
 
-/** Panel header — reused for both start screen and active wizard */
-function GuidedHeader({ projectTitle }: { projectTitle?: string }) {
+/** Panel header */
+function GuidedHeader({
+  projectTitle,
+  aiDrawerOpen,
+  onToggleAi,
+}: {
+  projectTitle?: string;
+  aiDrawerOpen?: boolean;
+  onToggleAi?: () => void;
+}) {
   return (
     <header
       className="flex items-center justify-between shrink-0"
       style={{
-        height: '3.5rem',
+        height: '3rem',
         background: 'var(--bg-editor-header)',
-        padding: '0 2rem',
+        padding: '0 1.5rem',
         borderBottom: '1px solid var(--border-light)',
         backdropFilter: 'blur(12px)',
         zIndex: 10,
@@ -301,7 +332,7 @@ function GuidedHeader({ projectTitle }: { projectTitle?: string }) {
           }}
         />
         <h1
-          className="text-lg font-bold text-heading"
+          className="text-base font-bold text-heading"
           style={{ textShadow: '0 2px 10px var(--accent-cyan-glow)' }}
         >
           创作引导
@@ -314,11 +345,35 @@ function GuidedHeader({ projectTitle }: { projectTitle?: string }) {
             border: 'none',
           }}
         >
-          Guided
+          Document
         </span>
       </div>
-      <div className="text-xs font-medium" style={{ color: 'var(--text-dim)' }}>
-        {projectTitle ?? '未选择项目'}
+
+      <div className="flex items-center gap-3">
+        <span className="text-xs" style={{ color: 'var(--text-dim)' }}>
+          {projectTitle ?? '未选择项目'}
+        </span>
+        {onToggleAi && (
+          <button
+            onClick={onToggleAi}
+            style={{
+              padding: '0.3rem 0.6rem',
+              borderRadius: '0.4rem',
+              border: '1px solid var(--border-light)',
+              background: aiDrawerOpen ? 'var(--accent-cyan-bg)' : 'var(--bg-hover-subtle)',
+              color: aiDrawerOpen ? 'var(--accent-cyan)' : 'var(--text-dim)',
+              fontSize: '0.72rem',
+              fontWeight: 600,
+              cursor: 'pointer',
+              transition: 'all 0.2s ease',
+              display: 'flex',
+              alignItems: 'center',
+              gap: '0.3rem',
+            }}
+          >
+            🤖 AI 助手
+          </button>
+        )}
       </div>
     </header>
   );

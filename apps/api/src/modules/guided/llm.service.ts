@@ -47,7 +47,7 @@ export class LlmService {
         Authorization: `Bearer ${this.apiKey}`,
       },
       body,
-      signal: AbortSignal.timeout(120_000),
+      signal: AbortSignal.timeout(600_000),
     });
 
     if (!response.ok) {
