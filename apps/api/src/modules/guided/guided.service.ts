@@ -8,15 +8,49 @@ import { GenerateStepDto } from './dto/generate-step.dto';
 
 const DEFAULT_FIRST_STEP = 'guided_setup';
 
+/**
+ * Canonical template variables for prompt templates.
+ * These can be used in both systemPrompt and userTemplate fields
+ * with the {{variableName}} syntax.
+ *
+ * Available variables:
+ * - {{projectContext}}   — Accumulated project settings from prior steps (genre, theme, characters, outline, etc.)
+ * - {{chatSummary}}      — Summary of user decisions made during the current step's Q&A conversation
+ * - {{userHint}}         — User's free-text hint/preference for one-shot generation
+ * - {{userMessage}}      — User's current chat message (chat mode only)
+ * - {{stepLabel}}        — Human-readable label for the current step (e.g. "故事总纲")
+ * - {{stepInstruction}}  — Step-specific generation instruction
+ * - {{jsonSchema}}       — Expected JSON output schema for the current step
+ */
+function renderTemplate(
+  template: string,
+  variables: Record<string, string | undefined>,
+): string {
+  return template.replace(/\{\{(\w+)\}\}/g, (match, key: string) => {
+    return variables[key] ?? '';
+  });
+}
+
+/** Human-readable labels for each guided step */
+const GUIDED_STEPS_LABELS: Record<string, string> = {
+  guided_setup: '基础设定',
+  guided_style: '风格定义',
+  guided_characters: '核心角色',
+  guided_outline: '故事总纲',
+  guided_volume: '卷纲拆分',
+  guided_chapter: '章节细纲',
+  guided_foreshadow: '伏笔与配角',
+};
+
 /** Step-specific system prompts — AI-driven completion with structured output */
 const INTERACTION_STYLE = `
 你的回复规则：
 - 使用 **选择题** 形式提问，给用户具体选项（如 A/B/C/D），用户可选择或组合
 - 选项要有差异性和代表性，覆盖主流方向
-- 每个选项配简短说明（不超过15字）
+- 每个选项配简短说明
 - 在选项之后加一句"也可以告诉我你自己的想法"，允许自由发挥
 - 每次只问 **1-2 个问题**，不要一次问太多
-- 使用 markdown 格式，回复不超过 300 字
+- 使用 markdown 格式
 
 ## 上下文记忆（极其重要）
 - **绝对禁止**重复询问用户已经确认过的内容（如姓名、性格、动机、配角等）
@@ -37,7 +71,7 @@ const STEP_SYSTEM_PROMPTS: Record<string, string> = {
 你需要帮助用户明确小说类型、故事主题、基调和一句话概述。
 ${INTERACTION_STYLE}
 完成时输出的 JSON 格式：
-\`[STEP_COMPLETE]\`{"genre":"类型","theme":"主题","tone":"基调","logline":"一句话概述","synopsis":"故事简介(100-200字)"}`,
+\`[STEP_COMPLETE]\`{"genre":"类型","theme":"主题","tone":"基调","logline":"一句话概述","synopsis":"故事简介"}`,
 
   guided_style: `你是一个资深小说创作顾问。你正在引导用户完成「风格定义」步骤。
 你需要帮助用户明确人称视角、文风、叙述节奏和对话比例。
@@ -48,6 +82,12 @@ ${INTERACTION_STYLE}
   guided_characters: `你是一个资深小说创作顾问。你正在引导用户完成「核心角色」设计步骤。
 你需要帮助用户设计主角、重要配角和对手/反派的名字、性格和动机。
 给出具体的名字/性格选项供参考。
+
+## 起名规则（严格遵守）
+- 按角色出身、地域、阶层、时代来起名，不按网文审美起名
+- 避开高频字（如：辰、逸、寒、墨、玄、凌、澈、瑶、幽）和高频气质（冷酷霸总、清冷仙子）
+- 名字要像这个世界里真实生活的人，不像某个小说平台里的角色
+- 姓氏选择要合理，不要扎堆使用稀有姓或大姓，注意姓名搭配的时代感和地域感
 ${INTERACTION_STYLE}
 完成时输出的 JSON 格式：
 \`[STEP_COMPLETE]\`{"characters":[{"name":"角色名","roleType":"protagonist/antagonist/supporting","personalityCore":"性格核心","motivation":"动机","backstory":"背景故事"}]}`,
@@ -56,28 +96,24 @@ ${INTERACTION_STYLE}
 根据用户之前确认的设定和角色，帮助构建完整的故事框架。
 可以直接给出 2-3 套总纲方案让用户选择。
 ${INTERACTION_STYLE}
-- 回复可放宽到 500 字
 完成时输出的 JSON 格式：
-\`[STEP_COMPLETE]\`{"outline":"完整的故事总纲大纲(300-500字)"}`,
+\`[STEP_COMPLETE]\`{"outline":"完整的故事总纲大纲"}`,
 
   guided_volume: `你是一个资深小说创作顾问。你正在引导用户完成「卷纲拆分」步骤。
 帮助用户将总纲拆分为多个卷。给出不同的分卷方案供选择。
 ${INTERACTION_STYLE}
-- 回复可放宽到 500 字
 完成时输出的 JSON 格式：
 \`[STEP_COMPLETE]\`{"volumes":[{"volumeNo":1,"title":"卷名","synopsis":"本卷剧情概要","objective":"本卷核心目标"}]}`,
 
   guided_chapter: `你是一个资深小说创作顾问。你正在引导用户完成「章节细纲」规划步骤。
 帮助用户为当前卷规划具体章节。可以给出章节节奏方案供选择。
 ${INTERACTION_STYLE}
-- 回复可放宽到 500 字
 完成时输出的 JSON 格式：
 \`[STEP_COMPLETE]\`{"chapters":[{"chapterNo":1,"title":"章节标题","objective":"本章目标","conflict":"核心冲突","outline":"章节大纲"}]}`,
 
   guided_foreshadow: `你是一个资深小说创作顾问。你正在引导用户完成「伏笔与配角」规划步骤。
 帮助用户规划伏笔线索和新角色。给出具体伏笔手法选项和角色类型供选择。
 ${INTERACTION_STYLE}
-- 回复可放宽到 400 字
 完成时输出的 JSON 格式：
 \`[STEP_COMPLETE]\`{"foreshadowTracks":[{"title":"伏笔标题","detail":"描述","scope":"arc/volume/chapter"}],"supportingCharacters":[{"name":"角色名","roleType":"supporting","personalityCore":"性格","motivation":"动机","scope":"volume/chapter"}]}`,
 };
@@ -88,6 +124,41 @@ export class GuidedService {
     private readonly prisma: PrismaService,
     private readonly llm: LlmService,
   ) {}
+
+  /**
+   * Resolve the prompt template for a given step.
+   * Priority: project-level default → global default → hardcoded fallback.
+   * Returns { systemPrompt, userTemplate } from the DB template if found.
+   */
+  private async resolvePromptTemplate(
+    projectId: string,
+    stepKey: string,
+  ): Promise<{ systemPrompt: string; userTemplate?: string } | null> {
+    // 1. Try project-level default
+    const projectDefault = await this.prisma.promptTemplate.findFirst({
+      where: { projectId, stepKey, isDefault: true },
+    });
+    if (projectDefault) {
+      return {
+        systemPrompt: projectDefault.systemPrompt,
+        userTemplate: projectDefault.userTemplate,
+      };
+    }
+
+    // 2. Try global default
+    const globalDefault = await this.prisma.promptTemplate.findFirst({
+      where: { projectId: null, stepKey, isDefault: true },
+    });
+    if (globalDefault) {
+      return {
+        systemPrompt: globalDefault.systemPrompt,
+        userTemplate: globalDefault.userTemplate,
+      };
+    }
+
+    // 3. No DB template found — caller should use hardcoded fallback
+    return null;
+  }
 
   async getSession(projectId: string) {
     const session = await this.prisma.guidedSession.findUnique({
@@ -146,11 +217,25 @@ export class GuidedService {
 
   /** Send a message to AI in the context of the current guided step */
   async chatWithAi(projectId: string, dto: GuidedChatDto): Promise<{ reply: string }> {
-    const systemPrompt =
-      STEP_SYSTEM_PROMPTS[dto.currentStep] ??
-      '你是一个资深小说创作顾问，正在帮助用户完善小说设定。使用markdown格式，每次回复不超过300字。';
+    // Priority: DB template → hardcoded fallback
+    const dbTemplate = await this.resolvePromptTemplate(projectId, dto.currentStep);
+    const rawSystemPrompt = dbTemplate?.systemPrompt
+      ?? STEP_SYSTEM_PROMPTS[dto.currentStep]
+      ?? '你是一个资深小说创作顾问，正在帮助用户完善小说设定。使用markdown格式。';
 
-    let enrichedSystem = systemPrompt;
+    // Template variable values available in chat mode
+    const templateVars: Record<string, string | undefined> = {
+      projectContext: dto.projectContext,
+      chatSummary: undefined, // built below from history compression
+      userMessage: dto.userMessage,
+      stepLabel: GUIDED_STEPS_LABELS[dto.currentStep],
+      userHint: undefined,
+      stepInstruction: undefined,
+      jsonSchema: undefined,
+    };
+
+    // Render variables in system prompt
+    let enrichedSystem = renderTemplate(rawSystemPrompt, templateVars);
 
     // Inject project context (accumulated decisions from prior steps)
     if (dto.projectContext) {
@@ -185,11 +270,15 @@ export class GuidedService {
       });
     }
 
-    messages.push({ role: 'user', content: dto.userMessage });
+    // Use DB userTemplate for user message if available, otherwise use raw user input
+    const userMessage = dbTemplate?.userTemplate
+      ? renderTemplate(dbTemplate.userTemplate, { ...templateVars, chatSummary: conversationSummary })
+      : dto.userMessage;
+    messages.push({ role: 'user', content: userMessage });
 
     const reply = await this.llm.chat(messages, {
       temperature: 0.8,
-      maxTokens: 2000,
+      maxTokens: 128000,
     });
 
     return { reply };
@@ -223,23 +312,13 @@ export class GuidedService {
     dto: GenerateStepDto,
   ): Promise<{ structuredData: Record<string, unknown>; summary: string }> {
     const stepJsonSchemas: Record<string, string> = {
-      guided_setup: '{"genre":"小说类型","theme":"核心主题","tone":"故事基调","logline":"一句话概述","synopsis":"故事简介(100-200字)"}',
+      guided_setup: '{"genre":"小说类型","theme":"核心主题","tone":"故事基调","logline":"一句话概述","synopsis":"故事简介"}',
       guided_style: '{"pov":"人称视角","tense":"时态","proseStyle":"文风描述","pacing":"节奏描述"}',
-      guided_characters: '{"characters":[{"name":"角色名","roleType":"protagonist/antagonist/supporting/competitor","personalityCore":"性格核心","motivation":"核心动机","backstory":"背景故事(50-100字)"}]}',
-      guided_outline: '{"outline":"完整的故事总纲大纲(300-500字)"}',
-      guided_volume: '{"volumes":[{"volumeNo":1,"title":"卷名","synopsis":"本卷剧情概要(50-100字)","objective":"本卷核心目标"}]}',
-      guided_chapter: '{"chapters":[{"chapterNo":1,"title":"章节标题","objective":"本章目标","conflict":"核心冲突","outline":"章节大纲(30-60字)"}]}',
+      guided_characters: '{"characters":[{"name":"角色名","roleType":"protagonist/antagonist/supporting/competitor","personalityCore":"性格核心","motivation":"核心动机","backstory":"背景故事"}]}',
+      guided_outline: '{"outline":"完整的故事总纲大纲"}',
+      guided_volume: '{"volumes":[{"volumeNo":1,"title":"卷名","synopsis":"本卷剧情概要","objective":"本卷核心目标"}]}',
+      guided_chapter: '{"chapters":[{"chapterNo":1,"title":"章节标题","objective":"本章目标","conflict":"核心冲突","outline":"章节大纲"}]}',
       guided_foreshadow: '{"foreshadowTracks":[{"title":"伏笔标题","detail":"描述","scope":"arc/volume/chapter"}],"supportingCharacters":[{"name":"角色名","roleType":"supporting","personalityCore":"性格","motivation":"动机","scope":"volume/chapter"}]}',
-    };
-
-    const stepLabels: Record<string, string> = {
-      guided_setup: '基础设定',
-      guided_style: '风格定义',
-      guided_characters: '核心角色',
-      guided_outline: '故事总纲',
-      guided_volume: '卷纲拆分',
-      guided_chapter: '章节细纲',
-      guided_foreshadow: '伏笔与配角',
     };
 
     const stepSpecificInstructions: Record<string, string> = {
@@ -253,25 +332,54 @@ export class GuidedService {
     };
 
     const schema = stepJsonSchemas[dto.currentStep];
-    const label = stepLabels[dto.currentStep] ?? dto.currentStep;
+    const label = GUIDED_STEPS_LABELS[dto.currentStep] ?? dto.currentStep;
     const instruction = stepSpecificInstructions[dto.currentStep] ?? '';
 
     if (!schema) {
       throw new NotFoundException(`未知步骤：${dto.currentStep}`);
     }
 
-    let systemPrompt = `你是一个资深小说创作顾问。现在需要你一次性生成「${label}」的完整结构化数据。
+    // Priority: DB template → hardcoded fallback
+    const dbTemplate = await this.resolvePromptTemplate(projectId, dto.currentStep);
+
+    // Template variable values available in generate mode
+    const templateVars: Record<string, string | undefined> = {
+      projectContext: dto.projectContext,
+      chatSummary: dto.chatSummary,
+      userHint: dto.userHint,
+      userMessage: dto.userHint,
+      stepLabel: label,
+      stepInstruction: instruction,
+      jsonSchema: schema,
+    };
+
+    let systemPrompt: string;
+    if (dbTemplate?.systemPrompt) {
+      // Use DB template, render variables, then append JSON schema requirement
+      systemPrompt = renderTemplate(dbTemplate.systemPrompt, templateVars);
+      systemPrompt += `
+
+## 输出格式
+你的回复必须包含两个部分：
+1. 先用一段简短的中文说明你生成了什么
+2. 然后输出完整的 JSON 数据，格式严格遵循以下 schema：
+${schema}
+
+注意：JSON 部分用 \`\`\`json 代码块包裹。`;
+    } else {
+      systemPrompt = `你是一个资深小说创作顾问。现在需要你一次性生成「${label}」的完整结构化数据。
 
 ## 要求
 ${instruction}
 
 ## 输出格式
 你的回复必须包含两个部分：
-1. 先用一段简短的中文说明你生成了什么（不超过100字）
+1. 先用一段简短的中文说明你生成了什么
 2. 然后输出完整的 JSON 数据，格式严格遵循以下 schema：
 ${schema}
 
 注意：JSON 部分用 \`\`\`json 代码块包裹。`;
+    }
 
     if (dto.projectContext) {
       systemPrompt += `\n\n## 用户已有的项目设定（必须基于这些信息来生成）\n${dto.projectContext}`;
@@ -281,9 +389,12 @@ ${schema}
       systemPrompt += `\n\n## 用户在本步骤对话中已确认的偏好（必须严格遵守）\n${dto.chatSummary}`;
     }
 
-    const userMessage = dto.userHint
-      ? `请根据以下偏好来生成：${dto.userHint}`
-      : `请直接生成「${label}」的完整数据。`;
+    // Use DB userTemplate for user message if available, otherwise use default
+    const userMessage = dbTemplate?.userTemplate
+      ? renderTemplate(dbTemplate.userTemplate, templateVars)
+      : dto.userHint
+        ? `请根据以下偏好来生成：${dto.userHint}`
+        : `请直接生成「${label}」的完整数据。`;
 
     const messages: Array<{ role: 'system' | 'user'; content: string }> = [
       { role: 'system', content: systemPrompt },
@@ -292,7 +403,7 @@ ${schema}
 
     const reply = await this.llm.chat(messages, {
       temperature: 0.9,
-      maxTokens: 3000,
+      maxTokens: 128000,
     });
 
     // Extract JSON from response (support both ```json blocks and raw JSON)

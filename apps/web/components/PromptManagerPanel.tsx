@@ -232,7 +232,19 @@ function PromptCreateForm({
         </div>
         <div>
           <label className="text-xs font-medium mb-1 block" style={{ color: 'var(--text-dim)' }}>User Template</label>
-          <textarea className="input-field" rows={4} placeholder="请根据以下信息生成…\n{{genre}}\n{{theme}}" value={userTemplate} onChange={(e) => setUserTemplate(e.target.value)} />
+          <textarea className="input-field" rows={4} placeholder={'请根据以下项目设定生成…\n\n【项目信息】\n{{projectContext}}\n\n【用户要求】\n{{userHint}}'} value={userTemplate} onChange={(e) => setUserTemplate(e.target.value)} />
+        </div>
+        <div style={{ gridColumn: '1 / -1', padding: '0.6rem 0.8rem', background: 'rgba(14,165,233,0.06)', borderRadius: '0.5rem', border: '1px solid rgba(14,165,233,0.15)' }}>
+          <p className="text-xs font-medium mb-1" style={{ color: '#0ea5e9' }}>可用模板变量 {'（使用 {{变量名}} 语法）'}</p>
+          <div className="grid gap-1" style={{ gridTemplateColumns: '1fr 1fr', fontSize: '0.65rem', color: 'var(--text-muted)' }}>
+            <span><code style={{ color: '#f59e0b' }}>{'{{projectContext}}'}</code> — 项目累积设定</span>
+            <span><code style={{ color: '#f59e0b' }}>{'{{chatSummary}}'}</code> — 对话决策摘要</span>
+            <span><code style={{ color: '#f59e0b' }}>{'{{userHint}}'}</code> — 用户自由输入偏好</span>
+            <span><code style={{ color: '#f59e0b' }}>{'{{userMessage}}'}</code> — 用户当前消息</span>
+            <span><code style={{ color: '#f59e0b' }}>{'{{stepLabel}}'}</code> — 当前步骤名称</span>
+            <span><code style={{ color: '#f59e0b' }}>{'{{stepInstruction}}'}</code> — 步骤生成指令</span>
+            <span><code style={{ color: '#f59e0b' }}>{'{{jsonSchema}}'}</code> — JSON 输出 schema</span>
+          </div>
         </div>
       </div>
       <div className="flex gap-3 justify-end mt-4">
