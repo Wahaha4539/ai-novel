@@ -136,10 +136,10 @@ export function ChapterFields({
             isCollapsed={isCollapsed}
             hasChapters={hasChapters}
             loading={loading}
-            chapterRange={chapterRanges[vol.volumeNo] ?? [8, 15]}
+            chapterRange={chapterRanges[vol.volumeNo] ?? [15, 20]}
             onChapterRangeChange={(range) => setChapterRanges((prev) => ({ ...prev, [vol.volumeNo]: range }))}
             onToggle={() => toggleVolume(vol.volumeNo)}
-            onGenerateForVolume={() => onGenerateForVolume(vol.volumeNo, chapterRanges[vol.volumeNo] ?? [8, 15])}
+            onGenerateForVolume={() => onGenerateForVolume(vol.volumeNo, chapterRanges[vol.volumeNo] ?? [15, 20])}
             onSaveVolume={() => onSaveVolume(vol.volumeNo)}
             onUpdateChapter={(idx, key, value) => updateChapter(vol.volumeNo, idx, key, value)}
             onAddChapter={() => addChapter(vol.volumeNo)}
@@ -255,7 +255,7 @@ function VolumeChapterPanel({
             max={30}
             value={chapterRange[0]}
             onChange={(e) => {
-              const v = Math.max(3, Math.min(30, parseInt(e.target.value, 10) || 8));
+              const v = Math.max(3, Math.min(30, parseInt(e.target.value, 10) || 15));
               onChapterRangeChange([v, Math.max(v, chapterRange[1])]);
             }}
             title="最少章节数"
@@ -269,7 +269,7 @@ function VolumeChapterPanel({
             max={30}
             value={chapterRange[1]}
             onChange={(e) => {
-              const v = Math.max(3, Math.min(30, parseInt(e.target.value, 10) || 15));
+              const v = Math.max(3, Math.min(30, parseInt(e.target.value, 10) || 20));
               onChapterRangeChange([Math.min(chapterRange[0], v), v]);
             }}
             title="最多章节数"

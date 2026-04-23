@@ -87,6 +87,25 @@ export function useProjectActions(onProjectsChanged: () => Promise<void>) {
     }
   }, [onProjectsChanged]);
 
+  /** 批量删除项目 — 逐个执行删除请求，避免并发过载 */
+  const batchDeleteProjects = useCallback(async (projectIds: string[]) => {
+    setFormLoading(true);
+    setFormError('');
+    try {
+      for (const id of projectIds) {
+        await apiFetch(`/projects/${id}`, { method: 'DELETE' });
+      }
+      await onProjectsChanged();
+      return true;
+    } catch (err) {
+      const msg = err instanceof Error ? err.message : '批量删除失败';
+      setFormError(msg);
+      return false;
+    } finally {
+      setFormLoading(false);
+    }
+  }, [onProjectsChanged]);
+
   return {
     formLoading,
     formError,
@@ -94,5 +113,6 @@ export function useProjectActions(onProjectsChanged: () => Promise<void>) {
     createProject,
     updateProject,
     deleteProject,
+    batchDeleteProjects,
   };
 }

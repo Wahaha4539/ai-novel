@@ -45,6 +45,8 @@ export function GuidedWizard({ selectedProject, selectedProjectId, autoStart, on
   const [activeStepKey, setActiveStepKey] = useState<StepKey>('guided_setup');
   // AI drawer visibility
   const [aiDrawerOpen, setAiDrawerOpen] = useState(true);
+  // True while sequentially generating chapters for all volumes
+  const [batchGenerating, setBatchGenerating] = useState(false);
   // Section refs for scroll-to
   const sectionRefs = useRef<Record<string, HTMLDivElement | null>>({});
   const scrollContainerRef = useRef<HTMLDivElement>(null);
@@ -61,14 +63,28 @@ export function GuidedWizard({ selectedProject, selectedProjectId, autoStart, on
     return set;
   }, [getStepResultData, session]); // eslint-disable-line react-hooks/exhaustive-deps
 
-  // Load persisted step results into allStepData on session load
+  // Load persisted step results into allStepData on session load.
+  // Transforms flat chapter arrays back into the volumeChapters format
+  // that ChapterFields expects (keyed by volumeNo).
   useEffect(() => {
     if (!session) return;
     const loaded: Record<string, Record<string, unknown>> = {};
     for (const step of GUIDED_STEPS) {
       const result = getStepResultData(step.key);
       if (result) {
-        loaded[step.key] = result;
+        // For guided_chapter: convert flat chapters[] → volumeChapters { [volumeNo]: chapters[] }
+        // because finalizeStep saves as { chapters: [...] } but UI reads volumeChapters
+        if (step.key === 'guided_chapter' && Array.isArray(result.chapters) && !result.volumeChapters) {
+          const grouped: Record<number, Array<Record<string, unknown>>> = {};
+          for (const ch of result.chapters as Array<Record<string, unknown>>) {
+            const vn = (ch.volumeNo as number) ?? 0;
+            if (!grouped[vn]) grouped[vn] = [];
+            grouped[vn].push(ch);
+          }
+          loaded[step.key] = { ...result, volumeChapters: grouped };
+        } else {
+          loaded[step.key] = result;
+        }
       }
     }
     setAllStepData((prev) => ({ ...prev, ...loaded }));
@@ -82,10 +98,11 @@ export function GuidedWizard({ selectedProject, selectedProjectId, autoStart, on
     }));
   }, []);
 
-  // Handle AI generation for a specific step
+  // Handle AI generation for a specific step.
+  // For guided_chapter: sequentially generates chapters for each volume in order,
+  // so the AI focuses on one volume's narrative arc at a time.
   const handleGenerate = useCallback(async (stepKey: StepKey) => {
     // For guided_volume, pass the user-specified volume count as a hint
-    let hint: string | undefined;
     if (stepKey === 'guided_volume') {
       const currentVolumes = allStepData[stepKey]?.volumes;
       let volumeCount = 3; // default
@@ -96,15 +113,70 @@ export function GuidedWizard({ selectedProject, selectedProjectId, autoStart, on
           volumeCount = currentVolumes.length;
         }
       } catch { /* use default */ }
-      hint = `请严格生成 ${volumeCount} 卷，不多不少。`;
+      const hint = `请严格生成 ${volumeCount} 卷，不多不少。`;
+      const data = await generateStepData(hint, stepKey);
+      if (data) {
+        setAllStepData((prev) => ({ ...prev, [stepKey]: data }));
+      }
+      return;
     }
 
-    const data = await generateStepData(hint, stepKey);
+    // For guided_chapter: iterate through volumes one by one.
+    // Uses batchGenerating flag to keep buttons disabled across the entire loop.
+    if (stepKey === 'guided_chapter') {
+      setBatchGenerating(true);
+      const volumeRaw = allStepData['guided_volume']?.volumes;
+      let volumes: Array<{ volumeNo: number }> = [];
+      try {
+        if (typeof volumeRaw === 'string') volumes = JSON.parse(volumeRaw);
+        else if (Array.isArray(volumeRaw)) volumes = volumeRaw as Array<{ volumeNo: number }>;
+      } catch { /* ignore */ }
+
+      if (volumes.length === 0) {
+        setBatchGenerating(false);
+        return;
+      }
+
+      // Generate chapters sequentially, volume by volume.
+      // try/finally ensures the batch flag is always cleared.
+      try {
+        for (const vol of volumes) {
+          // Read current chapter range settings (default 15-20)
+          const chapterRange: [number, number] = [15, 20];
+          const [minCh, maxCh] = chapterRange;
+
+          const data = await generateStepData(
+            `为第 ${vol.volumeNo} 卷生成章节细纲，请生成 ${minCh}-${maxCh} 章`,
+            'guided_chapter',
+            vol.volumeNo,
+          );
+
+          if (data) {
+            // Merge returned chapters into volumeChapters keyed by volumeNo
+            setAllStepData((prev) => {
+              const existingData = prev['guided_chapter'] ?? {};
+              const existingVC = parseVolumeChapters(existingData);
+              const newChapters = (data as Record<string, unknown>).chapters;
+              if (Array.isArray(newChapters)) {
+                existingVC[vol.volumeNo] = newChapters;
+              }
+              return {
+                ...prev,
+                guided_chapter: { ...existingData, volumeChapters: existingVC },
+              };
+            });
+          }
+        }
+      } finally {
+        setBatchGenerating(false);
+      }
+      return;
+    }
+
+    // Default: single-shot generation for other steps
+    const data = await generateStepData(undefined, stepKey);
     if (data) {
-      setAllStepData((prev) => ({
-        ...prev,
-        [stepKey]: data,
-      }));
+      setAllStepData((prev) => ({ ...prev, [stepKey]: data }));
     }
   }, [generateStepData, allStepData]);
 
@@ -137,11 +209,11 @@ export function GuidedWizard({ selectedProject, selectedProjectId, autoStart, on
     if (!rawData || Object.keys(rawData).length === 0) return;
 
     // Normalize: parse JSON-stringified fields back to objects
-    // (VolumesFields and CharactersFields store edited data as JSON strings via onChange)
+    // (VolumesFields, CharactersFields, and ChapterFields store edited data as JSON strings via onChange)
     const data = { ...rawData };
     for (const key of Object.keys(data)) {
       const val = data[key];
-      if (typeof val === 'string' && val.startsWith('[')) {
+      if (typeof val === 'string' && (val.startsWith('[') || val.startsWith('{'))) {
         try { data[key] = JSON.parse(val); } catch { /* keep as-is */ }
       }
     }
@@ -343,7 +415,7 @@ export function GuidedWizard({ selectedProject, selectedProjectId, autoStart, on
                 onGenerateForVolume={handleGenerateForVolume}
                 onSave={handleSave}
                 onSaveVolume={handleSaveVolume}
-                loading={loading}
+                loading={loading || batchGenerating}
               />
             ))}
 
