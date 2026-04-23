@@ -38,12 +38,23 @@ export function GuidedWizard({ selectedProject, selectedProjectId, autoStart }: 
     setPreviewData((prev) => ({ ...prev, [field]: value }));
   }, []);
 
+  // Unified confirm: persist data then advance to next step
   const handleConfirmAndNext = useCallback(async () => {
-    await saveStepProgress(previewData);
-    setPreviewData({});
-    setHasGeneratedData(false);
-    await goToNextStep();
-  }, [saveStepProgress, previewData, goToNextStep]);
+    if (hasGeneratedData && Object.keys(previewData).length > 0) {
+      // One-shot path: data already generated, just persist and advance
+      const success = await confirmGeneratedData(previewData);
+      if (!success) return;
+      setHasGeneratedData(false);
+      setPreviewData({});
+      await autoAdvanceToNextStep();
+    } else {
+      // Chat path: finalize from conversation then advance
+      await saveStepProgress(previewData);
+      setPreviewData({});
+      setHasGeneratedData(false);
+      await goToNextStep();
+    }
+  }, [hasGeneratedData, previewData, confirmGeneratedData, autoAdvanceToNextStep, saveStepProgress, goToNextStep]);
 
   // One-shot generation: AI generates everything, user reviews in preview
   const handleGenerate = useCallback(async () => {
@@ -57,20 +68,22 @@ export function GuidedWizard({ selectedProject, selectedProjectId, autoStart }: 
   // Confirm generated/edited data and persist to DB, then advance
   const handleConfirmGenerated = useCallback(async () => {
     const success = await confirmGeneratedData(previewData);
-    if (success) {
-      setHasGeneratedData(false);
-      setPreviewData({});
-      // Data already persisted — use autoAdvance (skips re-finalization)
-      await autoAdvanceToNextStep();
-    }
+    if (!success) return;
+    setHasGeneratedData(false);
+    setPreviewData({});
+    await autoAdvanceToNextStep();
   }, [confirmGeneratedData, previewData, autoAdvanceToNextStep]);
 
   const isLastStep = currentStepIndex >= GUIDED_STEPS.length - 1;
 
-  // Reset preview data when step changes
+  // Reset preview data only when the step actually changes (not on loading transitions)
+  const prevStepRef = React.useRef(currentStepIndex);
   useEffect(() => {
-    setPreviewData({});
-    setHasGeneratedData(false);
+    if (prevStepRef.current !== currentStepIndex) {
+      prevStepRef.current = currentStepIndex;
+      setPreviewData({});
+      setHasGeneratedData(false);
+    }
   }, [currentStepIndex]);
 
   // Auto-start session when triggered from guided project creation

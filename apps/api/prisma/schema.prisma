@@ -36,9 +36,9 @@ model Project {
   id                    String           @id @default(uuid()) @db.Uuid
   ownerId               String?          @db.Uuid
   title                 String           @db.VarChar(255)
-  genre                 String?          @db.VarChar(100)
-  theme                 String?          @db.VarChar(255)
-  tone                  String?          @db.VarChar(100)
+  genre                 String?          @db.Text
+  theme                 String?          @db.Text
+  tone                  String?          @db.Text
   logline               String?
   synopsis              String?
   outline               String?
@@ -68,10 +68,10 @@ model StyleProfile {
   id                 String   @id @default(uuid()) @db.Uuid
   projectId          String   @db.Uuid
   name               String   @db.VarChar(100)
-  pov                String?  @db.VarChar(50)
-  tense              String?  @db.VarChar(50)
-  proseStyle         String?  @db.VarChar(100)
-  pacing             String?  @db.VarChar(50)
+  pov                String?  @db.Text
+  tense              String?  @db.Text
+  proseStyle         String?  @db.Text
+  pacing             String?  @db.Text
   dialogueDensity    Int      @default(50)
   narrationDensity   Int      @default(50)
   descriptionDensity Int      @default(50)

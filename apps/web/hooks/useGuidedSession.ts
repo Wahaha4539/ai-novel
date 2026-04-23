@@ -247,11 +247,28 @@ export function useGuidedSession(projectId: string) {
       // Non-critical
     }
 
+    // Fetch fresh session to get latest stepData (avoids stale closure)
+    let freshStepData: Record<string, unknown> = {};
+    try {
+      const freshSession = await apiFetch<GuidedSession | null>(
+        `/projects/${projectId}/guided-session`,
+      );
+      if (freshSession) {
+        setSession(freshSession);
+        freshStepData = (freshSession.stepData as Record<string, unknown>) ?? {};
+      }
+    } catch {
+      // Fall through with empty context
+    }
+
     // Ask AI to generate a dynamic, selective opening for the new step
     try {
-      const stepData = (session?.stepData as Record<string, unknown>) ?? {};
-      const contextSummary = Object.entries(stepData)
-        .filter(([key]) => !key.endsWith('_chat'))
+      const priorKeys = new Set(GUIDED_STEPS.slice(0, nextIndex).map((s) => s.key));
+      const contextSummary = Object.entries(freshStepData)
+        .filter(([key]) => {
+          if (key.endsWith('_chat')) return false;
+          return priorKeys.has(key.replace(/_result$/, ''));
+        })
         .map(([key, val]) => `${key}: ${JSON.stringify(val)}`)
         .join('\n');
 
@@ -282,7 +299,7 @@ export function useGuidedSession(projectId: string) {
     } finally {
       setLoading(false);
     }
-  }, [currentStepIndex, projectId, session, finalizeCurrentStep, saveStepProgress]);
+  }, [currentStepIndex, projectId, finalizeCurrentStep, saveStepProgress]);
 
   // Go to previous step
   const goToPrevStep = useCallback(() => {
@@ -346,7 +363,7 @@ export function useGuidedSession(projectId: string) {
     }
   }, [projectId, currentStepIndex, currentStepKey]);
 
-  // Auto-advance without re-finalizing (used after [STEP_COMPLETE] detection)
+  // Auto-advance without re-finalizing (used after [STEP_COMPLETE] detection or one-shot confirm)
   const autoAdvanceToNextStep = useCallback(async () => {
     if (currentStepIndex >= GUIDED_STEPS.length - 1) return;
 
@@ -358,6 +375,7 @@ export function useGuidedSession(projectId: string) {
     setChatMessages([]);
     setLoading(true);
 
+    // Update server-side current step
     try {
       await apiFetch(`/projects/${projectId}/guided-session/step`, {
         method: 'PATCH',
@@ -367,10 +385,27 @@ export function useGuidedSession(projectId: string) {
       // Non-critical
     }
 
+    // Fetch fresh session to get latest stepData (avoids stale closure)
+    let freshStepData: Record<string, unknown> = {};
     try {
-      const stepData = (session?.stepData as Record<string, unknown>) ?? {};
-      const contextSummary = Object.entries(stepData)
-        .filter(([key]) => !key.endsWith('_chat'))
+      const freshSession = await apiFetch<GuidedSession | null>(
+        `/projects/${projectId}/guided-session`,
+      );
+      if (freshSession) {
+        setSession(freshSession);
+        freshStepData = (freshSession.stepData as Record<string, unknown>) ?? {};
+      }
+    } catch {
+      // Fall through with empty context
+    }
+
+    try {
+      const priorKeys = new Set(GUIDED_STEPS.slice(0, nextIndex).map((s) => s.key));
+      const contextSummary = Object.entries(freshStepData)
+        .filter(([key]) => {
+          if (key.endsWith('_chat')) return false;
+          return priorKeys.has(key.replace(/_result$/, ''));
+        })
         .map(([key, val]) => `${key}: ${JSON.stringify(val)}`)
         .join('\n');
 
@@ -401,17 +436,31 @@ export function useGuidedSession(projectId: string) {
     } finally {
       setLoading(false);
     }
-  }, [currentStepIndex, projectId, session, saveStepProgress]);
+  }, [currentStepIndex, projectId, saveStepProgress]);
 
   // Build project context summary from accumulated step data
+  // Build project context from steps BEFORE the current one (not current or future)
   const buildProjectContext = useCallback((): string | undefined => {
     const stepData = (session?.stepData as Record<string, unknown>) ?? {};
+
+    // Determine which step keys come before the current step
+    const priorStepKeys = new Set(
+      GUIDED_STEPS.slice(0, currentStepIndex).map((s) => s.key),
+    );
+
     const contextParts = Object.entries(stepData)
-      .filter(([key]) => !key.endsWith('_chat'))
+      .filter(([key]) => {
+        // Skip chat history entries
+        if (key.endsWith('_chat')) return false;
+        // Only include _result entries from prior steps
+        // e.g. "guided_setup_result" → step key is "guided_setup"
+        const stepKey = key.replace(/_result$/, '');
+        return priorStepKeys.has(stepKey);
+      })
       .map(([key, val]) => `${key}: ${JSON.stringify(val)}`)
       .join('\n');
     return contextParts || undefined;
-  }, [session]);
+  }, [session, currentStepIndex]);
 
   // Add a user message and get real AI response
   const sendMessage = useCallback(async (content: string) => {

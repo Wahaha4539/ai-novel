@@ -624,3 +624,10 @@ ${schema}
 function asString(val: unknown): string | undefined {
   return typeof val === 'string' && val.trim() ? val.trim() : undefined;
 }
+
+/** Truncate a string to fit a VarChar column, appending '…' if needed */
+function truncate(val: string | undefined, maxLen: number): string | undefined {
+  if (!val) return val;
+  if (val.length <= maxLen) return val;
+  return val.slice(0, maxLen - 1) + '…';
+}

@@ -1,4 +1,4 @@
-import { Injectable, Logger } from '@nestjs/common';
+import { Injectable } from '@nestjs/common';
 
 interface ChatMessage {
   role: 'system' | 'user' | 'assistant';
@@ -12,7 +12,7 @@ interface ChatOptions {
 
 @Injectable()
 export class LlmService {
-  private readonly logger = new Logger(LlmService.name);
+
   private readonly baseUrl: string;
   private readonly apiKey: string;
   private readonly model: string;
@@ -36,7 +36,9 @@ export class LlmService {
       max_tokens: options?.maxTokens ?? 2000,
     });
 
-    this.logger.log(`LLM request → ${this.model}, messages: ${messages.length}`);
+    const t0 = Date.now();
+    const msgPreview = messages.map((m) => `[${m.role}](${m.content.length}ch)`).join(' ');
+    console.log(`[LLM] → ${this.model} msgs=${messages.length} temp=${options?.temperature ?? 0.8} ${msgPreview} body=${body}`);
 
     const response = await fetch(url, {
       method: 'POST',
@@ -60,7 +62,10 @@ export class LlmService {
       throw new Error(`LLM 返回内容为空: ${JSON.stringify(payload).slice(0, 500)}`);
     }
 
-    this.logger.log(`LLM response ← ${text.length} chars`);
+    const elapsed = ((Date.now() - t0) / 1000).toFixed(1);
+    const usage = payload.usage as Record<string, number> | undefined;
+    const tokens = usage ? `in=${usage.prompt_tokens ?? '?'} out=${usage.completion_tokens ?? '?'}` : '';
+    console.log(`[LLM] ← ${text.length}ch ${elapsed}s ${tokens}`);
     return text;
   }
 

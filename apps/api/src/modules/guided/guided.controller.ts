@@ -20,7 +20,7 @@ export class GuidedController {
     @Param('projectId') projectId: string,
     @Body() dto: CreateGuidedSessionDto,
   ) {
-    console.log('[Guided] POST create/restart', { projectId, body: dto });
+    console.log(`[Guided] POST create/restart pid=${projectId} step=${dto.currentStep ?? 'default'}`);
     return this.guidedService.createOrRestart(projectId, dto);
   }
 
@@ -29,7 +29,7 @@ export class GuidedController {
     @Param('projectId') projectId: string,
     @Body() dto: UpdateGuidedStepDto,
   ) {
-    console.log('[Guided] PATCH updateStep', { projectId, body: dto });
+    console.log(`[Guided] PATCH step pid=${projectId} step=${dto.currentStep}`);
     return this.guidedService.updateStep(projectId, dto);
   }
 
@@ -38,7 +38,7 @@ export class GuidedController {
     @Param('projectId') projectId: string,
     @Body() dto: GuidedChatDto,
   ) {
-    console.log('[Guided] POST chat', { projectId, step: dto.currentStep, userMessage: dto.userMessage, historyLen: dto.chatHistory?.length ?? 0 });
+    console.log(`[Guided] POST chat pid=${projectId} step=${dto.currentStep} histLen=${dto.chatHistory?.length ?? 0}`);
     return this.guidedService.chatWithAi(projectId, dto);
   }
 
@@ -47,7 +47,7 @@ export class GuidedController {
     @Param('projectId') projectId: string,
     @Body() dto: GenerateStepDto,
   ) {
-    console.log('[Guided] POST generate-step', { projectId, body: dto });
+    console.log(`[Guided] POST generate pid=${projectId} step=${dto.currentStep}`);
     return this.guidedService.generateStepData(projectId, dto);
   }
 
@@ -56,7 +56,7 @@ export class GuidedController {
     @Param('projectId') projectId: string,
     @Body() dto: FinalizeStepDto,
   ) {
-    console.log('[Guided] POST finalize-step', { projectId, step: dto.currentStep, dataKeys: Object.keys(dto.structuredData ?? {}) });
+    console.log(`[Guided] POST finalize pid=${projectId} step=${dto.currentStep} keys=[${Object.keys(dto.structuredData ?? {}).join(',')}]`);
     return this.guidedService.finalizeStep(
       projectId,
       dto.currentStep,
