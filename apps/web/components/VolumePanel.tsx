@@ -1,13 +1,15 @@
 import React, { useState, useEffect } from 'react';
-import { ProjectSummary, VolumeSummary } from '../types/dashboard';
+import { ProjectSummary, VolumeSummary, ChapterSummary } from '../types/dashboard';
 import { useVolumeActions, VolumeFormData } from '../hooks/useVolumeActions';
+import { BatchGeneratePanel } from './BatchGeneratePanel';
 
 interface Props {
   selectedProject?: ProjectSummary;
   selectedProjectId: string;
+  chapters?: ChapterSummary[];
 }
 
-export function VolumePanel({ selectedProject, selectedProjectId }: Props) {
+export function VolumePanel({ selectedProject, selectedProjectId, chapters = [] }: Props) {
   const {
     volumes,
     loading,
@@ -21,6 +23,7 @@ export function VolumePanel({ selectedProject, selectedProjectId }: Props) {
 
   const [editingVolume, setEditingVolume] = useState<VolumeSummary | null>(null);
   const [showCreateForm, setShowCreateForm] = useState(false);
+  const [showBatchPanel, setShowBatchPanel] = useState(false);
 
   useEffect(() => {
     if (selectedProjectId) {
@@ -90,16 +93,37 @@ export function VolumePanel({ selectedProject, selectedProjectId }: Props) {
             {selectedProject?.title ?? '未选择项目'}
           </div>
           {selectedProjectId && (
-            <button
-              className="btn-primary"
-              style={{ fontSize: '0.75rem', padding: '0.35rem 0.85rem' }}
-              onClick={() => {
-                setShowCreateForm(true);
-                setError('');
-              }}
-            >
-              + 新增卷
-            </button>
+            <>
+              {/* Batch AI generate button */}
+              <button
+                onClick={() => setShowBatchPanel((prev) => !prev)}
+                style={{
+                  fontSize: '0.75rem',
+                  padding: '0.35rem 0.85rem',
+                  borderRadius: '0.4rem',
+                  fontWeight: 600,
+                  cursor: 'pointer',
+                  border: `1px solid ${showBatchPanel ? 'var(--accent-cyan)' : 'var(--border-light)'}`,
+                  background: showBatchPanel
+                    ? 'rgba(6,182,212,0.12)'
+                    : 'linear-gradient(135deg, rgba(6,182,212,0.1), rgba(139,92,246,0.1))',
+                  color: showBatchPanel ? 'var(--accent-cyan)' : 'var(--text-muted)',
+                  transition: 'all 0.2s ease',
+                }}
+              >
+                🤖 {showBatchPanel ? '关闭批量生成' : '批量生成正文'}
+              </button>
+              <button
+                className="btn-primary"
+                style={{ fontSize: '0.75rem', padding: '0.35rem 0.85rem' }}
+                onClick={() => {
+                  setShowCreateForm(true);
+                  setError('');
+                }}
+              >
+                + 新增卷
+              </button>
+            </>
           )}
         </div>
       </header>
@@ -117,6 +141,25 @@ export function VolumePanel({ selectedProject, selectedProjectId }: Props) {
             {error && (
               <div className="text-xs" style={{ color: 'var(--status-err)', padding: '0.5rem', background: 'var(--status-err-bg)', borderRadius: '8px' }}>
                 {error}
+              </div>
+            )}
+
+            {/* Batch generate panel */}
+            {showBatchPanel && (
+              <div
+                className="animate-fade-in panel"
+                style={{
+                  background: 'var(--bg-card)',
+                  border: '1px solid var(--accent-cyan)',
+                  borderRadius: '0.75rem',
+                  overflow: 'hidden',
+                }}
+              >
+                <BatchGeneratePanel
+                  volumes={volumes}
+                  chapters={chapters}
+                  onComplete={() => loadVolumes()}
+                />
               </div>
             )}
 

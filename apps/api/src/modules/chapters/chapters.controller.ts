@@ -20,4 +20,16 @@ export class ChaptersController {
   getDetail(@Param('chapterId') chapterId: string) {
     return this.chaptersService.getById(chapterId);
   }
+
+  /** Return the latest (isCurrent) draft for a chapter */
+  @Get('chapters/:chapterId/drafts')
+  getLatestDraft(@Param('chapterId') chapterId: string) {
+    return this.chaptersService.getLatestDraft(chapterId);
+  }
+
+  /** Return all draft versions for a chapter */
+  @Get('chapters/:chapterId/drafts/all')
+  listDrafts(@Param('chapterId') chapterId: string) {
+    return this.chaptersService.listDrafts(chapterId);
+  }
 }

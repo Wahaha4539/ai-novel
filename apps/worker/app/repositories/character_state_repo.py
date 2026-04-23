@@ -55,3 +55,35 @@ class CharacterStateRepository:
                 )
 
         return {"deleted": deleted, "created": created}
+
+    def list_before_chapter(self, project_id: str, chapter_no: int, limit: int = 30) -> list[dict]:
+        """
+        Load accumulated character state snapshots from all chapters
+        before the given chapter_no, ordered by chapter_no ASC.
+
+        Returns the most recent `limit` records to control prompt size.
+        Used for cross-chapter continuity validation.
+        """
+        from sqlalchemy import select as sa_select
+        project_uuid = uuid.UUID(project_id)
+        with SessionLocal() as session:
+            rows = session.execute(
+                sa_select(CharacterStateSnapshotModel)
+                .where(
+                    CharacterStateSnapshotModel.project_id == project_uuid,
+                    CharacterStateSnapshotModel.chapter_no < chapter_no,
+                )
+                .order_by(CharacterStateSnapshotModel.chapter_no.desc())
+                .limit(limit)
+            ).scalars().all()
+
+            return [
+                {
+                    "characterName": row.character_name,
+                    "chapterNo": row.chapter_no,
+                    "stateType": row.state_type,
+                    "stateValue": row.state_value,
+                    "summary": row.summary,
+                }
+                for row in reversed(rows)  # Return in chronological order
+            ]

@@ -168,3 +168,31 @@ export type ValidationRunResult = {
   issues: ValidationIssue[];
 };
 
+/** AI-generated chapter draft content */
+export type ChapterDraft = {
+  id: string;
+  chapterId: string;
+  versionNo: number;
+  content: string;
+  source: string;
+  modelInfo?: Record<string, unknown>;
+  isCurrent: boolean;
+  createdAt: string;
+};
+
+/** Generation job status for polling */
+export type GenerationJob = {
+  id: string;
+  projectId: string;
+  chapterId?: string | null;
+  jobType: string;
+  targetType: string;
+  targetId: string;
+  status: 'queued' | 'running' | 'completed' | 'failed';
+  responsePayload?: Record<string, unknown>;
+  errorMessage?: string | null;
+  startedAt?: string | null;
+  finishedAt?: string | null;
+  createdAt: string;
+};
+

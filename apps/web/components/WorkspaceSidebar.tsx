@@ -3,7 +3,7 @@ import { ProjectSummary, ChapterSummary, VolumeSummary } from '../types/dashboar
 import { ThemeSwitcher } from './ThemeSwitcher';
 import { VolumeChapterTree } from './VolumeChapterTree';
 
-type ActiveView = 'editor' | 'outline' | 'lore' | 'projects' | 'volumes' | 'guided' | 'prompts' | 'foreshadow';
+type ActiveView = 'editor' | 'outline' | 'lore' | 'projects' | 'volumes' | 'guided' | 'prompts' | 'foreshadow' | 'generate';
 
 interface Props {
   projects: ProjectSummary[];
@@ -22,6 +22,7 @@ interface Props {
   onNavigateToGuided: () => void;
   onNavigateToPrompts: () => void;
   onNavigateToForeshadow: () => void;
+  onNavigateToGenerate: () => void;
   onSelectVolume: (id: string) => void;
 }
 
@@ -42,6 +43,7 @@ export function WorkspaceSidebar({
   onNavigateToGuided,
   onNavigateToPrompts,
   onNavigateToForeshadow,
+  onNavigateToGenerate,
   onSelectVolume,
 }: Props) {
   const selectedProject = projects.find((p) => p.id === selectedProjectId);
@@ -121,6 +123,14 @@ export function WorkspaceSidebar({
                   isActive={activeView === 'guided'}
                   activeColor="#ec4899"
                   onClick={onNavigateToGuided}
+                />
+              </li>
+              <li>
+                <NavButton
+                  label="🤖 AI 生成 (Generate)"
+                  isActive={activeView === 'generate'}
+                  activeColor="#06b6d4"
+                  onClick={onNavigateToGenerate}
                 />
               </li>
               <li>

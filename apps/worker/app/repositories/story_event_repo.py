@@ -53,3 +53,34 @@ class StoryEventRepository:
                 )
 
         return {"deleted": deleted, "created": created}
+
+    def list_before_chapter(self, project_id: str, chapter_no: int, limit: int = 30) -> list[dict]:
+        """
+        Load story events from all chapters before the given chapter_no.
+
+        Returns the most recent `limit` events ordered chronologically.
+        Used for cross-chapter continuity validation.
+        """
+        from sqlalchemy import select as sa_select
+        project_uuid = uuid.UUID(project_id)
+        with SessionLocal() as session:
+            rows = session.execute(
+                sa_select(StoryEventModel)
+                .where(
+                    StoryEventModel.project_id == project_uuid,
+                    StoryEventModel.chapter_no < chapter_no,
+                )
+                .order_by(StoryEventModel.chapter_no.desc())
+                .limit(limit)
+            ).scalars().all()
+
+            return [
+                {
+                    "title": row.title,
+                    "chapterNo": row.chapter_no,
+                    "eventType": row.event_type,
+                    "description": row.description,
+                    "participants": row.participants or [],
+                }
+                for row in reversed(rows)  # Chronological order
+            ]

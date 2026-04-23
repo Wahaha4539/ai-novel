@@ -6,12 +6,16 @@ from app.models.schemas import (
     GenerateChapterJobResult,
     MemoryRebuildRequest,
     MemoryRebuildResult,
+    PolishChapterRequest,
+    PolishChapterResult,
 )
 from app.pipelines.generate_chapter import GenerateChapterPipeline
+from app.pipelines.polish_chapter import PolishChapterPipeline
 from app.pipelines.rebuild_memory import RebuildMemoryPipeline
 
 router = APIRouter()
 pipeline = GenerateChapterPipeline()
+polish_pipeline = PolishChapterPipeline()
 memory_rebuild_pipeline = RebuildMemoryPipeline()
 logger = get_logger(__name__)
 
@@ -41,6 +45,34 @@ def generate_chapter_job(payload: GenerateChapterJobRequest) -> GenerateChapterJ
         raise
 
 
+@router.post("/internal/jobs/polish-chapter", response_model=PolishChapterResult)
+def polish_chapter_job(payload: PolishChapterRequest) -> PolishChapterResult:
+    """Polish an existing chapter draft using LLM-powered rewriting."""
+    log_context = {
+        "projectId": payload.project_id,
+        "chapterId": payload.chapter_id,
+    }
+    log_event(logger, "polish.request.received", **log_context)
+
+    try:
+        result = polish_pipeline.run(
+            project_id=payload.project_id,
+            chapter_id=payload.chapter_id,
+            user_instruction=payload.user_instruction,
+        )
+        log_event(
+            logger,
+            "polish.request.completed",
+            **log_context,
+            draftId=result["draftId"],
+            polishedWordCount=result["polishedWordCount"],
+        )
+        return PolishChapterResult(**result)
+    except Exception as exc:
+        log_event(logger, "polish.request.failed", level="error", **log_context, error=str(exc))
+        raise
+
+
 @router.post("/internal/memory/rebuild", response_model=MemoryRebuildResult)
 def rebuild_memory(payload: MemoryRebuildRequest) -> MemoryRebuildResult:
     log_context = {
@@ -62,3 +94,4 @@ def rebuild_memory(payload: MemoryRebuildRequest) -> MemoryRebuildResult:
     except Exception as exc:
         log_event(logger, "memory.rebuild.request.failed", level="error", **log_context, error=str(exc))
         raise
+

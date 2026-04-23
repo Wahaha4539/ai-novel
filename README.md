@@ -161,6 +161,139 @@ pnpm db:migrate
 
 按当前 `schema.prisma` 对照，**现有两次 migration 合起来已覆盖全部 13 个核心业务模型**。也就是说：只要 `pnpm db:migrate` 正常执行完成，当前 Prisma schema 对应的业务表就会完整创建出来。
 
+#### 安装 pgvector 扩展（向量检索，可选）
+
+Worker 的 MemoryChunk 表预留了 `embedding` 字段，用于向量语义检索。如需启用，需要在 PostgreSQL 中安装 pgvector 扩展。
+
+**方式一：Docker 环境（已内置）**
+
+`docker-compose.yml` 使用的 `pgvector/pgvector:pg16` 镜像已内置 pgvector，只需启用：
+
+```powershell
+docker exec -it novel-postgres psql -U postgres -d ai_novel_mvp -c "CREATE EXTENSION IF NOT EXISTS vector;"
+```
+
+**方式二：远程服务器（Ubuntu + 系统安装的 PostgreSQL）**
+
+SSH 到服务器后执行：
+
+```bash
+# 安装 pgvector 包（将 14 替换为你的 PostgreSQL 大版本号）
+sudo apt update && sudo apt install -y postgresql-14-pgvector
+
+# 重启 PostgreSQL
+sudo systemctl restart postgresql
+
+# 在目标数据库中启用扩展
+sudo -u postgres psql -d ai_novel_mvp -c "CREATE EXTENSION IF NOT EXISTS vector;"
+```
+
+> 查看 PostgreSQL 版本：`psql --version` 或 `SELECT version();`
+
+**验证安装：**
+
+```bash
+sudo -u postgres psql -d ai_novel_mvp -c "SELECT extname, extversion FROM pg_extension WHERE extname = 'vector';"
+```
+
+输出含 `vector | 0.x.x` 即安装成功。
+
+#### 部署 Embedding 服务（向量检索，可选）
+
+MemoryChunk 的向量语义检索需要 embedding 模型将文本转换为向量。当前 LLM API 不提供 `/v1/embeddings` 端点，需要单独部署一个轻量 embedding 服务。
+
+> 模型 `BAAI/bge-base-zh-v1.5`，约 400MB，**纯 CPU 即可运行**，无需 GPU。
+
+**第 1 步：安装依赖**
+
+```bash
+apt install -y python3-pip
+pip3 install sentence-transformers fastapi uvicorn
+```
+
+**第 2 步：创建服务文件**
+
+```bash
+cat > /opt/embedding_server.py << 'EOF'
+"""轻量 Embedding API 服务 — 兼容 OpenAI /v1/embeddings 格式"""
+from sentence_transformers import SentenceTransformer
+from fastapi import FastAPI
+from pydantic import BaseModel
+import uvicorn
+
+model = SentenceTransformer("BAAI/bge-base-zh-v1.5")
+app = FastAPI(title="Embedding Server")
+
+class EmbeddingRequest(BaseModel):
+    input: str | list[str]
+    model: str = "bge-base-zh"
+
+@app.post("/v1/embeddings")
+def create_embedding(req: EmbeddingRequest):
+    texts = [req.input] if isinstance(req.input, str) else req.input
+    vectors = model.encode(texts, normalize_embeddings=True).tolist()
+    return {
+        "object": "list",
+        "model": "bge-base-zh-v1.5",
+        "data": [
+            {"object": "embedding", "embedding": vec, "index": i}
+            for i, vec in enumerate(vectors)
+        ],
+        "usage": {"prompt_tokens": sum(len(t) for t in texts), "total_tokens": sum(len(t) for t in texts)},
+    }
+
+@app.get("/healthz")
+def health():
+    return {"status": "ok", "model": "BAAI/bge-base-zh-v1.5", "dimension": 768}
+
+if __name__ == "__main__":
+    uvicorn.run(app, host="0.0.0.0", port=18319)
+EOF
+```
+
+**第 3 步：配置 systemd 开机自启**
+
+```bash
+cat > /etc/systemd/system/embedding.service << 'EOF'
+[Unit]
+Description=Embedding API Server
+After=network.target
+
+[Service]
+ExecStart=/usr/bin/python3 /opt/embedding_server.py
+Restart=always
+RestartSec=5
+
+[Install]
+WantedBy=multi-user.target
+EOF
+
+systemctl daemon-reload
+systemctl enable embedding
+systemctl start embedding
+```
+
+> 首次启动会自动下载模型（约 400MB），之后使用本地缓存。
+
+**第 4 步：验证**
+
+```bash
+curl -X POST http://localhost:8319/v1/embeddings \
+  -H "Content-Type: application/json" \
+  -d '{"input": "测试文本"}' | python3 -m json.tool | head -5
+```
+
+返回含 768 维的 `embedding` 数组即安装成功。
+
+**第 5 步：配置环境变量**
+
+在项目 `.env` 中添加：
+
+```env
+EMBEDDING_BASE_URL=http://YOUR_SERVER_IP:8319/v1
+```
+
+
 如果你想进一步确认是否已经真实落库，可以在数据库启动后执行下面任一方式检查：
 
 ```powershell

@@ -1,14 +1,94 @@
+"""Repository for MemoryChunk — supports both vector and keyword search.
+
+Uses pgvector cosine distance (<=> operator) when embedding is available,
+falls back to ILIKE keyword matching when no embedding service is configured
+or when the query embedding generation fails.
+"""
 import uuid
 
-from sqlalchemy import delete, desc, or_, select
+from sqlalchemy import delete, desc, func, or_, select, text as sa_text
 
+from app.core.logging import get_logger
 from app.db.session import SessionLocal
 from app.models.dto import RetrievalHit
 from app.models.sqlalchemy_models import MemoryChunkModel
+from app.services.embedding_service import EmbeddingService
+
+logger = get_logger(__name__)
 
 
 class MemoryRepository:
+    """MemoryChunk data access — vector search with keyword fallback."""
+
+    def __init__(self) -> None:
+        self.embedding_service = EmbeddingService()
+
     def search(self, project_id: str, query_text: str, allowed_statuses: list[str] | None = None) -> list[RetrievalHit]:
+        """Search memory chunks using vector similarity.
+        
+        Always uses embedding + pgvector. If embedding service fails, the error
+        will propagate up — no silent degradation to keyword search.
+        """
+        if not query_text:
+            return []
+
+        # 生成查询向量（失败会直接抛异常）
+        query_vec = self.embedding_service.embed_text(query_text)
+        logger.info("memory.search.vector", extra={"projectId": project_id, "query": query_text[:80], "vecDim": len(query_vec)})
+        results = self._vector_search(project_id, query_vec, allowed_statuses)
+        logger.info("memory.search.vector.done", extra={"hitCount": len(results), "topScore": results[0].score if results else 0})
+        return results
+
+    def _vector_search(
+        self, project_id: str, query_vec: list[float], allowed_statuses: list[str] | None
+    ) -> list[RetrievalHit]:
+        """Semantic search using pgvector cosine distance."""
+        with SessionLocal() as session:
+            # 构建向量字符串（pgvector 要求格式 '[0.1, 0.2, ...]'）
+            vec_str = "[" + ",".join(str(v) for v in query_vec) + "]"
+
+            # jsonb 列需要先转 text 再转 vector（jsonb 不能直接 cast 成 vector）
+            stmt = sa_text("""
+                SELECT id, "sourceType", "sourceId", "memoryType", content, summary,
+                       status, "sourceTrace", metadata, "importanceScore",
+                       (CAST(CAST(embedding AS text) AS vector) <=> CAST(:vec AS vector)) AS distance
+                FROM "MemoryChunk"
+                WHERE "projectId" = :pid
+                  AND embedding IS NOT NULL
+                  {status_filter}
+                ORDER BY distance ASC
+                LIMIT 10
+            """.format(
+                status_filter="AND status = ANY(:statuses)" if allowed_statuses else ""
+            ))
+
+            params = {"pid": uuid.UUID(project_id), "vec": vec_str}
+            if allowed_statuses:
+                params["statuses"] = allowed_statuses
+
+            rows = session.execute(stmt, params).fetchall()
+
+            return [
+                RetrievalHit(
+                    source_type=row.sourceType,
+                    source_id=str(row.sourceId),
+                    title=row.summary or row.memoryType,
+                    content=row.content,
+                    # 将余弦距离转为相似度分数 (1 - distance)
+                    score=round(max(0.0, 1.0 - (row.distance or 0.0)), 4),
+                    metadata={
+                        "memoryType": row.memoryType,
+                        "status": row.status,
+                        "searchMethod": "vector",
+                    },
+                )
+                for row in rows
+            ]
+
+    def _keyword_search(
+        self, project_id: str, query_text: str, allowed_statuses: list[str] | None
+    ) -> list[RetrievalHit]:
+        """Fallback keyword search using ILIKE (original behavior)."""
         with SessionLocal() as session:
             stmt = select(MemoryChunkModel).where(MemoryChunkModel.project_id == uuid.UUID(project_id))
             if allowed_statuses:
@@ -40,14 +120,14 @@ class MemoryRepository:
                     metadata={
                         "memoryType": row.memory_type,
                         "status": row.status,
-                        "sourceTrace": row.source_trace or {},
-                        **(row.metadata_json or {}),
+                        "searchMethod": "keyword",
                     },
                 )
                 for row in rows
             ]
 
     def create_many(self, project_id: str, chunks: list[dict]) -> list[dict]:
+        """Bulk-insert MemoryChunks, including embedding vectors if present."""
         project_uuid = uuid.UUID(project_id)
         created: list[dict] = []
         with SessionLocal.begin() as session:
@@ -76,12 +156,14 @@ class MemoryRepository:
                         "memoryType": row.memory_type,
                         "content": row.content,
                         "status": row.status,
+                        "hasEmbedding": row.embedding is not None,
                     }
                 )
 
         return created
 
     def replace_for_source(self, project_id: str, source_type: str, source_id: str, chunks: list[dict]) -> dict:
+        """Delete existing chunks for a source, then insert new ones."""
         project_uuid = uuid.UUID(project_id)
         source_uuid = uuid.UUID(source_id)
         deleted = 0

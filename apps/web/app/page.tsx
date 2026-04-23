@@ -12,8 +12,9 @@ import { VolumePanel } from '../components/VolumePanel';
 import { GuidedWizard } from '../components/guided/GuidedWizard';
 import { PromptManagerPanel } from '../components/PromptManagerPanel';
 import { ForeshadowBoard } from '../components/ForeshadowBoard';
+import { BatchGeneratePanel } from '../components/BatchGeneratePanel';
 
-type ActiveView = 'editor' | 'outline' | 'lore' | 'projects' | 'volumes' | 'guided' | 'prompts' | 'foreshadow';
+type ActiveView = 'editor' | 'outline' | 'lore' | 'projects' | 'volumes' | 'guided' | 'prompts' | 'foreshadow' | 'generate';
 
 export default function HomePage() {
   const data = useDashboardData();
@@ -59,6 +60,11 @@ export default function HomePage() {
 
   const handleNavigateToForeshadow = useCallback(() => {
     setActiveView('foreshadow');
+  }, []);
+
+  /** Navigate to AI batch generation view */
+  const handleNavigateToGenerate = useCallback(() => {
+    setActiveView('generate');
   }, []);
 
   const handleSelectVolume = useCallback((volumeId: string) => {
@@ -109,6 +115,7 @@ export default function HomePage() {
         onNavigateToGuided={handleNavigateToGuided}
         onNavigateToPrompts={handleNavigateToPrompts}
         onNavigateToForeshadow={handleNavigateToForeshadow}
+        onNavigateToGenerate={handleNavigateToGenerate}
         onSelectVolume={handleSelectVolume}
       />
 
@@ -127,7 +134,7 @@ export default function HomePage() {
         ) : activeView === 'lore' ? (
           <LorePanel selectedProject={selectedProject} selectedProjectId={data.selectedProjectId} />
         ) : activeView === 'volumes' ? (
-          <VolumePanel selectedProject={selectedProject} selectedProjectId={data.selectedProjectId} />
+          <VolumePanel selectedProject={selectedProject} selectedProjectId={data.selectedProjectId} chapters={chapters} />
         ) : activeView === 'guided' ? (
           <GuidedWizard selectedProject={selectedProject} selectedProjectId={data.selectedProjectId} autoStart={autoStartGuided} onDataChanged={() => data.loadProjectData(data.selectedProjectId, data.selectedChapterId)} />
         ) : activeView === 'prompts' ? (
@@ -138,6 +145,12 @@ export default function HomePage() {
             selectedProjectId={data.selectedProjectId}
             foreshadowTracks={data.foreshadowTracks}
             onRefresh={() => data.loadProjectData(data.selectedProjectId, data.selectedChapterId)}
+          />
+        ) : activeView === 'generate' ? (
+          <BatchGeneratePanel
+            volumes={data.volumes}
+            chapters={chapters}
+            onComplete={() => data.loadProjectData(data.selectedProjectId, data.selectedChapterId)}
           />
         ) : (
           <EditorPanel

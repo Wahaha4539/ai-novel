@@ -27,16 +27,21 @@ class TimestampMixin:
 
 
 class ProjectModel(TimestampMixin, Base):
+    """Core project entity — maps to Prisma 'Project' table.
+    genre/theme/tone use Text to match Prisma @db.Text columns.
+    outline and logline are populated by the guided wizard."""
     __tablename__ = "Project"
 
     id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
     owner_id: Mapped[uuid.UUID | None] = mapped_column("ownerId", UUID(as_uuid=True), nullable=True)
     title: Mapped[str] = mapped_column(String(255))
-    genre: Mapped[str | None] = mapped_column(String(100), nullable=True)
-    theme: Mapped[str | None] = mapped_column(String(255), nullable=True)
-    tone: Mapped[str | None] = mapped_column(String(100), nullable=True)
+    # Text columns — guided wizard writes rich content here
+    genre: Mapped[str | None] = mapped_column(Text, nullable=True)
+    theme: Mapped[str | None] = mapped_column(Text, nullable=True)
+    tone: Mapped[str | None] = mapped_column(Text, nullable=True)
     logline: Mapped[str | None] = mapped_column(Text, nullable=True)
     synopsis: Mapped[str | None] = mapped_column(Text, nullable=True)
+    outline: Mapped[str | None] = mapped_column(Text, nullable=True)
     target_word_count: Mapped[int | None] = mapped_column("targetWordCount", Integer, nullable=True)
     status: Mapped[str] = mapped_column(
         SqlEnum("draft", "active", "archived", name="ProjectStatus", create_type=False),
@@ -46,10 +51,15 @@ class ProjectModel(TimestampMixin, Base):
     chapters: Mapped[list[ChapterModel]] = relationship(back_populates="project")
     characters: Mapped[list[CharacterModel]] = relationship(back_populates="project")
     lorebook_entries: Mapped[list[LorebookEntryModel]] = relationship(back_populates="project")
+    volumes: Mapped[list[VolumeModel]] = relationship(back_populates="project")
+    style_profiles: Mapped[list[StyleProfileModel]] = relationship(back_populates="project")
     generation_jobs: Mapped[list[GenerationJobModel]] = relationship(back_populates="project")
 
 
 class CharacterModel(TimestampMixin, Base):
+    """Character entity — scope/source added for guided wizard support.
+    scope: 'global' | 'volume_N' | 'chapter' — controls visibility per volume.
+    source: 'manual' | 'guided' | 'guided_chapter' — tracks creation origin."""
     __tablename__ = "Character"
 
     id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
@@ -66,6 +76,9 @@ class CharacterModel(TimestampMixin, Base):
     backstory: Mapped[str | None] = mapped_column(Text, nullable=True)
     growth_arc: Mapped[str | None] = mapped_column("growthArc", Text, nullable=True)
     is_dead: Mapped[bool] = mapped_column("isDead", Boolean, default=False)
+    # Guided wizard fields: scope controls per-volume visibility
+    scope: Mapped[str | None] = mapped_column(String(20), nullable=True)
+    source: Mapped[str] = mapped_column(String(30), default="manual")
     metadata_json: Mapped[dict] = mapped_column("metadata", JSON, default=dict)
 
     project: Mapped[ProjectModel] = relationship(back_populates="characters")
@@ -166,7 +179,7 @@ class MemoryChunkModel(Base):
     updated_at: Mapped[datetime] = mapped_column(
         "updatedAt",
         DateTime(timezone=True),
-        server_default=func.now(),
+        default=func.now(),
         onupdate=func.now(),
     )
 
@@ -222,6 +235,10 @@ class CharacterStateSnapshotModel(TimestampMixin, Base):
 
 
 class ForeshadowTrackModel(TimestampMixin, Base):
+    """Foreshadow tracking — scope/source distinguish guided-planned vs auto-extracted.
+    scope: 'arc' | 'volume' | 'chapter' — breadth of the foreshadow.
+    source: 'guided' | 'auto_extracted' | 'manual' — creation origin.
+    metadata JSON contains: technique, plantChapter, revealChapter, involvedCharacters, payoff."""
     __tablename__ = "ForeshadowTrack"
 
     id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
@@ -230,16 +247,21 @@ class ForeshadowTrackModel(TimestampMixin, Base):
         UUID(as_uuid=True),
         ForeignKey("Project.id", ondelete="CASCADE"),
     )
-    chapter_id: Mapped[uuid.UUID] = mapped_column(
+    # chapterId is nullable — guided foreshadows may not be tied to a specific chapter
+    chapter_id: Mapped[uuid.UUID | None] = mapped_column(
         "chapterId",
         UUID(as_uuid=True),
         ForeignKey("Chapter.id", ondelete="CASCADE"),
+        nullable=True,
     )
     chapter_no: Mapped[int | None] = mapped_column("chapterNo", Integer, nullable=True)
     source_draft_id: Mapped[uuid.UUID | None] = mapped_column("sourceDraftId", UUID(as_uuid=True), nullable=True)
     title: Mapped[str] = mapped_column(String(255))
     detail: Mapped[str | None] = mapped_column(Text, nullable=True)
     status: Mapped[str] = mapped_column(String(50), default="planned")
+    # Guided wizard fields
+    scope: Mapped[str] = mapped_column(String(20), default="chapter")
+    source: Mapped[str] = mapped_column(String(30), default="manual")
     first_seen_chapter_no: Mapped[int | None] = mapped_column("firstSeenChapterNo", Integer, nullable=True)
     last_seen_chapter_no: Mapped[int | None] = mapped_column("lastSeenChapterNo", Integer, nullable=True)
     metadata_json: Mapped[dict] = mapped_column("metadata", JSON, default=dict)
@@ -306,3 +328,75 @@ class GenerationJobModel(Base):
     created_at: Mapped[datetime] = mapped_column("createdAt", DateTime(timezone=True), server_default=func.now())
 
     project: Mapped[ProjectModel] = relationship(back_populates="generation_jobs")
+
+
+class VolumeModel(TimestampMixin, Base):
+    """Volume entity — populated by guided wizard's 'guided_volume' step.
+    Contains narrative arc info (synopsis, objective) for each volume."""
+    __tablename__ = "Volume"
+
+    id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
+    project_id: Mapped[uuid.UUID] = mapped_column(
+        "projectId",
+        UUID(as_uuid=True),
+        ForeignKey("Project.id", ondelete="CASCADE"),
+    )
+    volume_no: Mapped[int] = mapped_column("volumeNo", Integer)
+    title: Mapped[str | None] = mapped_column(String(255), nullable=True)
+    synopsis: Mapped[str | None] = mapped_column(Text, nullable=True)
+    objective: Mapped[str | None] = mapped_column(Text, nullable=True)
+    chapter_count: Mapped[int | None] = mapped_column("chapterCount", Integer, nullable=True)
+    status: Mapped[str] = mapped_column(String(50), default="planned")
+
+    project: Mapped[ProjectModel] = relationship(back_populates="volumes")
+
+
+class StyleProfileModel(TimestampMixin, Base):
+    """Writing style profile — populated by guided wizard's 'guided_style' step.
+    Controls POV, tense, prose style, and pacing for chapter generation."""
+    __tablename__ = "StyleProfile"
+
+    id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
+    project_id: Mapped[uuid.UUID] = mapped_column(
+        "projectId",
+        UUID(as_uuid=True),
+        ForeignKey("Project.id", ondelete="CASCADE"),
+    )
+    name: Mapped[str] = mapped_column(String(100))
+    pov: Mapped[str | None] = mapped_column(Text, nullable=True)
+    tense: Mapped[str | None] = mapped_column(Text, nullable=True)
+    prose_style: Mapped[str | None] = mapped_column("proseStyle", Text, nullable=True)
+    pacing: Mapped[str | None] = mapped_column(Text, nullable=True)
+    # Numeric sliders (not critical for prompt building, but mapped for completeness)
+    dialogue_density: Mapped[int] = mapped_column("dialogueDensity", Integer, default=50)
+    narration_density: Mapped[int] = mapped_column("narrationDensity", Integer, default=50)
+    description_density: Mapped[int] = mapped_column("descriptionDensity", Integer, default=50)
+    darkness_level: Mapped[int] = mapped_column("darknessLevel", Integer, default=50)
+    humor_level: Mapped[int] = mapped_column("humorLevel", Integer, default=10)
+    emotional_intensity: Mapped[int] = mapped_column("emotionalIntensity", Integer, default=50)
+
+    project: Mapped[ProjectModel] = relationship(back_populates="style_profiles")
+
+
+class PromptTemplateModel(TimestampMixin, Base):
+    """Prompt template — stores system/user prompts for different pipeline steps.
+    stepKey: 'write_chapter' | 'polish_chapter' | 'outline' | guided steps.
+    projectId is NULL for global defaults, set for project-specific overrides."""
+    __tablename__ = "PromptTemplate"
+
+    id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
+    project_id: Mapped[uuid.UUID | None] = mapped_column(
+        "projectId",
+        UUID(as_uuid=True),
+        ForeignKey("Project.id", ondelete="CASCADE"),
+        nullable=True,
+    )
+    step_key: Mapped[str] = mapped_column("stepKey", String(50))
+    name: Mapped[str] = mapped_column(String(100))
+    description: Mapped[str | None] = mapped_column(Text, nullable=True)
+    system_prompt: Mapped[str] = mapped_column("systemPrompt", Text)
+    user_template: Mapped[str] = mapped_column("userTemplate", Text)
+    version: Mapped[int] = mapped_column(Integer, default=1)
+    is_default: Mapped[bool] = mapped_column("isDefault", Boolean, default=False)
+    tags: Mapped[list] = mapped_column(JSON, default=list)
+    effect_preview: Mapped[str | None] = mapped_column("effectPreview", Text, nullable=True)

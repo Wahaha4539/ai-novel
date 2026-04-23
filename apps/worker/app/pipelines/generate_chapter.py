@@ -13,7 +13,9 @@ from app.repositories.foreshadow_repo import ForeshadowRepository
 from app.repositories.memory_repo import MemoryRepository
 from app.repositories.project_repo import ProjectRepository
 from app.repositories.story_event_repo import StoryEventRepository
+from app.repositories.style_profile_repo import StyleProfileRepository
 from app.repositories.validation_repo import ValidationRepository
+from app.repositories.volume_repo import VolumeRepository
 from app.services.fact_extractor import FactExtractor
 from app.services.cache_service import CacheService
 from app.services.llm_gateway import LlmGateway
@@ -38,6 +40,9 @@ class GenerateChapterPipeline:
         self.memory_repo = MemoryRepository()
         self.validation_repo = ValidationRepository()
         self.story_event_repo = StoryEventRepository()
+        # New repositories for guided wizard context
+        self.volume_repo = VolumeRepository()
+        self.style_profile_repo = StyleProfileRepository()
         self.retrieval_service = RetrievalService()
         self.cache_service = CacheService()
         self.prompt_builder = PromptBuilder()
@@ -60,39 +65,67 @@ class GenerateChapterPipeline:
         }
         log_event(logger, "generation.pipeline.started", **log_context)
 
+        # --- Load project and chapter base context ---
         project = self.cache_service.get_project_snapshot(
             request.project_id,
             lambda: self.project_repo.get(request.project_id),
         )
-        chapter_context = self.cache_service.get_chapter_context(
-            request.project_id,
-            request.chapter_id,
-            lambda: {
-                "chapter": self.chapter_repo.get_snapshot(
-                    chapter_id=request.chapter_id,
-                    project_id=request.project_id,
-                ),
-                "relatedCharacters": self.character_repo.list_related(request.project_id),
-            },
+        chapter_snapshot = self.chapter_repo.get_snapshot(
+            chapter_id=request.chapter_id,
+            project_id=request.project_id,
         )
-        chapter_snapshot = chapter_context["chapter"]
-        related_characters = chapter_context.get("relatedCharacters", [])
         chapter = {
             **chapter_snapshot,
             "expectedWordCount": chapter_snapshot.get("expectedWordCount")
             or request.request_payload.word_count
             or 3500,
         }
+        chapter_no = chapter.get("chapterNo") or 1
 
+        # --- Load volume context (narrative arc for this volume) ---
+        volume_info = self.volume_repo.get_by_chapter(request.project_id, request.chapter_id)
+        volume_no = volume_info.get("volumeNo") if volume_info else None
+
+        # --- Load style profile (user's chosen writing style) ---
+        style_profile_db = self.style_profile_repo.get_default(request.project_id)
+        style_profile = style_profile_db or {
+            "pov": "third_limited",
+            "proseStyle": "冷峻、克制",
+            "pacing": "medium",
+        }
+
+        # --- Load characters filtered by volume scope ---
+        related_characters = self.character_repo.list_related(
+            request.project_id, volume_no=volume_no
+        )
+
+        # --- Load planned foreshadows from guided wizard ---
+        planned_foreshadows = self.foreshadow_repo.list_planned_for_chapter(
+            request.project_id, chapter_no
+        )
+
+        # --- Load previous chapters' full text for continuity ---
+        previous_chapters = self.draft_repo.get_previous_chapter_drafts(
+            request.project_id, chapter_no, limit=3, max_chars=6000
+        )
+
+        log_event(logger, "generation.pipeline.context_loaded", **log_context,
+                  volumeNo=volume_no, characterCount=len(related_characters),
+                  foreshadowCount=len(planned_foreshadows),
+                  previousChapterCount=len(previous_chapters),
+                  hasStyleProfile=style_profile_db is not None)
+
+        # --- Build retrieval context ---
         context = {
             "queryText": request.request_payload.instruction or chapter["objective"],
             "objective": chapter["objective"],
             "conflict": chapter["conflict"],
             "characters": [item["name"] for item in related_characters],
         }
-        hard_facts = [
-            "POV 必须维持克制、压抑的第三人称近距离视角。",
-        ]
+        hard_facts = []
+        # Inject style-aware POV constraint
+        pov_desc = style_profile.get("pov") or "第三人称限制"
+        hard_facts.append(f"POV 必须维持 {pov_desc} 视角。")
         if related_characters:
             hard_facts.append(f"当前项目已登记角色：{', '.join(item['name'] for item in related_characters[:6])}。")
         if chapter.get("conflict"):
@@ -132,21 +165,24 @@ class GenerateChapterPipeline:
                 validationIssues=blocking_issues,
             )
 
+        # --- Build prompt with all enriched context ---
         prompt = self.prompt_builder.build_chapter_prompt(
             PromptBuildInput(
                 project=project,
                 chapter=chapter,
-                style_profile={
-                    "pov": "third_limited",
-                    "proseStyle": "冷峻、克制",
-                    "pacing": "medium",
-                },
+                style_profile=style_profile,
                 hard_facts=hard_facts,
                 lorebook_hits=lorebook_hits,
                 memory_hits=ranked_hits,
-                outline_bundle={"chapterOutline": chapter.get("outline")},
+                outline_bundle={
+                    "chapterOutline": chapter.get("outline"),
+                    "relatedCharacters": related_characters,
+                },
                 user_instruction=request.request_payload.instruction,
                 target_word_count=request.request_payload.word_count,
+                volume_info=volume_info,
+                planned_foreshadows=planned_foreshadows,
+                previous_chapters=previous_chapters,
             )
         )
 
@@ -174,8 +210,27 @@ class GenerateChapterPipeline:
         events = self.fact_extractor.extract_events(text, project, chapter)
         states = self.fact_extractor.extract_character_states(text, project, chapter)
         foreshadows = self.fact_extractor.extract_foreshadows(text, project, chapter)
+
+        # --- Load accumulated narrative context for cross-chapter validation ---
+        character_states_history = self.character_state_repo.list_before_chapter(
+            request.project_id, chapter_no
+        )
+        story_events_history = self.story_event_repo.list_before_chapter(
+            request.project_id, chapter_no
+        )
+        active_foreshadows = self.foreshadow_repo.list_planned_for_chapter(
+            request.project_id, chapter_no
+        )
+
         post_issues = (
-            self.validation_engine.validate_generated_text(text, chapter)
+            self.validation_engine.validate_generated_text(
+                text, chapter,
+                characters=related_characters,
+                character_states=character_states_history,
+                story_events=story_events_history,
+                foreshadows=active_foreshadows,
+                previous_chapters=previous_chapters,
+            )
             if request.request_payload.validate_after_write
             else []
         )

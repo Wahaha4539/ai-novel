@@ -13,7 +13,9 @@ class Settings(BaseSettings):
     llm_base_url: str = "http://localhost:8318/v1"
     llm_api_key: str | None = None
     llm_model: str = "gpt-5.4"
-    embedding_dimensions: int = 1536
+    # Embedding 服务地址（独立部署的 bge-base-zh 模型）
+    embedding_base_url: str = "http://localhost:18319/v1"
+    embedding_dimensions: int = 768
 
     model_config = SettingsConfigDict(
         env_file=str(Path(__file__).resolve().parents[4] / ".env"),

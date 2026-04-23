@@ -51,6 +51,39 @@ export class ChaptersService {
     return chapter;
   }
 
+  /**
+   * Return the latest (isCurrent=true) draft for a chapter, or null if none exists.
+   * Used by the frontend EditorPanel to display AI-generated content.
+   */
+  async getLatestDraft(chapterId: string) {
+    const draft = await this.prisma.chapterDraft.findFirst({
+      where: { chapterId, isCurrent: true },
+      orderBy: { versionNo: 'desc' },
+    });
+    return draft;
+  }
+
+  /**
+   * Return all draft versions for a chapter, ordered newest first.
+   * Used by the frontend to show draft history / version switching.
+   */
+  async listDrafts(chapterId: string) {
+    return this.prisma.chapterDraft.findMany({
+      where: { chapterId },
+      orderBy: { versionNo: 'desc' },
+      select: {
+        id: true,
+        chapterId: true,
+        versionNo: true,
+        content: true,
+        source: true,
+        modelInfo: true,
+        isCurrent: true,
+        createdAt: true,
+      },
+    });
+  }
+
   async markDrafted(chapterId: string, actualWordCount: number) {
     const chapter = await this.getById(chapterId);
     const updatedChapter = await this.prisma.chapter.update({

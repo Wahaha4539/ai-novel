@@ -96,3 +96,50 @@ class DraftRepository:
                 }
                 for draft, chapter in rows
             ]
+
+    def get_previous_chapter_drafts(
+        self,
+        project_id: str,
+        current_chapter_no: int,
+        limit: int = 3,
+        max_chars: int = 6000,
+    ) -> list[dict]:
+        """Load the last N chapters' current drafts for context injection.
+        Returns drafts ordered by chapter_no ASC (oldest first) so the LLM
+        reads them in narrative order. Each draft content is truncated to
+        max_chars to control total token budget.
+
+        Args:
+            project_id: Project UUID.
+            current_chapter_no: The chapter being generated (excluded from results).
+            limit: Max number of previous chapters to return (default 3).
+            max_chars: Max characters per draft content (default 6000).
+        """
+        project_uuid = uuid.UUID(project_id)
+        with SessionLocal() as session:
+            # Find previous chapters that have a current draft
+            stmt = (
+                select(ChapterDraftModel, ChapterModel)
+                .join(ChapterModel, ChapterDraftModel.chapter_id == ChapterModel.id)
+                .where(
+                    ChapterModel.project_id == project_uuid,
+                    ChapterModel.chapter_no < current_chapter_no,
+                    ChapterDraftModel.is_current.is_(True),
+                )
+                # Take the most recent N chapters by chapter_no DESC
+                .order_by(ChapterModel.chapter_no.desc())
+                .limit(limit)
+            )
+            rows = session.execute(stmt).all()
+
+            # Reverse to get chronological order (oldest first)
+            results = [
+                {
+                    "chapterNo": chapter.chapter_no,
+                    "title": chapter.title,
+                    # Truncate long drafts to fit within token budget
+                    "content": draft.content[:max_chars] if draft.content else "",
+                }
+                for draft, chapter in reversed(rows)
+            ]
+            return results

@@ -14,6 +14,7 @@ class RetrievalHit:
 
 @dataclass(slots=True)
 class PromptBuildInput:
+    """All context needed to build a chapter-writing prompt."""
     project: dict[str, Any]
     chapter: dict[str, Any]
     style_profile: dict[str, Any]
@@ -23,6 +24,10 @@ class PromptBuildInput:
     outline_bundle: dict[str, Any]
     user_instruction: str | None = None
     target_word_count: int | None = None
+    # New context sources populated by the enriched pipeline
+    volume_info: dict[str, Any] | None = None
+    planned_foreshadows: list[dict[str, Any]] = field(default_factory=list)
+    previous_chapters: list[dict[str, Any]] = field(default_factory=list)
 
 
 @dataclass(slots=True)

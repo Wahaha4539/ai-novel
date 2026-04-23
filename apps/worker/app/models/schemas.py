@@ -72,3 +72,22 @@ class MemoryRebuildResult(BaseModel):
     chapters: list[dict[str, Any]] = Field(default_factory=list)
 
     model_config = ConfigDict(populate_by_name=True)
+
+
+class PolishChapterRequest(BaseModel):
+    """Request payload for chapter polish endpoint."""
+    project_id: str = Field(alias="projectId")
+    chapter_id: str = Field(alias="chapterId")
+    user_instruction: str | None = Field(default=None, alias="userInstruction")
+
+    model_config = ConfigDict(populate_by_name=True)
+
+
+class PolishChapterResult(BaseModel):
+    """Result from chapter polish pipeline."""
+    draft_id: str = Field(alias="draftId")
+    original_word_count: int = Field(alias="originalWordCount")
+    polished_word_count: int = Field(alias="polishedWordCount")
+    text: str
+
+    model_config = ConfigDict(populate_by_name=True)
