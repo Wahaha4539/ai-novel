@@ -128,23 +128,11 @@ export function OutlineEditor({ project }: Props) {
       {/* Editor area */}
       <div style={{ flex: 1, position: 'relative' }}>
         <textarea
+          className="editor-textarea"
           value={content}
           onChange={handleChange}
           onKeyDown={handleKeyDown}
           placeholder={`在此编写你的剧情大纲…\n\n可以包括：\n• 故事主线与核心冲突\n• 各幕/卷的剧情走向\n• 关键转折点与高潮设计\n• 支线剧情规划\n• 结局构想与伏笔布局\n• 时间线与节奏安排`}
-          style={{
-            width: '100%',
-            height: '100%',
-            padding: '1.25rem 1.5rem',
-            background: 'transparent',
-            border: 'none',
-            outline: 'none',
-            resize: 'none',
-            color: 'var(--text-main)',
-            fontSize: '0.875rem',
-            lineHeight: 1.8,
-            fontFamily: 'inherit',
-          }}
         />
       </div>
 

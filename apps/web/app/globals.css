@@ -366,7 +366,7 @@ body::after {
   cursor: not-allowed;
 }
 
-.input, .select {
+.input, .input-field, .select {
   width: 100%;
   background: var(--bg-overlay);
   border: 1px solid var(--border-light);
@@ -377,14 +377,45 @@ body::after {
   outline: none;
   transition: all 0.3s ease;
   font-family: inherit;
+  line-height: 1.5;
 }
-.input:focus, .select:focus {
+.input:focus, .input-field:focus, .select:focus {
   border-color: var(--accent-cyan);
-  background: var(--bg-overlay);
-  box-shadow: 0 0 0 3px var(--accent-cyan-bg);
+  background: rgba(6, 182, 212, 0.03);
+  box-shadow: 0 0 0 3px var(--accent-cyan-bg), 0 0 15px -3px var(--accent-cyan-glow);
 }
-.input::placeholder {
+.input::placeholder, .input-field::placeholder {
   color: var(--text-dim);
+}
+
+/* Textarea-specific enhancements */
+textarea.input, textarea.input-field {
+  line-height: 1.7;
+  resize: vertical;
+  min-height: 2.5rem;
+}
+
+/* Full-page editor textarea (OutlineEditor, WorldviewEditor, etc.) */
+.editor-textarea {
+  width: 100%;
+  height: 100%;
+  padding: 1.25rem 1.5rem;
+  background: transparent;
+  border: none;
+  outline: none;
+  resize: none;
+  color: var(--text-main);
+  font-size: 0.875rem;
+  line-height: 1.8;
+  font-family: inherit;
+  caret-color: var(--accent-cyan);
+}
+.editor-textarea::placeholder {
+  color: var(--text-dim);
+  opacity: 0.7;
+}
+.editor-textarea:focus {
+  background: rgba(6, 182, 212, 0.015);
 }
 
 .select {

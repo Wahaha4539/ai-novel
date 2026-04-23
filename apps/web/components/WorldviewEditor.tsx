@@ -128,23 +128,11 @@ export function WorldviewEditor({ project }: Props) {
       {/* Editor area */}
       <div style={{ flex: 1, position: 'relative' }}>
         <textarea
+          className="editor-textarea"
           value={content}
           onChange={handleChange}
           onKeyDown={handleKeyDown}
           placeholder="在此编写你的世界观设定…&#10;&#10;包括但不限于：&#10;• 世界背景与历史&#10;• 势力分布与权力结构&#10;• 魔法/科技体系规则&#10;• 地理环境与重要地点&#10;• 社会制度与文化习俗&#10;• 重要事件年表"
-          style={{
-            width: '100%',
-            height: '100%',
-            padding: '1.25rem 1.5rem',
-            background: 'transparent',
-            border: 'none',
-            outline: 'none',
-            resize: 'none',
-            color: 'var(--text-main)',
-            fontSize: '0.875rem',
-            lineHeight: 1.8,
-            fontFamily: 'inherit',
-          }}
         />
       </div>
 

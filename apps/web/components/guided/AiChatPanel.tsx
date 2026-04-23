@@ -112,6 +112,7 @@ export function AiChatPanel({ messages, onSend, loading }: Props) {
       >
         <div className="flex gap-2">
           <textarea
+            className="input-field"
             value={input}
             onChange={(e) => setInput(e.target.value)}
             onKeyDown={handleKeyDown}
@@ -120,18 +121,9 @@ export function AiChatPanel({ messages, onSend, loading }: Props) {
             style={{
               flex: 1,
               resize: 'none',
-              padding: '0.6rem 0.8rem',
               borderRadius: '0.75rem',
-              border: '1px solid var(--border-light)',
               background: 'var(--bg-deep)',
-              color: 'var(--text-main)',
-              fontSize: '0.85rem',
-              lineHeight: 1.5,
-              outline: 'none',
-              transition: 'border-color 0.2s ease',
             }}
-            onFocus={(e) => { e.currentTarget.style.borderColor = 'var(--accent-cyan)'; }}
-            onBlur={(e) => { e.currentTarget.style.borderColor = 'var(--border-light)'; }}
           />
           <button
             onClick={handleSubmit}

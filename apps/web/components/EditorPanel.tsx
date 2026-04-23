@@ -45,18 +45,9 @@ export function EditorPanel({ selectedProject, selectedChapterId, chapters }: Pr
         ) : (
           <div className="animate-fade-in" style={{ maxWidth: '48rem', margin: '0 auto' }}>
             <textarea
-              className="w-full h-full text-lg"
-              style={{
-                minHeight: '600px',
-                background: 'transparent',
-                resize: 'none',
-                outline: 'none',
-                border: 'none',
-                color: 'var(--text-main)',
-                lineHeight: 1.8,
-                fontFamily: 'inherit'
-              }}
+              className="editor-textarea"
               placeholder="在这里开始撰写属于你的章节故事......"
+              style={{ minHeight: '600px' }}
             />
           </div>
         )}
