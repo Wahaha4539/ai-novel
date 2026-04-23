@@ -1,5 +1,6 @@
 import React from 'react';
 import { GUIDED_STEPS, StepKey } from '../../hooks/useGuidedSession';
+import { ForeshadowFields } from './ForeshadowFields';
 
 interface Props {
   currentStepKey: StepKey;
@@ -29,10 +30,6 @@ const SIMPLE_STEP_FIELDS: Partial<Record<StepKey, FieldDef[]>> = {
   // guided_volume uses dedicated VolumesPreview component
   guided_chapter: [
     { field: 'chapterPlan', label: '章节规划', type: 'textarea' },
-  ],
-  guided_foreshadow: [
-    { field: 'foreshadowPlan', label: '伏笔规划', type: 'textarea' },
-    { field: 'supportingCharacters', label: '新增配角', type: 'textarea' },
   ],
 };
 
@@ -84,6 +81,21 @@ export function StructuredPreview({ currentStepKey, stepData, onEditField }: Pro
         stepData={stepData}
         onEditField={onEditField}
       />
+    );
+  }
+
+  // Foreshadow step uses dedicated multi-card layout
+  if (currentStepKey === 'guided_foreshadow') {
+    return (
+      <div className="flex flex-col h-full">
+        <PreviewHeader stepInfo={stepInfo} />
+        <div className="flex-1 p-4" style={{ overflowY: 'auto' }}>
+          <ForeshadowFields
+            data={stepData}
+            onChange={(field, value) => onEditField(field, value)}
+          />
+        </div>
+      </div>
     );
   }
 

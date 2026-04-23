@@ -1,6 +1,7 @@
 import React, { useState, forwardRef } from 'react';
 import { StepKey, GUIDED_STEPS } from '../../hooks/useGuidedSession';
 import { ChapterFields } from './ChapterFields';
+import { ForeshadowFields } from './ForeshadowFields';
 
 /** Simple field definitions for non-array steps */
 type FieldDef = { field: string; label: string; type: 'text' | 'textarea' };
@@ -20,10 +21,6 @@ const SIMPLE_STEP_FIELDS: Partial<Record<StepKey, FieldDef[]>> = {
   ],
   guided_outline: [
     { field: 'outline', label: '故事总纲', type: 'textarea' },
-  ],
-
-  guided_foreshadow: [
-    { field: 'foreshadowPlan', label: '伏笔规划', type: 'textarea' },
   ],
 };
 
@@ -165,6 +162,11 @@ export const StepSection = forwardRef<HTMLDivElement, Props>(
                 onGenerateForVolume={onGenerateForVolume ?? (() => {})}
                 onSaveVolume={onSaveVolume ?? (() => {})}
                 loading={loading}
+              />
+            ) : stepKey === 'guided_foreshadow' ? (
+              <ForeshadowFields
+                data={data}
+                onChange={(field, value) => onEditField(stepKey, field, value)}
               />
             ) : (
               <SimpleFields

@@ -169,11 +169,55 @@ ${INTERACTION_STYLE}
 完成时输出的 JSON 格式：
 \`[STEP_COMPLETE]\`{"chapters":[{"chapterNo":1,"title":"章节标题","objective":"本章目标","conflict":"核心冲突","outline":"章节大纲"}],"supportingCharacters":[{"name":"角色名","roleType":"supporting","personalityCore":"性格核心(含内在矛盾)","motivation":"具体动机","firstAppearChapter":1}]}`,
 
-  guided_foreshadow: `你是一个资深小说创作顾问。你正在引导用户完成「伏笔设计」规划步骤。
-帮助用户规划伏笔线索。给出具体伏笔手法选项供选择。
+  guided_foreshadow: `你是一个资深小说创作顾问，精通叙事悬念构建与伏笔编排。你正在引导用户完成「伏笔设计」规划步骤。
+
+## 核心设计理念
+好的伏笔不是「提前剧透」，而是让读者在揭晓时恍然大悟——「原来那时候就已经暗示了」。
+**每一条伏笔都必须同时满足两个标准：埋设时自然不突兀，揭开时令人拍案。**
+
+## 伏笔手法分类（引导用户选择）
+1. **道具型伏笔** — 通过物件、信件、信物在前后呼应（如：一把生锈的钥匙、一张缺角的照片）
+2. **对话型伏笔** — 角色不经意的一句话在后文获得全新含义
+3. **行为型伏笔** — 角色的反常举动/习惯暗示隐藏身份或秘密
+4. **环境型伏笔** — 场景描写中隐含线索（天气、地形、建筑细节）
+5. **叙事型伏笔** — 叙述视角刻意隐藏或误导的信息
+6. **象征型伏笔** — 反复出现的意象/符号承载深层含义
+7. **结构型伏笔** — 通过章节排列、时间线错位、嵌套叙事埋设
+
+## 伏笔设计规则（严格遵守）
+
+### 1. 分层布局
+- **主线伏笔**（1-2条）：横跨全书的核心悬念，影响结局走向
+- **卷级伏笔**（每卷1-2条）：在一卷内埋设、在后续1-2卷揭开
+- **章节伏笔**（适量）：短距离呼应，2-5章内闭合
+- 三个层级的伏笔数量比例建议为 1:2:3
+
+### 2. 时间分布
+- 前 30% 的章节是伏笔高密度埋设区
+- 中间 40% 交替埋设新伏笔和揭开旧伏笔
+- 后 30% 以揭开为主，偶尔埋设反转型伏笔
+- 禁止在最后 10% 才开始集中揭开所有伏笔
+
+### 3. 与角色的绑定
+- 每条伏笔必须绑定至少一个具体角色（施放者或接收者）
+- 主角相关的伏笔不应超过总数的 50%（避免主角中心化）
+- 反派/对手也应有属于自己的伏笔线（增加立体感）
+
+### 4. 揭开方式
+- 揭开不能只靠「某人说出真相」——要通过事件/行动自然暴露
+- 伏笔揭开后应产生情感冲击或剧情转折，不能揭开后无影响
+- 至少有一条伏笔的揭开会颠覆读者之前的认知（反转型）
+
+### 5. 反模式黑名单
+- 禁止「主角其实是天选之子/隐藏血统」这类老套伏笔
+- 禁止「梦境预言未来」作为伏笔手法（除非是此类型小说的核心设定）
+- 禁止埋设后从不揭开的「断头伏笔」
+- 禁止所有伏笔都是「角色的隐藏身份」——要有多样性
+- 禁止伏笔之间完全独立、互不关联——至少有2条伏笔互相交织
+
 ${INTERACTION_STYLE}
 完成时输出的 JSON 格式：
-\`[STEP_COMPLETE]\`{"foreshadowTracks":[{"title":"伏笔标题","detail":"描述","scope":"arc/volume/chapter"}]}`,
+\`[STEP_COMPLETE]\`{"foreshadowTracks":[{"title":"伏笔标题","detail":"伏笔内容详细描述","scope":"arc/volume/chapter","technique":"道具型/对话型/行为型/环境型/叙事型/象征型/结构型","plantChapter":"埋设时机(如:第1卷第3章)","revealChapter":"揭开时机(如:第3卷第8章)","involvedCharacters":"涉及角色","payoff":"揭开后的影响和情感冲击"}]}`,
 };
 
 @Injectable()
@@ -376,7 +420,7 @@ export class GuidedService {
       guided_outline: '{"outline":"完整的故事总纲大纲"}',
       guided_volume: '{"volumes":[{"volumeNo":1,"title":"有文学性的卷名","synopsis":"本卷剧情概要(100字以上，含核心事件/转折/情感变化)","objective":"本卷核心目标(具体可检验)"}]}',
       guided_chapter: '{"chapters":[{"chapterNo":1,"volumeNo":1,"title":"章节标题","objective":"本章目标","conflict":"核心冲突","outline":"章节大纲"}],"supportingCharacters":[{"name":"角色名","roleType":"supporting","personalityCore":"性格核心(含内在矛盾)","motivation":"具体动机","firstAppearChapter":1}]}',
-      guided_foreshadow: '{"foreshadowTracks":[{"title":"伏笔标题","detail":"描述","scope":"arc/volume/chapter"}]}',
+      guided_foreshadow: '{"foreshadowTracks":[{"title":"伏笔标题","detail":"伏笔内容详细描述","scope":"arc/volume/chapter","technique":"伏笔手法类型","plantChapter":"埋设时机","revealChapter":"揭开时机","involvedCharacters":"涉及角色","payoff":"揭开后的影响"}]}',
     };
 
     const stepSpecificInstructions: Record<string, string> = {
@@ -461,7 +505,37 @@ export class GuidedService {
 ### 质量标准
 - outline 至少 50 字，要包含具体的场景、行为和结果
 - objective 要具体可检验（如「读者了解了 X 的真实身份」而非「推进剧情」）`,
-      guided_foreshadow: '请设计3-5条伏笔线索，包括埋设时机、揭开时机、涉及角色和影响范围。配角已在章节细纲步骤中生成，此步骤不需要再生成配角。',
+      guided_foreshadow: `请根据已完成的卷纲和章节细纲，设计一套完整的伏笔体系（5-8条伏笔线索）。
+
+## 强制创意规则（必须遵守）
+### 分层要求
+- 至少 1 条「主线伏笔」（scope=arc）：横跨全书，影响最终结局
+- 至少 2 条「卷级伏笔」（scope=volume）：跨卷呼应
+- 其余为「章节伏笔」（scope=chapter）：短距离闭合
+
+### 手法多样性
+- 至少使用 3 种不同的伏笔手法（technique）
+- 禁止全部使用「对话型」或全部使用「道具型」
+
+### 时间分布
+- 埋设点（plantChapter）应分散在前 70% 的章节中
+- 揭开点（revealChapter）应在中后段逐步展开
+- 禁止所有伏笔都在最后一卷揭开
+
+### 角色关联
+- involvedCharacters 必须使用已有角色的真实名字
+- 主角相关伏笔不超过总数的一半
+- 反派/对手至少关联 1 条伏笔
+
+### 质量标准
+- detail 至少 50 字，描述埋设场景和揭开场景的具体画面
+- payoff 必须说明揭开后对剧情/角色/读者认知的具体影响
+- 至少 2 条伏笔之间存在交织或因果关联
+
+### 反模式
+- 禁止「主角是天选之子」「梦境预言」等老套伏笔
+- 禁止所有伏笔都是「角色隐藏身份」
+- 禁止埋设后从不揭开的断头伏笔`,
     };
 
     const schema = stepJsonSchemas[dto.currentStep];
@@ -800,9 +874,16 @@ ${schema}
       }
 
       case 'guided_foreshadow': {
-        // Create ForeshadowTrack records (supporting characters are now in guided_chapter)
+        // Create ForeshadowTrack records with enriched metadata.
+        // Technique, plantChapter, revealChapter, involvedCharacters, payoff
+        // are stored in the metadata JSON field for downstream use.
         const tracks = structuredData.foreshadowTracks as Array<Record<string, unknown>> | undefined;
         if (tracks?.length) {
+          // Delete old guided foreshadow tracks to prevent duplicates on re-generation
+          await this.prisma.foreshadowTrack.deleteMany({
+            where: { projectId, source: 'guided' },
+          });
+
           for (const track of tracks) {
             await this.prisma.foreshadowTrack.create({
               data: {
@@ -812,6 +893,13 @@ ${schema}
                 status: 'planned',
                 scope: asString(track.scope) ?? 'arc',
                 source: 'guided',
+                metadata: {
+                  technique: asString(track.technique),
+                  plantChapter: asString(track.plantChapter),
+                  revealChapter: asString(track.revealChapter),
+                  involvedCharacters: asString(track.involvedCharacters),
+                  payoff: asString(track.payoff),
+                },
               },
             });
           }

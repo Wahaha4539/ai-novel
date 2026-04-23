@@ -157,7 +157,7 @@ export function useGuidedSession(projectId: string) {
 {"chapters":[{"chapterNo":1,"title":"章节标题","objective":"本章目标","conflict":"核心冲突","outline":"章节大纲"}]}`,
 
       guided_foreshadow: `根据我们的对话，请输出「伏笔设计」的结构化 JSON（只输出JSON）：
-{"foreshadowTracks":[{"title":"伏笔标题","detail":"描述","scope":"arc/volume/chapter"}]}`,
+{"foreshadowTracks":[{"title":"伏笔标题","detail":"伏笔内容详细描述(50字以上)","scope":"arc/volume/chapter","technique":"道具型/对话型/行为型/环境型/叙事型/象征型/结构型","plantChapter":"埋设时机(如:第1卷第3章)","revealChapter":"揭开时机(如:第3卷第8章)","involvedCharacters":"涉及角色","payoff":"揭开后的影响和情感冲击"}]}`,
     };
 
     const extractionPrompt = jsonPrompts[currentStepKey];
