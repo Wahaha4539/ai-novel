@@ -701,7 +701,9 @@ ${schema}
       }
 
       case 'guided_chapter': {
-        // Create Chapter records, linked to volumes by volumeNo
+        // Create Chapter records, linked to volumes by volumeNo.
+        // chapterNo must be globally unique per project (@@unique([projectId, chapterNo])),
+        // so we compute an offset from existing chapters in other volumes.
         const chapters = structuredData.chapters as Array<Record<string, unknown>> | undefined;
         if (chapters?.length) {
           // Pre-fetch all volumes for this project to map volumeNo → volumeId
@@ -725,7 +727,19 @@ ${schema}
             await this.prisma.chapter.deleteMany({ where: { projectId } });
           }
 
-          for (const ch of chapters) {
+          // Compute chapterNo offset: find the max chapterNo among remaining chapters
+          // so new chapters get globally unique numbers (e.g., vol1 has ch1-16, vol2 starts at ch17)
+          let chapterNoOffset = 0;
+          if (volumeNo) {
+            const maxChapter = await this.prisma.chapter.aggregate({
+              where: { projectId },
+              _max: { chapterNo: true },
+            });
+            chapterNoOffset = maxChapter._max.chapterNo ?? 0;
+          }
+
+          for (let i = 0; i < chapters.length; i++) {
+            const ch = chapters[i];
             const chVolumeNo = ch.volumeNo as number | undefined;
             const resolvedVolumeId = chVolumeNo ? volumeNoToId.get(chVolumeNo) ?? null : null;
 
@@ -733,7 +747,8 @@ ${schema}
               data: {
                 projectId,
                 volumeId: resolvedVolumeId,
-                chapterNo: (ch.chapterNo as number) ?? 1,
+                // Use offset + sequential index to ensure global uniqueness
+                chapterNo: chapterNoOffset + i + 1,
                 title: asString(ch.title),
                 objective: asString(ch.objective),
                 conflict: asString(ch.conflict),
