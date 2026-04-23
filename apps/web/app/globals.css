@@ -744,3 +744,306 @@ textarea.input, textarea.input-field {
   flex-direction: column;
   gap: 1rem;
 }
+
+/* ─── Volume-Chapter Tree (Sidebar) ─── */
+
+.chapter-tree__header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 0 0.75rem;
+  margin-bottom: 0.5rem;
+  font-size: 0.65rem;
+  font-weight: 700;
+  text-transform: uppercase;
+  letter-spacing: 0.2em;
+  color: var(--text-dim);
+}
+.chapter-tree__count {
+  font-size: 10px;
+  font-weight: 600;
+  background: var(--bg-hover-subtle);
+  padding: 2px 8px;
+  border-radius: 6px;
+  letter-spacing: 0.05em;
+}
+
+.chapter-tree__list {
+  list-style: none;
+  padding: 0;
+  margin: 0;
+}
+.chapter-tree__list > li + li {
+  margin-top: 2px;
+}
+
+/* "全书范围" button */
+.chapter-tree__all-scope {
+  width: 100%;
+  display: flex;
+  align-items: center;
+  gap: 0.5rem;
+  padding: 0.5rem 0.75rem;
+  border: none;
+  border-radius: 0.5rem;
+  background: transparent;
+  color: var(--text-muted);
+  font-size: 0.82rem;
+  font-weight: 500;
+  font-family: inherit;
+  cursor: pointer;
+  transition: all 0.25s ease;
+  text-align: left;
+}
+.chapter-tree__all-scope:hover {
+  background: var(--bg-hover-subtle);
+  color: var(--text-main);
+}
+.chapter-tree__all-scope--active {
+  background: var(--accent-cyan-bg);
+  color: var(--accent-cyan);
+  font-weight: 600;
+  box-shadow: inset 3px 0 0 var(--accent-cyan);
+}
+
+/* Volume group container */
+.chapter-tree__volume-group {
+  margin-top: 0.25rem;
+}
+
+/* Volume header row */
+.chapter-tree__volume-header {
+  display: flex;
+  align-items: center;
+  gap: 2px;
+}
+
+/* Collapse chevron button */
+.chapter-tree__chevron {
+  width: 22px;
+  height: 22px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  border-radius: 4px;
+  border: none;
+  background: transparent;
+  color: var(--text-dim);
+  cursor: pointer;
+  flex-shrink: 0;
+  transition: all 0.2s ease;
+  font-family: inherit;
+}
+.chapter-tree__chevron:hover {
+  background: var(--bg-hover-subtle);
+  color: var(--text-muted);
+}
+
+/* Volume title button */
+.chapter-tree__volume-btn {
+  flex: 1;
+  display: flex;
+  align-items: center;
+  gap: 0.45rem;
+  padding: 0.4rem 0.5rem;
+  border-radius: 0.5rem;
+  border: none;
+  background: transparent;
+  color: var(--text-muted);
+  font-size: 0.8rem;
+  font-weight: 600;
+  font-family: inherit;
+  cursor: pointer;
+  text-align: left;
+  transition: all 0.25s ease;
+  min-width: 0;
+}
+.chapter-tree__volume-btn:hover {
+  background: var(--bg-hover-subtle);
+  color: var(--text-main);
+}
+.chapter-tree__volume-btn--active {
+  background: var(--volume-color-bg, rgba(245,158,11,0.1));
+  color: var(--volume-color, #f59e0b);
+  box-shadow: inset 3px 0 0 var(--volume-color, #f59e0b);
+}
+
+/* Volume color dot */
+.chapter-tree__volume-dot {
+  width: 7px;
+  height: 7px;
+  border-radius: 50%;
+  flex-shrink: 0;
+  transition: all 0.25s ease;
+}
+
+/* Volume title text */
+.chapter-tree__volume-title {
+  flex: 1;
+  min-width: 0;
+}
+
+/* Volume right-side metadata area */
+.chapter-tree__volume-meta {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  flex-shrink: 0;
+  margin-left: auto;
+}
+
+/* Chapter count badge in volume header */
+.chapter-tree__volume-badge {
+  font-size: 0.6rem;
+  font-weight: 600;
+  background: var(--bg-hover-subtle);
+  padding: 1px 6px;
+  border-radius: 4px;
+  color: var(--text-dim);
+  line-height: 1.5;
+}
+
+/* Micro progress bar in volume header */
+.chapter-tree__progress-track {
+  width: 20px;
+  height: 3px;
+  border-radius: 3px;
+  background: var(--border-dim);
+  overflow: hidden;
+  flex-shrink: 0;
+}
+.chapter-tree__progress-fill {
+  height: 100%;
+  border-radius: 3px;
+  transition: width 0.5s ease;
+  min-width: 1px;
+}
+
+/* Animated collapse wrapper */
+.chapter-tree__collapse-wrapper {
+  will-change: max-height, opacity;
+}
+
+/* Chapter list inside a volume */
+.chapter-tree__chapter-list {
+  list-style: none;
+  padding: 0;
+  margin: 2px 0 0 0;
+}
+
+/* Single chapter item wrapper */
+.chapter-tree__chapter-item {
+  display: flex;
+  align-items: stretch;
+  min-height: 30px;
+  position: relative;
+}
+
+/* Connector line container */
+.chapter-tree__connector {
+  width: 24px;
+  flex-shrink: 0;
+  position: relative;
+  margin-left: 10px;
+}
+
+/* Vertical connector line */
+.chapter-tree__connector-vert {
+  position: absolute;
+  left: 5px;
+  top: 0;
+  width: 1px;
+  background: var(--border-dim);
+}
+
+/* Horizontal branch line */
+.chapter-tree__connector-horiz {
+  position: absolute;
+  left: 5px;
+  top: 50%;
+  width: 12px;
+  height: 1px;
+  background: var(--border-dim);
+}
+
+/* Chapter button */
+.chapter-tree__chapter-btn {
+  flex: 1;
+  display: flex;
+  align-items: center;
+  gap: 0.4rem;
+  padding: 0.3rem 0.5rem;
+  border-radius: 0.4rem;
+  border: none;
+  background: transparent;
+  color: var(--text-muted);
+  font-size: 0.78rem;
+  font-weight: 400;
+  font-family: inherit;
+  cursor: pointer;
+  text-align: left;
+  transition: all 0.2s ease;
+  min-width: 0;
+}
+.chapter-tree__chapter-btn:hover {
+  background: var(--bg-hover-subtle);
+  color: var(--text-main);
+}
+.chapter-tree__chapter-btn--active {
+  background: var(--accent-cyan-bg);
+  color: var(--accent-cyan);
+  font-weight: 500;
+  box-shadow: inset 3px 0 0 var(--ch-accent, var(--accent-cyan));
+}
+
+/* Chapter status dot — shows drafted vs pending */
+.chapter-tree__status-dot {
+  width: 5px;
+  height: 5px;
+  border-radius: 50%;
+  flex-shrink: 0;
+  transition: all 0.3s ease;
+}
+
+/* Chapter number badge */
+.chapter-tree__ch-no {
+  font-size: 0.6rem;
+  font-weight: 600;
+  color: var(--text-dim);
+  background: var(--bg-hover-subtle);
+  padding: 0 5px;
+  border-radius: 3px;
+  line-height: 1.6;
+  flex-shrink: 0;
+  font-variant-numeric: tabular-nums;
+  min-width: 1.5rem;
+  text-align: center;
+}
+.chapter-tree__chapter-btn--active .chapter-tree__ch-no {
+  background: rgba(6, 182, 212, 0.15);
+  color: var(--accent-cyan);
+}
+
+/* Chapter title text */
+.chapter-tree__ch-title {
+  flex: 1;
+  min-width: 0;
+  line-height: 1.4;
+}
+
+/* Unassigned chapters section */
+.chapter-tree__unassigned {
+  margin-top: 0.75rem;
+  padding-top: 0.5rem;
+  border-top: 1px solid var(--border-dim);
+}
+.chapter-tree__unassigned-label {
+  display: flex;
+  align-items: center;
+  gap: 0.4rem;
+  padding: 0.3rem 0.75rem;
+  font-size: 0.7rem;
+  color: var(--text-dim);
+  font-style: italic;
+  font-weight: 500;
+}
