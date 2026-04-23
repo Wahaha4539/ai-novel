@@ -120,11 +120,48 @@ ${INTERACTION_STYLE}
 完成时输出的 JSON 格式：
 \`[STEP_COMPLETE]\`{"outline":"完整的故事总纲大纲"}`,
 
-  guided_volume: `你是一个资深小说创作顾问。你正在引导用户完成「卷纲拆分」步骤。
-帮助用户将总纲拆分为多个卷。给出不同的分卷方案供选择。
+  guided_volume: `你是一个资深小说创作顾问，精通长篇叙事结构与节奏把控。你正在引导用户完成「卷纲拆分」步骤。
+
+## 核心设计理念
+你的任务不是简单地「把故事分成几段」，而是设计一套**有节奏感、有呼吸感的叙事建筑**。
+每一卷都是一座完整的小房子，而所有卷组合起来构成一座宏伟的城堡。
+
+## 分卷结构原则（严格遵守）
+
+### 1. 每卷必须有独立的戏剧弧线
+- 每卷要有自己的「起承转合」——不能只是总纲的某一段
+- 每卷必须有一个**阶段性高潮**和一个**情感转折点**
+- 卷末必须有**钩子**（悬念、反转、新谜团），驱动读者翻到下一卷
+
+### 2. 卷间节奏设计
+- 禁止所有卷都是「升级→打怪→升级」的单调循环
+- 要有张弛交替：高强度冲突卷之后安排一卷相对舒缓但暗流涌动的过渡
+- 建议节奏模式参考：铺垫卷 → 爆发卷 → 过渡卷 → 升级卷 → 高潮卷
+
+### 3. 角色弧线分配
+- 明确每卷的**焦点角色**（主角始终在线，但每卷有不同的配角聚光灯）
+- 角色成长不能线性递增，要有挫折和倒退
+- 至少有一卷让主角遭遇严重的个人危机（而非外部威胁）
+
+### 4. 伏笔与暗线编排
+- 前期卷中必须埋设至少 2 条在后期卷才揭开的伏笔
+- 每卷的 synopsis 中标注该卷**新引入的谜团**和**解开的旧谜团**
+- 禁止所有伏笔都在最终卷一次性揭开（要分批揭开）
+
+### 5. 反模式黑名单
+- 禁止「第一卷：初入江湖」「第二卷：崭露头角」「第三卷：巅峰对决」这种模板式分卷
+- 禁止每卷标题都是四字成语
+- 禁止每卷的 objective 都是「主角变强/升级/获得新能力」
+- 卷名要有文学性和画面感，能暗示本卷的核心意象
+
+### 6. synopsis 质量要求
+- 每卷 synopsis 不少于 100 字，要包含：核心事件、关键转折、情感变化
+- 不能只写「主角遇到了困难并克服了它」——要写清楚是什么困难、怎么尝试、付出什么代价
+- objective 要具体到可以检验的标准（如「揭示反派的真实身份」而非「推进主线」）
+
 ${INTERACTION_STYLE}
 完成时输出的 JSON 格式：
-\`[STEP_COMPLETE]\`{"volumes":[{"volumeNo":1,"title":"卷名","synopsis":"本卷剧情概要","objective":"本卷核心目标"}]}`,
+\`[STEP_COMPLETE]\`{"volumes":[{"volumeNo":1,"title":"卷名","synopsis":"本卷剧情概要(100字以上)","objective":"本卷核心目标(具体可检验)"}]}`,
 
   guided_chapter: `你是一个资深小说创作顾问。你正在引导用户完成「章节细纲」规划步骤。
 帮助用户为当前卷规划具体章节。可以给出章节节奏方案供选择。
@@ -337,8 +374,8 @@ export class GuidedService {
       guided_style: '{"pov":"人称视角","tense":"时态","proseStyle":"文风描述","pacing":"节奏描述"}',
       guided_characters: '{"characters":[{"name":"角色名","roleType":"protagonist/antagonist/supporting/competitor","personalityCore":"性格核心","motivation":"核心动机","backstory":"背景故事"}]}',
       guided_outline: '{"outline":"完整的故事总纲大纲"}',
-      guided_volume: '{"volumes":[{"volumeNo":1,"title":"卷名","synopsis":"本卷剧情概要","objective":"本卷核心目标"}]}',
-      guided_chapter: '{"chapters":[{"chapterNo":1,"title":"章节标题","objective":"本章目标","conflict":"核心冲突","outline":"章节大纲"}]}',
+      guided_volume: '{"volumes":[{"volumeNo":1,"title":"有文学性的卷名","synopsis":"本卷剧情概要(100字以上，含核心事件/转折/情感变化)","objective":"本卷核心目标(具体可检验)"}]}',
+      guided_chapter: '{"chapters":[{"chapterNo":1,"volumeNo":1,"title":"章节标题","objective":"本章目标","conflict":"核心冲突","outline":"章节大纲"}]}',
       guided_foreshadow: '{"foreshadowTracks":[{"title":"伏笔标题","detail":"描述","scope":"arc/volume/chapter"}],"supportingCharacters":[{"name":"角色名","roleType":"supporting","personalityCore":"性格","motivation":"动机","scope":"volume/chapter"}]}',
     };
 
@@ -369,8 +406,53 @@ export class GuidedService {
 - 角色之间关系不能全是「信任的伙伴」，要有信息差、利益冲突或情感错位
 - 至少有一组关系是非对称的（A信任B但B在利用A）`,
       guided_outline: '请根据已有的设定和角色信息，生成一个完整的故事总纲大纲，包含起承转合、主要冲突线索和情感弧线。',
-      guided_volume: '请根据总纲将故事拆分为指定数量的卷，每个卷有清晰的剧情目标和阶段性高潮。用户会在 userHint 中指定卷数，务必严格按照该数量生成，不多不少。',
-      guided_chapter: '请为当前卷规划8-15个章节，每章有明确的推进目标和核心冲突。',
+      guided_volume: `请根据总纲和角色设定，将故事拆分为指定数量的卷。用户会在 userHint 中指定卷数，务必严格按照该数量生成，不多不少。
+
+## 强制结构规则（必须遵守）
+### 叙事弧线
+- 每卷必须有独立的「起承转合」戏剧弧线，不能只是总纲的简单切片
+- 每卷末尾必须有一个钩子（悬念/反转/新谜团）驱动读者继续
+- 至少有一卷让主角遭遇严重个人危机（内在冲突而非外部打斗）
+
+### 节奏控制
+- 禁止所有卷都是「升级→打怪→升级」的单调循环
+- 高强度冲突卷之后要安排暗流涌动的过渡卷
+- 角色成长不能线性递增，要有挫折和倒退
+
+### 伏笔编排
+- 前期卷必须埋设在后期卷才揭开的伏笔
+- 禁止所有伏笔在最终卷一次性揭开
+
+### 反模式
+- 禁止模板式分卷（如「初入江湖→崭露头角→巅峰对决」）
+- 禁止每卷标题都是四字成语
+- 禁止每卷 objective 都是「主角变强/升级」
+- 卷名要有文学性和画面感
+
+### 质量标准
+- 每卷 synopsis 不少于 100 字，包含核心事件、关键转折、情感变化
+- objective 要具体可检验（如「揭示反派的真实身份」而非「推进主线」）`,
+      guided_chapter: `请为指定卷规划 8-15 个章节，每章有明确的推进目标和核心冲突。
+
+## 强制结构规则（必须遵守）
+### 章节节奏设计
+- 开篇章要有引子/钩子，抓住读者注意力
+- 中间章节要有交替的紧张和舒缓节奏
+- 卷末章节必须有高潮或悬念收束
+- 禁止每章都是「主角遇到敌人→战斗→获胜」的单一模式
+
+### 冲突层次
+- 外部冲突（对手/环境/任务）和内在冲突（信念/情感/道德）要交替出现
+- 至少有 1-2 章以角色关系和内心活动为主线
+- 每章的 conflict 必须具体到人物/事件，不能是「遇到困难」
+
+### 信息与伏笔分配
+- 每 3-4 章揭示一个重要信息或推进一条伏笔线
+- 关键信息不要集中在最后几章
+
+### 质量标准
+- outline 至少 50 字，要包含具体的场景、行为和结果
+- objective 要具体可检验（如「读者了解了 X 的真实身份」而非「推进剧情」）`,
       guided_foreshadow: '请设计3-5条伏笔线索，并规划2-3个新配角来丰富故事。',
     };
 
@@ -441,6 +523,24 @@ ${schema}
       }
     }
 
+    // For guided_chapter with volumeNo, inject volume-specific context
+    if (dto.currentStep === 'guided_chapter' && dto.volumeNo) {
+      // Look up volume info from the session's saved volume data
+      let volumeContext = '';
+      try {
+        const session = await this.prisma.guidedSession.findUnique({ where: { projectId } });
+        const stepData = (session?.stepData as Record<string, unknown>) ?? {};
+        const volumeResult = stepData['guided_volume_result'] as Record<string, unknown> | undefined;
+        const volumes = (volumeResult?.volumes ?? []) as Array<Record<string, unknown>>;
+        const targetVol = volumes.find((v) => (v.volumeNo as number) === dto.volumeNo);
+        if (targetVol) {
+          volumeContext = `\n- 卷名：${targetVol.title}\n- 本卷核心目标：${targetVol.objective}\n- 本卷剧情概要：${targetVol.synopsis}`;
+        }
+      } catch { /* non-critical */ }
+
+      systemPrompt += `\n\n## ⚠️ 当前生成目标（最高优先级）\n仅为 **第 ${dto.volumeNo} 卷** 生成章节细纲。${volumeContext}\n\n所有生成的 chapter 对象中 volumeNo 字段必须为 ${dto.volumeNo}。请为本卷规划 8-15 个章节。`;
+    }
+
     // Use DB userTemplate for user message if available, otherwise use default
     const userMessage = dbTemplate?.userTemplate
       ? renderTemplate(dbTemplate.userTemplate, templateVars)
@@ -484,6 +584,7 @@ ${schema}
     projectId: string,
     step: string,
     structuredData: Record<string, unknown>,
+    volumeNo?: number,
   ): Promise<{ written: string[] }> {
     const written: string[] = [];
 
@@ -568,9 +669,12 @@ ${schema}
       }
 
       case 'guided_volume': {
-        // Create Volume records
+        // Replace all existing volumes for this project (delete-then-create)
         const volumes = structuredData.volumes as Array<Record<string, unknown>> | undefined;
         if (volumes?.length) {
+          // Delete old volumes first to prevent duplicates
+          await this.prisma.volume.deleteMany({ where: { projectId } });
+
           for (let i = 0; i < volumes.length; i++) {
             const vol = volumes[i];
             await this.prisma.volume.create({
@@ -590,14 +694,38 @@ ${schema}
       }
 
       case 'guided_chapter': {
-        // Create Chapter records, optionally linked to volumes
+        // Create Chapter records, linked to volumes by volumeNo
         const chapters = structuredData.chapters as Array<Record<string, unknown>> | undefined;
         if (chapters?.length) {
+          // Pre-fetch all volumes for this project to map volumeNo → volumeId
+          const existingVolumes = await this.prisma.volume.findMany({
+            where: { projectId },
+            select: { id: true, volumeNo: true },
+          });
+          const volumeNoToId = new Map(existingVolumes.map((v) => [v.volumeNo, v.id]));
+
+          // Delete old chapters before creating new ones to prevent duplicates
+          if (volumeNo) {
+            // Per-volume save: only delete chapters for the target volume
+            const targetVolumeId = volumeNoToId.get(volumeNo);
+            if (targetVolumeId) {
+              await this.prisma.chapter.deleteMany({
+                where: { projectId, volumeId: targetVolumeId },
+              });
+            }
+          } else {
+            // Full save: delete all chapters for this project
+            await this.prisma.chapter.deleteMany({ where: { projectId } });
+          }
+
           for (const ch of chapters) {
+            const chVolumeNo = ch.volumeNo as number | undefined;
+            const resolvedVolumeId = chVolumeNo ? volumeNoToId.get(chVolumeNo) ?? null : null;
+
             await this.prisma.chapter.create({
               data: {
                 projectId,
-                volumeId: asString(ch.volumeId) ?? null,
+                volumeId: resolvedVolumeId,
                 chapterNo: (ch.chapterNo as number) ?? 1,
                 title: asString(ch.title),
                 objective: asString(ch.objective),

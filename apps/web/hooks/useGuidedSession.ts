@@ -515,8 +515,8 @@ export function useGuidedSession(projectId: string) {
   }, [projectId, currentStepKey, chatMessages, handleStepComplete, buildProjectContext]);
 
   // One-shot AI generation: generate all data for a step without Q&A
-  // Accepts optional targetStepKey to support document-editing mode
-  const generateStepData = useCallback(async (userHint?: string, targetStepKey?: StepKey): Promise<Record<string, unknown> | null> => {
+  // Accepts optional targetStepKey and volumeNo to support per-volume chapter generation
+  const generateStepData = useCallback(async (userHint?: string, targetStepKey?: StepKey, volumeNo?: number): Promise<Record<string, unknown> | null> => {
     if (!projectId) return null;
     setLoading(true);
     setError('');
@@ -542,17 +542,19 @@ export function useGuidedSession(projectId: string) {
             userHint,
             projectContext: buildProjectContext(),
             chatSummary,
+            ...(volumeNo !== undefined && { volumeNo }),
           }),
         },
       );
 
       // Show AI summary in chat
       const stepLabel = GUIDED_STEPS[stepIndex]?.label ?? '';
+      const volumeLabel = volumeNo ? ` · 第${volumeNo}卷` : '';
       setChatMessages((prev) => [
         ...prev,
         {
           role: 'ai',
-          content: `⚡ **${stepLabel} · 一键生成完成**\n\n${response.summary}\n\n可在文档中查看并编辑，确认无误后点击「✅ 保存」按钮。`,
+          content: `⚡ **${stepLabel}${volumeLabel} · 一键生成完成**\n\n${response.summary}\n\n可在文档中查看并编辑，确认无误后点击「✅ 保存」按钮。`,
           timestamp: Date.now(),
         },
       ]);
@@ -567,10 +569,11 @@ export function useGuidedSession(projectId: string) {
   }, [projectId, currentStepKey, chatMessages, buildProjectContext]);
 
   // Confirm and persist generated/edited data directly (skip AI extraction)
-  // Accepts optional targetStepKey to support document-editing mode
+  // Accepts optional targetStepKey and volumeNo to support document-editing mode
   const confirmGeneratedData = useCallback(async (
     structuredData: Record<string, unknown>,
     targetStepKey?: StepKey,
+    volumeNo?: number,
   ): Promise<boolean> => {
     if (!projectId) return false;
     setLoading(true);
@@ -587,15 +590,17 @@ export function useGuidedSession(projectId: string) {
           body: JSON.stringify({
             currentStep: stepKey,
             structuredData,
+            ...(volumeNo !== undefined && { volumeNo }),
           }),
         },
       );
 
+      const volumeLabel = volumeNo ? ` · 第${volumeNo}卷` : '';
       setChatMessages((prev) => [
         ...prev,
         {
           role: 'ai',
-          content: `✅ **${stepLabel}** 已保存！\n\n已写入：${result.written.join('、')}`,
+          content: `✅ **${stepLabel}${volumeLabel}** 已保存！\n\n已写入：${result.written.join('、')}`,
           timestamp: Date.now(),
         },
       ]);

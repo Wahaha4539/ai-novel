@@ -129,7 +129,7 @@ export default function HomePage() {
         ) : activeView === 'volumes' ? (
           <VolumePanel selectedProject={selectedProject} selectedProjectId={data.selectedProjectId} />
         ) : activeView === 'guided' ? (
-          <GuidedWizard selectedProject={selectedProject} selectedProjectId={data.selectedProjectId} autoStart={autoStartGuided} />
+          <GuidedWizard selectedProject={selectedProject} selectedProjectId={data.selectedProjectId} autoStart={autoStartGuided} onDataChanged={() => data.loadProjectData(data.selectedProjectId, data.selectedChapterId)} />
         ) : activeView === 'prompts' ? (
           <PromptManagerPanel selectedProject={selectedProject} selectedProjectId={data.selectedProjectId} />
         ) : activeView === 'foreshadow' ? (

@@ -1,4 +1,4 @@
-import { IsOptional, IsString } from 'class-validator';
+import { IsNumber, IsOptional, IsString } from 'class-validator';
 
 export class FinalizeStepDto {
   @IsString()
@@ -7,4 +7,9 @@ export class FinalizeStepDto {
   /** JSON-stringified structured data from AI, varies by step */
   @IsOptional()
   structuredData?: Record<string, unknown>;
+
+  /** Optional: save chapters for a specific volume only */
+  @IsOptional()
+  @IsNumber()
+  volumeNo?: number;
 }

@@ -1,5 +1,6 @@
 import React, { useState, forwardRef } from 'react';
 import { StepKey, GUIDED_STEPS } from '../../hooks/useGuidedSession';
+import { ChapterFields } from './ChapterFields';
 
 /** Simple field definitions for non-array steps */
 type FieldDef = { field: string; label: string; type: 'text' | 'textarea' };
@@ -20,9 +21,7 @@ const SIMPLE_STEP_FIELDS: Partial<Record<StepKey, FieldDef[]>> = {
   guided_outline: [
     { field: 'outline', label: '故事总纲', type: 'textarea' },
   ],
-  guided_chapter: [
-    { field: 'chapterPlan', label: '章节规划', type: 'textarea' },
-  ],
+
   guided_foreshadow: [
     { field: 'foreshadowPlan', label: '伏笔规划', type: 'textarea' },
     { field: 'supportingCharacters', label: '新增配角', type: 'textarea' },
@@ -73,14 +72,17 @@ interface Props {
   isActive: boolean;
   isCompleted: boolean;
   data: Record<string, unknown>;
+  volumeData?: Record<string, unknown>;
   onEditField: (stepKey: StepKey, field: string, value: string) => void;
   onGenerate: (stepKey: StepKey) => void;
+  onGenerateForVolume?: (volumeNo: number) => void;
   onSave: (stepKey: StepKey) => void;
+  onSaveVolume?: (volumeNo: number) => void;
   loading: boolean;
 }
 
 export const StepSection = forwardRef<HTMLDivElement, Props>(
-  ({ stepKey, isActive, isCompleted, data, onEditField, onGenerate, onSave, loading }, ref) => {
+  ({ stepKey, isActive, isCompleted, data, volumeData, onEditField, onGenerate, onGenerateForVolume, onSave, onSaveVolume, loading }, ref) => {
     const [collapsed, setCollapsed] = useState(false);
     const stepInfo = GUIDED_STEPS.find((s) => s.key === stepKey);
     if (!stepInfo) return null;
@@ -155,6 +157,15 @@ export const StepSection = forwardRef<HTMLDivElement, Props>(
               <VolumesFields
                 data={data}
                 onChange={(field, value) => onEditField(stepKey, field, value)}
+              />
+            ) : stepKey === 'guided_chapter' ? (
+              <ChapterFields
+                data={data}
+                volumeData={volumeData ?? {}}
+                onChange={(field, value) => onEditField(stepKey, field, value)}
+                onGenerateForVolume={onGenerateForVolume ?? (() => {})}
+                onSaveVolume={onSaveVolume ?? (() => {})}
+                loading={loading}
               />
             ) : (
               <SimpleFields

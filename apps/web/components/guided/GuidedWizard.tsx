@@ -5,13 +5,25 @@ import { DocumentTOC } from './DocumentTOC';
 import { StepSection } from './StepSection';
 import { AiChatPanel } from './AiChatPanel';
 
+/** Parse volumeChapters from chapter step data */
+function parseVolumeChapters(data: Record<string, unknown>): Record<number, Array<Record<string, unknown>>> {
+  const raw = data?.volumeChapters;
+  if (!raw) return {};
+  try {
+    if (typeof raw === 'string') return JSON.parse(raw) as Record<number, Array<Record<string, unknown>>>;
+    if (typeof raw === 'object' && !Array.isArray(raw)) return raw as Record<number, Array<Record<string, unknown>>>;
+  } catch { /* ignore */ }
+  return {};
+}
+
 interface Props {
   selectedProject?: ProjectSummary;
   selectedProjectId: string;
   autoStart?: boolean;
+  onDataChanged?: () => void;
 }
 
-export function GuidedWizard({ selectedProject, selectedProjectId, autoStart }: Props) {
+export function GuidedWizard({ selectedProject, selectedProjectId, autoStart, onDataChanged }: Props) {
   const {
     session,
     currentStepIndex,
@@ -96,12 +108,80 @@ export function GuidedWizard({ selectedProject, selectedProjectId, autoStart }: 
     }
   }, [generateStepData, allStepData]);
 
+  // Handle AI generation for a specific volume's chapters
+  const handleGenerateForVolume = useCallback(async (volumeNo: number) => {
+    const data = await generateStepData(
+      `为第 ${volumeNo} 卷生成章节细纲`,
+      'guided_chapter',
+      volumeNo,
+    );
+    if (data) {
+      // Merge returned chapters into volumeChapters keyed by volumeNo
+      const existingData = allStepData['guided_chapter'] ?? {};
+      const existingVC = parseVolumeChapters(existingData);
+      const newChapters = (data as Record<string, unknown>).chapters;
+      if (Array.isArray(newChapters)) {
+        existingVC[volumeNo] = newChapters;
+      }
+      setAllStepData((prev) => ({
+        ...prev,
+        guided_chapter: { ...existingData, volumeChapters: existingVC },
+      }));
+    }
+  }, [generateStepData, allStepData]);
+
   // Handle save for a specific step
   const handleSave = useCallback(async (stepKey: StepKey) => {
-    const data = allStepData[stepKey];
-    if (!data || Object.keys(data).length === 0) return;
+    const rawData = allStepData[stepKey];
+    if (!rawData || Object.keys(rawData).length === 0) return;
+
+    // Normalize: parse JSON-stringified fields back to objects
+    // (VolumesFields and CharactersFields store edited data as JSON strings via onChange)
+    const data = { ...rawData };
+    for (const key of Object.keys(data)) {
+      const val = data[key];
+      if (typeof val === 'string' && val.startsWith('[')) {
+        try { data[key] = JSON.parse(val); } catch { /* keep as-is */ }
+      }
+    }
+
+    // For guided_chapter, flatten volumeChapters into a single chapters[] with volumeNo
+    if (stepKey === 'guided_chapter') {
+      const vc = parseVolumeChapters(data);
+      const flatChapters: Array<Record<string, unknown>> = [];
+      for (const [volNoStr, chapters] of Object.entries(vc)) {
+        const volNo = parseInt(volNoStr, 10);
+        for (const ch of chapters) {
+          flatChapters.push({ ...ch, volumeNo: volNo });
+        }
+      }
+      if (flatChapters.length > 0) {
+        await confirmGeneratedData({ chapters: flatChapters }, stepKey);
+        onDataChanged?.();
+      }
+      return;
+    }
+
     await confirmGeneratedData(data, stepKey);
-  }, [allStepData, confirmGeneratedData]);
+    // Trigger sidebar refresh after saving
+    onDataChanged?.();
+  }, [allStepData, confirmGeneratedData, onDataChanged]);
+
+  // Handle save for a specific volume's chapters
+  const handleSaveVolume = useCallback(async (volumeNo: number) => {
+    const rawData = allStepData['guided_chapter'] ?? {};
+    const vc = parseVolumeChapters(rawData);
+    const chapters = vc[volumeNo];
+    if (!chapters || chapters.length === 0) return;
+
+    const flatChapters = chapters.map((ch) => ({ ...ch, volumeNo }));
+    await confirmGeneratedData(
+      { chapters: flatChapters },
+      'guided_chapter',
+      volumeNo,
+    );
+    onDataChanged?.();
+  }, [allStepData, confirmGeneratedData, onDataChanged]);
 
   // TOC click — scroll to section
   const handleTocClick = useCallback((stepKey: StepKey) => {
@@ -237,6 +317,8 @@ export function GuidedWizard({ selectedProject, selectedProjectId, autoStart }: 
           activeStepKey={activeStepKey}
           completedSteps={completedSteps}
           onStepClick={handleTocClick}
+          volumeData={allStepData['guided_volume'] ?? {}}
+          chapterData={allStepData['guided_chapter'] ?? {}}
         />
 
         {/* Center: Document Body */}
@@ -254,9 +336,12 @@ export function GuidedWizard({ selectedProject, selectedProjectId, autoStart }: 
                 isActive={activeStepKey === step.key}
                 isCompleted={completedSteps.has(step.key)}
                 data={allStepData[step.key] ?? {}}
+                volumeData={allStepData['guided_volume'] ?? {}}
                 onEditField={handleEditField}
                 onGenerate={handleGenerate}
+                onGenerateForVolume={handleGenerateForVolume}
                 onSave={handleSave}
+                onSaveVolume={handleSaveVolume}
                 loading={loading}
               />
             ))}

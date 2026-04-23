@@ -1,4 +1,4 @@
-import { IsOptional, IsString } from 'class-validator';
+import { IsInt, IsOptional, IsString } from 'class-validator';
 
 export class GenerateStepDto {
   @IsString()
@@ -18,5 +18,10 @@ export class GenerateStepDto {
   @IsOptional()
   @IsString()
   chatSummary?: string;
+
+  /** Target volume number for per-volume chapter generation (guided_chapter step) */
+  @IsOptional()
+  @IsInt()
+  volumeNo?: number;
 }
 

@@ -56,11 +56,12 @@ export class GuidedController {
     @Param('projectId') projectId: string,
     @Body() dto: FinalizeStepDto,
   ) {
-    console.log(`[Guided] POST finalize pid=${projectId} step=${dto.currentStep} keys=[${Object.keys(dto.structuredData ?? {}).join(',')}]`);
+    console.log(`[Guided] POST finalize pid=${projectId} step=${dto.currentStep} keys=[${Object.keys(dto.structuredData ?? {}).join(',')}] volumeNo=${dto.volumeNo ?? 'all'}`);
     return this.guidedService.finalizeStep(
       projectId,
       dto.currentStep,
       dto.structuredData ?? {},
+      dto.volumeNo,
     );
   }
 }
