@@ -535,13 +535,15 @@ export class GuidedService {
 ### 质量标准
 - outline 至少 50 字，要包含具体的场景、行为和结果
 - objective 要具体可检验（如「读者了解了 X 的真实身份」而非「推进剧情」）`,
-      guided_foreshadow: `请根据已完成的卷纲和章节细纲，设计一套完整的伏笔体系（5-8条伏笔线索）。
+      guided_foreshadow: `请根据已完成的卷纲和章节细纲，设计一套完整的伏笔体系。
+伏笔数量公式：主线 2-3 条 + 每卷 1-2 条卷级伏笔 + 适量章节级伏笔。
+具体数量会在下方「伏笔数量约束」中指定，必须严格遵守。
 
 ## 强制创意规则（必须遵守）
 ### 分层要求
-- 至少 1 条「主线伏笔」（scope=arc）：横跨全书，影响最终结局
-- 至少 2 条「卷级伏笔」（scope=volume）：跨卷呼应
-- 其余为「章节伏笔」（scope=chapter）：短距离闭合
+- 至少 2 条「主线伏笔」（scope=arc）：横跨全书，影响最终结局
+- 每卷至少 1 条「卷级伏笔」（scope=volume）：跨卷呼应
+- 适量「章节伏笔」（scope=chapter）：短距离闭合
 
 ### 手法多样性
 - 至少使用 3 种不同的伏笔手法（technique）
@@ -658,6 +660,39 @@ ${schema}
       }
 
       systemPrompt += `\n\n## ⚠️ 当前生成目标（最高优先级）\n仅为 **第 ${dto.volumeNo} 卷** 生成章节细纲。${volumeContext}\n\n所有生成的 chapter 对象中 volumeNo 字段必须为 ${dto.volumeNo}。请为本卷规划 **${chapterRangeStr}** 个章节（不多不少）。`;
+    }
+
+    // For guided_foreshadow, compute dynamic foreshadow count based on volume count
+    // Formula: arc-level 2-3 + volume-level 1-2 per volume + a few chapter-level
+    if (dto.currentStep === 'guided_foreshadow') {
+      let volumeCount = 3; // default assumption
+      let volumeSummary = '';
+      try {
+        const session = await this.prisma.guidedSession.findUnique({ where: { projectId } });
+        const stepData = (session?.stepData as Record<string, unknown>) ?? {};
+        const volumeResult = stepData['guided_volume_result'] as Record<string, unknown> | undefined;
+        const volumes = (volumeResult?.volumes ?? []) as Array<Record<string, unknown>>;
+        if (volumes.length > 0) {
+          volumeCount = volumes.length;
+          // Build a brief summary of all volumes for context
+          volumeSummary = volumes
+            .map((v) => `第${v.volumeNo}卷「${v.title}」: ${v.objective}`)
+            .join('\n');
+        }
+      } catch { /* non-critical */ }
+
+      // Compute target counts by tier
+      const arcCount = volumeCount <= 3 ? 2 : 3;
+      const volumeLevelCount = volumeCount; // ~1 per volume
+      const chapterLevelCount = Math.max(2, Math.floor(volumeCount * 0.5));
+      const totalMin = arcCount + volumeLevelCount + chapterLevelCount;
+      const totalMax = totalMin + Math.floor(volumeCount * 0.5);
+
+      systemPrompt += `\n\n## ⚠️ 伏笔数量约束（最高优先级）\n本书共 **${volumeCount}** 卷，请生成 **${totalMin}-${totalMax}** 条伏笔线索：\n- 主线伏笔（scope=arc）：**${arcCount}** 条\n- 卷级伏笔（scope=volume）：**${volumeLevelCount}-${volumeLevelCount + 2}** 条（约每卷 1-2 条）\n- 章节伏笔（scope=chapter）：**${chapterLevelCount}-${chapterLevelCount + 2}** 条`;
+
+      if (volumeSummary) {
+        systemPrompt += `\n\n## 各卷概要（伏笔应分布在这些卷中）\n${volumeSummary}`;
+      }
     }
 
     // Use DB userTemplate for user message if available, otherwise use default
