@@ -18,6 +18,7 @@ import { useChapterGeneration, GenerationState } from '../hooks/useChapterGenera
 // ─── Types ──────────────────────────────────────────────
 
 interface Props {
+  projectId: string;
   volumes: VolumeSummary[];
   chapters: ChapterSummary[];
   onComplete?: (chapterIds?: string[]) => void | Promise<void>;
@@ -27,7 +28,7 @@ type GenerateMode = 'single' | 'volume' | 'book';
 
 // ─── Component ──────────────────────────────────────────
 
-export function BatchGeneratePanel({ volumes, chapters, onComplete }: Props) {
+export function BatchGeneratePanel({ projectId, volumes, chapters, onComplete }: Props) {
   const gen = useChapterGeneration();
   const [selectedVolumeIds, setSelectedVolumeIds] = useState<Set<string>>(new Set());
   // Default mode is 'single' — chapter-level multi-select generation
@@ -161,7 +162,7 @@ export function BatchGeneratePanel({ volumes, chapters, onComplete }: Props) {
       if (!confirmed) return;
     }
 
-    await gen.generateSequential(targets, () => {});
+    await gen.generateSequential(projectId, targets, () => {});
 
     // 生成完成后，检查后续是否有已生成章节可能受影响
     const maxGeneratedNo = Math.max(...targets.map((t) => t.chapterNo));
@@ -180,13 +181,14 @@ export function BatchGeneratePanel({ volumes, chapters, onComplete }: Props) {
     }
 
     await onComplete?.(targets.map((target) => target.id));
-  }, [selectedChapterIds, chapters, gen, onComplete]);
+  }, [projectId, selectedChapterIds, chapters, gen, onComplete]);
 
   /** Start batch generation (volume/book modes) */
   const handleStart = useCallback(async () => {
     const targets = getTargetChapters();
     if (targets.length === 0) return;
     await gen.generateSequential(
+      projectId,
       targets.map((ch) => ({
         id: ch.id,
         chapterNo: ch.chapterNo,
@@ -197,7 +199,7 @@ export function BatchGeneratePanel({ volumes, chapters, onComplete }: Props) {
       },
     );
     await onComplete?.(targets.map((target) => target.id));
-  }, [getTargetChapters, gen, onComplete]);
+  }, [projectId, getTargetChapters, gen, onComplete]);
 
   const isActive = gen.state === 'generating' || gen.state === 'polling';
   const targetCount = mode === 'single' ? selectedChapterIds.size : getTargetChapters().length;

@@ -156,6 +156,7 @@ export function VolumePanel({ selectedProject, selectedProjectId, chapters = [] 
                 }}
               >
                 <BatchGeneratePanel
+                  projectId={selectedProjectId}
                   volumes={volumes}
                   chapters={chapters}
                   onComplete={() => loadVolumes()}

@@ -177,11 +177,11 @@ export default function HomePage() {
           />
         ) : activeView === 'generate' ? (
           <BatchGeneratePanel
+            projectId={data.selectedProjectId}
             volumes={data.volumes}
             chapters={chapters}
             onComplete={async (chapterIds?: string[]) => {
               await data.loadProjectData(data.selectedProjectId, data.selectedChapterId);
-              await data.runAutoMaintenance(chapterIds);
             }}
           />
         ) : (

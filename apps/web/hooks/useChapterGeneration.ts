@@ -5,7 +5,8 @@
  *  1. Trigger generation (POST /chapters/:id/generate)
  *  2. Poll job status (GET /jobs/:id) until completed/failed
  *  3. Load draft content (GET /chapters/:id/drafts)
- *  4. Sequential batch generation (one chapter at a time)
+ *  4. Run the required post-process chain: polish → rebuild memory → validate → AI memory review
+ *  5. Sequential batch generation (one fully processed chapter at a time)
  *
  * Supports: single chapter, multi-chapter, volume, multi-volume, whole-book.
  */
@@ -107,6 +108,28 @@ async function fetchLatestDraft(chapterId: string): Promise<ChapterDraft | null>
   }
 }
 
+/** Run the mandatory post-generation chain so the next chapter sees final-text facts. */
+async function runChapterPostProcess(projectId: string, chapterId: string): Promise<void> {
+  // 润色必须先于重建记忆执行；否则事实层会基于初稿而不是最终稿。
+  await requestPolish(
+    chapterId,
+    '请在不改变剧情事实、人物关系和章节主线结果的前提下，润色当前章节正文：提升句子流畅度、画面感、节奏和衔接，修正明显语病与重复表达。直接输出润色后的完整章节正文，不要添加说明。',
+  );
+
+  await apiFetch(`/projects/${projectId}/memory/rebuild?chapterId=${encodeURIComponent(chapterId)}&dryRun=false`, {
+    method: 'POST',
+  });
+
+  await apiFetch(`/projects/${projectId}/validation/run?chapterId=${encodeURIComponent(chapterId)}`, {
+    method: 'POST',
+  });
+
+  await apiFetch(`/projects/${projectId}/memory/reviews/ai-resolve`, {
+    method: 'POST',
+    body: JSON.stringify({ chapterId }),
+  });
+}
+
 // ─── Hook ───────────────────────────────────────────────
 
 export function useChapterGeneration() {
@@ -122,7 +145,7 @@ export function useChapterGeneration() {
    * Generate content for a single chapter.
    * Full lifecycle: trigger → poll → load draft.
    */
-  const generateSingle = useCallback(async (chapterId: string): Promise<ChapterDraft | null> => {
+  const generateSingle = useCallback(async (projectId: string, chapterId: string): Promise<ChapterDraft | null> => {
     setState('generating');
     setError('');
     setCurrentJob(null);
@@ -147,7 +170,10 @@ export function useChapterGeneration() {
         return null;
       }
 
-      // Step 3: Load the generated draft
+      // Step 3: Polish final text, rebuild facts, validate, and confirm memory before exposing completion.
+      await runChapterPostProcess(projectId, chapterId);
+
+      // Step 4: Load the final current draft after polishing
       const draft = await fetchLatestDraft(chapterId);
       setCurrentDraft(draft);
       setState('completed');
@@ -166,6 +192,7 @@ export function useChapterGeneration() {
    * This ensures consistent context (previous chapters' text is available).
    */
   const generateSequential = useCallback(async (
+    projectId: string,
     chapters: ChapterTarget[],
     onChapterComplete?: (chapterId: string, index: number) => void,
   ) => {
@@ -217,6 +244,10 @@ export function useChapterGeneration() {
           // Continue to next chapter on failure (don't block the batch)
           continue;
         }
+
+        // Step 3: Complete the chapter lifecycle before starting the next chapter.
+        // This guarantees subsequent chapters retrieve polished text and refreshed facts/memory.
+        await runChapterPostProcess(projectId, chapter.id);
 
         batchProgress.completedIds.push(chapter.id);
         onChapterComplete?.(chapter.id, i);

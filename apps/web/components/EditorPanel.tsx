@@ -70,8 +70,9 @@ export function EditorPanel({ selectedProject, selectedChapterId, chapters, draf
   /** Trigger AI generation for the current chapter */
   const handleGenerate = useCallback(async () => {
     if (isGlobal || !selectedChapterId || gen.state === 'polling' || gen.state === 'generating') return;
-    await gen.generateSingle(selectedChapterId);
-  }, [isGlobal, selectedChapterId, gen]);
+    if (!selectedProject?.id) return;
+    await gen.generateSingle(selectedProject.id, selectedChapterId);
+  }, [isGlobal, selectedProject?.id, selectedChapterId, gen]);
 
   const isGenerating = gen.state === 'generating' || gen.state === 'polling';
   const statusText = chapter?.status === 'drafted' ? '已生成' : (draftLoaded ? '有草稿' : '未生成');
