@@ -288,8 +288,10 @@ export function useDashboardData() {
   };
 
   /**
-   * Run the unattended post-generation maintenance chain: let LLM resolve review queue,
-   * rebuild/validate facts, then batch-fix remaining chapter-scoped validation issues when possible.
+   * Run the unattended post-generation maintenance chain: polish newly generated drafts first,
+   * then let LLM resolve review queue, rebuild/validate facts, and batch-fix remaining chapter-scoped
+   * validation issues when possible. Polish must run before rebuild so the fact layer reflects the
+   * final readable draft rather than the raw generation output.
    */
   const runAutoMaintenance = async (chapterIds?: string[]) => {
     if (!selectedProjectId) return;
@@ -299,8 +301,20 @@ export function useDashboardData() {
     const canUseCurrentScope = selectedChapterId !== 'all';
     const targetChapterIds = scopedChapterIds.length ? Array.from(new Set(scopedChapterIds)) : canUseCurrentScope ? [selectedChapterId] : [];
 
-    setActionMessage('全自动流程：AI 正在审核待确认记忆…');
+    setActionMessage(targetChapterIds.length ? '全自动流程：AI 正在润色生成草稿…' : '全自动流程：AI 正在审核待确认记忆…');
     try {
+      if (targetChapterIds.length) {
+        for (const chapterId of targetChapterIds) {
+          await apiFetch<PolishResult>(`/chapters/${chapterId}/polish`, {
+            method: 'POST',
+            body: JSON.stringify({
+              userInstruction: '请在不改变剧情事实、人物关系和章节主线结果的前提下，润色当前章节正文：提升句子流畅度、画面感、节奏和衔接，修正明显语病与重复表达。直接输出润色后的完整章节正文，不要添加说明。',
+            }),
+          });
+        }
+      }
+
+      setActionMessage('全自动流程：AI 正在审核待确认记忆…');
       const reviewScopes = targetChapterIds.length ? targetChapterIds : [undefined];
       for (const chapterId of reviewScopes) {
         await apiFetch<AiReviewResolveResult>(`/projects/${selectedProjectId}/memory/reviews/ai-resolve`, {

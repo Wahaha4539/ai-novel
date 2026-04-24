@@ -67,7 +67,8 @@ class LlmGateway:
 
         url = f"{config.base_url.rstrip('/')}/chat/completions"
         temperature = config.params.get("temperature", 0.8)
-        max_tokens = max(800, min((target_word_count or 1800), 4000))
+        # 长章节润色需要更大的输出空间；上限放宽到 10000，避免 6000+ 字章节被 4000 token 截断。
+        max_tokens = max(800, min((target_word_count or 1800), 10000))
 
         request = urllib.request.Request(
             url=url,
