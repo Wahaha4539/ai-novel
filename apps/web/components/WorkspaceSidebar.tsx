@@ -194,12 +194,12 @@ export function WorkspaceSidebar({
 
         <div className="flex items-center justify-between px-2">
           <div className="flex items-center gap-3">
-            <div className="flex items-center justify-center shrink-0" style={{ width: '32px', height: '32px', borderRadius: '50%', background: 'linear-gradient(to top right, var(--accent-cyan), #34d399)', padding: '2px', boxShadow: '0 4px 10px var(--accent-cyan-glow)' }}>
+            <div className="flex items-center justify-center shrink-0" style={{ width: '32px', height: '32px', borderRadius: '50%', background: 'var(--accent-cyan)', padding: '2px', boxShadow: '0 4px 10px var(--accent-cyan-glow)' }}>
               <div className="w-full h-full flex items-center justify-center" style={{ borderRadius: '50%', background: 'var(--bg-deep)' }}>
-                <span style={{ fontSize: '10px', color: 'var(--accent-cyan)', fontWeight: 'bold' }}>AI</span>
+                <span style={{ fontSize: '10px', color: '#faf7f0', fontWeight: 'bold' }}>AI</span>
               </div>
             </div>
-            <div className="text-xs font-medium text-slate-300">小说辅写台</div>
+            <div className="text-xs font-medium" style={{ color: 'var(--text-muted)' }}>小说辅写台</div>
           </div>
           <ThemeSwitcher />
         </div>

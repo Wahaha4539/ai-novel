@@ -141,10 +141,10 @@ export function EditorPanel({ selectedProject, selectedChapterId, chapters, draf
                   borderColor: isGenerating ? 'var(--border-light)' : 'var(--accent-cyan)',
                   background: isGenerating
                     ? 'var(--bg-card)'
-                    : 'linear-gradient(135deg, rgba(6,182,212,0.15), rgba(139,92,246,0.15))',
+                    : 'var(--accent-cyan-bg)',
                   color: isGenerating ? 'var(--text-muted)' : 'var(--accent-cyan)',
                   transition: 'all 0.2s ease',
-                  boxShadow: isGenerating ? 'none' : '0 0 12px rgba(6,182,212,0.2)',
+                  boxShadow: isGenerating ? 'none' : '0 0 12px var(--accent-cyan-glow)',
                 }}
               >
                 {isGenerating ? (
@@ -167,7 +167,7 @@ export function EditorPanel({ selectedProject, selectedChapterId, chapters, draf
           className="animate-fade-in"
           style={{
             padding: '0.6rem 2rem',
-            background: 'linear-gradient(90deg, rgba(6,182,212,0.08), rgba(139,92,246,0.08))',
+            background: 'var(--accent-cyan-bg)',
             borderBottom: '1px solid var(--border-light)',
             display: 'flex',
             alignItems: 'center',

@@ -1,9 +1,10 @@
 import { useState, useEffect } from 'react';
 
-export type ThemeType = 'theme-cyberpunk' | 'theme-light' | 'theme-matrix';
+export type ThemeType = 'theme-cyberpunk' | 'theme-light' | 'theme-matrix' | 'theme-paper-ink';
 
 export const THEMES: { id: ThemeType; label: string; color: string }[] = [
   { id: 'theme-cyberpunk', label: '深空暗影 (Cyberpunk)', color: '#06b6d4' },
+  { id: 'theme-paper-ink', label: '纸墨 (Paper & Ink)', color: '#8b5a2b' },
   { id: 'theme-light', label: '晨曦琉璃 (Light)', color: '#3b82f6' },
   { id: 'theme-matrix', label: '矩阵之眼 (Matrix)', color: '#22c55e' },
 ];

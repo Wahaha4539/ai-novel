@@ -42,7 +42,7 @@ export function InspectorPanel(props: Props) {
   const [activeTab, setActiveTab] = useState<'preview' | 'edit'>('preview');
 
   return (
-    <aside className="flex flex-col shrink-0 h-full" style={{ width: '26rem', borderLeft: '1px solid var(--border-light)', background: 'var(--bg-inspector)', backdropFilter: 'blur(32px)', overflow: 'hidden', position: 'relative', zIndex: 10, boxShadow: '-10px 0 30px rgba(0,0,0,0.3)' }}>
+    <aside className="flex flex-col shrink-0 h-full" style={{ width: '26rem', borderLeft: '1px solid var(--border-light)', background: 'var(--bg-inspector)', backdropFilter: 'blur(32px)', overflow: 'hidden', position: 'relative', zIndex: 10, boxShadow: '-10px 0 30px rgba(0,0,0,0.15)' }}>
       
       {/* Inspector Tabs - Sleek Segmented Control */}
       <div className="shrink-0 flex px-4 pt-4 pb-0" style={{ background: 'var(--bg-overlay)', borderBottom: '1px solid var(--border-dim)' }}>
@@ -59,7 +59,7 @@ export function InspectorPanel(props: Props) {
               background: activeTab === 'preview' ? 'var(--bg-card-hover)' : 'transparent',
               color: activeTab === 'preview' ? 'var(--accent-cyan)' : 'var(--text-muted)',
               border: activeTab === 'preview' ? '1px solid var(--border-light)' : '1px solid transparent',
-              boxShadow: activeTab === 'preview' ? '0 4px 15px rgba(0,0,0,0.2)' : 'none'
+              boxShadow: activeTab === 'preview' ? '0 4px 15px rgba(0,0,0,0.08)' : 'none'
             }}
           >
             剧情 / 设定预览
@@ -76,7 +76,7 @@ export function InspectorPanel(props: Props) {
               background: activeTab === 'edit' ? 'var(--bg-card-hover)' : 'transparent',
               color: activeTab === 'edit' ? 'var(--accent-cyan)' : 'var(--text-muted)',
               border: activeTab === 'edit' ? '1px solid var(--border-light)' : '1px solid transparent',
-              boxShadow: activeTab === 'edit' ? '0 4px 15px rgba(0,0,0,0.2)' : 'none'
+              boxShadow: activeTab === 'edit' ? '0 4px 15px rgba(0,0,0,0.08)' : 'none'
             }}
           >
             后台审计与操作

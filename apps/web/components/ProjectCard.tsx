@@ -58,7 +58,7 @@ export function ProjectCard({
           ? '0 0 20px rgba(244, 63, 94, 0.15)'
           : isSelected
             ? '0 0 20px var(--accent-cyan-glow)'
-            : '0 4px 15px rgba(0,0,0,0.2)',
+            : '0 4px 15px rgba(0,0,0,0.1)',
         position: 'relative',
         overflow: 'hidden',
       }}
@@ -67,14 +67,14 @@ export function ProjectCard({
         if (!isSelected && !isChecked) {
           e.currentTarget.style.borderColor = 'var(--border-hover)';
           e.currentTarget.style.transform = 'translateY(-2px)';
-          e.currentTarget.style.boxShadow = '0 8px 25px rgba(0,0,0,0.3)';
+          e.currentTarget.style.boxShadow = '0 8px 25px rgba(0,0,0,0.12)';
         }
       }}
       onMouseLeave={(e) => {
         if (!isSelected && !isChecked) {
           e.currentTarget.style.borderColor = 'var(--border-light)';
           e.currentTarget.style.transform = 'translateY(0)';
-          e.currentTarget.style.boxShadow = '0 4px 15px rgba(0,0,0,0.2)';
+          e.currentTarget.style.boxShadow = '0 4px 15px rgba(0,0,0,0.1)';
         }
       }}
     >

@@ -26,7 +26,7 @@ export function ThemeSwitcher() {
         onClick={() => setIsOpen(!isOpen)}
         className="flex items-center justify-center p-2"
         style={{ 
-          background: isOpen ? 'rgba(255,255,255,0.1)' : 'transparent',
+          background: isOpen ? 'var(--bg-hover-subtle)' : 'transparent',
           border: 'none',
           color: isOpen ? 'var(--text-main)' : 'var(--text-muted)',
           cursor: 'pointer',
@@ -35,7 +35,7 @@ export function ThemeSwitcher() {
         }}
         onMouseEnter={(e) => { 
           if (!isOpen) {
-            e.currentTarget.style.background = 'rgba(255,255,255,0.05)'; 
+            e.currentTarget.style.background = 'var(--bg-hover-subtle)'; 
           }
         }}
         onMouseLeave={(e) => { 
@@ -72,7 +72,7 @@ export function ThemeSwitcher() {
                   textAlign: 'left',
                   transition: 'all 0.2s ease'
                 }}
-                onMouseEnter={(e) => { if(theme !== t.id) { e.currentTarget.style.background = 'rgba(255,255,255,0.05)'; e.currentTarget.style.color = 'var(--text-main)' } }}
+                onMouseEnter={(e) => { if(theme !== t.id) { e.currentTarget.style.background = 'var(--bg-hover-subtle)'; e.currentTarget.style.color = 'var(--text-main)' } }}
                 onMouseLeave={(e) => { if(theme !== t.id) { e.currentTarget.style.background = 'transparent'; e.currentTarget.style.color = 'var(--text-muted)' } }}
               >
                 <div style={{ width: '10px', height: '10px', borderRadius: '50%', background: t.color, boxShadow: `0 0 6px ${t.color}80` }} />

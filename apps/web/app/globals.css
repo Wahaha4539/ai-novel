@@ -1,4 +1,5 @@
 @import url('https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&display=swap');
+@import url('https://fonts.googleapis.com/css2?family=Noto+Serif+SC:wght@300;400;500;600;700&display=swap');
 
 :root, .theme-cyberpunk {
   /* Core Colors */
@@ -96,6 +97,63 @@
   --bg-hover-subtle: rgba(74, 222, 128, 0.06);
   --bg-overlay: rgba(0, 0, 0, 0.4);
   --bg-info-banner: rgba(34, 197, 94, 0.05);
+}
+
+/* ═══════════════════════════════════════════════════
+   纸墨主题 — Paper & Ink
+   灵感来源：宣纸、水墨、朱砂、书卷气
+   ═══════════════════════════════════════════════════ */
+.theme-paper-ink {
+  /* ── 宣纸底色系 ── */
+  --bg-deep: #f0ebe1;              /* 主背景：温暖宣纸 */
+  --bg-card: #faf7f0;              /* 卡片：象牙白 */
+  --bg-card-hover: #f5f0e6;        /* 卡片悬浮：微暖 */
+  --bg-primary: #f5f0e8;           /* 页面底色 */
+
+  /* ── 墨色文字层次 ── */
+  --text-main: #2c2418;            /* 浓墨：标题与正文 */
+  --text-muted: #6b5e4f;           /* 淡墨：辅助文字 */
+  --text-dim: #a89a8a;             /* 轻墨：最弱层级 */
+
+  /* ── 朱砂/赭石强调色 ── */
+  --accent-cyan: #8b5a2b;          /* 主强调：赭石 */
+  --accent-cyan-glow: rgba(139, 90, 43, 0.18);
+  --accent-cyan-bg: rgba(139, 90, 43, 0.08);
+
+  /* ── 纸上墨线边框 ── */
+  --border-dim: rgba(120, 100, 70, 0.10);
+  --border-light: rgba(120, 100, 70, 0.15);
+  --border-hover: rgba(120, 100, 70, 0.28);
+
+  /* ── 状态色 ── */
+  --status-err: #b5443e;           /* 深朱红：错误 */
+  --status-err-bg: rgba(181, 68, 62, 0.08);
+
+  /* ── 氛围光改为暖色晕染 ── */
+  --ambient-glow-1: rgba(180, 150, 100, 0.06);
+  --ambient-glow-2: rgba(160, 130, 90, 0.04);
+
+  /* ── 滚动条 ── */
+  --scrollbar-thumb: rgba(120, 100, 70, 0.15);
+  --scrollbar-thumb-hover: rgba(120, 100, 70, 0.30);
+
+  /* ── 布局语义色 ── */
+  --bg-sidebar: #ece7db;           /* 侧边栏：略深宣纸 */
+  --bg-sidebar-footer: rgba(120, 100, 70, 0.05);
+  --bg-editor-header: rgba(245, 240, 232, 0.95);
+  --bg-inspector: rgba(240, 235, 225, 0.7);
+  --bg-stat-card: rgba(120, 100, 70, 0.04);
+  --bg-stat-card-shadow: rgba(120, 100, 70, 0.06);
+  --bg-hover-subtle: rgba(120, 100, 70, 0.06);
+  --bg-overlay: rgba(120, 100, 70, 0.05);
+  --bg-info-banner: rgba(139, 90, 43, 0.05);
+
+  /* ── 纸墨专属变量 ── */
+  --paper-ink-font: 'Noto Serif SC', 'Songti SC', 'SimSun', serif;
+  --paper-shadow-soft: 0 2px 12px rgba(120, 100, 70, 0.08);
+  --paper-shadow-card: 0 1px 4px rgba(120, 100, 70, 0.10),
+                       0 4px 16px rgba(120, 100, 70, 0.06);
+  --paper-divider: rgba(120, 100, 70, 0.12);
 }
 
 :root {
@@ -1047,3 +1105,331 @@ textarea.input, textarea.input-field {
   font-style: italic;
   font-weight: 500;
 }
+
+/* ═══════════════════════════════════════════════════════════════
+   纸墨主题 — 组件级覆盖样式
+   以下规则仅在 body.theme-paper-ink 时生效
+   ═══════════════════════════════════════════════════════════════ */
+
+/* ── 字体切换：全局换用衬线字体 ── */
+.theme-paper-ink body,
+.theme-paper-ink {
+  font-family: var(--paper-ink-font, 'Noto Serif SC'), serif;
+  -webkit-font-smoothing: auto; /* 衬线字体不需要亚像素抗锯齿 */
+}
+/* 代码与表单元素保持无衬线 */
+.theme-paper-ink input,
+.theme-paper-ink textarea,
+.theme-paper-ink select,
+.theme-paper-ink code,
+.theme-paper-ink pre {
+  font-family: 'Inter', -apple-system, sans-serif;
+}
+
+/* ── 去掉科技感的环境光晕 ── */
+.theme-paper-ink body::before,
+.theme-paper-ink body::after {
+  opacity: 0;
+}
+
+/* ── 面板：宣纸质感替代毛玻璃 ── */
+.theme-paper-ink .panel {
+  backdrop-filter: none;
+  -webkit-backdrop-filter: none;
+  background: var(--bg-card);
+  border: 1px solid var(--paper-divider);
+  border-radius: var(--radius-md);
+  box-shadow: var(--paper-shadow-card);
+}
+.theme-paper-ink .panel:hover {
+  border-color: var(--border-hover);
+  box-shadow: var(--paper-shadow-card), 0 0 0 1px var(--border-dim);
+}
+
+/* ── 按钮：墨色笔触风格 ── */
+.theme-paper-ink .btn {
+  background: var(--accent-cyan);
+  color: #faf7f0;
+  border: 1px solid var(--accent-cyan);
+  box-shadow: none;
+  border-radius: 0.375rem;
+  font-weight: 600;
+  letter-spacing: 0.02em;
+}
+.theme-paper-ink .btn:hover:not(:disabled) {
+  background: #7a4e24;
+  border-color: #7a4e24;
+  box-shadow: 0 2px 8px rgba(139, 90, 43, 0.20);
+  transform: none;
+  filter: none;
+}
+
+.theme-paper-ink .btn-secondary {
+  background: transparent;
+  color: var(--text-muted);
+  border: 1px solid var(--border-light);
+  backdrop-filter: none;
+}
+.theme-paper-ink .btn-secondary:hover:not(:disabled) {
+  background: var(--bg-hover-subtle);
+  border-color: var(--border-hover);
+  color: var(--text-main);
+  transform: none;
+}
+
+.theme-paper-ink .btn-danger {
+  background: transparent;
+  color: var(--status-err);
+  border: 1px solid rgba(181, 68, 62, 0.3);
+  box-shadow: none;
+}
+.theme-paper-ink .btn-danger:hover:not(:disabled) {
+  background: var(--status-err-bg);
+  border-color: var(--status-err);
+  box-shadow: none;
+  transform: none;
+}
+
+/* ── 输入框：纸上墨迹 ── */
+.theme-paper-ink .input,
+.theme-paper-ink .input-field,
+.theme-paper-ink .select {
+  background: rgba(255, 255, 255, 0.5);
+  border: 1px solid var(--border-light);
+  border-radius: 0.375rem;
+}
+.theme-paper-ink .input:focus,
+.theme-paper-ink .input-field:focus,
+.theme-paper-ink .select:focus {
+  border-color: var(--accent-cyan);
+  background: rgba(255, 255, 255, 0.7);
+  box-shadow: 0 0 0 2px rgba(139, 90, 43, 0.08);
+}
+
+/* ── 编辑器文本区：书写纸张感 ── */
+.theme-paper-ink .editor-textarea {
+  font-family: var(--paper-ink-font, 'Noto Serif SC'), serif;
+  line-height: 2;
+  letter-spacing: 0.01em;
+  caret-color: var(--accent-cyan);
+}
+.theme-paper-ink .editor-textarea:focus {
+  background: rgba(255, 255, 255, 0.3);
+}
+
+/* ── 徽章：素雅标签 ── */
+.theme-paper-ink .badge {
+  backdrop-filter: none;
+  border-radius: 0.25rem;
+  font-weight: 500;
+  letter-spacing: 0.03em;
+}
+
+/* ── 列表卡片：轻柔纸片 ── */
+.theme-paper-ink .list-card {
+  border-radius: var(--radius-md);
+  box-shadow: var(--paper-shadow-soft);
+}
+.theme-paper-ink .list-card:hover {
+  box-shadow: var(--paper-shadow-card);
+  transform: none;
+}
+
+/* ── 统计卡片 ── */
+.theme-paper-ink .stat-card {
+  background: rgba(255, 255, 255, 0.4);
+  border: 1px solid var(--paper-divider);
+  box-shadow: none;
+  border-radius: 0.5rem;
+}
+.theme-paper-ink .stat-card:hover {
+  transform: none;
+  background: rgba(255, 255, 255, 0.6);
+}
+
+/* ── 侧边栏：去除毛玻璃 ── */
+.theme-paper-ink aside {
+  backdrop-filter: none !important;
+  -webkit-backdrop-filter: none !important;
+}
+
+/* ── 文档目录 ── */
+.theme-paper-ink .doc-toc {
+  backdrop-filter: none;
+  background: var(--bg-sidebar);
+  border-right: 1px solid var(--paper-divider);
+}
+.theme-paper-ink .doc-toc__item--active {
+  border-left-color: var(--accent-cyan);
+  background: rgba(139, 90, 43, 0.06);
+}
+
+/* ── 文档区域卡片 ── */
+.theme-paper-ink .doc-section {
+  border-radius: var(--radius-md);
+  box-shadow: var(--paper-shadow-soft);
+}
+.theme-paper-ink .doc-section--active {
+  border-color: var(--accent-cyan);
+  box-shadow: 0 0 0 1px rgba(139, 90, 43, 0.12);
+}
+
+/* ── AI 抽屉 ── */
+.theme-paper-ink .ai-drawer {
+  backdrop-filter: none;
+  background: var(--bg-sidebar);
+}
+
+/* ── 文档区域按钮：AI 按钮保留色彩但去掉光效 ── */
+.theme-paper-ink .doc-section__btn--ai {
+  border-color: rgba(139, 90, 43, 0.25);
+  background: rgba(139, 90, 43, 0.06);
+  color: var(--accent-cyan);
+}
+.theme-paper-ink .doc-section__btn--ai:hover:not(:disabled) {
+  border-color: rgba(139, 90, 43, 0.4);
+  background: rgba(139, 90, 43, 0.12);
+  color: #7a4e24;
+  box-shadow: none;
+}
+.theme-paper-ink .doc-section__btn--save {
+  border-color: rgba(60, 120, 80, 0.25);
+  background: rgba(60, 120, 80, 0.06);
+  color: #3c7850;
+}
+.theme-paper-ink .doc-section__btn--save:hover:not(:disabled) {
+  border-color: rgba(60, 120, 80, 0.4);
+  background: rgba(60, 120, 80, 0.12);
+  color: #2a5e3a;
+  box-shadow: none;
+}
+
+/* ── 卷章树：柔化 ── */
+.theme-paper-ink .chapter-tree__all-scope--active {
+  box-shadow: inset 3px 0 0 var(--accent-cyan);
+}
+.theme-paper-ink .chapter-tree__chapter-btn--active {
+  box-shadow: inset 3px 0 0 var(--accent-cyan);
+}
+
+/* ═══════════════════════════════════════════════════════════════
+   纸墨主题 — 动画：卷轴展开
+   替代 Cyberpunk 的发光脉动，使用安静的展开、淡入效果
+   ═══════════════════════════════════════════════════════════════ */
+
+/* 卷轴水平展开 */
+@keyframes scrollUnfoldX {
+  from {
+    opacity: 0;
+    transform: scaleX(0.92);
+    transform-origin: left center;
+  }
+  to {
+    opacity: 1;
+    transform: scaleX(1);
+    transform-origin: left center;
+  }
+}
+
+/* 卷轴纵向展开 */
+@keyframes scrollUnfoldY {
+  from {
+    opacity: 0;
+    transform: scaleY(0.95);
+    transform-origin: top center;
+  }
+  to {
+    opacity: 1;
+    transform: scaleY(1);
+    transform-origin: top center;
+  }
+}
+
+/* 水墨晕染淡入 */
+@keyframes inkFadeIn {
+  from {
+    opacity: 0;
+    filter: blur(4px);
+  }
+  40% {
+    opacity: 0.7;
+    filter: blur(1px);
+  }
+  to {
+    opacity: 1;
+    filter: blur(0);
+  }
+}
+
+/* 毛笔竖向入场 */
+@keyframes brushStrokeDown {
+  from {
+    opacity: 0;
+    clip-path: inset(0 0 100% 0);
+  }
+  to {
+    opacity: 1;
+    clip-path: inset(0 0 0 0);
+  }
+}
+
+/* 安静的呼吸脉动（替代发光脉动） */
+@keyframes inkBreath {
+  0%, 100% { opacity: 1; }
+  50% { opacity: 0.75; }
+}
+
+/* 覆盖动画类 */
+.theme-paper-ink .animate-fade-in {
+  animation: inkFadeIn 0.5s ease-out forwards;
+}
+.theme-paper-ink .animate-slide-right {
+  animation: scrollUnfoldX 0.45s cubic-bezier(0.22, 1, 0.36, 1) forwards;
+}
+.theme-paper-ink .animate-slide-top {
+  animation: scrollUnfoldY 0.4s cubic-bezier(0.22, 1, 0.36, 1) forwards;
+}
+.theme-paper-ink .animate-pulse-glow {
+  animation: inkBreath 3s ease-in-out infinite;
+  box-shadow: none !important;
+}
+
+/* ── 纸张质感微纹理 ── */
+.theme-paper-ink body {
+  background-image:
+    repeating-linear-gradient(
+      0deg,
+      transparent,
+      transparent 28px,
+      rgba(120, 100, 70, 0.03) 28px,
+      rgba(120, 100, 70, 0.03) 29px
+    );
+  background-size: 100% 29px;
+}
+
+/* ── Inspector 面板：去除深色阴影 ── */
+.theme-paper-ink aside[style*="26rem"] {
+  box-shadow: -4px 0 12px rgba(120, 100, 70, 0.06) !important;
+}
+
+/* ── 纸墨主题：选中/高亮态色彩统一 ── */
+.theme-paper-ink .text-cyan-400 {
+  color: var(--accent-cyan);
+}
+.theme-paper-ink .text-emerald-400 {
+  color: #3c7850;
+}
+.theme-paper-ink .text-rose-400 {
+  color: var(--status-err);
+}
+
+/* ── 项目卡片：纸张风格 ── */
+.theme-paper-ink .project-card {
+  border-radius: var(--radius-md) !important;
+  box-shadow: var(--paper-shadow-card) !important;
+}
+.theme-paper-ink .project-card:hover {
+  box-shadow: var(--paper-shadow-card), 0 0 0 1px var(--border-hover) !important;
+  transform: none !important;
+}
+
