@@ -31,6 +31,10 @@ interface Props {
   onRunReviewAction: (memoryId: string, action: 'confirm' | 'reject') => void;
 }
 
+/**
+ * 右侧检查器面板：在预览态展示写作上下文，在后台态提供重建、校验和审核操作。
+ * 校验问题需要在预览态直接露出，否则用户只能看到概览数量，看不到具体问题。
+ */
 export function InspectorPanel(props: Props) {
   const [activeTab, setActiveTab] = useState<'preview' | 'edit'>('preview');
 
@@ -100,6 +104,8 @@ export function InspectorPanel(props: Props) {
               selectedChapterId={props.selectedChapterId}
               onRefresh={props.onRefresh}
             />
+            {/* 有问题时在预览页直接展示详情，避免“校验问题”统计数字和问题列表分离。 */}
+            {props.validationIssues.length > 0 ? <ValidationIssueList validationIssues={props.validationIssues} /> : null}
             <StoryEventList storyEvents={props.storyEvents} />
             <CharacterStateList characterStates={props.characterStates} />
             <ForeshadowList foreshadowTracks={props.foreshadowTracks} />
