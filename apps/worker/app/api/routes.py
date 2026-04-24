@@ -1,9 +1,10 @@
-from fastapi import APIRouter
+from fastapi import APIRouter, BackgroundTasks
 
 from app.core.logging import get_logger, log_event
 from app.models.schemas import (
     GenerateChapterJobRequest,
     GenerateChapterJobResult,
+    JobAcceptedResult,
     MemoryRebuildRequest,
     MemoryRebuildResult,
     PolishChapterRequest,
@@ -12,38 +13,69 @@ from app.models.schemas import (
 from app.pipelines.generate_chapter import GenerateChapterPipeline
 from app.pipelines.polish_chapter import PolishChapterPipeline
 from app.pipelines.rebuild_memory import RebuildMemoryPipeline
+from app.repositories.job_repo import JobRepository
 from app.repositories.llm_provider_repo import LlmProviderRepository
 
 router = APIRouter()
 pipeline = GenerateChapterPipeline()
 polish_pipeline = PolishChapterPipeline()
 memory_rebuild_pipeline = RebuildMemoryPipeline()
+job_repo = JobRepository()
 logger = get_logger(__name__)
 
 
-@router.post("/internal/jobs/generate-chapter", response_model=GenerateChapterJobResult)
-def generate_chapter_job(payload: GenerateChapterJobRequest) -> GenerateChapterJobResult:
+def _run_generate_chapter_background(payload: GenerateChapterJobRequest) -> None:
+    """Run chapter generation after HTTP acknowledgement and persist final job state.
+
+    This decouples the long-running LLM pipeline from the API→worker HTTP
+    connection. If the client connection times out, the worker can still finish
+    and the frontend will observe the final state through normal job polling.
+    """
     log_context = {
         "requestId": payload.request_id,
         "jobId": payload.job_id,
         "projectId": payload.project_id,
         "chapterId": payload.chapter_id,
     }
-    log_event(logger, "generation.request.received", **log_context)
-
     try:
         result = pipeline.run(payload)
+        job_repo.mark_completed(
+            payload.job_id,
+            payload.chapter_id,
+            {
+                "draftId": result.draft_id,
+                "summary": result.summary,
+                "actualWordCount": result.actual_word_count,
+            },
+            result.retrieval_payload,
+            result.actual_word_count,
+        )
         log_event(
             logger,
-            "generation.request.completed",
+            "generation.background.completed",
             **log_context,
             draftId=result.draft_id or None,
             actualWordCount=result.actual_word_count,
         )
-        return result
     except Exception as exc:
-        log_event(logger, "generation.request.failed", level="error", **log_context, error=str(exc))
-        raise
+        job_repo.mark_failed(payload.job_id, str(exc))
+        log_event(logger, "generation.background.failed", level="error", **log_context, error=str(exc))
+
+
+@router.post("/internal/jobs/generate-chapter", response_model=JobAcceptedResult, status_code=202)
+def generate_chapter_job(
+    payload: GenerateChapterJobRequest,
+    background_tasks: BackgroundTasks,
+) -> JobAcceptedResult:
+    log_context = {
+        "requestId": payload.request_id,
+        "jobId": payload.job_id,
+        "projectId": payload.project_id,
+        "chapterId": payload.chapter_id,
+    }
+    log_event(logger, "generation.request.accepted", **log_context)
+    background_tasks.add_task(_run_generate_chapter_background, payload)
+    return JobAcceptedResult(jobId=payload.job_id)
 
 
 @router.post("/internal/jobs/polish-chapter", response_model=PolishChapterResult)
@@ -104,5 +136,6 @@ def reload_llm_config() -> dict[str, int | bool]:
     status = LlmProviderRepository.cache_status()
     log_event(logger, "llm.config.reloaded", **status)
     return status
+
 
 

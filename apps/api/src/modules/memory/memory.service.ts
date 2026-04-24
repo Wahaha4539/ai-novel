@@ -1,6 +1,7 @@
 import { BadGatewayException, Injectable, InternalServerErrorException, NotFoundException } from '@nestjs/common';
 import { NovelCacheService } from '../../common/cache/novel-cache.service';
 import { PrismaService } from '../../prisma/prisma.service';
+import { LlmService } from '../guided/llm.service';
 
 const REVIEW_STATUSES = ['pending_review', 'user_confirmed', 'rejected'] as const;
 
@@ -90,11 +91,18 @@ type PrismaFactsClient = {
   };
 };
 
+type AiReviewDecision = {
+  id: string;
+  action: 'confirm' | 'reject';
+  reason?: string;
+};
+
 @Injectable()
 export class MemoryService {
   constructor(
     private readonly prisma: PrismaService,
     private readonly cacheService: NovelCacheService,
+    private readonly llmService: LlmService,
   ) {}
 
   private get prismaFacts(): PrismaFactsClient {
@@ -128,6 +136,105 @@ export class MemoryService {
     return {
       reviewStatus,
       foreshadowStatus,
+    };
+  }
+
+  /**
+   * Extract a JSON array/object from LLM output that may include Markdown fences or short explanations.
+   * The review automation requires deterministic machine-readable decisions; malformed output fails fast.
+   */
+  private parseAiReviewDecisions(text: string): AiReviewDecision[] {
+    const fenced = text.match(/```(?:json)?\s*([\s\S]*?)\s*```/i)?.[1];
+    const raw = (fenced ?? text).trim();
+    const start = raw.search(/[\[{]/);
+    const end = Math.max(raw.lastIndexOf(']'), raw.lastIndexOf('}'));
+    if (start < 0 || end < start) {
+      throw new Error('LLM 未返回可解析的审核 JSON');
+    }
+
+    const parsed = JSON.parse(raw.slice(start, end + 1)) as unknown;
+    const list = Array.isArray(parsed) ? parsed : this.asRecord(parsed).decisions;
+    if (!Array.isArray(list)) {
+      throw new Error('LLM 审核 JSON 缺少 decisions 数组');
+    }
+
+    return list
+      .map((item: unknown): AiReviewDecision | null => {
+        const record = this.asRecord(item);
+        const id = typeof record.id === 'string' ? record.id : '';
+        const action = record.action === 'confirm' || record.action === 'reject' ? record.action : undefined;
+        const reason = typeof record.reason === 'string' ? record.reason : undefined;
+        return id && action ? { id, action, reason } : null;
+      })
+      .filter((item): item is AiReviewDecision => Boolean(item));
+  }
+
+  /**
+   * Ask LLM to decide whether pending_review memories should be adopted or removed, then propagate status.
+   * Decisions are constrained to confirm/reject only so the pipeline can run unattended after generation/rebuild.
+   */
+  async aiResolveReviewQueue(projectId: string, chapterId?: string) {
+    const queue = await this.listReviewQueue(projectId, 'pending_review', undefined, chapterId);
+    if (!queue.length) {
+      return { reviewedCount: 0, confirmedCount: 0, rejectedCount: 0, decisions: [] };
+    }
+
+    const reviewPayload = queue.map((item) => ({
+      id: item.id,
+      memoryType: item.memoryType,
+      summary: item.summary,
+      content: item.content,
+      sourceTrace: item.sourceTrace,
+      metadata: item.metadata,
+    }));
+
+    const answer = await this.llmService.chat(
+      [
+        {
+          role: 'system',
+          content: '你是小说事实层审计员。只判断 pending_review 记忆是否应采纳进入事实层，或拒绝移除。必须输出严格 JSON。',
+        },
+        {
+          role: 'user',
+          content: [
+            '请审核以下待确认记忆。判断标准：',
+            '1. 与章节事实、人物状态、路线、伏笔一致且有助于后续检索的，action=confirm。',
+            '2. 重复、误读、过度推断、与上下文冲突、只是临时心理描写不应固化的，action=reject。',
+            '3. 不要新增 id，不要省略任何输入项。',
+            '输出格式：[{"id":"...","action":"confirm|reject","reason":"简短中文理由"}]',
+            JSON.stringify(reviewPayload),
+          ].join('\n'),
+        },
+      ],
+      { temperature: 0.1, maxTokens: 4000, appStep: 'memory_review' },
+    );
+
+    const decisions = this.parseAiReviewDecisions(answer);
+    const allowedIds = new Set(queue.map((item) => item.id));
+    let confirmedCount = 0;
+    let rejectedCount = 0;
+    const applied: AiReviewDecision[] = [];
+
+    for (const decision of decisions) {
+      if (!allowedIds.has(decision.id)) {
+        continue;
+      }
+
+      await this.updateReviewStatus(projectId, decision.id, decision.action === 'confirm' ? 'user_confirmed' : 'rejected');
+      if (decision.action === 'confirm') {
+        confirmedCount += 1;
+      } else {
+        rejectedCount += 1;
+      }
+      applied.push(decision);
+    }
+
+    return {
+      reviewedCount: applied.length,
+      confirmedCount,
+      rejectedCount,
+      skippedCount: queue.length - applied.length,
+      decisions: applied,
     };
   }
 

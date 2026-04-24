@@ -51,6 +51,14 @@ class GenerateChapterJobResult(BaseModel):
     model_config = ConfigDict(populate_by_name=True)
 
 
+class JobAcceptedResult(BaseModel):
+    """Immediate acknowledgement for background worker dispatch endpoints."""
+    accepted: bool = True
+    job_id: str = Field(alias="jobId")
+
+    model_config = ConfigDict(populate_by_name=True)
+
+
 class MemoryRebuildRequest(BaseModel):
     project_id: str = Field(alias="projectId")
     chapter_id: str | None = Field(default=None, alias="chapterId")

@@ -160,7 +160,10 @@ export default function HomePage() {
           <BatchGeneratePanel
             volumes={data.volumes}
             chapters={chapters}
-            onComplete={() => data.loadProjectData(data.selectedProjectId, data.selectedChapterId)}
+            onComplete={async (chapterIds?: string[]) => {
+              await data.loadProjectData(data.selectedProjectId, data.selectedChapterId);
+              await data.runAutoMaintenance(chapterIds);
+            }}
           />
         ) : (
           <EditorPanel
@@ -206,7 +209,8 @@ export default function HomePage() {
           onRunRebuild={data.runRebuild}
           onRunValidation={data.runValidation}
           onRunReviewAction={data.runReviewAction}
-          onFixValidationIssue={data.fixValidationIssue}
+          onFixValidationIssues={data.fixValidationIssues}
+          onRunAiReviewQueue={data.runAiReviewQueue}
           fixingValidationIssueId={data.fixingValidationIssueId}
         />
       )}

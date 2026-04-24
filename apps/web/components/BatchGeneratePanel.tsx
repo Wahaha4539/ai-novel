@@ -20,7 +20,7 @@ import { useChapterGeneration, GenerationState } from '../hooks/useChapterGenera
 interface Props {
   volumes: VolumeSummary[];
   chapters: ChapterSummary[];
-  onComplete?: () => void;
+  onComplete?: (chapterIds?: string[]) => void | Promise<void>;
 }
 
 type GenerateMode = 'single' | 'volume' | 'book';
@@ -179,15 +179,13 @@ export function BatchGeneratePanel({ volumes, chapters, onComplete }: Props) {
       );
     }
 
-    onComplete?.();
+    await onComplete?.(targets.map((target) => target.id));
   }, [selectedChapterIds, chapters, gen, onComplete]);
 
   /** Start batch generation (volume/book modes) */
   const handleStart = useCallback(async () => {
     const targets = getTargetChapters();
     if (targets.length === 0) return;
-    setGeneratingSingleId(null);
-
     await gen.generateSequential(
       targets.map((ch) => ({
         id: ch.id,
@@ -198,7 +196,7 @@ export function BatchGeneratePanel({ volumes, chapters, onComplete }: Props) {
         // Optional: callback per chapter completion
       },
     );
-    onComplete?.();
+    await onComplete?.(targets.map((target) => target.id));
   }, [getTargetChapters, gen, onComplete]);
 
   const isActive = gen.state === 'generating' || gen.state === 'polling';

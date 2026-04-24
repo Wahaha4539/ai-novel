@@ -8,6 +8,6 @@ import { LlmService } from './llm.service';
   imports: [LlmProvidersModule],
   controllers: [GuidedController],
   providers: [GuidedService, LlmService],
-  exports: [GuidedService],
+  exports: [GuidedService, LlmService],
 })
 export class GuidedModule {}

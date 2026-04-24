@@ -3,7 +3,7 @@ import { ValidationIssue } from '../types/dashboard';
 
 interface Props {
   validationIssues: ValidationIssue[];
-  onFixIssue?: (issue: ValidationIssue) => void | Promise<void>;
+  onFixIssues?: (issues: ValidationIssue[]) => void | Promise<void>;
   fixingIssueId?: string;
 }
 
@@ -74,8 +74,11 @@ function getIssueActionId(issue: ValidationIssue) {
 
 /**
  * 校验问题列表：展示问题名称、规则来源、详情和建议，帮助作者定位当前章节的硬规则风险。
+ * AI 修复入口按当前列表批量提交，避免逐条修复造成章节正文被多次重写、事实层反复 rebuild。
  */
-export function ValidationIssueList({ validationIssues, onFixIssue, fixingIssueId }: Props) {
+export function ValidationIssueList({ validationIssues, onFixIssues, fixingIssueId }: Props) {
+  const isAnyIssueFixing = Boolean(fixingIssueId);
+
   return (
     <article className="panel p-5 animate-fade-in" style={{ animationDelay: '0.4s', animationFillMode: 'both', borderColor: validationIssues.length ? 'rgba(245, 158, 11, 0.28)' : undefined }}>
       <SectionHeader
@@ -89,6 +92,32 @@ export function ValidationIssueList({ validationIssues, onFixIssue, fixingIssueI
           ) : null
         }
       />
+      {validationIssues.length > 0 && onFixIssues ? (
+        <div className="mt-5" style={{ border: '1px solid rgba(6, 182, 212, 0.35)', borderRadius: '14px', background: 'rgba(6,182,212,0.07)', padding: '0.85rem' }}>
+          <button
+            type="button"
+            onClick={() => onFixIssues(validationIssues)}
+            disabled={isAnyIssueFixing}
+            className="btn"
+            style={{
+              width: '100%',
+              justifyContent: 'center',
+              borderColor: isAnyIssueFixing ? 'var(--accent-cyan)' : 'rgba(6, 182, 212, 0.48)',
+              background: isAnyIssueFixing
+                ? 'linear-gradient(135deg, rgba(6,182,212,0.18), rgba(139,92,246,0.16))'
+                : 'rgba(6,182,212,0.1)',
+              color: 'var(--accent-cyan)',
+              cursor: isAnyIssueFixing ? 'wait' : 'pointer',
+            }}
+          >
+            {isAnyIssueFixing ? '批量修复中…' : `🤖 AI 一键修复全部 ${validationIssues.length} 条`}
+          </button>
+          {/* 批量入口会把当前范围的问题合并到同一轮 LLM 指令，减少多次改稿造成的新连续性偏差。 */}
+          <div className="mt-2 text-xs" style={{ color: 'var(--text-dim)', lineHeight: 1.65 }}>
+            将一次性合并当前列表所有问题生成修复稿，并自动重建事实层后复检。
+          </div>
+        </div>
+      ) : null}
       <div className="mt-5 space-y-3">
         {validationIssues.length ? (
           validationIssues.map((issue, index) => {
@@ -96,7 +125,6 @@ export function ValidationIssueList({ validationIssues, onFixIssue, fixingIssueI
             const tone = getSeverityTone(issue.severity);
             const issueActionId = getIssueActionId(issue);
             const isFixing = fixingIssueId === issueActionId;
-            const isAnyIssueFixing = Boolean(fixingIssueId);
 
             return (
             <div
@@ -148,33 +176,7 @@ export function ValidationIssueList({ validationIssues, onFixIssue, fixingIssueI
                 </div>
               ) : null}
 
-              {onFixIssue ? (
-                <div className="mt-3" style={{ borderTop: '1px solid var(--border-dim)', paddingTop: '0.75rem' }}>
-                  <button
-                    type="button"
-                    onClick={() => onFixIssue(issue)}
-                    disabled={isAnyIssueFixing}
-                    className="btn"
-                    style={{
-                      width: '100%',
-                      justifyContent: 'center',
-                      borderColor: isFixing ? 'var(--accent-cyan)' : 'rgba(6, 182, 212, 0.45)',
-                      background: isFixing
-                        ? 'linear-gradient(135deg, rgba(6,182,212,0.18), rgba(139,92,246,0.16))'
-                        : 'rgba(6,182,212,0.08)',
-                      color: isAnyIssueFixing && !isFixing ? 'var(--text-dim)' : 'var(--accent-cyan)',
-                      cursor: isAnyIssueFixing ? 'wait' : 'pointer',
-                      opacity: isAnyIssueFixing && !isFixing ? 0.58 : 1,
-                    }}
-                  >
-                    {isFixing ? '修复中…' : '🤖 AI 修复'}
-                  </button>
-                  {/* AI 修复会跨越草稿、事实层和复检三步，提前说明可避免用户误以为只是隐藏告警。 */}
-                  <div className="mt-2 text-xs" style={{ color: 'var(--text-dim)', lineHeight: 1.65 }}>
-                    将调用 LLM 针对该问题生成新草稿，并自动重建事实层后复检；若仍有问题，可继续修复或手动调整。
-                  </div>
-                </div>
-              ) : null}
+              {isFixing ? <div className="mt-3 text-xs" style={{ color: 'var(--accent-cyan)' }}>该问题正在批量修复队列中…</div> : null}
             </div>
             );
           })

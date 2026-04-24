@@ -27,6 +27,13 @@ type ResolveValidationIssueResult = {
   updatedCount: number;
 };
 
+type AiReviewResolveResult = {
+  reviewedCount: number;
+  confirmedCount: number;
+  rejectedCount: number;
+  skippedCount?: number;
+};
+
 async function apiFetch<T>(path: string, init?: RequestInit): Promise<T> {
   const response = await fetch(`${API_BASE}${path}`, {
     ...init,
@@ -46,17 +53,23 @@ async function apiFetch<T>(path: string, init?: RequestInit): Promise<T> {
 }
 
 /**
- * Build a targeted LLM instruction for fixing one validation issue without rewriting unrelated prose.
- * The polish pipeline stores the result as a new current draft, so this instruction must be narrow.
+ * Build a targeted LLM instruction for fixing all visible validation issues in one pass.
+ * The polish pipeline stores the result as a new current draft, so the prompt keeps edits scoped while
+ * still asking the model to resolve cross-issue continuity together instead of patching cards one by one.
  */
-function buildValidationFixInstruction(issue: ValidationIssue) {
+function buildValidationFixInstruction(issues: ValidationIssue[]) {
+  const issueLines = issues.map((issue, index) => [
+    `问题 ${index + 1}`,
+    `- 类型：${issue.issueType}`,
+    `- 严重程度：${issue.severity}`,
+    `- 详情：${issue.message}`,
+    issue.suggestion ? `- 已有建议：${issue.suggestion}` : '',
+  ].filter(Boolean).join('\n'));
+
   return [
-    '请只修复以下结构化事实校验问题，不要重写整章，不要改变主线结果。',
-    '修复方式：优先在相关段落补充必要过渡、空间移动、时间衔接或事实澄清；保持原有叙事视角、语气和人物关系。',
-    `问题类型：${issue.issueType}`,
-    `严重程度：${issue.severity}`,
-    `问题详情：${issue.message}`,
-    issue.suggestion ? `已有建议：${issue.suggestion}` : '',
+    '请一次性修复以下全部结构化事实校验问题，不要逐条孤立改写，不要重写整章，不要改变主线结果。',
+    '修复方式：合并考虑所有问题，在相关段落补充必要过渡、空间移动、时间衔接或事实澄清；保持原有叙事视角、语气和人物关系。',
+    issueLines.join('\n\n'),
     '输出要求：直接输出修复后的完整章节正文，不要添加说明、标题、diff 或分析。',
   ].filter(Boolean).join('\n');
 }
@@ -192,27 +205,34 @@ export function useDashboardData() {
     }
   };
 
-  const fixValidationIssue = async (issue: ValidationIssue) => {
+  const fixValidationIssues = async (issues: ValidationIssue[]) => {
     if (!selectedProjectId) return;
     if (fixingValidationIssueId) return;
+    if (!issues.length) return;
 
-    const issueChapterId = issue.chapterId ?? (selectedChapterId !== 'all' ? selectedChapterId : '');
-    if (!issueChapterId) {
-      setActionMessage('该校验问题缺少章节信息，无法自动定位正文。');
+    const issueChapterIds = Array.from(new Set(issues.map((issue) => issue.chapterId ?? (selectedChapterId !== 'all' ? selectedChapterId : '')).filter(Boolean)));
+    if (issueChapterIds.length > 1) {
+      setActionMessage('当前列表包含多个章节的问题，请先选择单个章节后再执行 AI 一键修复。');
       return;
     }
 
-    const issueActionId = getValidationIssueActionId(issue);
+    const issueChapterId = issueChapterIds[0] ?? '';
+    if (!issueChapterId) {
+      setActionMessage('当前校验问题缺少章节信息，无法自动定位正文。');
+      return;
+    }
+
+    const issueActionId = issues.length === 1 ? getValidationIssueActionId(issues[0]) : `batch:${issueChapterId}:${issues.length}`;
     const issueChapterQuery = `?chapterId=${encodeURIComponent(issueChapterId)}`;
     setFixingValidationIssueId(issueActionId);
-    setActionMessage('AI 正在根据校验问题修正文稿…');
+    setActionMessage(`AI 正在一次性修复 ${issues.length} 个校验问题…`);
     try {
       await apiFetch<PolishResult>(`/chapters/${issueChapterId}/polish`, {
         method: 'POST',
-        body: JSON.stringify({ userInstruction: buildValidationFixInstruction(issue) }),
+        body: JSON.stringify({ userInstruction: buildValidationFixInstruction(issues) }),
       });
 
-      // 修复会生成新的当前草稿；必须重建事实层并复检，否则右侧问题列表仍是旧事实结果。
+      // 批量修复只生成一次当前草稿；随后统一重建事实层并复检，避免每个问题单独 rebuild 产生抖动。
       setActionMessage('AI 已生成修正版，正在重建事实层…');
       await apiFetch<RebuildResult>(
         `/projects/${selectedProjectId}/memory/rebuild${issueChapterQuery}&dryRun=false`,
@@ -225,10 +245,11 @@ export function useDashboardData() {
         { method: 'POST' },
       );
 
-      if (issue.id) {
+      const issueIds = issues.map((issue) => issue.id).filter((id): id is string => Boolean(id));
+      if (issueIds.length) {
         // LLM 类问题（例如 spatial_error）不一定会被硬规则复检覆盖；成功生成修复稿后先关闭原问题，
         // 后续若 LLM 校验器再次发现同类问题，会重新写入一条新的 open issue。
-        await apiFetch<ResolveValidationIssueResult>(`/validation-issues/${issue.id}/resolve`, { method: 'POST' });
+        await Promise.all(issueIds.map((issueId) => apiFetch<ResolveValidationIssueResult>(`/validation-issues/${issueId}/resolve`, { method: 'POST' })));
       }
 
       setValidationRunResult(validationResult);
@@ -236,13 +257,99 @@ export function useDashboardData() {
       setDraftRefreshKey((value) => value + 1);
       setActionMessage(
         validationResult.createdCount > 0
-          ? `AI 修复已生成新草稿，但复检仍有 ${validationResult.createdCount} 个问题，请继续处理。`
-          : 'AI 修复已生成新草稿，当前问题已处理；事实层重建与复检均已完成。',
+          ? `AI 已批量生成新草稿，但复检仍有 ${validationResult.createdCount} 个问题，请继续处理。`
+          : 'AI 已批量生成新草稿，当前问题已处理；事实层重建与复检均已完成。',
       );
     } catch (fixError) {
-      setActionMessage(fixError instanceof Error ? fixError.message : 'AI 修复失败');
+      setActionMessage(fixError instanceof Error ? fixError.message : 'AI 批量修复失败');
     } finally {
       setFixingValidationIssueId('');
+    }
+  };
+
+  const runAiReviewQueue = async () => {
+    if (!selectedProjectId) return;
+
+    const chapterId = selectedChapterId !== 'all' ? selectedChapterId : undefined;
+    setActionMessage('AI 正在审核 pending_review 记忆…');
+    try {
+      const result = await apiFetch<AiReviewResolveResult>(`/projects/${selectedProjectId}/memory/reviews/ai-resolve`, {
+        method: 'POST',
+        body: JSON.stringify({ chapterId }),
+      });
+
+      await loadProjectData(selectedProjectId, selectedChapterId);
+      setActionMessage(
+        `AI 记忆审核完成：采纳 ${result.confirmedCount} 条，拒绝 ${result.rejectedCount} 条。`,
+      );
+    } catch (reviewError) {
+      setActionMessage(reviewError instanceof Error ? reviewError.message : 'AI 记忆审核失败');
+    }
+  };
+
+  /**
+   * Run the unattended post-generation maintenance chain: let LLM resolve review queue,
+   * rebuild/validate facts, then batch-fix remaining chapter-scoped validation issues when possible.
+   */
+  const runAutoMaintenance = async (chapterIds?: string[]) => {
+    if (!selectedProjectId) return;
+    if (fixingValidationIssueId) return;
+
+    const scopedChapterIds = chapterIds?.filter(Boolean) ?? [];
+    const canUseCurrentScope = selectedChapterId !== 'all';
+    const targetChapterIds = scopedChapterIds.length ? Array.from(new Set(scopedChapterIds)) : canUseCurrentScope ? [selectedChapterId] : [];
+
+    setActionMessage('全自动流程：AI 正在审核待确认记忆…');
+    try {
+      const reviewScopes = targetChapterIds.length ? targetChapterIds : [undefined];
+      for (const chapterId of reviewScopes) {
+        await apiFetch<AiReviewResolveResult>(`/projects/${selectedProjectId}/memory/reviews/ai-resolve`, {
+          method: 'POST',
+          body: JSON.stringify({ chapterId }),
+        });
+      }
+
+      setActionMessage('全自动流程：正在重建事实层…');
+      if (targetChapterIds.length) {
+        for (const chapterId of targetChapterIds) {
+          await apiFetch<RebuildResult>(
+            `/projects/${selectedProjectId}/memory/rebuild?chapterId=${encodeURIComponent(chapterId)}&dryRun=false`,
+            { method: 'POST' },
+          );
+        }
+      } else {
+        await apiFetch<RebuildResult>(`/projects/${selectedProjectId}/memory/rebuild?dryRun=false`, { method: 'POST' });
+      }
+
+      setActionMessage('全自动流程：正在执行硬规则校验…');
+      const validationScopes = targetChapterIds.length ? targetChapterIds : [undefined];
+      let latestValidationResult: ValidationRunResult | null = null;
+      const issuesToFix: ValidationIssue[] = [];
+      for (const chapterId of validationScopes) {
+        const query = chapterId ? `?chapterId=${encodeURIComponent(chapterId)}` : '';
+        latestValidationResult = await apiFetch<ValidationRunResult>(
+          `/projects/${selectedProjectId}/validation/run${query}`,
+          { method: 'POST' },
+        );
+        issuesToFix.push(...latestValidationResult.issues);
+      }
+
+      setValidationRunResult(latestValidationResult);
+
+      if (issuesToFix.length && targetChapterIds.length === 1) {
+        await fixValidationIssues(issuesToFix);
+        return;
+      }
+
+      await loadProjectData(selectedProjectId, selectedChapterId);
+      setDraftRefreshKey((value) => value + 1);
+      setActionMessage(
+        issuesToFix.length
+          ? `全自动流程已完成记忆审核、事实层重建与校验；仍有 ${issuesToFix.length} 个问题需要按单章修复。`
+          : '全自动流程已完成：记忆审核、事实层重建与校验均已处理。',
+      );
+    } catch (autoError) {
+      setActionMessage(autoError instanceof Error ? autoError.message : '全自动流程失败');
     }
   };
 
@@ -272,6 +379,8 @@ export function useDashboardData() {
     runReviewAction,
     runRebuild,
     runValidation,
-    fixValidationIssue,
+    fixValidationIssues,
+    runAiReviewQueue,
+    runAutoMaintenance,
   };
 }

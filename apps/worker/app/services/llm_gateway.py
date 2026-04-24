@@ -96,7 +96,8 @@ class LlmGateway:
         )
 
         try:
-            with urllib.request.urlopen(request, timeout=240) as response:
+            # 长篇章节生成可能超过默认 4 分钟，放宽到 10 分钟以减少慢模型误超时。
+            with urllib.request.urlopen(request, timeout=600) as response:
                 payload = json.loads(response.read().decode("utf-8"))
         except urllib.error.HTTPError as exc:
             detail = exc.read().decode("utf-8", errors="replace")

@@ -5,12 +5,21 @@ import { ReviewItem } from '../types/dashboard';
 interface Props {
   reviewQueue: ReviewItem[];
   onRunReviewAction: (memoryId: string, action: 'confirm' | 'reject') => void;
+  onRunAiReviewQueue?: () => void | Promise<void>;
 }
 
-export function ReviewQueueList({ reviewQueue, onRunReviewAction }: Props) {
+/**
+ * 待审核记忆队列：保留人工确认按钮，同时提供 LLM 一键审核入口给全自动流程复用。
+ */
+export function ReviewQueueList({ reviewQueue, onRunReviewAction, onRunAiReviewQueue }: Props) {
   return (
     <article className="panel p-5 animate-fade-in" style={{ animationDelay: '0.3s', animationFillMode: 'both' }}>
-      <SectionHeader title="待审核记忆队列" desc="pending_review → user_confirmed / rejected 工作流。" />
+      <SectionHeader title="待审核记忆队列" desc="pending_review → LLM 判断采纳 / rejected 工作流。" />
+      {reviewQueue.length > 0 && onRunAiReviewQueue ? (
+        <button className="btn mt-5 w-full justify-center" type="button" onClick={() => onRunAiReviewQueue()}>
+          🤖 AI 审核全部待确认记忆
+        </button>
+      ) : null}
       <div className="mt-5 space-y-3">
         {reviewQueue.length ? (
           reviewQueue.map((item) => (

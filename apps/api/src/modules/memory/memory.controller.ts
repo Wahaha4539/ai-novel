@@ -1,4 +1,4 @@
-import { Controller, Get, Param, Post, Query } from '@nestjs/common';
+import { Body, Controller, Get, Param, Post, Query } from '@nestjs/common';
 import { MemoryService } from './memory.service';
 
 @Controller()
@@ -64,6 +64,14 @@ export class MemoryController {
   @Post('projects/:projectId/memory/reviews/:memoryId/reject')
   rejectReview(@Param('projectId') projectId: string, @Param('memoryId') memoryId: string) {
     return this.memoryService.updateReviewStatus(projectId, memoryId, 'rejected');
+  }
+
+  @Post('projects/:projectId/memory/reviews/ai-resolve')
+  aiResolveReviews(
+    @Param('projectId') projectId: string,
+    @Body('chapterId') chapterId?: string,
+  ) {
+    return this.memoryService.aiResolveReviewQueue(projectId, chapterId);
   }
 
   @Post('projects/:projectId/memory/rebuild')

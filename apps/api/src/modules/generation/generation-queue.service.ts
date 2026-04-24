@@ -222,32 +222,11 @@ export class GenerationQueueService implements OnModuleInit, OnModuleDestroy {
           throw new Error(`worker 请求失败: ${response.status} ${responseText.slice(0, 1000)}`);
         }
 
-        const result = (await response.json()) as {
-          draftId: string;
-          summary: string;
-          retrievalPayload?: Record<string, unknown>;
-          actualWordCount?: number;
-        };
-
-        if (result.draftId && job.chapterId) {
-          await this.chaptersService.markDrafted(job.chapterId, result.actualWordCount ?? 0);
-        }
-
-        await this.jobsService.markCompleted(
-          job.id,
-          {
-            draftId: result.draftId,
-            summary: result.summary,
-            actualWordCount: result.actualWordCount ?? null,
-          },
-          result.retrievalPayload ?? {},
-        );
-
-        this.logger.log('generation.job.completed', {
+        // Worker 接口只确认已接收任务，真正的 completed/failed 由 worker 后台任务回写数据库。
+        // 这样 API→worker HTTP 连接中断不会把仍在运行的 worker 任务错误标记为失败。
+        this.logger.log('generation.job.dispatched', {
           ...logContext,
-          stage: 'completed',
-          draftId: result.draftId || null,
-          actualWordCount: result.actualWordCount ?? null,
+          stage: 'dispatched',
         });
       } catch (error) {
         await this.jobsService.markFailed(job.id, error instanceof Error ? error.message : 'unknown_worker_error');

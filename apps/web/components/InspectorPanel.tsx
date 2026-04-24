@@ -29,7 +29,8 @@ interface Props {
   onRunRebuild: (dryRun: boolean) => void;
   onRunValidation: () => void;
   onRunReviewAction: (memoryId: string, action: 'confirm' | 'reject') => void;
-  onFixValidationIssue?: (issue: ValidationIssue) => void | Promise<void>;
+  onFixValidationIssues?: (issues: ValidationIssue[]) => void | Promise<void>;
+  onRunAiReviewQueue?: () => void | Promise<void>;
   fixingValidationIssueId?: string;
 }
 
@@ -110,7 +111,7 @@ export function InspectorPanel(props: Props) {
             {props.validationIssues.length > 0 ? (
               <ValidationIssueList
                 validationIssues={props.validationIssues}
-                onFixIssue={props.onFixValidationIssue}
+                onFixIssues={props.onFixValidationIssues}
                 fixingIssueId={props.fixingValidationIssueId}
               />
             ) : null}
@@ -132,10 +133,14 @@ export function InspectorPanel(props: Props) {
               validationRunResult={props.validationRunResult}
               onRunValidation={props.onRunValidation}
             />
-            <ReviewQueueList reviewQueue={props.reviewQueue} onRunReviewAction={props.onRunReviewAction} />
+            <ReviewQueueList
+              reviewQueue={props.reviewQueue}
+              onRunReviewAction={props.onRunReviewAction}
+              onRunAiReviewQueue={props.onRunAiReviewQueue}
+            />
             <ValidationIssueList
               validationIssues={props.validationIssues}
-              onFixIssue={props.onFixValidationIssue}
+              onFixIssues={props.onFixValidationIssues}
               fixingIssueId={props.fixingValidationIssueId}
             />
           </div>
