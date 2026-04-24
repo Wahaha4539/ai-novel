@@ -29,6 +29,8 @@ interface Props {
   onRunRebuild: (dryRun: boolean) => void;
   onRunValidation: () => void;
   onRunReviewAction: (memoryId: string, action: 'confirm' | 'reject') => void;
+  onFixValidationIssue?: (issue: ValidationIssue) => void | Promise<void>;
+  fixingValidationIssueId?: string;
 }
 
 /**
@@ -105,7 +107,13 @@ export function InspectorPanel(props: Props) {
               onRefresh={props.onRefresh}
             />
             {/* 有问题时在预览页直接展示详情，避免“校验问题”统计数字和问题列表分离。 */}
-            {props.validationIssues.length > 0 ? <ValidationIssueList validationIssues={props.validationIssues} /> : null}
+            {props.validationIssues.length > 0 ? (
+              <ValidationIssueList
+                validationIssues={props.validationIssues}
+                onFixIssue={props.onFixValidationIssue}
+                fixingIssueId={props.fixingValidationIssueId}
+              />
+            ) : null}
             <StoryEventList storyEvents={props.storyEvents} />
             <CharacterStateList characterStates={props.characterStates} />
             <ForeshadowList foreshadowTracks={props.foreshadowTracks} />
@@ -125,7 +133,11 @@ export function InspectorPanel(props: Props) {
               onRunValidation={props.onRunValidation}
             />
             <ReviewQueueList reviewQueue={props.reviewQueue} onRunReviewAction={props.onRunReviewAction} />
-            <ValidationIssueList validationIssues={props.validationIssues} />
+            <ValidationIssueList
+              validationIssues={props.validationIssues}
+              onFixIssue={props.onFixValidationIssue}
+              fixingIssueId={props.fixingValidationIssueId}
+            />
           </div>
         )}
       </div>

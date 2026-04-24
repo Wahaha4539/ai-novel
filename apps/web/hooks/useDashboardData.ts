@@ -14,6 +14,19 @@ import {
 
 const API_BASE = process.env.NEXT_PUBLIC_API_BASE_URL ?? 'http://127.0.0.1:3001/api';
 
+type PolishResult = {
+  draftId: string;
+  originalWordCount?: number;
+  polishedWordCount?: number;
+  text?: string;
+};
+
+type ResolveValidationIssueResult = {
+  issueId: string;
+  resolved: boolean;
+  updatedCount: number;
+};
+
 async function apiFetch<T>(path: string, init?: RequestInit): Promise<T> {
   const response = await fetch(`${API_BASE}${path}`, {
     ...init,
@@ -32,6 +45,30 @@ async function apiFetch<T>(path: string, init?: RequestInit): Promise<T> {
   return (await response.json()) as T;
 }
 
+/**
+ * Build a targeted LLM instruction for fixing one validation issue without rewriting unrelated prose.
+ * The polish pipeline stores the result as a new current draft, so this instruction must be narrow.
+ */
+function buildValidationFixInstruction(issue: ValidationIssue) {
+  return [
+    '请只修复以下结构化事实校验问题，不要重写整章，不要改变主线结果。',
+    '修复方式：优先在相关段落补充必要过渡、空间移动、时间衔接或事实澄清；保持原有叙事视角、语气和人物关系。',
+    `问题类型：${issue.issueType}`,
+    `严重程度：${issue.severity}`,
+    `问题详情：${issue.message}`,
+    issue.suggestion ? `已有建议：${issue.suggestion}` : '',
+    '输出要求：直接输出修复后的完整章节正文，不要添加说明、标题、diff 或分析。',
+  ].filter(Boolean).join('\n');
+}
+
+/**
+ * Build a stable client-side action id so the issue card can show a loading state
+ * even before every validation source consistently returns a database id.
+ */
+function getValidationIssueActionId(issue: ValidationIssue) {
+  return issue.id ?? `${issue.issueType}:${issue.chapterId ?? 'project'}:${issue.message}`;
+}
+
 export function useDashboardData() {
   const [projects, setProjects] = useState<ProjectSummary[]>([]);
   const [selectedProjectId, setSelectedProjectId] = useState('');
@@ -48,6 +85,8 @@ export function useDashboardData() {
   const [actionMessage, setActionMessage] = useState('');
   const [rebuildResult, setRebuildResult] = useState<RebuildResult | null>(null);
   const [validationRunResult, setValidationRunResult] = useState<ValidationRunResult | null>(null);
+  const [draftRefreshKey, setDraftRefreshKey] = useState(0);
+  const [fixingValidationIssueId, setFixingValidationIssueId] = useState('');
 
   const chapterQuery = useMemo(() => {
     if (!selectedProjectId || selectedChapterId === 'all') {
@@ -153,6 +192,60 @@ export function useDashboardData() {
     }
   };
 
+  const fixValidationIssue = async (issue: ValidationIssue) => {
+    if (!selectedProjectId) return;
+    if (fixingValidationIssueId) return;
+
+    const issueChapterId = issue.chapterId ?? (selectedChapterId !== 'all' ? selectedChapterId : '');
+    if (!issueChapterId) {
+      setActionMessage('该校验问题缺少章节信息，无法自动定位正文。');
+      return;
+    }
+
+    const issueActionId = getValidationIssueActionId(issue);
+    const issueChapterQuery = `?chapterId=${encodeURIComponent(issueChapterId)}`;
+    setFixingValidationIssueId(issueActionId);
+    setActionMessage('AI 正在根据校验问题修正文稿…');
+    try {
+      await apiFetch<PolishResult>(`/chapters/${issueChapterId}/polish`, {
+        method: 'POST',
+        body: JSON.stringify({ userInstruction: buildValidationFixInstruction(issue) }),
+      });
+
+      // 修复会生成新的当前草稿；必须重建事实层并复检，否则右侧问题列表仍是旧事实结果。
+      setActionMessage('AI 已生成修正版，正在重建事实层…');
+      await apiFetch<RebuildResult>(
+        `/projects/${selectedProjectId}/memory/rebuild${issueChapterQuery}&dryRun=false`,
+        { method: 'POST' },
+      );
+
+      setActionMessage('事实层已更新，正在重新校验…');
+      const validationResult = await apiFetch<ValidationRunResult>(
+        `/projects/${selectedProjectId}/validation/run${issueChapterQuery}`,
+        { method: 'POST' },
+      );
+
+      if (issue.id) {
+        // LLM 类问题（例如 spatial_error）不一定会被硬规则复检覆盖；成功生成修复稿后先关闭原问题，
+        // 后续若 LLM 校验器再次发现同类问题，会重新写入一条新的 open issue。
+        await apiFetch<ResolveValidationIssueResult>(`/validation-issues/${issue.id}/resolve`, { method: 'POST' });
+      }
+
+      setValidationRunResult(validationResult);
+      await loadProjectData(selectedProjectId, selectedChapterId);
+      setDraftRefreshKey((value) => value + 1);
+      setActionMessage(
+        validationResult.createdCount > 0
+          ? `AI 修复已生成新草稿，但复检仍有 ${validationResult.createdCount} 个问题，请继续处理。`
+          : 'AI 修复已生成新草稿，当前问题已处理；事实层重建与复检均已完成。',
+      );
+    } catch (fixError) {
+      setActionMessage(fixError instanceof Error ? fixError.message : 'AI 修复失败');
+    } finally {
+      setFixingValidationIssueId('');
+    }
+  };
+
   return {
     API_BASE,
     projects,
@@ -172,10 +265,13 @@ export function useDashboardData() {
     actionMessage,
     rebuildResult,
     validationRunResult,
+    draftRefreshKey,
+    fixingValidationIssueId,
     loadProjects,
     loadProjectData,
     runReviewAction,
     runRebuild,
     runValidation,
+    fixValidationIssue,
   };
 }

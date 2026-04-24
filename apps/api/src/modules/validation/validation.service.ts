@@ -82,10 +82,15 @@ export class ValidationService {
     return this.prisma as unknown as PrismaFactsClient;
   }
 
+  /**
+   * Return unresolved validation issues for the current project/scope.
+   * Resolved items stay in the audit trail but are hidden from the writing panel.
+   */
   listByProject(projectId: string, chapterId?: string) {
     return this.prisma.validationIssue.findMany({
       where: {
         projectId,
+        status: 'open',
         ...(chapterId ? { chapterId } : {}),
       },
       orderBy: [{ createdAt: 'desc' }],
@@ -93,11 +98,37 @@ export class ValidationService {
     });
   }
 
+  /**
+   * Return unresolved validation issues for a single chapter.
+   */
   listByChapter(chapterId: string) {
     return this.prisma.validationIssue.findMany({
-      where: { chapterId },
+      where: { chapterId, status: 'open' },
       orderBy: { createdAt: 'desc' },
     });
+  }
+
+  /**
+   * Idempotently mark an issue as resolved after an AI repair flow succeeds.
+   * Hard-rule issues may already be deleted/recreated during rerun, so updateMany avoids false 404s.
+   */
+  async resolveIssue(issueId: string) {
+    const result = await this.prisma.validationIssue.updateMany({
+      where: {
+        id: issueId,
+        status: 'open',
+      },
+      data: {
+        status: 'resolved',
+        resolvedAt: new Date(),
+      },
+    });
+
+    return {
+      issueId,
+      resolved: result.count > 0,
+      updatedCount: result.count,
+    };
   }
 
   async runFactRules(projectId: string, chapterId?: string) {

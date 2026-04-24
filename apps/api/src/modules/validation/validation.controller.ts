@@ -10,6 +10,11 @@ export class ValidationController {
     return this.validationService.listByProject(projectId, chapterId);
   }
 
+  @Post('validation-issues/:issueId/resolve')
+  resolveIssue(@Param('issueId') issueId: string) {
+    return this.validationService.resolveIssue(issueId);
+  }
+
   @Post('projects/:projectId/validation/run')
   runFactRules(@Param('projectId') projectId: string, @Query('chapterId') chapterId?: string) {
     return this.validationService.runFactRules(projectId, chapterId);

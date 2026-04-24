@@ -167,6 +167,7 @@ export default function HomePage() {
             selectedProject={selectedProject}
             selectedChapterId={data.selectedChapterId}
             chapters={chapters}
+            draftRefreshKey={data.draftRefreshKey}
           />
         )}
 
@@ -205,6 +206,8 @@ export default function HomePage() {
           onRunRebuild={data.runRebuild}
           onRunValidation={data.runValidation}
           onRunReviewAction={data.runReviewAction}
+          onFixValidationIssue={data.fixValidationIssue}
+          fixingValidationIssueId={data.fixingValidationIssueId}
         />
       )}
 

@@ -18,9 +18,10 @@ interface Props {
   selectedProject?: ProjectSummary;
   selectedChapterId: string;
   chapters: ChapterSummary[];
+  draftRefreshKey?: number;
 }
 
-export function EditorPanel({ selectedProject, selectedChapterId, chapters }: Props) {
+export function EditorPanel({ selectedProject, selectedChapterId, chapters, draftRefreshKey = 0 }: Props) {
   const isGlobal = selectedChapterId === 'all';
   const chapter = chapters.find((c) => c.id === selectedChapterId);
   const gen = useChapterGeneration();
@@ -36,7 +37,8 @@ export function EditorPanel({ selectedProject, selectedChapterId, chapters }: Pr
   // Compute word count from current content
   const wordCount = content.replace(/\s/g, '').length;
 
-  // Auto-load draft when chapter selection changes
+  // Auto-load draft when chapter selection changes. AI validation repair creates a
+  // new current draft for the same chapter, so draftRefreshKey forces a reload.
   useEffect(() => {
     if (isGlobal || !selectedChapterId) {
       setContent('');
@@ -55,7 +57,7 @@ export function EditorPanel({ selectedProject, selectedChapterId, chapters }: Pr
     });
     // Reset generation state when switching chapters
     gen.reset();
-  }, [selectedChapterId]); // eslint-disable-line react-hooks/exhaustive-deps
+  }, [selectedChapterId, draftRefreshKey]); // eslint-disable-line react-hooks/exhaustive-deps
 
   // When generation completes, update editor content
   useEffect(() => {

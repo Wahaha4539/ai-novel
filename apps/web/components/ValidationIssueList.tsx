@@ -3,6 +3,8 @@ import { ValidationIssue } from '../types/dashboard';
 
 interface Props {
   validationIssues: ValidationIssue[];
+  onFixIssue?: (issue: ValidationIssue) => void | Promise<void>;
+  fixingIssueId?: string;
 }
 
 const ISSUE_TYPE_LABELS: Record<string, { title: string; desc: string }> = {
@@ -63,9 +65,17 @@ function getSeverityTone(severity: string) {
 }
 
 /**
+ * Keep the loading key aligned with the dashboard hook so cards without a DB id
+ * can still display the correct in-progress state.
+ */
+function getIssueActionId(issue: ValidationIssue) {
+  return issue.id ?? `${issue.issueType}:${issue.chapterId ?? 'project'}:${issue.message}`;
+}
+
+/**
  * 校验问题列表：展示问题名称、规则来源、详情和建议，帮助作者定位当前章节的硬规则风险。
  */
-export function ValidationIssueList({ validationIssues }: Props) {
+export function ValidationIssueList({ validationIssues, onFixIssue, fixingIssueId }: Props) {
   return (
     <article className="panel p-5 animate-fade-in" style={{ animationDelay: '0.4s', animationFillMode: 'both', borderColor: validationIssues.length ? 'rgba(245, 158, 11, 0.28)' : undefined }}>
       <SectionHeader
@@ -84,6 +94,9 @@ export function ValidationIssueList({ validationIssues }: Props) {
           validationIssues.map((issue, index) => {
             const meta = getIssueMeta(issue.issueType);
             const tone = getSeverityTone(issue.severity);
+            const issueActionId = getIssueActionId(issue);
+            const isFixing = fixingIssueId === issueActionId;
+            const isAnyIssueFixing = Boolean(fixingIssueId);
 
             return (
             <div
@@ -132,6 +145,34 @@ export function ValidationIssueList({ validationIssues }: Props) {
               {issue.suggestion ? (
                 <div className="mt-3 text-xs" style={{ color: 'var(--text-main)', background: 'var(--bg-overlay)', border: '1px dashed var(--border-light)', borderRadius: '12px', padding: '0.75rem', lineHeight: 1.65 }}>
                   <span style={{ color: 'var(--accent-cyan)', fontWeight: 700 }}>建议：</span>{issue.suggestion}
+                </div>
+              ) : null}
+
+              {onFixIssue ? (
+                <div className="mt-3" style={{ borderTop: '1px solid var(--border-dim)', paddingTop: '0.75rem' }}>
+                  <button
+                    type="button"
+                    onClick={() => onFixIssue(issue)}
+                    disabled={isAnyIssueFixing}
+                    className="btn"
+                    style={{
+                      width: '100%',
+                      justifyContent: 'center',
+                      borderColor: isFixing ? 'var(--accent-cyan)' : 'rgba(6, 182, 212, 0.45)',
+                      background: isFixing
+                        ? 'linear-gradient(135deg, rgba(6,182,212,0.18), rgba(139,92,246,0.16))'
+                        : 'rgba(6,182,212,0.08)',
+                      color: isAnyIssueFixing && !isFixing ? 'var(--text-dim)' : 'var(--accent-cyan)',
+                      cursor: isAnyIssueFixing ? 'wait' : 'pointer',
+                      opacity: isAnyIssueFixing && !isFixing ? 0.58 : 1,
+                    }}
+                  >
+                    {isFixing ? '修复中…' : '🤖 AI 修复'}
+                  </button>
+                  {/* AI 修复会跨越草稿、事实层和复检三步，提前说明可避免用户误以为只是隐藏告警。 */}
+                  <div className="mt-2 text-xs" style={{ color: 'var(--text-dim)', lineHeight: 1.65 }}>
+                    将调用 LLM 针对该问题生成新草稿，并自动重建事实层后复检；若仍有问题，可继续修复或手动调整。
+                  </div>
                 </div>
               ) : null}
             </div>
