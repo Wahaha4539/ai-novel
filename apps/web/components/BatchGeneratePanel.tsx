@@ -26,6 +26,13 @@ interface Props {
 
 type GenerateMode = 'single' | 'volume' | 'book';
 
+type ChapterGenerateTarget = {
+  id: string;
+  chapterNo: number;
+  title: string;
+  status?: ChapterSummary['status'];
+};
+
 // ─── Component ──────────────────────────────────────────
 
 export function BatchGeneratePanel({ projectId, volumes, chapters, onComplete }: Props) {
@@ -37,6 +44,10 @@ export function BatchGeneratePanel({ projectId, volumes, chapters, onComplete }:
   const [selectedChapterIds, setSelectedChapterIds] = useState<Set<string>>(new Set());
   // Polish state: tracks which chapter is currently being polished
   const [polishingChapterId, setPolishingChapterId] = useState<string | null>(null);
+  // 用站内确认卡片替代浏览器原生 confirm，避免阻塞式 Alert 弹窗打断暗色界面体验。
+  const [pendingOverwriteTargets, setPendingOverwriteTargets] = useState<ChapterGenerateTarget[] | null>(null);
+  // 生成后续章节可能过期时，在页面内展示提醒，替代 window.alert。
+  const [staleChapterWarning, setStaleChapterWarning] = useState<ChapterSummary[] | null>(null);
 
   /** Group ALL chapters by volume for the single-chapter view */
   const allChaptersByVolume = useMemo(() => {
@@ -138,6 +149,22 @@ export function BatchGeneratePanel({ projectId, volumes, chapters, onComplete }:
     });
   }, []);
 
+  /** 执行按章生成，并在完成后用页面内提示标记可能过期的后续章节。 */
+  const runChapterBatchGenerate = useCallback(async (targets: ChapterGenerateTarget[]) => {
+    setPendingOverwriteTargets(null);
+    setStaleChapterWarning(null);
+    await gen.generateSequential(projectId, targets, () => {});
+
+    // 生成完成后，检查后续是否有已生成章节可能受影响
+    const maxGeneratedNo = Math.max(...targets.map((t) => t.chapterNo));
+    const staleChapters = chapters.filter(
+      (ch) => ch.chapterNo > maxGeneratedNo && ch.status === 'drafted',
+    );
+    setStaleChapterWarning(staleChapters.length > 0 ? staleChapters : null);
+
+    await onComplete?.(targets.map((target) => target.id));
+  }, [projectId, chapters, gen, onComplete]);
+
   /** Start batch generation for selected chapters (chapter mode) */
   const handleChapterBatchGenerate = useCallback(async () => {
     if (selectedChapterIds.size === 0) return;
@@ -152,36 +179,14 @@ export function BatchGeneratePanel({ projectId, volumes, chapters, onComplete }:
         status: ch.status,
       }));
 
-    // 检查是否有已生成的章节被选中，弹出覆盖确认
-    const draftedTargets = targets.filter((t) => t.status === 'drafted');
-    if (draftedTargets.length > 0) {
-      const names = draftedTargets.map((t) => `#${t.chapterNo} ${t.title}`).join('、');
-      const confirmed = window.confirm(
-        `以下 ${draftedTargets.length} 章已有生成内容，重新生成将覆盖现有草稿：\n\n${names}\n\n确认覆盖？`,
-      );
-      if (!confirmed) return;
+    // 已生成章节需要二次确认，但使用自定义卡片，避免浏览器原生 Alert/Confirm。
+    if (targets.some((t) => t.status === 'drafted')) {
+      setPendingOverwriteTargets(targets);
+      return;
     }
 
-    await gen.generateSequential(projectId, targets, () => {});
-
-    // 生成完成后，检查后续是否有已生成章节可能受影响
-    const maxGeneratedNo = Math.max(...targets.map((t) => t.chapterNo));
-    const staleChapters = chapters.filter(
-      (ch) => ch.chapterNo > maxGeneratedNo && ch.status === 'drafted',
-    );
-    if (staleChapters.length > 0) {
-      const staleNames = staleChapters
-        .slice(0, 10) // 最多显示10个
-        .map((ch) => `#${ch.chapterNo} ${ch.title || '未命名'}`)
-        .join('\n');
-      const suffix = staleChapters.length > 10 ? `\n…等共 ${staleChapters.length} 章` : '';
-      window.alert(
-        `⚠️ 以下章节的内容基于旧版生成，角色状态/剧情可能已过期，建议按顺序重新生成：\n\n${staleNames}${suffix}`,
-      );
-    }
-
-    await onComplete?.(targets.map((target) => target.id));
-  }, [projectId, selectedChapterIds, chapters, gen, onComplete]);
+    await runChapterBatchGenerate(targets);
+  }, [selectedChapterIds, chapters, runChapterBatchGenerate]);
 
   /** Start batch generation (volume/book modes) */
   const handleStart = useCallback(async () => {
@@ -336,6 +341,21 @@ export function BatchGeneratePanel({ projectId, volumes, chapters, onComplete }:
         )}
       </div>
 
+      {pendingOverwriteTargets && !isActive && (
+        <OverwriteConfirmCard
+          targets={pendingOverwriteTargets.filter((target) => target.status === 'drafted')}
+          onCancel={() => setPendingOverwriteTargets(null)}
+          onConfirm={() => runChapterBatchGenerate(pendingOverwriteTargets)}
+        />
+      )}
+
+      {staleChapterWarning && !isActive && (
+        <StaleChapterNotice
+          chapters={staleChapterWarning}
+          onDismiss={() => setStaleChapterWarning(null)}
+        />
+      )}
+
       {/* ── Floating Action Panel (always visible) ── */}
       <div
         style={{
@@ -442,6 +462,134 @@ export function BatchGeneratePanel({ projectId, volumes, chapters, onComplete }:
 }
 
 // ─── Sub-components ─────────────────────────────────────
+
+/**
+ * OverwriteConfirmCard — In-page replacement for native confirm dialogs.
+ * Shows which drafted chapters will be overwritten and lets the user continue or cancel.
+ */
+function OverwriteConfirmCard({
+  targets,
+  onConfirm,
+  onCancel,
+}: {
+  targets: ChapterGenerateTarget[];
+  onConfirm: () => void;
+  onCancel: () => void;
+}) {
+  const previewTargets = targets.slice(0, 6);
+
+  return (
+    <div
+      className="animate-fade-in"
+      style={{
+        position: 'absolute',
+        right: '2rem',
+        bottom: '7.6rem',
+        width: 'min(28rem, calc(100% - 4rem))',
+        padding: '1rem',
+        borderRadius: '1rem',
+        background: 'linear-gradient(180deg, rgba(15,23,42,0.96), rgba(8,13,24,0.96))',
+        border: '1px solid rgba(245,158,11,0.35)',
+        boxShadow: '0 20px 60px rgba(0,0,0,0.55), 0 0 32px rgba(245,158,11,0.08)',
+        backdropFilter: 'blur(18px)',
+        zIndex: 30,
+      }}
+    >
+      <div style={{ display: 'flex', alignItems: 'center', gap: '0.6rem', marginBottom: '0.7rem' }}>
+        <span style={{ fontSize: '1.1rem' }}>⚠️</span>
+        <strong style={{ color: '#fbbf24', fontSize: '0.95rem' }}>确认覆盖已有草稿</strong>
+      </div>
+      <p style={{ color: 'var(--text-muted)', fontSize: '0.82rem', lineHeight: 1.7, marginBottom: '0.75rem' }}>
+        以下 {targets.length} 章已有生成内容，继续生成将覆盖现有草稿：
+      </p>
+      <div style={{ display: 'flex', flexDirection: 'column', gap: '0.35rem', marginBottom: '0.85rem' }}>
+        {previewTargets.map((target) => (
+          <span key={target.id} style={{ color: 'var(--text-main)', fontSize: '0.82rem' }}>
+            #{target.chapterNo} {target.title}
+          </span>
+        ))}
+        {targets.length > previewTargets.length && (
+          <span style={{ color: 'var(--text-dim)', fontSize: '0.78rem' }}>…等共 {targets.length} 章</span>
+        )}
+      </div>
+      <div style={{ display: 'flex', justifyContent: 'flex-end', gap: '0.5rem' }}>
+        <button type="button" onClick={onCancel} style={secondaryActionStyle}>取消</button>
+        <button type="button" onClick={onConfirm} style={dangerActionStyle}>确认覆盖</button>
+      </div>
+    </div>
+  );
+}
+
+/**
+ * StaleChapterNotice — Non-blocking warning shown after generation changes earlier chapters.
+ * It avoids window.alert while still preserving the stale-content reminder.
+ */
+function StaleChapterNotice({ chapters, onDismiss }: { chapters: ChapterSummary[]; onDismiss: () => void }) {
+  const previewChapters = chapters.slice(0, 10);
+
+  return (
+    <div
+      className="animate-fade-in"
+      style={{
+        position: 'absolute',
+        left: '2rem',
+        bottom: '1.5rem',
+        width: 'min(34rem, calc(100% - 24rem))',
+        padding: '0.9rem 1rem',
+        borderRadius: '0.9rem',
+        background: 'rgba(8,13,24,0.94)',
+        border: '1px solid rgba(6,182,212,0.28)',
+        boxShadow: '0 16px 46px rgba(0,0,0,0.45)',
+        backdropFilter: 'blur(18px)',
+        zIndex: 25,
+      }}
+    >
+      <div style={{ display: 'flex', gap: '0.75rem', alignItems: 'flex-start' }}>
+        <span>💡</span>
+        <div style={{ flex: 1 }}>
+          <strong style={{ color: 'var(--accent-cyan)', fontSize: '0.88rem' }}>后续章节可能需要重新生成</strong>
+          <p style={{ color: 'var(--text-muted)', fontSize: '0.78rem', lineHeight: 1.7, marginTop: '0.35rem' }}>
+            以下章节基于旧版角色状态/剧情生成，建议按顺序重新生成。
+          </p>
+          <p style={{ color: 'var(--text-dim)', fontSize: '0.76rem', lineHeight: 1.6, marginTop: '0.45rem' }}>
+            {previewChapters.map((chapter) => `#${chapter.chapterNo} ${chapter.title || '未命名'}`).join('、')}
+            {chapters.length > previewChapters.length ? `…等共 ${chapters.length} 章` : ''}
+          </p>
+        </div>
+        <button type="button" onClick={onDismiss} aria-label="关闭提醒" style={closeButtonStyle}>×</button>
+      </div>
+    </div>
+  );
+}
+
+const secondaryActionStyle: React.CSSProperties = {
+  padding: '0.45rem 0.85rem',
+  borderRadius: '0.65rem',
+  border: '1px solid var(--border-light)',
+  background: 'rgba(148,163,184,0.08)',
+  color: 'var(--text-muted)',
+  cursor: 'pointer',
+};
+
+const dangerActionStyle: React.CSSProperties = {
+  padding: '0.45rem 0.85rem',
+  borderRadius: '0.65rem',
+  border: '1px solid rgba(245,158,11,0.45)',
+  background: 'rgba(245,158,11,0.16)',
+  color: '#fbbf24',
+  fontWeight: 700,
+  cursor: 'pointer',
+};
+
+const closeButtonStyle: React.CSSProperties = {
+  width: '1.65rem',
+  height: '1.65rem',
+  borderRadius: '999px',
+  border: '1px solid var(--border-light)',
+  background: 'rgba(15,23,42,0.75)',
+  color: 'var(--text-muted)',
+  cursor: 'pointer',
+};
 
 /**
  * ChapterSelectList — Multi-select chapter list grouped by volume.

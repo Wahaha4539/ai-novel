@@ -4,7 +4,7 @@
  */
 'use client';
 
-import React from 'react';
+import React, { useState } from 'react';
 import { LlmProvider, ConnectivityResult } from '../../types/llm-provider';
 
 interface Props {
@@ -26,13 +26,11 @@ export function ProviderCard({
   isTesting,
   testResult,
 }: Props) {
-  /** Confirm before deleting */
-  const handleDelete = () => {
-    const msg = provider.routedSteps.length > 0
-      ? `删除「${provider.name}」将同时移除以下步骤的路由配置：${provider.routedSteps.join('、')}。确认删除？`
-      : `确认删除 Provider「${provider.name}」？`;
-    if (window.confirm(msg)) onDelete(provider.id);
-  };
+  // 用卡片内联确认替代 window.confirm，避免浏览器原生弹窗破坏配置页交互节奏。
+  const [isConfirmingDelete, setIsConfirmingDelete] = useState(false);
+
+  /** Show inline delete confirmation before removing a provider. */
+  const handleDelete = () => setIsConfirmingDelete(true);
 
   return (
     <div
@@ -158,6 +156,33 @@ export function ProviderCard({
           </span>
         )}
       </div>
+
+      {isConfirmingDelete && (
+        <div
+          className="animate-fade-in"
+          style={{
+            marginTop: '0.85rem',
+            padding: '0.75rem',
+            borderRadius: '0.65rem',
+            border: '1px solid rgba(239,68,68,0.28)',
+            background: 'rgba(239,68,68,0.07)',
+          }}
+        >
+          <p style={{ fontSize: '0.76rem', lineHeight: 1.7, color: 'var(--text-muted)', marginBottom: '0.6rem' }}>
+            确认删除 Provider「{provider.name}」？
+            {provider.routedSteps.length > 0 && (
+              <>
+                <br />
+                将同时移除以下步骤的路由配置：{provider.routedSteps.join('、')}
+              </>
+            )}
+          </p>
+          <div style={{ display: 'flex', justifyContent: 'flex-end', gap: '0.45rem' }}>
+            <ActionButton label="取消" onClick={() => setIsConfirmingDelete(false)} variant="default" />
+            <ActionButton label="确认删除" onClick={() => onDelete(provider.id)} variant="danger" />
+          </div>
+        </div>
+      )}
     </div>
   );
 }
