@@ -177,20 +177,24 @@ class PolishChapterPipeline:
 
         # ── Call LLM with higher token budget for polish ──
         polished_text = self.llm.generate(
-            prompt, target_word_count=len(original_text)
+            prompt, target_word_count=len(original_text),
+            app_step="polish",
         )
 
         # Strip any accidental wrapper tags the LLM might add
         polished_text = self._strip_wrapper_tags(polished_text)
 
         # ── Save as a new draft version ──
+        # Capture resolved config for draft metadata
+        llm_config = self.llm.get_config("polish")
         draft = self.draft_repo.create_chapter_draft(
             chapter_id=chapter_id,
             content=polished_text,
             model_info={
                 "provider": "openai-compatible",
-                "model": self.settings.llm_model,
-                "baseUrl": self.settings.llm_base_url,
+                "model": llm_config.model,
+                "baseUrl": llm_config.base_url,
+                "configSource": llm_config.source,
                 "mode": "polish",
             },
             generation_context={

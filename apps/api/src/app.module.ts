@@ -6,6 +6,7 @@ import { CharactersModule } from './modules/characters/characters.module';
 import { GenerationModule } from './modules/generation/generation.module';
 import { GuidedModule } from './modules/guided/guided.module';
 import { JobsModule } from './modules/jobs/jobs.module';
+import { LlmProvidersModule } from './modules/llm-providers/llm-providers.module';
 import { LorebookModule } from './modules/lorebook/lorebook.module';
 import { MemoryModule } from './modules/memory/memory.module';
 import { ProjectsModule } from './modules/projects/projects.module';
@@ -26,6 +27,7 @@ import { PrismaModule } from './prisma/prisma.module';
     JobsModule,
     GenerationModule,
     GuidedModule,
+    LlmProvidersModule,
     PromptTemplatesModule,
     ValidationModule,
     MemoryModule,

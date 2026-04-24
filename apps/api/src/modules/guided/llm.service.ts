@@ -1,4 +1,5 @@
 import { Injectable } from '@nestjs/common';
+import { LlmProvidersService, ResolvedLlmConfig } from '../llm-providers/llm-providers.service';
 
 interface ChatMessage {
   role: 'system' | 'user' | 'assistant';
@@ -8,43 +9,53 @@ interface ChatMessage {
 interface ChatOptions {
   temperature?: number;
   maxTokens?: number;
+  /** App step identifier for provider routing (guided / generate / polish) */
+  appStep?: string;
 }
 
+/**
+ * Unified LLM chat service.
+ * Resolves provider config via the 3-layer fallback chain:
+ *   step routing → default provider → environment variables.
+ */
 @Injectable()
 export class LlmService {
+  /** Cached env fallback values (read once at startup) */
+  private readonly envBaseUrl = process.env.LLM_BASE_URL ?? 'http://localhost:8318/v1';
+  private readonly envApiKey = process.env.LLM_API_KEY ?? '';
+  private readonly envModel = process.env.LLM_MODEL ?? 'gpt-4o';
 
-  private readonly baseUrl: string;
-  private readonly apiKey: string;
-  private readonly model: string;
+  constructor(private readonly llmProviders: LlmProvidersService) {}
 
-  constructor() {
-    this.baseUrl = process.env.LLM_BASE_URL ?? 'http://localhost:8318/v1';
-    this.apiKey = process.env.LLM_API_KEY ?? '';
-    this.model = process.env.LLM_MODEL ?? 'gpt-5.4';
-  }
-
+  /**
+   * Send a chat completion request.
+   * Uses appStep to resolve the correct provider; falls back to env vars.
+   */
   async chat(messages: ChatMessage[], options?: ChatOptions): Promise<string> {
-    if (!this.apiKey) {
-      throw new Error('缺少 LLM_API_KEY，无法调用 AI');
+    // Resolve LLM config from DB or env
+    const config = await this.resolveConfig(options?.appStep);
+
+    if (!config.apiKey) {
+      throw new Error('缺少 LLM API Key，无法调用 AI。请在 LLM 配置中设置 Provider。');
     }
 
-    const url = `${this.baseUrl.replace(/\/+$/, '')}/chat/completions`;
+    const url = `${config.baseUrl.replace(/\/+$/, '')}/chat/completions`;
     const body = JSON.stringify({
-      model: this.model,
+      model: config.model,
       messages,
-      temperature: options?.temperature ?? 0.8,
+      temperature: options?.temperature ?? (config.params.temperature as number | undefined) ?? 0.8,
       max_tokens: options?.maxTokens ?? 2000,
     });
 
     const t0 = Date.now();
     const msgPreview = messages.map((m) => `[${m.role}](${m.content.length}ch)`).join(' ');
-    console.log(`[LLM] → ${this.model} msgs=${messages.length} temp=${options?.temperature ?? 0.8} ${msgPreview} body=${body}`);
+    console.log(`[LLM] → ${config.model} src=${config.source} msgs=${messages.length} temp=${options?.temperature ?? 0.8} ${msgPreview}`);
 
     const response = await fetch(url, {
       method: 'POST',
       headers: {
         'Content-Type': 'application/json',
-        Authorization: `Bearer ${this.apiKey}`,
+        Authorization: `Bearer ${config.apiKey}`,
       },
       body,
       signal: AbortSignal.timeout(600_000),
@@ -69,6 +80,26 @@ export class LlmService {
     return text;
   }
 
+  /**
+   * Resolve config from the startup-loaded provider snapshot.
+   * If the snapshot has no usable provider, use raw env vars as absolute fallback.
+   */
+  private resolveConfig(appStep?: string): ResolvedLlmConfig {
+    try {
+      return this.llmProviders.resolveForStep(appStep);
+    } catch {
+      // Absolute fallback: use env vars directly (e.g. during initial setup)
+      return {
+        baseUrl: this.envBaseUrl,
+        apiKey: this.envApiKey,
+        model: this.envModel,
+        params: {},
+        source: 'env_fallback',
+      };
+    }
+  }
+
+  /** Extract text content from OpenAI-compatible response payload */
   private extractText(payload: Record<string, unknown>): string {
     const choices = payload.choices as Array<Record<string, unknown>> | undefined;
     if (!choices?.length) return '';
@@ -79,6 +110,7 @@ export class LlmService {
     const content = message.content;
     if (typeof content === 'string') return content;
 
+    // Handle structured content (e.g. array of text blocks)
     if (Array.isArray(content)) {
       return content
         .filter(

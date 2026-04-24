@@ -12,6 +12,7 @@ from app.models.schemas import (
 from app.pipelines.generate_chapter import GenerateChapterPipeline
 from app.pipelines.polish_chapter import PolishChapterPipeline
 from app.pipelines.rebuild_memory import RebuildMemoryPipeline
+from app.repositories.llm_provider_repo import LlmProviderRepository
 
 router = APIRouter()
 pipeline = GenerateChapterPipeline()
@@ -94,4 +95,14 @@ def rebuild_memory(payload: MemoryRebuildRequest) -> MemoryRebuildResult:
     except Exception as exc:
         log_event(logger, "memory.rebuild.request.failed", level="error", **log_context, error=str(exc))
         raise
+
+
+@router.post("/internal/llm-config/reload")
+def reload_llm_config() -> dict[str, int | bool]:
+    """Force worker to reload DB-backed LLM config after API-side config changes."""
+    LlmProviderRepository.load_cache()
+    status = LlmProviderRepository.cache_status()
+    log_event(logger, "llm.config.reloaded", **status)
+    return status
+
 

@@ -377,3 +377,34 @@ model GuidedSession {
 
   @@unique([projectId])
 }
+
+/// LLM 服务提供商配置（当前仅支持 OpenAI-Compatible 格式）
+/// providerType 字段预留，未来可扩展 Claude/Gemini 等
+model LlmProvider {
+  id            String        @id @default(uuid()) @db.Uuid
+  name          String        @db.VarChar(100)                        // 显示名称，如 "GPT-5.4 主力"
+  providerType  String        @default("openai_compatible") @db.VarChar(50)
+  baseUrl       String        @db.VarChar(500)                        // API base URL (e.g. https://api.openai.com/v1)
+  apiKey        String        @db.Text                                // API Key（明文存储，与 .env 同级安全）
+  defaultModel  String        @db.VarChar(200)                        // 默认模型名 (e.g. gpt-4o)
+  extraConfig   Json          @default("{}")                          // 扩展配置（默认 temperature 等）
+  isDefault     Boolean       @default(false)                         // 默认 Provider：步骤未配置路由时使用
+  isActive      Boolean       @default(true)                          // 软停用标记
+  createdAt     DateTime      @default(now())
+  updatedAt     DateTime      @updatedAt
+  routings      LlmRouting[]
+}
+
+/// 应用步骤 → LLM Provider 路由映射
+/// 固定 3 个步骤：guided（创作引导）、generate（章节生成）、polish（章节润色）
+/// validation/fact_extractor/summary 等内部服务不走路由，直接用默认 Provider
+model LlmRouting {
+  id             String       @id @default(uuid()) @db.Uuid
+  appStep        String       @unique @db.VarChar(50)                 // "guided" | "generate" | "polish"
+  providerId     String       @db.Uuid
+  modelOverride  String?      @db.VarChar(200)                        // 可选：覆盖 provider 的默认模型
+  paramsOverride Json         @default("{}")                          // 可选：覆盖 temperature/maxTokens 等
+  createdAt      DateTime     @default(now())
+  updatedAt      DateTime     @updatedAt
+  provider       LlmProvider  @relation(fields: [providerId], references: [id], onDelete: Cascade)
+}

@@ -189,15 +189,20 @@ class GenerateChapterPipeline:
         text = self.llm_gateway.generate(
             prompt,
             target_word_count=request.request_payload.word_count,
+            app_step="generate",
         )
+
+        # Capture resolved config for draft metadata
+        llm_config = self.llm_gateway.get_config("generate")
 
         draft = self.draft_repo.create_chapter_draft(
             chapter_id=request.chapter_id,
             content=text,
             model_info={
                 "provider": "openai-compatible",
-                "model": self.settings.llm_model,
-                "baseUrl": self.settings.llm_base_url,
+                "model": llm_config.model,
+                "baseUrl": llm_config.base_url,
+                "configSource": llm_config.source,
             },
             generation_context={
                 "jobId": request.job_id,

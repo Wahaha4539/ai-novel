@@ -401,3 +401,39 @@ class PromptTemplateModel(TimestampMixin, Base):
     is_default: Mapped[bool] = mapped_column("isDefault", Boolean, default=False)
     tags: Mapped[list] = mapped_column(JSON, default=list)
     effect_preview: Mapped[str | None] = mapped_column("effectPreview", Text, nullable=True)
+
+
+class LlmProviderModel(TimestampMixin, Base):
+    """LLM provider configuration — stores OpenAI-Compatible connection details.
+    isDefault: when True, this provider is used for steps without explicit routing."""
+    __tablename__ = "LlmProvider"
+
+    id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
+    name: Mapped[str] = mapped_column(String(100))
+    provider_type: Mapped[str] = mapped_column("providerType", String(50), default="openai_compatible")
+    base_url: Mapped[str] = mapped_column("baseUrl", String(500))
+    api_key: Mapped[str] = mapped_column("apiKey", Text)
+    default_model: Mapped[str] = mapped_column("defaultModel", String(200))
+    extra_config: Mapped[dict] = mapped_column("extraConfig", JSON, default=dict)
+    is_default: Mapped[bool] = mapped_column("isDefault", Boolean, default=False)
+    is_active: Mapped[bool] = mapped_column("isActive", Boolean, default=True)
+
+    routings: Mapped[list[LlmRoutingModel]] = relationship(back_populates="provider")
+
+
+class LlmRoutingModel(TimestampMixin, Base):
+    """Step → Provider routing. appStep is one of: guided, generate, polish."""
+    __tablename__ = "LlmRouting"
+
+    id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
+    app_step: Mapped[str] = mapped_column("appStep", String(50), unique=True)
+    provider_id: Mapped[uuid.UUID] = mapped_column(
+        "providerId",
+        UUID(as_uuid=True),
+        ForeignKey("LlmProvider.id", ondelete="CASCADE"),
+    )
+    model_override: Mapped[str | None] = mapped_column("modelOverride", String(200), nullable=True)
+    params_override: Mapped[dict] = mapped_column("paramsOverride", JSON, default=dict)
+
+    provider: Mapped[LlmProviderModel] = relationship(back_populates="routings")
+

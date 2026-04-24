@@ -397,6 +397,7 @@ export class GuidedService {
     const reply = await this.llm.chat(messages, {
       temperature: 0.8,
       maxTokens: 128000,
+      appStep: 'guided',
     });
 
     return { reply };
@@ -710,6 +711,7 @@ ${schema}
     const reply = await this.llm.chat(messages, {
       temperature: 0.9,
       maxTokens: 128000,
+      appStep: 'guided',
     });
 
     // Extract JSON from response (support both ```json blocks and raw JSON)

@@ -3,7 +3,7 @@ import { ProjectSummary, ChapterSummary, VolumeSummary } from '../types/dashboar
 import { ThemeSwitcher } from './ThemeSwitcher';
 import { VolumeChapterTree } from './VolumeChapterTree';
 
-type ActiveView = 'editor' | 'outline' | 'lore' | 'projects' | 'volumes' | 'guided' | 'prompts' | 'foreshadow' | 'generate';
+type ActiveView = 'editor' | 'outline' | 'lore' | 'projects' | 'volumes' | 'guided' | 'prompts' | 'foreshadow' | 'generate' | 'llm-config';
 
 interface Props {
   projects: ProjectSummary[];
@@ -23,6 +23,7 @@ interface Props {
   onNavigateToPrompts: () => void;
   onNavigateToForeshadow: () => void;
   onNavigateToGenerate: () => void;
+  onNavigateToLlmConfig: () => void;
   onSelectVolume: (id: string) => void;
 }
 
@@ -44,6 +45,7 @@ export function WorkspaceSidebar({
   onNavigateToPrompts,
   onNavigateToForeshadow,
   onNavigateToGenerate,
+  onNavigateToLlmConfig,
   onSelectVolume,
 }: Props) {
   const selectedProject = projects.find((p) => p.id === selectedProjectId);
@@ -170,7 +172,26 @@ export function WorkspaceSidebar({
       )}
 
       {/* Footer Profile or Settings block */}
+      {/* Footer — always visible: LLM config + branding */}
       <div className="p-4" style={{ borderTop: '1px solid var(--border-dim)', background: 'var(--bg-sidebar-footer)' }}>
+        {/* LLM Config — global, always accessible */}
+        <button
+          onClick={onNavigateToLlmConfig}
+          className="flex items-center gap-2 w-full px-3 py-2 mb-3"
+          style={{
+            borderRadius: '0.5rem',
+            fontSize: '0.8rem',
+            fontWeight: activeView === 'llm-config' ? 700 : 500,
+            cursor: 'pointer',
+            border: `1px solid ${activeView === 'llm-config' ? 'rgba(245,158,11,0.4)' : 'var(--border-dim)'}`,
+            background: activeView === 'llm-config' ? 'rgba(245,158,11,0.08)' : 'transparent',
+            color: activeView === 'llm-config' ? '#f59e0b' : 'var(--text-muted)',
+            transition: 'all 0.2s ease',
+          }}
+        >
+          🔧 LLM 配置
+        </button>
+
         <div className="flex items-center justify-between px-2">
           <div className="flex items-center gap-3">
             <div className="flex items-center justify-center shrink-0" style={{ width: '32px', height: '32px', borderRadius: '50%', background: 'linear-gradient(to top right, var(--accent-cyan), #34d399)', padding: '2px', boxShadow: '0 4px 10px var(--accent-cyan-glow)' }}>

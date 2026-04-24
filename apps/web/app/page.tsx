@@ -13,8 +13,9 @@ import { GuidedWizard } from '../components/guided/GuidedWizard';
 import { PromptManagerPanel } from '../components/PromptManagerPanel';
 import { ForeshadowBoard } from '../components/ForeshadowBoard';
 import { BatchGeneratePanel } from '../components/BatchGeneratePanel';
+import { LlmProviderPanel } from '../components/LlmProviderPanel';
 
-type ActiveView = 'editor' | 'outline' | 'lore' | 'projects' | 'volumes' | 'guided' | 'prompts' | 'foreshadow' | 'generate';
+type ActiveView = 'editor' | 'outline' | 'lore' | 'projects' | 'volumes' | 'guided' | 'prompts' | 'foreshadow' | 'generate' | 'llm-config';
 
 export default function HomePage() {
   const data = useDashboardData();
@@ -67,6 +68,11 @@ export default function HomePage() {
     setActiveView('generate');
   }, []);
 
+  /** Navigate to LLM provider configuration */
+  const handleNavigateToLlmConfig = useCallback(() => {
+    setActiveView('llm-config');
+  }, []);
+
   const handleSelectVolume = useCallback((volumeId: string) => {
     setSelectedVolumeId(volumeId);
     setActiveView('volumes');
@@ -116,12 +122,16 @@ export default function HomePage() {
         onNavigateToPrompts={handleNavigateToPrompts}
         onNavigateToForeshadow={handleNavigateToForeshadow}
         onNavigateToGenerate={handleNavigateToGenerate}
+        onNavigateToLlmConfig={handleNavigateToLlmConfig}
         onSelectVolume={handleSelectVolume}
       />
 
       {/* 2. 主躯干：根据 activeView 切换面板 */}
       <section className="flex-1" style={{ position: 'relative', overflow: 'hidden' }}>
-        {activeView === 'projects' || !hasProject ? (
+        {/* LLM config is global — renders without requiring a project */}
+        {activeView === 'llm-config' ? (
+          <LlmProviderPanel />
+        ) : activeView === 'projects' || !hasProject ? (
           <ProjectManagementPanel
             projects={data.projects}
             selectedProjectId={data.selectedProjectId}

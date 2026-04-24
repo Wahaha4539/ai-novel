@@ -1,17 +1,27 @@
+"""
+LlmGateway — Sends chat completions to an OpenAI-Compatible LLM endpoint.
+
+Config resolution:
+  - When app_step is provided (e.g. "generate", "polish"), uses step routing → default → env
+  - When app_step is omitted, uses default provider → env (for internal services like validation/summary)
+"""
 import json
+import logging
 import urllib.error
 import urllib.request
 
 from app.models.dto import BuiltPrompt
-from app.core.config import get_settings
+from app.repositories.llm_provider_repo import LlmProviderRepository, ResolvedLlmConfig
+
+logger = logging.getLogger(__name__)
 
 
 class LlmGateway:
-    def __init__(self) -> None:
-        self.settings = get_settings()
+    """Unified LLM API caller with startup-cached provider resolution."""
 
     @staticmethod
     def _extract_text(response_payload: dict) -> str:
+        """Extract text content from OpenAI-compatible response payload."""
         choices = response_payload.get("choices") or []
         if not choices:
             return ""
@@ -21,6 +31,7 @@ class LlmGateway:
         if isinstance(content, str):
             return content
 
+        # Handle structured content (array of text blocks)
         if isinstance(content, list):
             texts: list[str] = []
             for item in content:
@@ -32,29 +43,56 @@ class LlmGateway:
 
         return ""
 
-    def generate(self, prompt: BuiltPrompt, *, target_word_count: int | None = None) -> str:
-        if not self.settings.llm_api_key:
-            raise ValueError("缺少 LLM_API_KEY，无法调用真实模型")
+    def generate(
+        self,
+        prompt: BuiltPrompt,
+        *,
+        target_word_count: int | None = None,
+        app_step: str | None = None,
+    ) -> str:
+        """
+        Send a chat completion request.
+
+        Args:
+            prompt: System + user prompt pair.
+            target_word_count: Hint for max_tokens calculation.
+            app_step: Optional step identifier for provider routing
+                      ("generate", "polish", or None for default provider).
+        """
+        # Resolve config from the startup-loaded snapshot; this path should not hit DB per LLM call.
+        config = LlmProviderRepository.resolve_for_step(app_step)
+
+        if not config.api_key:
+            raise ValueError("缺少 LLM API Key，无法调用模型。请在 LLM 配置中设置 Provider。")
+
+        url = f"{config.base_url.rstrip('/')}/chat/completions"
+        temperature = config.params.get("temperature", 0.8)
+        max_tokens = max(800, min((target_word_count or 1800), 4000))
 
         request = urllib.request.Request(
-            url=f"{self.settings.llm_base_url.rstrip('/')}/chat/completions",
+            url=url,
             data=json.dumps(
                 {
-                    "model": self.settings.llm_model,
+                    "model": config.model,
                     "messages": [
                         {"role": "system", "content": prompt.system},
                         {"role": "user", "content": prompt.user},
                     ],
-                    "temperature": 0.8,
-                    "max_tokens": max(800, min((target_word_count or 1800), 4000)),
+                    "temperature": temperature,
+                    "max_tokens": max_tokens,
                 },
                 ensure_ascii=False,
             ).encode("utf-8"),
             headers={
                 "Content-Type": "application/json",
-                "Authorization": f"Bearer {self.settings.llm_api_key}",
+                "Authorization": f"Bearer {config.api_key}",
             },
             method="POST",
+        )
+
+        logger.info(
+            "[LLM] → %s src=%s step=%s temp=%.1f max_tokens=%d",
+            config.model, config.source, app_step or "default", temperature, max_tokens,
         )
 
         try:
@@ -72,3 +110,7 @@ class LlmGateway:
             raise RuntimeError(f"LLM 返回内容为空: {preview}")
 
         return text
+
+    def get_config(self, app_step: str | None = None) -> ResolvedLlmConfig:
+        """Expose resolved config for logging/metadata purposes."""
+        return LlmProviderRepository.resolve_for_step(app_step)
