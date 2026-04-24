@@ -1,6 +1,6 @@
 'use client';
 
-import { useState, useCallback } from 'react';
+import { useState, useCallback, useEffect } from 'react';
 import { useDashboardData } from '../hooks/useDashboardData';
 import { WorkspaceSidebar } from '../components/WorkspaceSidebar';
 import { EditorPanel } from '../components/EditorPanel';
@@ -22,9 +22,28 @@ export default function HomePage() {
   const [activeView, setActiveView] = useState<ActiveView>('projects');
   const [selectedVolumeId, setSelectedVolumeId] = useState('');
   const [autoStartGuided, setAutoStartGuided] = useState(false);
+  const [isToastVisible, setIsToastVisible] = useState(false);
 
   const selectedProject = data.projects.find((item) => item.id === data.selectedProjectId) ?? data.dashboard?.project;
   const chapters = data.dashboard?.chapters ?? [];
+  const toastMessage = data.error || data.actionMessage;
+
+  useEffect(() => {
+    if (!toastMessage) {
+      setIsToastVisible(false);
+      return;
+    }
+
+    setIsToastVisible(true);
+
+    // Toast 只是轻量反馈层，不能因为底层 actionMessage 未清空而永久遮挡编辑区。
+    // 每次文案变化都重新计时，长任务的阶段更新仍会继续短暂展示。
+    const timeoutId = window.setTimeout(() => {
+      setIsToastVisible(false);
+    }, 6000);
+
+    return () => window.clearTimeout(timeoutId);
+  }, [toastMessage]);
 
   const handleSelectProject = useCallback((id: string) => {
     data.setSelectedProjectId(id);
@@ -175,7 +194,7 @@ export default function HomePage() {
         )}
 
         {/* 全局 Toast 提示 */}
-        {(data.error || data.actionMessage) && (
+        {toastMessage && isToastVisible && (
           <div className="animate-slide-top" style={{ position: 'absolute', top: '1rem', right: '2rem', zIndex: 50 }}>
             <div
               className="panel px-4 py-3 text-sm"
@@ -184,7 +203,7 @@ export default function HomePage() {
                 background: data.error ? 'var(--status-err-bg)' : 'var(--accent-cyan-bg)',
                 color: data.error ? '#ffe4e6' : '#ccfbf1'
               }}>
-              {data.error || data.actionMessage}
+              {toastMessage}
             </div>
           </div>
         )}

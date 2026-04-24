@@ -1,3 +1,4 @@
+import { useState } from 'react';
 import { SectionHeader } from './SectionHeader';
 import { StatusBadge } from './StatusBadge';
 import { ReviewItem } from '../types/dashboard';
@@ -12,12 +13,29 @@ interface Props {
  * 待审核记忆队列：保留人工确认按钮，同时提供 LLM 一键审核入口给全自动流程复用。
  */
 export function ReviewQueueList({ reviewQueue, onRunReviewAction, onRunAiReviewQueue }: Props) {
+  const [isAiReviewing, setIsAiReviewing] = useState(false);
+
+  /**
+   * 点击后一律进入本地 loading，避免全局 Toast 自动隐藏后用户误以为按钮没有响应。
+   * finally 中恢复按钮，网络失败时由上层 actionMessage 展示错误原因。
+   */
+  const handleRunAiReviewQueue = async () => {
+    if (!onRunAiReviewQueue || isAiReviewing) return;
+
+    setIsAiReviewing(true);
+    try {
+      await onRunAiReviewQueue();
+    } finally {
+      setIsAiReviewing(false);
+    }
+  };
+
   return (
     <article className="panel p-5 animate-fade-in" style={{ animationDelay: '0.3s', animationFillMode: 'both' }}>
       <SectionHeader title="待审核记忆队列" desc="pending_review → LLM 判断采纳 / rejected 工作流。" />
       {reviewQueue.length > 0 && onRunAiReviewQueue ? (
-        <button className="btn mt-5 w-full justify-center" type="button" onClick={() => onRunAiReviewQueue()}>
-          🤖 AI 审核全部待确认记忆
+        <button className="btn mt-5 w-full justify-center" type="button" disabled={isAiReviewing} onClick={handleRunAiReviewQueue}>
+          {isAiReviewing ? '🤖 AI 正在审核待确认记忆…' : '🤖 AI 审核全部待确认记忆'}
         </button>
       ) : null}
       <div className="mt-5 space-y-3">
