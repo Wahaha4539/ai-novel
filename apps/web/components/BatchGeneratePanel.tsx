@@ -244,6 +244,7 @@ export function BatchGeneratePanel({ projectId, volumes, chapters, onComplete }:
             onToggleVolume={toggleVolumeChapters}
             genProgress={gen.progress}
             genState={gen.state}
+            generationError={gen.error}
             isActive={isActive}
             polishingChapterId={polishingChapterId}
             onPolish={async (chapterId: string) => {
@@ -337,6 +338,9 @@ export function BatchGeneratePanel({ projectId, volumes, chapters, onComplete }:
             }}
           >
             ❌ {gen.error}
+              <div style={{ marginTop: '0.45rem', color: '#fecaca', lineHeight: 1.6 }}>
+                已停在当前章节。请处理失败原因后点击“重置”，再继续生成。
+              </div>
           </div>
         )}
       </div>
@@ -603,6 +607,7 @@ function ChapterSelectList({
   onToggleVolume,
   genProgress,
   genState,
+  generationError,
   isActive,
   polishingChapterId,
   onPolish,
@@ -613,6 +618,7 @@ function ChapterSelectList({
   onToggleVolume: (chapters: ChapterSummary[]) => void;
   genProgress: ReturnType<typeof useChapterGeneration>['progress'];
   genState: GenerationState;
+  generationError: string;
   isActive: boolean;
   polishingChapterId: string | null;
   onPolish: (chapterId: string) => void;
@@ -658,16 +664,16 @@ function ChapterSelectList({
                 const isCompleted = genProgress?.completedIds.includes(ch.id);
                 const isFailed = genProgress?.failedIds.includes(ch.id);
                 const isCurrentlyGenerating = isActive && genProgress?.currentChapterId === ch.id;
+                const shouldShowFailureReason = isFailed && genState === 'failed' && Boolean(generationError);
                 // Status display
                 const statusLabel = ch.status === 'drafted' ? '已生成' : '待生成';
                 const statusColor = ch.status === 'drafted' ? '#10b981' : 'var(--text-dim)';
 
                 return (
-                  <label
+                  <div
                     key={ch.id}
-                    className="flex items-center gap-3"
                     style={{
-                      padding: '0.5rem 0.8rem',
+                      padding: shouldShowFailureReason ? '0.5rem 0.8rem 0.65rem' : '0.5rem 0.8rem',
                       borderRadius: '0.5rem',
                       cursor: isActive ? 'default' : 'pointer',
                       background: isCurrentlyGenerating
@@ -688,69 +694,77 @@ function ChapterSelectList({
                       transition: 'all 0.2s ease',
                     }}
                   >
-                    {/* Checkbox */}
-                    <input
-                      type="checkbox"
-                      checked={isChecked}
-                      onChange={() => onToggleChapter(ch.id)}
-                      disabled={isActive}
-                      style={{ accentColor: 'var(--accent-cyan)', cursor: isActive ? 'not-allowed' : 'pointer' }}
-                    />
-                    {/* Chapter number */}
-                    <span
-                      className="shrink-0 text-xs font-medium"
-                      style={{ color: 'var(--text-dim)', width: '3rem', textAlign: 'right' }}
-                    >
-                      #{ch.chapterNo}
-                    </span>
-                    {/* Chapter title */}
-                    <span className="flex-1 text-sm truncate" style={{ color: 'var(--text-main)' }}>
-                      {ch.title || '未命名章节'}
-                    </span>
-                    {/* Status / progress indicator */}
-                    <span
-                      className="shrink-0 text-xs"
-                      style={{
-                        color: isCurrentlyGenerating ? 'var(--accent-cyan)'
-                          : isCompleted ? '#10b981'
-                          : isFailed ? '#ef4444'
-                          : statusColor,
-                        padding: '0.15rem 0.4rem',
-                        borderRadius: '0.25rem',
-                        background: isCompleted ? 'rgba(16,185,129,0.1)'
-                          : ch.status === 'drafted' ? 'rgba(16,185,129,0.1)'
-                          : 'transparent',
-                      }}
-                    >
-                      {isCurrentlyGenerating ? '✍️ 生成中…'
-                        : isCompleted ? '✅ 完成'
-                        : isFailed ? '❌ 失败'
-                        : statusLabel}
-                    </span>
-                    {/* Polish button — only shown for drafted chapters when not generating */}
-                    {ch.status === 'drafted' && !isActive && (
-                      <button
-                        disabled={polishingChapterId !== null}
-                        onClick={(e) => { e.preventDefault(); e.stopPropagation(); onPolish(ch.id); }}
+                    <label className="flex items-center gap-3" style={{ cursor: isActive ? 'default' : 'pointer' }}>
+                      {/* Checkbox */}
+                      <input
+                        type="checkbox"
+                        checked={isChecked}
+                        onChange={() => onToggleChapter(ch.id)}
+                        disabled={isActive}
+                        style={{ accentColor: 'var(--accent-cyan)', cursor: isActive ? 'not-allowed' : 'pointer' }}
+                      />
+                      {/* Chapter number */}
+                      <span
+                        className="shrink-0 text-xs font-medium"
+                        style={{ color: 'var(--text-dim)', width: '3rem', textAlign: 'right' }}
+                      >
+                        #{ch.chapterNo}
+                      </span>
+                      {/* Chapter title */}
+                      <span className="flex-1 text-sm truncate" style={{ color: 'var(--text-main)' }}>
+                        {ch.title || '未命名章节'}
+                      </span>
+                      {/* Status / progress indicator */}
+                      <span
+                        className="shrink-0 text-xs"
                         style={{
-                          padding: '0.15rem 0.5rem',
-                          borderRadius: '0.3rem',
-                          fontSize: '0.7rem',
-                          fontWeight: 600,
-                          cursor: polishingChapterId ? 'not-allowed' : 'pointer',
-                          border: '1px solid rgba(139,92,246,0.3)',
-                          background: polishingChapterId === ch.id
-                            ? 'rgba(139,92,246,0.2)'
-                            : 'rgba(139,92,246,0.08)',
-                          color: polishingChapterId === ch.id ? '#c4b5fd' : '#a78bfa',
-                          transition: 'all 0.2s ease',
-                          whiteSpace: 'nowrap',
+                          color: isCurrentlyGenerating ? 'var(--accent-cyan)'
+                            : isCompleted ? '#10b981'
+                            : isFailed ? '#ef4444'
+                            : statusColor,
+                          padding: '0.15rem 0.4rem',
+                          borderRadius: '0.25rem',
+                          background: isCompleted ? 'rgba(16,185,129,0.1)'
+                            : isFailed ? 'rgba(239,68,68,0.1)'
+                            : ch.status === 'drafted' ? 'rgba(16,185,129,0.1)'
+                            : 'transparent',
                         }}
                       >
-                        {polishingChapterId === ch.id ? '✨ 润色中…' : '✨ 润色'}
-                      </button>
-                    )}
-                  </label>
+                        {isCurrentlyGenerating ? '✍️ 生成中…'
+                          : isCompleted ? '✅ 完成'
+                          : isFailed ? '❌ 失败'
+                          : statusLabel}
+                      </span>
+                      {/* Polish button — only shown for drafted chapters when not generating */}
+                      {ch.status === 'drafted' && !isActive && (
+                        <button
+                          disabled={polishingChapterId !== null}
+                          onClick={(e) => { e.preventDefault(); e.stopPropagation(); onPolish(ch.id); }}
+                          style={{
+                            padding: '0.15rem 0.5rem',
+                            borderRadius: '0.3rem',
+                            fontSize: '0.7rem',
+                            fontWeight: 600,
+                            cursor: polishingChapterId ? 'not-allowed' : 'pointer',
+                            border: '1px solid rgba(139,92,246,0.3)',
+                            background: polishingChapterId === ch.id
+                              ? 'rgba(139,92,246,0.2)'
+                              : 'rgba(139,92,246,0.08)',
+                            color: polishingChapterId === ch.id ? '#c4b5fd' : '#a78bfa',
+                            transition: 'all 0.2s ease',
+                            whiteSpace: 'nowrap',
+                          }}
+                        >
+                          {polishingChapterId === ch.id ? '✨ 润色中…' : '✨ 润色'}
+                        </button>
+                      )}
+                    </label>
+                    {shouldShowFailureReason ? (
+                      <div style={{ marginLeft: '4.9rem', marginTop: '0.45rem', color: '#ef4444', fontSize: '0.78rem', lineHeight: 1.65 }}>
+                        失败原因：{generationError}
+                      </div>
+                    ) : null}
+                  </div>
                 );
               })}
             </div>
@@ -818,8 +832,11 @@ function ProgressDisplay({ state, progress }: { state: GenerationState; progress
       </div>
       {/* Status text */}
       <div className="flex items-center justify-between text-xs">
-        <span style={{ color: 'var(--accent-cyan)' }}>
-          ✍️ 正在生成：{progress.currentChapterTitle}
+        <span style={{ color: 'var(--accent-cyan)', display: 'flex', flexDirection: 'column', gap: '0.25rem' }}>
+          <span>✍️ 正在处理：{progress.currentChapterTitle}</span>
+          {progress.currentStep ? (
+            <span style={{ color: 'var(--text-muted)' }}>当前步骤：{progress.currentStep}</span>
+          ) : null}
         </span>
         <span style={{ color: 'var(--text-muted)' }}>
           {progress.current}/{progress.total}
