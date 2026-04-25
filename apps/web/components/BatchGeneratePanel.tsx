@@ -11,7 +11,7 @@
  */
 'use client';
 
-import React, { useState, useCallback, useMemo } from 'react';
+import React, { useState, useCallback, useMemo, useEffect } from 'react';
 import { ChapterSummary, VolumeSummary } from '../types/dashboard';
 import { useChapterGeneration, GenerationState } from '../hooks/useChapterGeneration';
 
@@ -33,10 +33,34 @@ type ChapterGenerateTarget = {
   status?: ChapterSummary['status'];
 };
 
+const generationStatusStorageKey = (projectId: string) => `ai-novel:generation-status:${projectId}`;
+
+/**
+ * Read locally persisted chapter generation states for optimistic UI display.
+ * The database remains the source of truth; this cache only bridges the delay
+ * between a completed generation job and the next dashboard refresh.
+ */
+function readGeneratedChapterIds(projectId: string): Set<string> {
+  if (typeof window === 'undefined' || !projectId) return new Set();
+  try {
+    const parsed = JSON.parse(window.localStorage.getItem(generationStatusStorageKey(projectId)) ?? '[]');
+    return new Set(Array.isArray(parsed) ? parsed.filter((item): item is string => typeof item === 'string') : []);
+  } catch {
+    return new Set();
+  }
+}
+
+/** Persist locally known generated chapters so the status badge survives view switches. */
+function writeGeneratedChapterIds(projectId: string, ids: Set<string>) {
+  if (typeof window === 'undefined' || !projectId) return;
+  window.localStorage.setItem(generationStatusStorageKey(projectId), JSON.stringify(Array.from(ids)));
+}
+
 // ─── Component ──────────────────────────────────────────
 
 export function BatchGeneratePanel({ projectId, volumes, chapters, onComplete }: Props) {
   const gen = useChapterGeneration();
+  const [locallyGeneratedIds, setLocallyGeneratedIds] = useState<Set<string>>(() => readGeneratedChapterIds(projectId));
   const [selectedVolumeIds, setSelectedVolumeIds] = useState<Set<string>>(new Set());
   // Default mode is 'single' — chapter-level multi-select generation
   const [mode, setMode] = useState<GenerateMode>('single');
@@ -48,6 +72,32 @@ export function BatchGeneratePanel({ projectId, volumes, chapters, onComplete }:
   const [pendingOverwriteTargets, setPendingOverwriteTargets] = useState<ChapterGenerateTarget[] | null>(null);
   // 生成后续章节可能过期时，在页面内展示提醒，替代 window.alert。
   const [staleChapterWarning, setStaleChapterWarning] = useState<ChapterSummary[] | null>(null);
+
+  useEffect(() => {
+    setLocallyGeneratedIds(readGeneratedChapterIds(projectId));
+  }, [projectId]);
+
+  useEffect(() => {
+    setLocallyGeneratedIds((prev) => {
+      const next = new Set(prev);
+      for (const chapter of chapters) {
+        // 后端刷新后用真实章节状态回填本地缓存，避免接口刷新慢时 UI 又短暂退回“待生成”。
+        if (chapter.status === 'drafted') next.add(chapter.id);
+      }
+      writeGeneratedChapterIds(projectId, next);
+      return next;
+    });
+  }, [projectId, chapters]);
+
+  /** Mark chapters as generated locally immediately after the generation pipeline succeeds. */
+  const rememberGeneratedChapters = useCallback((chapterIds: string[]) => {
+    setLocallyGeneratedIds((prev) => {
+      const next = new Set(prev);
+      for (const chapterId of chapterIds) next.add(chapterId);
+      writeGeneratedChapterIds(projectId, next);
+      return next;
+    });
+  }, [projectId]);
 
   /** Group ALL chapters by volume for the single-chapter view */
   const allChaptersByVolume = useMemo(() => {
@@ -153,7 +203,10 @@ export function BatchGeneratePanel({ projectId, volumes, chapters, onComplete }:
   const runChapterBatchGenerate = useCallback(async (targets: ChapterGenerateTarget[]) => {
     setPendingOverwriteTargets(null);
     setStaleChapterWarning(null);
-    await gen.generateSequential(projectId, targets, () => {});
+    await gen.generateSequential(projectId, targets, (chapterId) => {
+      // 逐章完成后再持久化状态；如果后续章节失败，已完成章节仍能保持“已生成”。
+      rememberGeneratedChapters([chapterId]);
+    });
 
     // 生成完成后，检查后续是否有已生成章节可能受影响
     const maxGeneratedNo = Math.max(...targets.map((t) => t.chapterNo));
@@ -163,7 +216,7 @@ export function BatchGeneratePanel({ projectId, volumes, chapters, onComplete }:
     setStaleChapterWarning(staleChapters.length > 0 ? staleChapters : null);
 
     await onComplete?.(targets.map((target) => target.id));
-  }, [projectId, chapters, gen, onComplete]);
+  }, [projectId, chapters, gen, onComplete, rememberGeneratedChapters]);
 
   /** Start batch generation for selected chapters (chapter mode) */
   const handleChapterBatchGenerate = useCallback(async () => {
@@ -199,12 +252,13 @@ export function BatchGeneratePanel({ projectId, volumes, chapters, onComplete }:
         chapterNo: ch.chapterNo,
         title: ch.title || `第${ch.chapterNo}章`,
       })),
-      () => {
-        // Optional: callback per chapter completion
+      (chapterId) => {
+        // 逐章完成后写入本地状态；真实章节状态会在 onComplete 刷新后继续校准。
+        rememberGeneratedChapters([chapterId]);
       },
     );
     await onComplete?.(targets.map((target) => target.id));
-  }, [projectId, getTargetChapters, gen, onComplete]);
+  }, [projectId, getTargetChapters, gen, onComplete, rememberGeneratedChapters]);
 
   const isActive = gen.state === 'generating' || gen.state === 'polling';
   const targetCount = mode === 'single' ? selectedChapterIds.size : getTargetChapters().length;
@@ -245,6 +299,7 @@ export function BatchGeneratePanel({ projectId, volumes, chapters, onComplete }:
             genProgress={gen.progress}
             genState={gen.state}
             generationError={gen.error}
+            locallyGeneratedIds={locallyGeneratedIds}
             isActive={isActive}
             polishingChapterId={polishingChapterId}
             onPolish={async (chapterId: string) => {
@@ -608,6 +663,7 @@ function ChapterSelectList({
   genProgress,
   genState,
   generationError,
+  locallyGeneratedIds,
   isActive,
   polishingChapterId,
   onPolish,
@@ -619,6 +675,7 @@ function ChapterSelectList({
   genProgress: ReturnType<typeof useChapterGeneration>['progress'];
   genState: GenerationState;
   generationError: string;
+  locallyGeneratedIds: Set<string>;
   isActive: boolean;
   polishingChapterId: string | null;
   onPolish: (chapterId: string) => void;
@@ -666,8 +723,9 @@ function ChapterSelectList({
                 const isCurrentlyGenerating = isActive && genProgress?.currentChapterId === ch.id;
                 const shouldShowFailureReason = isFailed && genState === 'failed' && Boolean(generationError);
                 // Status display
-                const statusLabel = ch.status === 'drafted' ? '已生成' : '待生成';
-                const statusColor = ch.status === 'drafted' ? '#10b981' : 'var(--text-dim)';
+                const isDrafted = ch.status === 'drafted' || locallyGeneratedIds.has(ch.id);
+                const statusLabel = isDrafted ? '已生成' : '待生成';
+                const statusColor = isDrafted ? '#10b981' : 'var(--text-dim)';
 
                 return (
                   <div
@@ -726,7 +784,7 @@ function ChapterSelectList({
                           borderRadius: '0.25rem',
                           background: isCompleted ? 'rgba(16,185,129,0.1)'
                             : isFailed ? 'rgba(239,68,68,0.1)'
-                            : ch.status === 'drafted' ? 'rgba(16,185,129,0.1)'
+                            : isDrafted ? 'rgba(16,185,129,0.1)'
                             : 'transparent',
                         }}
                       >

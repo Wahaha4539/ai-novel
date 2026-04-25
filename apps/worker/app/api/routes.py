@@ -11,6 +11,7 @@ from app.models.schemas import (
     PolishChapterResult,
 )
 from app.pipelines.generate_chapter import GenerateChapterPipeline
+from app.pipelines.postprocess_chapter import PostProcessChapterPipeline
 from app.pipelines.polish_chapter import PolishChapterPipeline
 from app.pipelines.rebuild_memory import RebuildMemoryPipeline
 from app.repositories.job_repo import JobRepository
@@ -18,6 +19,7 @@ from app.repositories.llm_provider_repo import LlmProviderRepository
 
 router = APIRouter()
 pipeline = GenerateChapterPipeline()
+postprocess_pipeline = PostProcessChapterPipeline()
 polish_pipeline = PolishChapterPipeline()
 memory_rebuild_pipeline = RebuildMemoryPipeline()
 job_repo = JobRepository()
@@ -39,23 +41,28 @@ def _run_generate_chapter_background(payload: GenerateChapterJobRequest) -> None
     }
     try:
         result = pipeline.run(payload)
+        # The job is only completed after final-text post-processing finishes.
+        # This makes API job polling represent the full background lifecycle,
+        # not just the first draft generation step.
+        postprocess_result = postprocess_pipeline.run(payload.project_id, payload.chapter_id, result)
         job_repo.mark_completed(
             payload.job_id,
             payload.chapter_id,
             {
-                "draftId": result.draft_id,
-                "summary": result.summary,
-                "actualWordCount": result.actual_word_count,
+                "draftId": postprocess_result["draftId"],
+                "summary": postprocess_result["summary"],
+                "actualWordCount": postprocess_result["actualWordCount"],
+                "postProcessSteps": postprocess_result["steps"],
             },
             result.retrieval_payload,
-            result.actual_word_count,
+            postprocess_result["actualWordCount"],
         )
         log_event(
             logger,
             "generation.background.completed",
             **log_context,
-            draftId=result.draft_id or None,
-            actualWordCount=result.actual_word_count,
+            draftId=postprocess_result["draftId"] or None,
+            actualWordCount=postprocess_result["actualWordCount"],
         )
     except Exception as exc:
         job_repo.mark_failed(payload.job_id, str(exc))
@@ -136,6 +143,3 @@ def reload_llm_config() -> dict[str, int | bool]:
     status = LlmProviderRepository.cache_status()
     log_event(logger, "llm.config.reloaded", **status)
     return status
-
-
-
