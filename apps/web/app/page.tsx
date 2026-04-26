@@ -14,8 +14,9 @@ import { PromptManagerPanel } from '../components/PromptManagerPanel';
 import { ForeshadowBoard } from '../components/ForeshadowBoard';
 import { BatchGeneratePanel } from '../components/BatchGeneratePanel';
 import { LlmProviderPanel } from '../components/LlmProviderPanel';
+import { AgentWorkspace } from '../components/agent/AgentWorkspace';
 
-type ActiveView = 'editor' | 'outline' | 'lore' | 'projects' | 'volumes' | 'guided' | 'prompts' | 'foreshadow' | 'generate' | 'llm-config';
+type ActiveView = 'editor' | 'outline' | 'lore' | 'projects' | 'volumes' | 'guided' | 'prompts' | 'foreshadow' | 'generate' | 'agent' | 'llm-config';
 
 export default function HomePage() {
   const data = useDashboardData();
@@ -87,6 +88,11 @@ export default function HomePage() {
     setActiveView('generate');
   }, []);
 
+  /** Navigate to Agent Workspace for natural-language Plan/Act tasks */
+  const handleNavigateToAgent = useCallback(() => {
+    setActiveView('agent');
+  }, []);
+
   /** Navigate to LLM provider configuration */
   const handleNavigateToLlmConfig = useCallback(() => {
     setActiveView('llm-config');
@@ -141,6 +147,7 @@ export default function HomePage() {
         onNavigateToPrompts={handleNavigateToPrompts}
         onNavigateToForeshadow={handleNavigateToForeshadow}
         onNavigateToGenerate={handleNavigateToGenerate}
+        onNavigateToAgent={handleNavigateToAgent}
         onNavigateToLlmConfig={handleNavigateToLlmConfig}
         onSelectVolume={handleSelectVolume}
       />
@@ -183,6 +190,12 @@ export default function HomePage() {
             onComplete={async (chapterIds?: string[]) => {
               await data.loadProjectData(data.selectedProjectId, data.selectedChapterId);
             }}
+          />
+        ) : activeView === 'agent' ? (
+          <AgentWorkspace
+            projectId={data.selectedProjectId}
+            selectedChapterId={data.selectedChapterId !== 'all' ? data.selectedChapterId : undefined}
+            onRefresh={() => data.loadProjectData(data.selectedProjectId, data.selectedChapterId)}
           />
         ) : (
           <EditorPanel

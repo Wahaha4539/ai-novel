@@ -4,8 +4,8 @@ import { CreateLlmProviderDto } from './dto/create-llm-provider.dto';
 import { UpdateLlmProviderDto } from './dto/update-llm-provider.dto';
 import { SetRoutingDto } from './dto/set-routing.dto';
 
-/** Allowed app steps for LLM routing — fixed set of 3 */
-const VALID_APP_STEPS = ['guided', 'generate', 'polish'] as const;
+/** Allowed app steps for LLM routing — Agent-Centric API 内链路会复用这些步骤做模型路由。 */
+const VALID_APP_STEPS = ['guided', 'agent_planner', 'generate', 'polish', 'summary', 'memory_review', 'embedding', 'fact_extractor.events', 'fact_extractor.states', 'fact_extractor.foreshadows'] as const;
 
 /**
  * Resolved LLM configuration ready for API calls.
@@ -163,9 +163,9 @@ export class LlmProvidersService implements OnModuleInit {
 
   // ── Routing CRUD ──────────────────────────────────────
 
-  /** Get all step routings (3 fixed steps, some may be unset) */
+  /** Get all step routings (fixed known steps, some may be unset) */
   listRoutings() {
-    // Build a map of all 3 steps, filling in null for unset ones
+    // Build a map of all known app steps, filling in null for unset ones.
     return VALID_APP_STEPS.map((step) => {
       const routing = this.cache.routings.find((r) => r.appStep === step);
       return {
@@ -378,30 +378,8 @@ export class LlmProvidersService implements OnModuleInit {
     };
   }
 
-  /**
-   * Refresh API local cache and ask worker to reload its own process-local snapshot.
-   * Worker refresh is best-effort so config CRUD remains usable even if worker is temporarily offline.
-   */
+  /** Refresh API local cache; Worker-era reload is intentionally removed from the Agent-Centric API runtime. */
   private async reloadRuntimeConfigCaches() {
     await this.reloadConfigCache();
-    await this.notifyWorkerConfigReload();
-  }
-
-  /** Notify worker that DB-backed LLM config changed and its startup snapshot must be reloaded. */
-  private async notifyWorkerConfigReload() {
-    const workerBaseUrl = process.env.WORKER_BASE_URL;
-    if (!workerBaseUrl) return;
-
-    try {
-      const response = await fetch(`${workerBaseUrl.replace(/\/+$/, '')}/internal/llm-config/reload`, {
-        method: 'POST',
-        signal: AbortSignal.timeout(5_000),
-      });
-      if (!response.ok) {
-        console.warn(`[LLM] worker config reload failed: ${response.status} ${await response.text()}`);
-      }
-    } catch (err) {
-      console.warn(`[LLM] worker config reload skipped: ${err instanceof Error ? err.message : String(err)}`);
-    }
   }
 }

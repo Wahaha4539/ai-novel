@@ -1,7 +1,10 @@
-import { BadGatewayException, Injectable, InternalServerErrorException, NotFoundException } from '@nestjs/common';
+import { Injectable, NotFoundException } from '@nestjs/common';
 import { NovelCacheService } from '../../common/cache/novel-cache.service';
 import { PrismaService } from '../../prisma/prisma.service';
 import { LlmService } from '../guided/llm.service';
+import { MemoryRebuildService } from './memory-rebuild.service';
+import { MemoryWriterService } from './memory-writer.service';
+import { RetrievalService } from './retrieval.service';
 
 const REVIEW_STATUSES = ['pending_review', 'user_confirmed', 'rejected'] as const;
 
@@ -103,6 +106,9 @@ export class MemoryService {
     private readonly prisma: PrismaService,
     private readonly cacheService: NovelCacheService,
     private readonly llmService: LlmService,
+    private readonly memoryRebuildService: MemoryRebuildService,
+    private readonly memoryWriterService: MemoryWriterService,
+    private readonly retrievalService: RetrievalService,
   ) {}
 
   private get prismaFacts(): PrismaFactsClient {
@@ -253,6 +259,16 @@ export class MemoryService {
       },
       orderBy: [{ importanceScore: 'desc' }, { freshnessScore: 'desc' }, { createdAt: 'desc' }],
     });
+  }
+
+  /** 返回一次召回评测快照，帮助迁移期比较 pgvector SQL、应用层 cosine 和关键词召回质量。 */
+  evaluateRetrieval(projectId: string, query?: string, expectedMemoryIds: string[] = []) {
+    return this.retrievalService.evaluate(projectId, { queryText: query ?? '' }, expectedMemoryIds);
+  }
+
+  /** 批量运行召回评测用例，用于对比迁移后 pgvector/关键词兜底的整体质量。 */
+  benchmarkRetrieval(projectId: string, cases: Array<{ id?: string; query: string; expectedMemoryIds?: string[] }>) {
+    return this.retrievalService.benchmark(projectId, cases.filter((item) => item.query?.trim()));
   }
 
   async listStoryEvents(projectId: string, chapterId?: string, query?: string, take = 50) {
@@ -491,32 +507,20 @@ export class MemoryService {
   }
 
   async rebuild(projectId: string, chapterId?: string, dryRun = false) {
-    const workerBaseUrl = process.env.WORKER_BASE_URL;
-    if (!workerBaseUrl) {
-      throw new InternalServerErrorException('missing_worker_base_url');
-    }
-
-    const response = await fetch(`${workerBaseUrl}/internal/memory/rebuild`, {
-      method: 'POST',
-      headers: { 'content-type': 'application/json' },
-      body: JSON.stringify({
-        projectId,
-        chapterId,
-        dryRun,
-      }),
-    });
-
-    if (!response.ok) {
-      const responseText = await response.text();
-      throw new BadGatewayException(`worker rebuild 请求失败: ${response.status} ${responseText.slice(0, 1000)}`);
-    }
-
-    const payload = (await response.json()) as Record<string, unknown>;
+    // Agent-Centric 后端单体架构下，rebuild 直接调用 API 内 MemoryRebuildService，不再依赖 Python Worker 回调。
+    const payload = await this.memoryRebuildService.rebuildProject(projectId, chapterId, dryRun);
 
     if (!dryRun) {
       await this.cacheService.deleteProjectRecallResults(projectId);
     }
 
+    return payload;
+  }
+
+  /** 批量补齐历史记忆 embedding，供迁移后召回质量提升使用。 */
+  async backfillEmbeddings(projectId: string, chapterId?: string, dryRun = false, limit = 50, cursor?: string, force = false) {
+    const payload = await this.memoryWriterService.backfillEmbeddings(projectId, { chapterId, dryRun, limit, cursor, force });
+    if (!dryRun && payload.updatedCount > 0) await this.cacheService.deleteProjectRecallResults(projectId);
     return payload;
   }
 }

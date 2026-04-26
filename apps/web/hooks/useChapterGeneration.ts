@@ -3,7 +3,7 @@
  *
  * Handles the full lifecycle:
  *  1. Trigger generation (POST /chapters/:id/generate)
- *  2. Poll job status (GET /jobs/:id) until the Worker finishes generation + post-processing
+ *  2. Poll job status (GET /jobs/:id) until the API 内同步生成链路完成生成 + 后处理
  *  3. Load draft content (GET /chapters/:id/drafts)
  *  4. Sequential batch generation (one fully processed chapter at a time)
  *
@@ -191,7 +191,7 @@ export function useChapterGeneration() {
         return null;
       }
 
-      // Step 3: Worker completed only after polish/rebuild/validation/review, so this is the final draft.
+        // Step 3: API 同步任务完成后，生成、后处理、事实抽取、校验和记忆维护都已落库。
       const draft = await fetchLatestDraft(chapterId);
       setCurrentDraft(draft);
       setState('completed');
@@ -206,7 +206,7 @@ export function useChapterGeneration() {
 
   /**
    * Generate content for multiple chapters sequentially.
-   * Each chapter's worker must finish before starting the next.
+   * Each chapter's API-side generation lifecycle must finish before starting the next.
    * This ensures consistent context (previous chapters' text is available).
    */
   const generateSequential = useCallback(async (
@@ -258,7 +258,7 @@ export function useChapterGeneration() {
         logGenerationStep('chapter.generate.requested', logContext);
         setCurrentJob(job);
         setState('polling');
-        batchProgress.currentStep = '等待 Worker 生成与后处理';
+        batchProgress.currentStep = '等待 API 生成与后处理';
         setProgress({ ...batchProgress });
 
         // Step 2: Poll until complete
@@ -274,7 +274,7 @@ export function useChapterGeneration() {
           throw new Error(`第 ${chapter.chapterNo} 章生成失败：${completedJob.errorMessage || '未知错误'}`);
         }
 
-        // Step 3: Job completion now means Worker has finished the full lifecycle.
+        // Step 3: Job completion means API-side generation lifecycle has finished.
         logGenerationStep('chapter.generate.completed_with_postprocess', logContext);
         batchProgress.completedIds.push(chapter.id);
         batchProgress.currentStep = '当前章节完成';

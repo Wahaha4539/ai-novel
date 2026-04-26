@@ -267,7 +267,8 @@ export function useGuidedSession(projectId: string) {
       const contextSummary = Object.entries(freshStepData)
         .filter(([key]) => {
           if (!key.endsWith('_result')) return false;
-          return priorKeys.has(key.replace(/_result$/, ''));
+          // stepData 的 key 来自后端 JSON，需在运行时转回已知 guided step key 再做集合判断。
+          return priorKeys.has(key.replace(/_result$/, '') as (typeof GUIDED_STEPS)[number]['key']);
         })
         .map(([key, val]) => `${key}: ${JSON.stringify(val)}`)
         .join('\n');
@@ -415,7 +416,8 @@ export function useGuidedSession(projectId: string) {
       const contextSummary = Object.entries(freshStepData)
         .filter(([key]) => {
           if (!key.endsWith('_result')) return false;
-          return priorKeys.has(key.replace(/_result$/, ''));
+          // stepData 的 key 来自后端 JSON，需在运行时转回已知 guided step key 再做集合判断。
+          return priorKeys.has(key.replace(/_result$/, '') as StepKey);
         })
         .map(([key, val]) => `${key}: ${JSON.stringify(val)}`)
         .join('\n');
@@ -464,7 +466,8 @@ export function useGuidedSession(projectId: string) {
         // Only include _result entries from prior steps
         // e.g. "guided_setup_result" → step key is "guided_setup"
         if (!key.endsWith('_result')) return false;
-        const stepKey = key.replace(/_result$/, '');
+        // stepData 是弱类型 JSON，收窄为 StepKey 后才能与 priorStepKeys 安全比较。
+        const stepKey = key.replace(/_result$/, '') as StepKey;
         return priorStepKeys.has(stepKey);
       })
       .map(([key, val]) => `${key}: ${JSON.stringify(val)}`)

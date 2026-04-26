@@ -5,7 +5,9 @@
     "dev": "nest start --watch",
     "start:dev": "nest start --watch",
     "build": "nest build",
-    "prisma:seed": "ts-node --project tsconfig.seed.json prisma/seed.ts"
+    "test:agent": "ts-node src/modules/agent-runs/agent-services.spec.ts",
+    "prisma:seed": "ts-node --project tsconfig.seed.json prisma/seed.ts",
+    "db:maintenance": "ts-node --project tsconfig.seed.json prisma/db-maintenance.ts"
   },
   "dependencies": {
     "@nestjs/common": "10.4.1",

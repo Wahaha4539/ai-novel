@@ -5,5 +5,6 @@ import { ValidationService } from './validation.service';
 @Module({
   controllers: [ValidationController],
   providers: [ValidationService],
+  exports: [ValidationService],
 })
 export class ValidationModule {}

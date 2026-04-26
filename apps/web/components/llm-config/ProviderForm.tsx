@@ -48,7 +48,8 @@ export function ProviderForm({ provider, onSubmit, onCancel }: Props) {
 
       // When editing and key is empty, don't send apiKey (keep existing)
       if (isEditing && !apiKey.trim()) {
-        delete (input as Record<string, unknown>).apiKey;
+        // TypeScript 5.5 会阻止结构类型直接转 Record；先转 unknown 保持删除可选字段的意图明确。
+        delete (input as unknown as Record<string, unknown>).apiKey;
       }
 
       await onSubmit(input);

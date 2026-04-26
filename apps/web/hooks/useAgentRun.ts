@@ -1,0 +1,241 @@
+import { useCallback, useState } from 'react';
+
+const API_BASE = process.env.NEXT_PUBLIC_API_BASE_URL ?? 'http://127.0.0.1:3001/api';
+
+export type AgentRunStatus = 'planning' | 'waiting_approval' | 'acting' | 'running' | 'waiting_review' | 'succeeded' | 'failed' | 'cancelled';
+
+export interface AgentPlanStep {
+  stepNo: number;
+  name?: string;
+  tool?: string;
+  mode?: string;
+  requiresApproval?: boolean;
+  args?: unknown;
+}
+
+export interface AgentPlanPayload {
+  summary?: string;
+  assumptions?: string[];
+  risks?: string[];
+  steps?: AgentPlanStep[];
+  requiredApprovals?: Array<{ approvalType?: string; target?: { stepNos?: number[]; tools?: string[] } }>;
+}
+
+export interface AgentRunStepRecord {
+  id: string;
+  stepNo: number;
+  name?: string;
+  tool?: string;
+  status?: string;
+  input?: unknown;
+  output?: unknown;
+  error?: unknown;
+  startedAt?: string;
+  finishedAt?: string;
+}
+
+export interface AgentRunArtifact {
+  id: string;
+  artifactType?: string;
+  title?: string;
+  content?: unknown;
+  createdAt?: string;
+}
+
+export interface AgentRun {
+  id: string;
+  projectId: string;
+  chapterId?: string | null;
+  agentType?: string;
+  taskType?: string;
+  status: AgentRunStatus;
+  mode?: string;
+  goal: string;
+  input?: unknown;
+  output?: unknown;
+  error?: unknown;
+  plans?: Array<{ id: string; version?: number; plan?: AgentPlanPayload; createdAt?: string }>;
+  steps?: AgentRunStepRecord[];
+  artifacts?: AgentRunArtifact[];
+  createdAt?: string;
+  updatedAt?: string;
+}
+
+export interface AgentRunListItem extends Omit<AgentRun, 'steps' | 'artifacts' | 'approvals'> {
+  plans?: Array<{ id: string; version?: number; plan?: AgentPlanPayload; createdAt?: string }>;
+}
+
+async function apiFetch<T>(path: string, init?: RequestInit): Promise<T> {
+  const response = await fetch(`${API_BASE}${path}`, {
+    ...init,
+    headers: {
+      'content-type': 'application/json',
+      ...(init?.headers ?? {}),
+    },
+    cache: 'no-store',
+  });
+
+  if (!response.ok) {
+    const text = await response.text();
+    throw new Error(text || `请求失败: ${response.status}`);
+  }
+
+  return (await response.json()) as T;
+}
+
+/**
+ * 管理 AgentRun 的 Plan → Approval → Act 请求状态。
+ * Hook 只保存当前会话的 AgentRun，正式执行状态仍以后端 AgentStep/Artifact 为准。
+ */
+export function useAgentRun() {
+  const [currentRun, setCurrentRun] = useState<AgentRun | null>(null);
+  const [runHistory, setRunHistory] = useState<AgentRunListItem[]>([]);
+  const [loading, setLoading] = useState(false);
+  const [error, setError] = useState('');
+  const [actionMessage, setActionMessage] = useState('');
+
+  const listByProject = useCallback(async (projectId: string) => {
+    setLoading(true);
+    setError('');
+    try {
+      const runs = await apiFetch<AgentRunListItem[]>(`/projects/${projectId}/agent-runs`);
+      setRunHistory(runs);
+      return runs;
+    } catch (listError) {
+      const messageText = listError instanceof Error ? listError.message : '加载 AgentRun 历史失败';
+      setError(messageText);
+      throw listError;
+    } finally {
+      setLoading(false);
+    }
+  }, []);
+
+  const createPlan = useCallback(async (projectId: string, message: string, currentChapterId?: string) => {
+    setLoading(true);
+    setError('');
+    setActionMessage('正在生成 Agent 执行计划…');
+    try {
+      const run = await apiFetch<AgentRun>('/agent-runs/plan', {
+        method: 'POST',
+        body: JSON.stringify({
+          projectId,
+          message,
+          context: currentChapterId ? { currentChapterId } : {},
+        }),
+      });
+      setCurrentRun(run);
+      await listByProject(projectId);
+      setActionMessage('计划已生成，请检查风险和步骤后确认执行。');
+      return run;
+    } catch (planError) {
+      const messageText = planError instanceof Error ? planError.message : '生成计划失败';
+      setError(messageText);
+      setActionMessage(messageText);
+      throw planError;
+    } finally {
+      setLoading(false);
+    }
+  }, [listByProject]);
+
+  const refresh = useCallback(async (agentRunId: string) => {
+    setLoading(true);
+    setError('');
+    try {
+      const run = await apiFetch<AgentRun>(`/agent-runs/${agentRunId}`);
+      setCurrentRun(run);
+      return run;
+    } catch (refreshError) {
+      const messageText = refreshError instanceof Error ? refreshError.message : '刷新 AgentRun 失败';
+      setError(messageText);
+      throw refreshError;
+    } finally {
+      setLoading(false);
+    }
+  }, []);
+
+  const act = useCallback(async (agentRunId: string, approvedStepNos?: number[]) => {
+    setLoading(true);
+    setError('');
+    setActionMessage('已确认计划，Agent 正在同步执行…');
+    try {
+      const run = await apiFetch<AgentRun>(`/agent-runs/${agentRunId}/act`, {
+        method: 'POST',
+        body: JSON.stringify({ approval: true, approvedStepNos, confirmation: { confirmHighRisk: true }, comment: '用户在 Agent Workspace 确认执行' }),
+      });
+      setCurrentRun(run);
+      setActionMessage(run.status === 'succeeded' ? 'Agent 执行完成。' : `Agent 当前状态：${run.status}`);
+      return run;
+    } catch (actError) {
+      const messageText = actError instanceof Error ? actError.message : '执行 Agent 失败';
+      setError(messageText);
+      setActionMessage(messageText);
+      throw actError;
+    } finally {
+      setLoading(false);
+    }
+  }, []);
+
+  const retry = useCallback(async (agentRunId: string, approvedStepNos?: number[]) => {
+    setLoading(true);
+    setError('');
+    setActionMessage('正在重试执行，已成功步骤会尽量复用…');
+    try {
+      const run = await apiFetch<AgentRun>(`/agent-runs/${agentRunId}/retry`, {
+        method: 'POST',
+        body: JSON.stringify({ approval: true, approvedStepNos, confirmation: { confirmHighRisk: true }, comment: '用户在 Agent Workspace 触发失败重试' }),
+      });
+      setCurrentRun(run);
+      setActionMessage(run.status === 'succeeded' ? 'Agent 重试执行完成。' : `Agent 当前状态：${run.status}`);
+      return run;
+    } catch (retryError) {
+      const messageText = retryError instanceof Error ? retryError.message : '重试 Agent 失败';
+      setError(messageText);
+      setActionMessage(messageText);
+      throw retryError;
+    } finally {
+      setLoading(false);
+    }
+  }, []);
+
+  const replan = useCallback(async (agentRunId: string, message?: string) => {
+    setLoading(true);
+    setError('');
+    setActionMessage('正在基于当前任务重新规划…');
+    try {
+      const run = await apiFetch<AgentRun>(`/agent-runs/${agentRunId}/replan`, {
+        method: 'POST',
+        body: JSON.stringify({ message }),
+      });
+      setCurrentRun(run);
+      setActionMessage('重新规划已完成，请重新检查计划与预览。');
+      return run;
+    } catch (replanError) {
+      const messageText = replanError instanceof Error ? replanError.message : '重新规划失败';
+      setError(messageText);
+      setActionMessage(messageText);
+      throw replanError;
+    } finally {
+      setLoading(false);
+    }
+  }, []);
+
+  const cancel = useCallback(async (agentRunId: string) => {
+    setLoading(true);
+    setError('');
+    setActionMessage('正在取消 AgentRun…');
+    try {
+      const run = await apiFetch<AgentRun>(`/agent-runs/${agentRunId}/cancel`, { method: 'POST' });
+      setCurrentRun(run);
+      setActionMessage('AgentRun 已取消。');
+      return run;
+    } catch (cancelError) {
+      const messageText = cancelError instanceof Error ? cancelError.message : '取消失败';
+      setError(messageText);
+      throw cancelError;
+    } finally {
+      setLoading(false);
+    }
+  }, []);
+
+  return { currentRun, runHistory, loading, error, actionMessage, createPlan, refresh, act, retry, replan, cancel, listByProject, setCurrentRun };
+}

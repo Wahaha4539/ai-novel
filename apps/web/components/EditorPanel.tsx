@@ -217,7 +217,7 @@ export function EditorPanel({ selectedProject, selectedChapterId, chapters, draf
             }}
           />
           <span className="text-xs" style={{ color: 'var(--accent-cyan)' }}>
-            {gen.currentJob?.status === 'queued' && '⏳ 排队中，等待 Worker 处理…'}
+            {gen.currentJob?.status === 'queued' && '⏳ 任务已创建，等待 API 同步处理…'}
             {gen.currentJob?.status === 'running' && '✍️ AI 正在撰写章节内容…'}
             {!gen.currentJob?.status && '🚀 正在提交生成请求…'}
           </span>

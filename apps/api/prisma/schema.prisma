@@ -62,6 +62,105 @@ model Project {
   modelProfiles         ModelProfile[]
   promptTemplates       PromptTemplate[]
   guidedSession         GuidedSession?
+  agentRuns             AgentRun[]
+}
+
+model AgentRun {
+  id          String   @id @default(uuid()) @db.Uuid
+  projectId   String   @db.Uuid
+  chapterId   String?  @db.Uuid
+  agentType   String   @db.VarChar(80)
+  taskType    String?  @db.VarChar(80)
+  status      String   @db.VarChar(50)
+  mode        String   @db.VarChar(20)
+  goal        String
+  input       Json     @default("{}")
+  output      Json?
+  error       String?
+  policy      Json?
+  createdBy   String?  @db.Uuid
+  createdAt   DateTime @default(now())
+  updatedAt   DateTime @updatedAt
+
+  project     Project @relation(fields: [projectId], references: [id], onDelete: Cascade)
+  plans       AgentPlan[]
+  steps       AgentStep[]
+  artifacts   AgentArtifact[]
+  approvals   AgentApproval[]
+
+  @@index([projectId, status, createdAt])
+}
+
+model AgentPlan {
+  id                String   @id @default(uuid()) @db.Uuid
+  agentRunId         String   @db.Uuid
+  version            Int      @default(1)
+  status             String   @db.VarChar(50)
+  taskType           String   @db.VarChar(80)
+  summary            String
+  assumptions        Json?
+  risks              Json?
+  steps              Json
+  requiredApprovals  Json?
+  createdAt          DateTime @default(now())
+  updatedAt          DateTime @updatedAt
+
+  agentRun           AgentRun @relation(fields: [agentRunId], references: [id], onDelete: Cascade)
+
+  @@index([agentRunId, version])
+}
+
+model AgentStep {
+  id          String   @id @default(uuid()) @db.Uuid
+  agentRunId  String   @db.Uuid
+  stepNo      Int
+  stepType    String   @db.VarChar(50)
+  name        String   @db.VarChar(255)
+  toolName    String?  @db.VarChar(100)
+  status      String   @db.VarChar(50)
+  mode        String   @db.VarChar(20)
+  input       Json?
+  output      Json?
+  error       String?
+  startedAt   DateTime?
+  finishedAt  DateTime?
+  createdAt   DateTime @default(now())
+
+  agentRun    AgentRun @relation(fields: [agentRunId], references: [id], onDelete: Cascade)
+
+  @@unique([agentRunId, stepNo])
+}
+
+model AgentArtifact {
+  id            String   @id @default(uuid()) @db.Uuid
+  agentRunId    String   @db.Uuid
+  artifactType  String   @db.VarChar(100)
+  title         String   @db.VarChar(255)
+  content       Json
+  status        String   @db.VarChar(50)
+  sourceStepNo  Int?
+  createdAt     DateTime @default(now())
+  updatedAt     DateTime @updatedAt
+
+  agentRun      AgentRun @relation(fields: [agentRunId], references: [id], onDelete: Cascade)
+
+  @@index([agentRunId, artifactType])
+}
+
+model AgentApproval {
+  id            String   @id @default(uuid()) @db.Uuid
+  agentRunId    String   @db.Uuid
+  approvalType  String   @db.VarChar(80)
+  status        String   @db.VarChar(50)
+  target        Json
+  approvedBy    String?  @db.Uuid
+  approvedAt    DateTime?
+  comment       String?
+  createdAt     DateTime @default(now())
+
+  agentRun      AgentRun @relation(fields: [agentRunId], references: [id], onDelete: Cascade)
+
+  @@index([agentRunId, status])
 }
 
 model StyleProfile {
@@ -207,6 +306,7 @@ model MemoryChunk {
   content         String
   summary         String?
   embedding       Json?
+  embeddingVector Unsupported("vector")?
   tags            Json                  @default("[]")
   sourceTrace     Json                  @default("{}")
   metadata        Json                  @default("{}")

@@ -14,7 +14,6 @@ import psycopg
 
 
 ROOT = Path(__file__).resolve().parents[2]
-WORKER_URL = "http://127.0.0.1:8000/healthz"
 API_BASE = "http://127.0.0.1:3001/api"
 REDIS_HOST = "127.0.0.1"
 REDIS_PORT = 6379
@@ -78,53 +77,8 @@ def ensure_redis() -> dict[str, object]:
     raise RuntimeError(f"Redis 未启动，请先确认 {REDIS_HOST}:{REDIS_PORT} 可访问")
 
 
-def ensure_worker() -> dict[str, object]:
-    status, payload = http_json("GET", WORKER_URL, timeout=3)
-    if status == 200 and isinstance(payload, dict) and payload.get("status") == "ok":
-        return {"status": "already-running"}
-
-    stdout_path = ROOT / "worker.stdout.log"
-    stderr_path = ROOT / "worker.stderr.log"
-    for path in (stdout_path, stderr_path):
-        if path.exists():
-            path.unlink()
-
-    stdout = open(stdout_path, "wb")
-    stderr = open(stderr_path, "wb")
-    proc = subprocess.Popen(
-        [
-            str(ROOT / ".venv" / "Scripts" / "python.exe"),
-            "-m",
-            "uvicorn",
-            "main:app",
-            "--app-dir",
-            "apps/worker",
-            "--host",
-            "127.0.0.1",
-            "--port",
-            "8000",
-        ],
-        cwd=ROOT,
-        stdout=stdout,
-        stderr=stderr,
-    )
-
-    for _ in range(30):
-        time.sleep(1)
-        status, payload = http_json("GET", WORKER_URL, timeout=3)
-        if status == 200 and isinstance(payload, dict) and payload.get("status") == "ok":
-            return {"status": "started", "pid": proc.pid}
-
-    stdout.close()
-    stderr.close()
-    raise RuntimeError(
-        "Worker 启动失败\n"
-        f"stderr:\n{tail_text(stderr_path)}\n\n"
-        f"stdout:\n{tail_text(stdout_path)}"
-    )
-
-
 def ensure_api() -> dict[str, object]:
+    """确保 Agent-Centric 单体 API 可访问；不再启动历史 Python Worker。"""
     if is_port_open(3001):
         return {"status": "already-running"}
 
@@ -156,7 +110,6 @@ def main() -> int:
     env = parse_env(ROOT / ".env")
     summary: dict[str, object] = {
         "redis": ensure_redis(),
-        "worker": ensure_worker(),
         "api": ensure_api(),
     }
 
