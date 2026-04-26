@@ -199,6 +199,21 @@ pnpm --filter api start:dev
 - API Base：`http://127.0.0.1:3001/api`
 - MinIO Console：`http://127.0.0.1:9001`
 
+## 端口速查
+
+| 端口 | 服务 | 来源 | 是否默认必用 |
+| --- | --- | --- | --- |
+| `3000` | Web / Next.js | `apps/web/package.json` 中 `next dev -p 3000` 固定指定 | 是 |
+| `3001` | API / NestJS | `API_PORT`，未配置时 `apps/api/src/main.ts` 默认 `3001` | 是 |
+| `5432` | PostgreSQL(pgvector) | `infra/docker/docker-compose.yml` | 是 |
+| `6379` | Redis | `infra/docker/docker-compose.yml` | 是 |
+| `9000` | MinIO API | `infra/docker/docker-compose.yml` | 否，当前主链路预留 |
+| `9001` | MinIO Console | `infra/docker/docker-compose.yml` | 否，当前主链路预留 |
+| `8318` | LLM 网关示例端口 | `.env.example` 中 `LLM_BASE_URL` 示例 | 按你的模型服务实际端口填写 |
+| `18319` | Embedding 网关示例端口 | `.env.example` 中 `EMBEDDING_BASE_URL` 示例 | 可选，按你的 embedding 服务实际端口填写 |
+
+启动后优先打开 Web：`http://127.0.0.1:3000`。前端默认请求 API：`http://127.0.0.1:3001/api`。
+
 ## 常用开发命令
 
 | 命令 | 说明 |
@@ -237,6 +252,14 @@ python scripts/dev/verify_embedding_retrieval.py --project-id <PROJECT_ID> --que
 ```
 
 如需计算 recall / precision / MRR，可通过 `--expected-memory-ids` 传入逗号分隔的期望 MemoryChunk ID，或用 `--cases` 指向 benchmark JSON 文件。
+
+## Agent 入口在哪里
+
+启动 Web 后打开：`http://127.0.0.1:3000`。
+
+在左侧导航栏中点击 **`🧠 Agent 工作台`**，即可进入 Agent-Centric 自然语言创作入口。这里适合输入“帮我写第 12 章”“把第一卷拆成 30 章”“根据文案拆角色和世界观”等目标，系统会先生成 Plan，确认后再执行 Act。
+
+界面里的 **`🤖 AI 生成 (Generate)`** 是偏章节级的直接生成入口；**`🧠 Agent 工作台`** 是更完整的 Agent 入口，支持计划、审批、执行时间线、Artifact 预览、审计轨迹和失败恢复。
 
 ## 当前主要功能
 

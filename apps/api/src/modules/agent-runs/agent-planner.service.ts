@@ -29,6 +29,13 @@ interface PlannerLlmBudget {
   failures: Array<{ stage: string; message: string }>;
 }
 
+interface PlannerOutputDefaults {
+  taskType: string;
+  summary: string;
+  assumptions: string[];
+  risks: string[];
+}
+
 export class AgentPlannerFailedError extends Error {
   constructor(message: string, readonly diagnostics: Record<string, unknown>) {
     super(message);
@@ -38,7 +45,7 @@ export class AgentPlannerFailedError extends Error {
 
 /**
  * Agent Planner 负责把用户自然语言目标转换为受控 JSON Plan。
- * 当前先构造确定性 baseline 作为 schema 参考，再要求 LLM 输出计划；LLM 失败会报错，不再回退执行低质量计划。
+ * taskType 和步骤编排由 LLM 根据用户目标与 Tool Schema 决定；后端只校验工具白名单、审批和引用边界。
  */
 @Injectable()
 export class AgentPlannerService {
@@ -50,182 +57,40 @@ export class AgentPlannerService {
   ) {}
 
   async createPlan(goal: string): Promise<AgentPlanSpec> {
-    const baseline = this.createDeterministicPlan(goal);
+    const defaults = this.createOutputDefaults(goal);
     const llmBudget: PlannerLlmBudget = { used: 0, max: this.rules.getPolicy().limits.maxLlmCalls, failures: [] };
     try {
-      return await this.createLlmPlan(goal, baseline, llmBudget);
+      return await this.createLlmPlan(goal, defaults, llmBudget);
     } catch (error) {
       const failures = [...llmBudget.failures, this.failureDetail('planner_failed', error)];
-      const diagnostics = { llmCalls: llmBudget.used, maxLlmCalls: llmBudget.max, failures, baselineTaskType: baseline.taskType, baselineStepCount: baseline.steps.length };
-      throw new AgentPlannerFailedError(`Agent Planner 生成高质量计划失败，已拒绝降级到确定性 baseline：${JSON.stringify(diagnostics)}`, diagnostics);
+      const diagnostics = { llmCalls: llmBudget.used, maxLlmCalls: llmBudget.max, failures };
+      throw new AgentPlannerFailedError(`Agent Planner 生成高质量计划失败：${JSON.stringify(diagnostics)}`, diagnostics);
     }
   }
 
-  private createDeterministicPlan(goal: string): AgentPlanSpec {
-    const taskType = this.classify(goal);
-    const skill = this.skills.select(taskType);
-    const availableTools = this.tools.list().map((tool) => tool.name);
-    const chapterNo = this.extractChapterNo(goal);
-
-    if (taskType === 'chapter_polish') {
-      return {
-        taskType,
-        summary: `使用 ${skill.name} 处理章节润色目标：${goal}`,
-        assumptions: [`章节润色会先解析章节并收集上下文，用户审批后创建润色后的当前草稿版本。`, `可用工具：${availableTools.join(', ')}`],
-        risks: this.rules.listHardRules(),
-        steps: [
-          { stepNo: 1, name: '解析目标章节', tool: 'resolve_chapter', mode: 'act', requiresApproval: false, args: { ...(chapterNo ? { chapterNo } : {}) } },
-          { stepNo: 2, name: '收集章节上下文', tool: 'collect_chapter_context', mode: 'act', requiresApproval: false, args: { chapterId: '{{steps.1.output.chapterId}}' } },
-          { stepNo: 3, name: '润色章节草稿', tool: 'polish_chapter', mode: 'act', requiresApproval: true, args: { chapterId: '{{steps.1.output.chapterId}}', instruction: goal } },
-          { stepNo: 4, name: '运行事实一致性校验', tool: 'fact_validation', mode: 'act', requiresApproval: true, args: { chapterId: '{{steps.3.output.chapterId}}' } },
-          { stepNo: 5, name: '有界自动修复', tool: 'auto_repair_chapter', mode: 'act', requiresApproval: true, args: { chapterId: '{{steps.3.output.chapterId}}', draftId: '{{steps.3.output.draftId}}', issues: '{{steps.4.output.issues}}', instruction: goal, maxRounds: 1 } },
-          { stepNo: 6, name: '抽取章节事实层', tool: 'extract_chapter_facts', mode: 'act', requiresApproval: true, args: { chapterId: '{{steps.3.output.chapterId}}', draftId: '{{steps.5.output.draftId}}' } },
-          { stepNo: 7, name: '重建章节记忆', tool: 'rebuild_memory', mode: 'act', requiresApproval: true, args: { chapterId: '{{steps.3.output.chapterId}}', draftId: '{{steps.5.output.draftId}}' } },
-          { stepNo: 8, name: '复核待确认记忆', tool: 'review_memory', mode: 'act', requiresApproval: true, args: { chapterId: '{{steps.3.output.chapterId}}' } },
-          { stepNo: 9, name: '汇总执行结果', tool: 'report_result', mode: 'act', requiresApproval: false, args: { draftId: '{{steps.5.output.draftId}}', chapterId: '{{steps.3.output.chapterId}}', actualWordCount: '{{steps.5.output.repairedWordCount}}', summary: '{{steps.5.output.summary}}', polish: '{{steps.3.output}}', validation: '{{steps.4.output}}', autoRepair: '{{steps.5.output}}', facts: '{{steps.6.output}}', memory: '{{steps.7.output}}', memoryReview: '{{steps.8.output}}' } },
-        ],
-        requiredApprovals: [{ approvalType: 'plan', target: { stepNos: [3, 4, 5, 6, 7, 8], tools: ['polish_chapter', 'fact_validation', 'auto_repair_chapter', 'extract_chapter_facts', 'rebuild_memory', 'review_memory'] } }],
-      };
-    }
-
-    if (taskType === 'chapter_write') {
-      return {
-        taskType,
-        summary: `使用 ${skill.name} 处理章节写作目标：${goal}`,
-        assumptions: [`章节写作会先解析章节并收集上下文，用户审批后创建新的当前草稿版本。`, `可用工具：${availableTools.join(', ')}`],
-        risks: this.rules.listHardRules(),
-        steps: [
-          { stepNo: 1, name: '解析目标章节', tool: 'resolve_chapter', mode: 'act', requiresApproval: false, args: { ...(chapterNo ? { chapterNo } : {}) } },
-          { stepNo: 2, name: '收集章节上下文', tool: 'collect_chapter_context', mode: 'act', requiresApproval: false, args: { chapterId: '{{steps.1.output.chapterId}}' } },
-          {
-            stepNo: 3,
-            name: '生成章节正文草稿',
-            tool: 'write_chapter',
-            mode: 'act',
-            requiresApproval: true,
-            args: { chapterId: '{{steps.1.output.chapterId}}', context: '{{steps.2.output}}', instruction: goal, ...(this.extractWordCount(goal) ? { wordCount: this.extractWordCount(goal) } : {}) },
-          },
-          {
-            stepNo: 4,
-            name: '后处理章节草稿',
-            tool: 'postprocess_chapter',
-            mode: 'act',
-            requiresApproval: true,
-            args: { chapterId: '{{steps.3.output.chapterId}}', draftId: '{{steps.3.output.draftId}}' },
-          },
-          {
-            stepNo: 5,
-            name: '运行事实一致性校验',
-            tool: 'fact_validation',
-            mode: 'act',
-            requiresApproval: true,
-            args: { chapterId: '{{steps.4.output.chapterId}}' },
-          },
-          {
-            stepNo: 6,
-            name: '有界自动修复',
-            tool: 'auto_repair_chapter',
-            mode: 'act',
-            requiresApproval: true,
-            args: { chapterId: '{{steps.4.output.chapterId}}', draftId: '{{steps.4.output.draftId}}', issues: '{{steps.5.output.issues}}', instruction: goal, maxRounds: 1 },
-          },
-          {
-            stepNo: 7,
-            name: '抽取章节事实层',
-            tool: 'extract_chapter_facts',
-            mode: 'act',
-            requiresApproval: true,
-            args: { chapterId: '{{steps.4.output.chapterId}}', draftId: '{{steps.6.output.draftId}}' },
-          },
-          {
-            stepNo: 8,
-            name: '重建章节记忆',
-            tool: 'rebuild_memory',
-            mode: 'act',
-            requiresApproval: true,
-            args: { chapterId: '{{steps.4.output.chapterId}}', draftId: '{{steps.6.output.draftId}}' },
-          },
-          {
-            stepNo: 9,
-            name: '复核待确认记忆',
-            tool: 'review_memory',
-            mode: 'act',
-            requiresApproval: true,
-            args: { chapterId: '{{steps.4.output.chapterId}}' },
-          },
-          {
-            stepNo: 10,
-            name: '汇总执行结果',
-            tool: 'report_result',
-            mode: 'act',
-            requiresApproval: false,
-            args: { draftId: '{{steps.6.output.draftId}}', chapterId: '{{steps.4.output.chapterId}}', actualWordCount: '{{steps.6.output.repairedWordCount}}', summary: '{{steps.6.output.summary}}', postprocess: '{{steps.4.output}}', validation: '{{steps.5.output}}', autoRepair: '{{steps.6.output}}', facts: '{{steps.7.output}}', memory: '{{steps.8.output}}', memoryReview: '{{steps.9.output}}' },
-          },
-        ],
-        requiredApprovals: [{ approvalType: 'plan', target: { stepNos: [3, 4, 5, 6, 7, 8, 9], tools: ['write_chapter', 'postprocess_chapter', 'fact_validation', 'auto_repair_chapter', 'extract_chapter_facts', 'rebuild_memory', 'review_memory'] } }],
-      };
-    }
-
-    if (taskType === 'outline_design') {
-      const volumeNo = this.extractVolumeNo(goal) ?? 1;
-      const chapterCount = this.extractChapterCount(goal) ?? 10;
-      return {
-        taskType,
-        summary: `使用 ${skill.name} 处理大纲设计目标：${goal}`,
-        assumptions: [`大纲设计会先读取项目上下文并生成预览，用户审批后才写入卷和章节。`, `可用工具：${availableTools.join(', ')}`],
-        risks: this.rules.listHardRules(),
-        steps: [
-          { stepNo: 1, name: '巡检项目上下文', tool: 'inspect_project_context', mode: 'act', requiresApproval: false, args: {} },
-          { stepNo: 2, name: '生成大纲预览', tool: 'generate_outline_preview', mode: 'act', requiresApproval: false, args: { context: '{{steps.1.output}}', instruction: goal, volumeNo, chapterCount } },
-          { stepNo: 3, name: '校验大纲预览', tool: 'validate_outline', mode: 'act', requiresApproval: false, args: { preview: '{{steps.2.output}}' } },
-          { stepNo: 4, name: '写入大纲到卷和章节', tool: 'persist_outline', mode: 'act', requiresApproval: true, args: { preview: '{{steps.2.output}}' } },
-          { stepNo: 5, name: '汇总执行结果', tool: 'report_result', mode: 'act', requiresApproval: false, args: { taskType, summary: '大纲设计执行完成', outline: '{{steps.2.output}}', outlineValidation: '{{steps.3.output}}', persist: '{{steps.4.output}}' } },
-        ],
-        requiredApprovals: [{ approvalType: 'plan', target: { stepNos: [4], tools: ['persist_outline'] } }],
-      };
-    }
-
-    if (taskType === 'project_import_preview') {
-      return {
-        taskType,
-        summary: `使用 ${skill.name} 处理文案拆解导入目标：${goal.slice(0, 120)}`,
-        assumptions: [`文案拆解会先生成结构化预览，用户审批后才写入项目资料、角色、设定、卷和章节。`, `可用工具：${availableTools.join(', ')}`],
-        risks: this.rules.listHardRules(),
-        steps: [
-          { stepNo: 1, name: '分析原始文案', tool: 'analyze_source_text', mode: 'act', requiresApproval: false, args: { sourceText: goal } },
-          { stepNo: 2, name: '构建导入预览', tool: 'build_import_preview', mode: 'act', requiresApproval: false, args: { analysis: '{{steps.1.output}}', instruction: goal } },
-          { stepNo: 3, name: '校验导入预览', tool: 'validate_imported_assets', mode: 'act', requiresApproval: false, args: { preview: '{{steps.2.output}}' } },
-          { stepNo: 4, name: '写入项目资料', tool: 'persist_project_assets', mode: 'act', requiresApproval: true, args: { preview: '{{steps.2.output}}' } },
-          { stepNo: 5, name: '汇总执行结果', tool: 'report_result', mode: 'act', requiresApproval: false, args: { taskType, summary: '文案拆解导入执行完成', importPreview: '{{steps.2.output}}', importValidation: '{{steps.3.output}}', persist: '{{steps.4.output}}' } },
-        ],
-        requiredApprovals: [{ approvalType: 'plan', target: { stepNos: [4], tools: ['persist_project_assets'] } }],
-      };
-    }
-
+  /** 只提供非语义字段的默认展示文案，不参与 taskType 判定，也不会作为可执行计划回退。 */
+  private createOutputDefaults(goal: string): PlannerOutputDefaults {
     return {
-      taskType,
-      summary: `使用 ${skill.name} 处理目标：${goal}`,
-      assumptions: [`当前为 Agent-Centric MVP，同步执行最小闭环。`, `可用工具：${availableTools.join(', ')}`],
+      taskType: 'general',
+      summary: `处理目标：${goal}`,
+      assumptions: ['Plan 阶段只生成可审批计划和只读预览。'],
       risks: this.rules.listHardRules(),
-      steps: [{ stepNo: 1, name: '生成执行报告', tool: 'echo_report', mode: 'act', requiresApproval: true, args: { message: goal } }],
-      requiredApprovals: [{ approvalType: 'plan', target: { stepNos: [1], tools: ['echo_report'] } }],
     };
   }
 
-  /**
-   * 调用 LLM 生成结构化计划，但只接受 ToolRegistry 已注册工具，并重新派生审批清单。
-   * 这样即使模型输出伪造工具、遗漏审批或返回脏 JSON，也不会绕过后端 Policy。
-   */
-  private async createLlmPlan(goal: string, baseline: AgentPlanSpec, llmBudget: PlannerLlmBudget): Promise<AgentPlanSpec> {
+  private async createLlmPlan(goal: string, defaults: PlannerOutputDefaults, llmBudget: PlannerLlmBudget): Promise<AgentPlanSpec> {
     const tools = this.tools.list().map((tool) => ({
       name: tool.name,
       description: tool.description,
+      inputSchema: tool.inputSchema,
+      outputSchema: tool.outputSchema,
       allowedModes: tool.allowedModes,
       riskLevel: tool.riskLevel,
       requiresApproval: tool.requiresApproval,
       sideEffects: tool.sideEffects,
     }));
-    const skill = this.skills.select(baseline.taskType);
+    const availableTaskTypes = this.listTaskTypes();
+    const skills = this.skills.list();
     const hardRules = this.rules.listHardRules();
 
     const messages = [
@@ -233,9 +98,13 @@ export class AgentPlannerService {
         role: 'system' as const,
         content: [
           '你是 CreativeAgent Planner。你只能输出严格 JSON，不要 Markdown。',
+          '当前用户选择的是 Agent 工作台 Plan 模式：只生成可审批计划和只读预览，不执行写入。',
+          'taskType 必须由你根据 userGoal 语义判断，并且只能从 availableTaskTypes 中选择；不要依赖后端关键词分类。',
           '你不能编造工具，steps[].tool 必须来自 Available Tools。',
-          'Plan 阶段不写正式业务表；所有真实副作用只能在 act mode 的 Tool 中声明，并由后端审批。',
-          '保留 baseline 的任务意图和安全边界，可优化 summary、assumptions、risks、step name 和 args。',
+          '注意：outputContract.steps[].mode 是后端计划步骤字段，固定填 act；它不代表当前 UI 的 Plan/Act 开关。',
+          'Plan 阶段不写正式业务表；运行时会用 mode=plan 只执行无副作用预览步骤，所有真实副作用必须等用户切到 Act 并审批后才允许。',
+          '你需要根据 Available Tools 的 description/inputSchema/outputSchema 自主编排步骤和 args。',
+          '引用前序步骤输出时，完整对象用 {{steps.N.output}}，对象字段用 {{steps.N.output.field}}；不要把对象序列化成字符串。',
         ].join('\n'),
       },
       {
@@ -243,12 +112,21 @@ export class AgentPlannerService {
         content: JSON.stringify(
           {
             userGoal: goal,
-            selectedSkill: skill,
+            currentAgentMode: 'plan',
+            stepModeContract: 'steps[].mode 固定为 act；Plan/Act 运行时模式由后端 AgentRuntimeService 注入，不由 LLM 决定。',
+            availableTaskTypes,
+            taskTypeGuidance: {
+              chapter_write: '写某一章正文、章节内容、目标字数、续写正文。',
+              chapter_polish: '润色、修改、改稿、优化文风、去 AI 味。',
+              outline_design: '设计大纲、拆卷、拆成/分成多章、章节规划。',
+              project_import_preview: '拆解导入文案、生成角色/世界观/项目资料。',
+              general: '无法归入以上创作任务时才使用。',
+            },
+            skills,
             hardRules,
             availableTools: tools,
-            baselinePlan: baseline,
             outputContract: {
-              taskType: 'string',
+              taskType: 'one_of_availableTaskTypes',
               summary: 'string',
               assumptions: ['string'],
               risks: ['string'],
@@ -269,15 +147,16 @@ export class AgentPlannerService {
     );
 
     try {
-      return { ...this.validateAndNormalizeLlmPlan(data, baseline), plannerDiagnostics: { source: 'llm', model: result.model, usage: result.usage, llmCalls: llmBudget.used, maxLlmCalls: llmBudget.max, schemaVersion: 1 } };
+      return { ...this.validateAndNormalizeLlmPlan(data, defaults), plannerDiagnostics: { source: 'llm', model: result.model, usage: result.usage, llmCalls: llmBudget.used, maxLlmCalls: llmBudget.max, schemaVersion: 1 } };
     } catch (error) {
       llmBudget.failures.push(this.failureDetail('schema_validation', error));
-      return this.repairLlmPlan(goal, baseline, data, error instanceof Error ? error.message : String(error), llmBudget);
+      return this.repairLlmPlan(goal, defaults, data, error instanceof Error ? error.message : String(error), llmBudget);
     }
   }
 
-  private async repairLlmPlan(goal: string, baseline: AgentPlanSpec, invalidPlan: unknown, validationError: string, llmBudget: PlannerLlmBudget): Promise<AgentPlanSpec> {
-    const registeredTools = this.tools.list().map((tool) => ({ name: tool.name, requiresApproval: tool.requiresApproval, riskLevel: tool.riskLevel, sideEffects: tool.sideEffects }));
+  private async repairLlmPlan(goal: string, defaults: PlannerOutputDefaults, invalidPlan: unknown, validationError: string, llmBudget: PlannerLlmBudget): Promise<AgentPlanSpec> {
+    const registeredTools = this.tools.list().map((tool) => ({ name: tool.name, description: tool.description, inputSchema: tool.inputSchema, outputSchema: tool.outputSchema, requiresApproval: tool.requiresApproval, riskLevel: tool.riskLevel, sideEffects: tool.sideEffects }));
+    const availableTaskTypes = this.listTaskTypes();
     this.consumeLlmCall(llmBudget, 'repair_plan');
     const { data, result } = await this.llm.chatJson<unknown>(
       [
@@ -285,8 +164,12 @@ export class AgentPlannerService {
           role: 'system',
           content: [
             '你是 CreativeAgent Planner 修复器。你只能输出严格 JSON，不要 Markdown。',
-            '必须修复 invalidPlan，使 steps[].tool 全部来自 registeredTools，taskType 必须等于 baseline.taskType。',
-            '如果无法安全修复，直接输出 baselinePlan。',
+            '当前用户选择的是 Agent 工作台 Plan 模式：只修复可审批计划，不执行写入。',
+            '必须修复 invalidPlan，使 taskType 来自 availableTaskTypes，steps[].tool 全部来自 registeredTools。',
+            'taskType 由 userGoal 语义决定；不要依赖后端关键词分类。',
+            'steps[].mode 是后端计划步骤字段，固定填 act；Plan/Act 运行时模式由后端注入，不由 LLM 决定。',
+            '引用前序步骤输出时，完整对象用 {{steps.N.output}}，对象字段用 {{steps.N.output.field}}；不要把对象序列化成字符串。',
+            '如果无法安全修复，仍必须输出符合 outputContract 的最小安全计划。',
           ].join('\n'),
         },
         {
@@ -294,10 +177,21 @@ export class AgentPlannerService {
           content: JSON.stringify(
             {
               userGoal: goal,
-              baselinePlan: baseline,
+              currentAgentMode: 'plan',
+              stepModeContract: 'steps[].mode 固定为 act；Plan/Act 运行时模式由后端 AgentRuntimeService 注入，不由 LLM 决定。',
+              availableTaskTypes,
               invalidPlan,
               validationError,
               registeredTools,
+              outputDefaults: defaults,
+              outputContract: {
+                taskType: 'one_of_availableTaskTypes',
+                summary: 'string',
+                assumptions: ['string'],
+                risks: ['string'],
+                steps: [{ stepNo: 1, name: 'string', tool: 'registered_tool_name', mode: 'act', requiresApproval: true, args: {} }],
+                requiredApprovals: [{ approvalType: 'plan', target: { stepNos: [1], tools: ['tool_name'] } }],
+              },
             },
             null,
             2,
@@ -307,23 +201,24 @@ export class AgentPlannerService {
       { appStep: 'agent_planner', maxTokens: 4500, timeoutMs: 90_000, retries: 1, temperature: 0.1 },
     );
 
-    return { ...this.validateAndNormalizeLlmPlan(data, baseline), plannerDiagnostics: { source: 'llm_repair', model: result.model, usage: result.usage, repairedFromError: validationError, llmCalls: llmBudget.used, maxLlmCalls: llmBudget.max, schemaVersion: 1 } };
+    return { ...this.validateAndNormalizeLlmPlan(data, defaults), plannerDiagnostics: { source: 'llm_repair', model: result.model, usage: result.usage, repairedFromError: validationError, llmCalls: llmBudget.used, maxLlmCalls: llmBudget.max, schemaVersion: 1 } };
   }
 
-  private validateAndNormalizeLlmPlan(data: unknown, baseline: AgentPlanSpec): AgentPlanSpec {
+  private validateAndNormalizeLlmPlan(data: unknown, defaults: PlannerOutputDefaults): AgentPlanSpec {
     const record = this.asRecord(data);
+    const availableTaskTypes = new Set(this.listTaskTypes());
     const registeredTools = new Set(this.tools.list().map((tool) => tool.name));
     const toolRequiresApproval = new Map(this.tools.list().map((tool) => [tool.name, tool.requiresApproval]));
     const rawSteps = Array.isArray(record.steps) ? record.steps : [];
     const maxSteps = this.rules.getPolicy().limits.maxSteps;
+    if (typeof record.taskType !== 'string') throw new Error('LLM Plan taskType 必须由模型明确给出');
     if (!rawSteps.length || rawSteps.length > maxSteps) throw new Error(`LLM Plan steps 数量非法，最多 ${maxSteps} 步`);
-    if (typeof record.taskType === 'string' && record.taskType !== baseline.taskType) throw new Error(`LLM Plan taskType 越界：${record.taskType}`);
+    if (typeof record.taskType === 'string' && !availableTaskTypes.has(record.taskType)) throw new Error(`LLM Plan taskType 不在允许范围：${record.taskType}`);
 
     const steps = rawSteps.map((item, index): AgentPlanStepSpec => {
       const step = this.asRecord(item);
       if (!Object.keys(step).length) throw new Error(`LLM Plan 第 ${index + 1} 步不是对象`);
       if (step.stepNo !== undefined && typeof step.stepNo !== 'number') throw new Error(`LLM Plan 第 ${index + 1} 步 stepNo 非数字`);
-      if (step.mode !== undefined && step.mode !== 'act') throw new Error(`LLM Plan 第 ${index + 1} 步 mode 必须为 act`);
       const tool = typeof step.tool === 'string' ? step.tool : '';
       if (!registeredTools.has(tool)) throw new Error(`LLM Plan 使用未注册工具：${tool}`);
       const args = this.asRecord(step.args);
@@ -341,10 +236,10 @@ export class AgentPlannerService {
 
     const approvalSteps = steps.filter((step) => step.requiresApproval);
     return {
-      taskType: typeof record.taskType === 'string' && record.taskType === baseline.taskType ? record.taskType : baseline.taskType,
-      summary: typeof record.summary === 'string' && record.summary.trim() ? record.summary.trim() : baseline.summary,
-      assumptions: this.stringArray(record.assumptions, baseline.assumptions),
-      risks: this.stringArray(record.risks, baseline.risks),
+      taskType: record.taskType,
+      summary: typeof record.summary === 'string' && record.summary.trim() ? record.summary.trim() : defaults.summary,
+      assumptions: this.stringArray(record.assumptions, defaults.assumptions),
+      risks: this.stringArray(record.risks, defaults.risks),
       steps,
       requiredApprovals: approvalSteps.length
         ? [{ approvalType: 'plan', target: { stepNos: approvalSteps.map((step) => step.stepNo), tools: approvalSteps.map((step) => step.tool) } }]
@@ -387,33 +282,9 @@ export class AgentPlannerService {
     return items.length ? items : fallback;
   }
 
-  private classify(goal: string): string {
-    // 大纲类语句常包含“章节”，需先于章节正文写作判断，避免“章节大纲”被误判为 chapter_write。
-    if (/大纲|卷|拆成\s*\d+\s*章|分成\s*\d+\s*章|章节大纲/.test(goal)) return 'outline_design';
-    if (/文案|拆解|角色|世界观/.test(goal)) return 'project_import_preview';
-    if (/润色|修改|改稿|修稿|去AI味|去 AI 味|优化文风/.test(goal)) return 'chapter_polish';
-    if (/第\s*\d+\s*章|章节|正文/.test(goal)) return 'chapter_write';
-    return 'general';
+  /** LLM 可以选择的任务类型白名单；后端只限制边界，不再做语义分类裁决。 */
+  private listTaskTypes(): string[] {
+    return [...new Set(this.skills.list().flatMap((skill) => skill.taskTypes))];
   }
 
-  private extractChapterNo(goal: string): number | undefined {
-    const match = goal.match(/第\s*(\d+)\s*章/);
-    return match ? Number(match[1]) : undefined;
-  }
-
-  private extractWordCount(goal: string): number | undefined {
-    const match = goal.match(/(\d{3,5})\s*字/);
-    return match ? Number(match[1]) : undefined;
-  }
-
-  private extractChapterCount(goal: string): number | undefined {
-    const match = goal.match(/拆成\s*(\d+)\s*章|分成\s*(\d+)\s*章|(\d+)\s*章/);
-    const value = match?.[1] ?? match?.[2] ?? match?.[3];
-    return value ? Number(value) : undefined;
-  }
-
-  private extractVolumeNo(goal: string): number | undefined {
-    const match = goal.match(/第\s*(\d+)\s*卷/);
-    return match ? Number(match[1]) : undefined;
-  }
 }

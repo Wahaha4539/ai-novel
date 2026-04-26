@@ -59,7 +59,7 @@ export class AgentExecutorService {
     const options: AgentExecuteOptions = typeof approvedOrOptions === 'boolean' ? { mode: 'act', approved: approvedOrOptions, approvedStepNos } : approvedOrOptions;
     const mode = options.mode ?? 'act';
     const planVersion = options.planVersion ?? 1;
-    const outputs: Record<number, unknown> = options.reuseSucceeded ? await this.loadSucceededOutputs(agentRunId, mode, planVersion, steps) : {};
+    const outputs: Record<number, unknown> = options.reuseSucceeded ? await this.loadReusableOutputs(agentRunId, mode, planVersion, steps) : {};
     const plannedTools = steps.map((step) => step.tool);
     this.policy.assertPlanExecutable(steps);
 
@@ -99,19 +99,33 @@ export class AgentExecutorService {
   }
 
   /**
-   * 失败重试时复用已成功的 Act 步骤输出，避免重复创建草稿或重复写入项目资产。
-   * 只复用“当前计划 stepNo + toolName 完全一致且输出仍符合 Tool Schema”的记录，
-   * 防止 replan 后相同步骤号对应不同工具时误用旧输出。
+   * 失败重试/Act 执行时复用已成功输出，避免重复 LLM 预览、重复创建草稿或重复写入项目资产。
+   * Act 优先复用同 mode 的成功输出；缺失时可复用同版本 Plan 阶段的无副作用预览输出，让审批看到的内容进入 Act 依赖链。
    */
-  private async loadSucceededOutputs(agentRunId: string, mode: 'plan' | 'act', planVersion: number, steps: AgentPlanStepSpec[]): Promise<Record<number, unknown>> {
+  private async loadReusableOutputs(agentRunId: string, mode: 'plan' | 'act', planVersion: number, steps: AgentPlanStepSpec[]): Promise<Record<number, unknown>> {
     const records = await this.prisma.agentStep.findMany({ where: { agentRunId, mode, planVersion, status: 'succeeded' }, orderBy: { stepNo: 'asc' } });
     const plannedByStepNo = new Map(steps.map((step) => [step.stepNo, step.tool]));
     const outputs: Record<number, unknown> = {};
+    this.mergeReusableStepOutputs(outputs, records, plannedByStepNo, false);
+
+    if (mode === 'act') {
+      const planPreviewRecords = await this.prisma.agentStep.findMany({ where: { agentRunId, mode: 'plan', planVersion, status: 'succeeded' }, orderBy: { stepNo: 'asc' } });
+      this.mergeReusableStepOutputs(outputs, planPreviewRecords, plannedByStepNo, true);
+    }
+
+    return outputs;
+  }
+
+  /** 只复用“当前计划 stepNo + toolName 完全一致且输出仍符合 Tool Schema”的记录，防止 replan 后误用旧输出。 */
+  private mergeReusableStepOutputs(outputs: Record<number, unknown>, records: Array<{ stepNo: number; toolName: string | null; output: unknown }>, plannedByStepNo: Map<number, string>, planPreviewOnly: boolean) {
     for (const record of records) {
+      if (outputs[record.stepNo] !== undefined) continue;
       const plannedToolName = plannedByStepNo.get(record.stepNo);
       if (!plannedToolName || plannedToolName !== record.toolName || record.output === null) continue;
       const tool = this.tools.get(plannedToolName);
       if (!tool) continue;
+      // Plan 预览输出只能来自无副作用、无需审批的工具，避免把写入类步骤当成已执行。
+      if (planPreviewOnly && (tool.requiresApproval || tool.sideEffects.length > 0)) continue;
       // 旧 trace 可能来自早期版本；复用前重新校验输出契约，失败则跳过并让 Executor 重跑该步骤。
       try {
         this.assertSchema(tool.outputSchema, record.output, `${plannedToolName}.cachedOutput`);
@@ -120,7 +134,6 @@ export class AgentExecutorService {
         continue;
       }
     }
-    return outputs;
   }
 
   private withTimeout<T>(promise: Promise<T>, timeoutMs: number, message: string): Promise<T> {
@@ -150,6 +163,10 @@ export class AgentExecutorService {
 
   private resolveValue(value: unknown, outputs: Record<number, unknown>): unknown {
     if (typeof value === 'string') {
+      // 支持把前序步骤的完整输出对象作为 Tool 参数传递，避免对象被保留为模板字符串后触发 Schema 类型错误。
+      const wholeOutputMatch = value.match(/^{{steps\.(\d+)\.output}}$/);
+      if (wholeOutputMatch) return outputs[Number(wholeOutputMatch[1])];
+
       const match = value.match(/^{{steps\.(\d+)\.output\.([\w.]+)}}$/);
       if (!match) return value;
       return match[2].split('.').reduce<unknown>((current, key) => (current && typeof current === 'object' ? (current as Record<string, unknown>)[key] : undefined), outputs[Number(match[1])]);

@@ -48,14 +48,22 @@ export class GenerateOutlinePreviewTool implements BaseTool<GenerateOutlinePrevi
   private normalize(data: OutlinePreviewOutput, volumeNo: number, chapterCount: number): OutlinePreviewOutput {
     const chapters = (data.chapters ?? []).slice(0, chapterCount).map((item, index) => ({
       chapterNo: Number(item.chapterNo) || index + 1,
-      title: item.title || `第 ${index + 1} 章`,
-      objective: item.objective || '推进主线目标',
-      conflict: item.conflict || '制造角色选择压力',
-      hook: item.hook || '留下下一章悬念',
-      outline: item.outline || item.objective || '待扩写',
+      title: this.text(item.title, `第 ${index + 1} 章`),
+      objective: this.text(item.objective, '推进主线目标'),
+      conflict: this.text(item.conflict, '制造角色选择压力'),
+      hook: this.text(item.hook, '留下下一章悬念'),
+      outline: this.text(item.outline, this.text(item.objective, '待扩写')),
       expectedWordCount: Number(item.expectedWordCount) || 2500,
     }));
-    return { volume: { volumeNo, title: data.volume?.title || `第 ${volumeNo} 卷`, synopsis: data.volume?.synopsis || '', objective: data.volume?.objective || '', chapterCount: chapters.length }, chapters, risks: data.risks ?? [] };
+    return { volume: { volumeNo, title: this.text(data.volume?.title, `第 ${volumeNo} 卷`), synopsis: this.text(data.volume?.synopsis, ''), objective: this.text(data.volume?.objective, ''), chapterCount: chapters.length }, chapters, risks: data.risks ?? [] };
+  }
+
+  /** 将 LLM 可能返回的非字符串字段收敛为字符串，避免后续 Tool 对 trim 等字符串方法崩溃。 */
+  private text(value: unknown, fallback: string): string {
+    if (typeof value === 'string') return value.trim() || fallback;
+    if (typeof value === 'number' || typeof value === 'boolean') return String(value);
+    if (value && typeof value === 'object') return JSON.stringify(value);
+    return fallback;
   }
 
 }

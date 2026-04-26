@@ -14,9 +14,9 @@ import { PromptManagerPanel } from '../components/PromptManagerPanel';
 import { ForeshadowBoard } from '../components/ForeshadowBoard';
 import { BatchGeneratePanel } from '../components/BatchGeneratePanel';
 import { LlmProviderPanel } from '../components/LlmProviderPanel';
-import { AgentWorkspace } from '../components/agent/AgentWorkspace';
+import { AgentFloatingOrb } from '../components/agent/AgentFloatingOrb';
 
-type ActiveView = 'editor' | 'outline' | 'lore' | 'projects' | 'volumes' | 'guided' | 'prompts' | 'foreshadow' | 'generate' | 'agent' | 'llm-config';
+type ActiveView = 'editor' | 'outline' | 'lore' | 'projects' | 'volumes' | 'guided' | 'prompts' | 'foreshadow' | 'generate' | 'llm-config';
 
 export default function HomePage() {
   const data = useDashboardData();
@@ -88,10 +88,7 @@ export default function HomePage() {
     setActiveView('generate');
   }, []);
 
-  /** Navigate to Agent Workspace for natural-language Plan/Act tasks */
-  const handleNavigateToAgent = useCallback(() => {
-    setActiveView('agent');
-  }, []);
+
 
   /** Navigate to LLM provider configuration */
   const handleNavigateToLlmConfig = useCallback(() => {
@@ -147,7 +144,7 @@ export default function HomePage() {
         onNavigateToPrompts={handleNavigateToPrompts}
         onNavigateToForeshadow={handleNavigateToForeshadow}
         onNavigateToGenerate={handleNavigateToGenerate}
-        onNavigateToAgent={handleNavigateToAgent}
+
         onNavigateToLlmConfig={handleNavigateToLlmConfig}
         onSelectVolume={handleSelectVolume}
       />
@@ -191,12 +188,7 @@ export default function HomePage() {
               await data.loadProjectData(data.selectedProjectId, data.selectedChapterId);
             }}
           />
-        ) : activeView === 'agent' ? (
-          <AgentWorkspace
-            projectId={data.selectedProjectId}
-            selectedChapterId={data.selectedChapterId !== 'all' ? data.selectedChapterId : undefined}
-            onRefresh={() => data.loadProjectData(data.selectedProjectId, data.selectedChapterId)}
-          />
+
         ) : (
           <EditorPanel
             selectedProject={selectedProject}
@@ -246,6 +238,15 @@ export default function HomePage() {
           onFixValidationIssues={data.fixValidationIssues}
           onRunAiReviewQueue={data.runAiReviewQueue}
           fixingValidationIssueId={data.fixingValidationIssueId}
+        />
+      )}
+
+      {/* 4. Agent 悬浮圆球 — 全局可见，不依赖 activeView */}
+      {hasProject && (
+        <AgentFloatingOrb
+          projectId={data.selectedProjectId}
+          selectedChapterId={data.selectedChapterId !== 'all' ? data.selectedChapterId : undefined}
+          onRefresh={() => data.loadProjectData(data.selectedProjectId, data.selectedChapterId)}
         />
       )}
 

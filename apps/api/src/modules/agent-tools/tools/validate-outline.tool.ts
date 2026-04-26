@@ -93,10 +93,10 @@ export class ValidateOutlineTool implements BaseTool<ValidateOutlineInput, Valid
       if (!Number.isFinite(Number(chapter.chapterNo)) || Number(chapter.chapterNo) <= 0) {
         issues.push({ severity: 'error', message: `${label} 的 chapterNo 必须是正数。` });
       }
-      if (!chapter.title?.trim()) issues.push({ severity: 'warning', message: `${label} 缺少标题。`, suggestion: '补充标题可提升后续章节定位和导航体验。' });
-      if (!chapter.objective?.trim()) issues.push({ severity: 'warning', message: `${label} 缺少目标。`, suggestion: '补充 objective 便于正文生成保持主线推进。' });
-      if (!chapter.conflict?.trim()) issues.push({ severity: 'warning', message: `${label} 缺少冲突。`, suggestion: '补充 conflict 可避免章节节奏过平。' });
-      if (!chapter.outline?.trim()) issues.push({ severity: 'warning', message: `${label} 缺少章节梗概。`, suggestion: '补充 outline 后再写入更利于后续生成正文。' });
+      if (!this.text(chapter.title).trim()) issues.push({ severity: 'warning', message: `${label} 缺少标题。`, suggestion: '补充标题可提升后续章节定位和导航体验。' });
+      if (!this.text(chapter.objective).trim()) issues.push({ severity: 'warning', message: `${label} 缺少目标。`, suggestion: '补充 objective 便于正文生成保持主线推进。' });
+      if (!this.text(chapter.conflict).trim()) issues.push({ severity: 'warning', message: `${label} 缺少冲突。`, suggestion: '补充 conflict 可避免章节节奏过平。' });
+      if (!this.text(chapter.outline).trim()) issues.push({ severity: 'warning', message: `${label} 缺少章节梗概。`, suggestion: '补充 outline 后再写入更利于后续生成正文。' });
       if (!Number.isFinite(Number(chapter.expectedWordCount)) || Number(chapter.expectedWordCount) <= 0) {
         issues.push({ severity: 'warning', message: `${label} 的 expectedWordCount 无效。`, suggestion: '建议设置一个正数字数目标。' });
       } else if (Number(chapter.expectedWordCount) < 500) {
@@ -142,7 +142,7 @@ export class ValidateOutlineTool implements BaseTool<ValidateOutlineInput, Valid
     const chapters = preview.chapters.map((chapter) => {
       const existing = existingByNo.get(Number(chapter.chapterNo));
       const action: 'create' | 'update_planned' | 'skip_existing_content' = !existing ? 'create' : existing.status === 'planned' ? 'update_planned' : 'skip_existing_content';
-      return { chapterNo: Number(chapter.chapterNo), title: chapter.title, action, existingStatus: existing?.status ?? null };
+      return { chapterNo: Number(chapter.chapterNo), title: this.text(chapter.title), action, existingStatus: existing?.status ?? null };
     });
     return {
       volume: { action: existingVolume ? 'update' : 'create', volumeNo: preview.volume.volumeNo, existingTitle: existingVolume?.title ?? null, nextTitle: preview.volume.title },
@@ -164,5 +164,13 @@ export class ValidateOutlineTool implements BaseTool<ValidateOutlineInput, Valid
       seen.add(value);
     });
     return [...duplicated].sort((a, b) => a - b);
+  }
+
+  /** 将上游 LLM 预览字段安全转换为文本，避免非字符串内容导致校验阶段 500。 */
+  private text(value: unknown): string {
+    if (typeof value === 'string') return value;
+    if (typeof value === 'number' || typeof value === 'boolean') return String(value);
+    if (value && typeof value === 'object') return JSON.stringify(value);
+    return '';
   }
 }
