@@ -19,9 +19,13 @@ interface Props {
   selectedChapterId: string;
   chapters: ChapterSummary[];
   draftRefreshKey?: number;
+  /** Run chapter-scoped AI review/maintenance without changing the chapter completion status. */
+  onRunAutoMaintenance?: (chapterIds?: string[]) => void | Promise<void>;
+  /** Mark the current chapter as complete; this only updates chapter metadata for the sidebar status dot. */
+  onMarkChapterComplete?: (chapterId: string) => void | Promise<void>;
 }
 
-export function EditorPanel({ selectedProject, selectedChapterId, chapters, draftRefreshKey = 0 }: Props) {
+export function EditorPanel({ selectedProject, selectedChapterId, chapters, draftRefreshKey = 0, onRunAutoMaintenance, onMarkChapterComplete }: Props) {
   const isGlobal = selectedChapterId === 'all';
   const chapter = chapters.find((c) => c.id === selectedChapterId);
   const gen = useChapterGeneration();
@@ -29,6 +33,8 @@ export function EditorPanel({ selectedProject, selectedChapterId, chapters, draf
   // Local content state for the editor textarea
   const [content, setContent] = useState('');
   const [draftLoaded, setDraftLoaded] = useState(false);
+  const [isAutoMaintaining, setIsAutoMaintaining] = useState(false);
+  const [isMarkingComplete, setIsMarkingComplete] = useState(false);
 
   const title = isGlobal
     ? selectedProject?.title || '未选择项目'
@@ -74,8 +80,34 @@ export function EditorPanel({ selectedProject, selectedChapterId, chapters, draf
     await gen.generateSingle(selectedProject.id, selectedChapterId);
   }, [isGlobal, selectedProject?.id, selectedChapterId, gen]);
 
+  /** Trigger AI review/maintenance chain for the current detail page. */
+  const handleRunAiReview = useCallback(async () => {
+    if (isGlobal || !selectedChapterId || !onRunAutoMaintenance || isAutoMaintaining) return;
+
+    setIsAutoMaintaining(true);
+    try {
+      // Limit the AI review chain to the current chapter so it never behaves like the batch generation page.
+      await onRunAutoMaintenance([selectedChapterId]);
+    } finally {
+      setIsAutoMaintaining(false);
+    }
+  }, [isGlobal, isAutoMaintaining, onRunAutoMaintenance, selectedChapterId]);
+
+  /** Mark the current chapter complete without invoking AI, rebuild, validation, or memory review. */
+  const handleMarkComplete = useCallback(async () => {
+    if (isGlobal || !selectedChapterId || !onMarkChapterComplete || isMarkingComplete) return;
+
+    setIsMarkingComplete(true);
+    try {
+      await onMarkChapterComplete(selectedChapterId);
+    } finally {
+      setIsMarkingComplete(false);
+    }
+  }, [isGlobal, isMarkingComplete, onMarkChapterComplete, selectedChapterId]);
+
   const isGenerating = gen.state === 'generating' || gen.state === 'polling';
   const statusText = chapter?.status === 'drafted' ? '已生成' : (draftLoaded ? '有草稿' : '未生成');
+  const showFloatingActions = !isGlobal && Boolean(selectedChapterId);
 
   return (
     <article className="flex flex-col h-full" style={{ background: 'var(--bg-deep)' }}>
@@ -209,7 +241,7 @@ export function EditorPanel({ selectedProject, selectedChapterId, chapters, draf
       )}
 
       {/* ── Editor body ── */}
-      <div className="flex-1 px-8 py-10" style={{ overflowY: 'auto' }}>
+      <div className="flex-1 px-8 py-10" style={{ overflowY: 'auto', position: 'relative' }}>
         {isGlobal ? (
           <GlobalPlaceholder />
         ) : (
@@ -225,6 +257,85 @@ export function EditorPanel({ selectedProject, selectedChapterId, chapters, draf
           </div>
         )}
       </div>
+
+      {/* 章节详情页右下角主操作入口：恢复用户在正文页完成/生成的固定触达点。 */}
+      {showFloatingActions && (
+        <div
+          className="animate-fade-in"
+          style={{
+            position: 'absolute',
+            right: '2rem',
+            bottom: '1.5rem',
+            zIndex: 30,
+            display: 'flex',
+            flexDirection: 'column',
+            alignItems: 'flex-end',
+            gap: '0.65rem',
+            pointerEvents: 'none',
+          }}
+        >
+          <button
+            type="button"
+            onClick={handleMarkComplete}
+            disabled={!onMarkChapterComplete || isMarkingComplete || isGenerating || isAutoMaintaining}
+            style={{
+              pointerEvents: 'auto',
+              padding: '0.85rem 1.25rem',
+              borderRadius: '999px',
+              border: '1px solid rgba(16, 185, 129, 0.45)',
+              background: isMarkingComplete ? 'var(--bg-card)' : 'rgba(16, 185, 129, 0.14)',
+              color: isMarkingComplete ? 'var(--text-muted)' : '#10b981',
+              fontSize: '0.9rem',
+              fontWeight: 700,
+              cursor: !onMarkChapterComplete || isMarkingComplete || isGenerating || isAutoMaintaining ? 'wait' : 'pointer',
+              boxShadow: isMarkingComplete ? 'none' : '0 10px 28px rgba(16, 185, 129, 0.22)',
+              backdropFilter: 'blur(16px)',
+            }}
+          >
+            {isMarkingComplete ? '✅ 标记中…' : '✅ 完成'}
+          </button>
+          <button
+            type="button"
+            onClick={handleRunAiReview}
+            disabled={!onRunAutoMaintenance || isAutoMaintaining || isGenerating || isMarkingComplete}
+            style={{
+              pointerEvents: 'auto',
+              padding: '0.85rem 1.25rem',
+              borderRadius: '999px',
+              border: '1px solid rgba(245, 158, 11, 0.45)',
+              background: isAutoMaintaining ? 'var(--bg-card)' : 'rgba(245, 158, 11, 0.14)',
+              color: isAutoMaintaining ? 'var(--text-muted)' : '#f59e0b',
+              fontSize: '0.9rem',
+              fontWeight: 700,
+              cursor: !onRunAutoMaintenance || isAutoMaintaining || isGenerating || isMarkingComplete ? 'wait' : 'pointer',
+              boxShadow: isAutoMaintaining ? 'none' : '0 10px 28px rgba(245, 158, 11, 0.22)',
+              backdropFilter: 'blur(16px)',
+            }}
+          >
+            {isAutoMaintaining ? '🤖 AI审核中…' : '🤖 AI审核'}
+          </button>
+          <button
+            type="button"
+            onClick={handleGenerate}
+            disabled={isGenerating || isAutoMaintaining || isMarkingComplete}
+            style={{
+              pointerEvents: 'auto',
+              padding: '0.85rem 1.25rem',
+              borderRadius: '999px',
+              border: '1px solid var(--accent-cyan)',
+              background: isGenerating ? 'var(--bg-card)' : 'var(--accent-cyan-bg)',
+              color: isGenerating ? 'var(--text-muted)' : 'var(--accent-cyan)',
+              fontSize: '0.9rem',
+              fontWeight: 700,
+              cursor: isGenerating || isAutoMaintaining || isMarkingComplete ? 'wait' : 'pointer',
+              boxShadow: isGenerating ? 'none' : '0 10px 28px var(--accent-cyan-glow)',
+              backdropFilter: 'blur(16px)',
+            }}
+          >
+            {isGenerating ? '🤖 AI生成中…' : '🤖 AI生成'}
+          </button>
+        </div>
+      )}
     </article>
   );
 }

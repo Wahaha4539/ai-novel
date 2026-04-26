@@ -13,7 +13,7 @@ DEFAULT_POLISH_INSTRUCTION = "请在不改变剧情事实、人物关系和章�
 
 
 class PostProcessChapterPipeline:
-    """Orchestrate polish → memory rebuild → validation → fix → memory review."""
+    """Orchestrate polish → memory rebuild → memory review → validation → fix."""
 
     def __init__(self) -> None:
         self.polish_pipeline = PolishChapterPipeline()
@@ -46,6 +46,12 @@ class PostProcessChapterPipeline:
         rebuild = self._rebuild_memory(project_id, chapter_id)
         steps.append({"step": "memory_rebuild", "processedChapterCount": rebuild.processed_chapter_count})
 
+        # Review freshly rebuilt pending facts before validation. Otherwise deterministic
+        # rules may block on facts that the unattended reviewer would reject, which makes
+        # background generation fail while the same manual review→validate flow succeeds.
+        memory_review = self.memory_review_pipeline.run(project_id, chapter_id)
+        steps.append({"step": "memory_review", **memory_review})
+
         validation = self.fact_validation_pipeline.run(project_id, chapter_id)
         open_issues = self.validation_repo.list_open_by_chapter(chapter_id)
         steps.append({"step": "validation", "createdCount": validation["createdCount"], "openIssueCount": len(open_issues)})
@@ -53,9 +59,6 @@ class PostProcessChapterPipeline:
         open_issues = self._auto_fix_until_clean(project_id, chapter_id, open_issues, steps)
         if open_issues:
             raise ValueError(f"当前章节仍有 {len(open_issues)} 个校验问题，请人工处理后重试。")
-
-        memory_review = self.memory_review_pipeline.run(project_id, chapter_id)
-        steps.append({"step": "memory_review", **memory_review})
 
         log_event(logger, "postprocess.completed", **log_context, finalDraftId=polish["draftId"])
         return {
@@ -72,9 +75,22 @@ class PostProcessChapterPipeline:
             if not remaining_issues:
                 break
 
+            log_event(
+                logger,
+                "postprocess.auto_fix.attempt_started",
+                projectId=project_id,
+                chapterId=chapter_id,
+                attempt=attempt,
+                maxAttempts=MAX_AUTO_FIX_ATTEMPTS,
+                openIssueCount=len(remaining_issues),
+                issueTypes=[issue.get("issueType") for issue in remaining_issues],
+            )
             instruction = self._build_validation_fix_instruction(remaining_issues)
             polish = self.polish_pipeline.run(project_id, chapter_id, instruction)
             rebuild = self._rebuild_memory(project_id, chapter_id)
+            # Auto-fix rewrites can produce new pending_review facts. Audit them before
+            # re-validating so rejected extraction noise does not keep the retry loop stuck.
+            memory_review = self.memory_review_pipeline.run(project_id, chapter_id)
             validation = self.fact_validation_pipeline.run(project_id, chapter_id)
             remaining_issues = self.validation_repo.list_open_by_chapter(chapter_id)
             steps.append(
@@ -83,9 +99,28 @@ class PostProcessChapterPipeline:
                     "attempt": attempt,
                     "draftId": polish["draftId"],
                     "processedChapterCount": rebuild.processed_chapter_count,
+                    "reviewedCount": memory_review["reviewedCount"],
+                    "confirmedCount": memory_review["confirmedCount"],
+                    "rejectedCount": memory_review["rejectedCount"],
                     "createdIssueCount": validation["createdCount"],
                     "openIssueCount": len(remaining_issues),
                 }
+            )
+            log_event(
+                logger,
+                "postprocess.auto_fix.attempt_completed",
+                projectId=project_id,
+                chapterId=chapter_id,
+                attempt=attempt,
+                maxAttempts=MAX_AUTO_FIX_ATTEMPTS,
+                draftId=polish["draftId"],
+                processedChapterCount=rebuild.processed_chapter_count,
+                reviewedCount=memory_review["reviewedCount"],
+                confirmedCount=memory_review["confirmedCount"],
+                rejectedCount=memory_review["rejectedCount"],
+                createdIssueCount=validation["createdCount"],
+                openIssueCount=len(remaining_issues),
+                willRetry=bool(remaining_issues and attempt < MAX_AUTO_FIX_ATTEMPTS),
             )
 
         return remaining_issues

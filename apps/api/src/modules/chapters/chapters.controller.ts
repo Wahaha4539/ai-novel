@@ -1,4 +1,4 @@
-import { Body, Controller, Get, Param, Post } from '@nestjs/common';
+import { Body, Controller, Get, Param, Patch, Post } from '@nestjs/common';
 import { CreateChapterDto } from './dto/create-chapter.dto';
 import { ChaptersService } from './chapters.service';
 
@@ -19,6 +19,12 @@ export class ChaptersController {
   @Get('chapters/:chapterId')
   getDetail(@Param('chapterId') chapterId: string) {
     return this.chaptersService.getById(chapterId);
+  }
+
+  /** Manually mark a chapter as completed without running AI generation. */
+  @Patch('chapters/:chapterId/complete')
+  markComplete(@Param('chapterId') chapterId: string, @Body() dto: { actualWordCount?: number }) {
+    return this.chaptersService.markCompletedManually(chapterId, dto.actualWordCount);
   }
 
   /** Return the latest (isCurrent) draft for a chapter */

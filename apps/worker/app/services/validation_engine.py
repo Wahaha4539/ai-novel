@@ -212,7 +212,18 @@ class ValidationEngine:
         if characters:
             user += "\n【登场角色】\n"
             for c in characters[:8]:
-                user += f"  - {c['name']}：{c.get('role', '')}\n"
+                # CharacterRepository 返回 roleType/personalityCore 等驼峰字段；
+                # 校验提示词需要完整角色画像，避免审校模型因上下文缺失误判角色行为。
+                details = []
+                if c.get("roleType"):
+                    details.append(f"定位：{c['roleType']}")
+                if c.get("personalityCore"):
+                    details.append(f"性格：{c['personalityCore']}")
+                if c.get("motivation"):
+                    details.append(f"动机：{c['motivation']}")
+                if c.get("speechStyle"):
+                    details.append(f"语言风格：{c['speechStyle']}")
+                user += f"  - {c['name']}：{'；'.join(details) or '暂无详细设定'}\n"
 
         # Accumulated character state timeline
         if character_states:

@@ -98,6 +98,26 @@ export class ChaptersService {
     return updatedChapter;
   }
 
+  /**
+   * Mark a chapter as completed from the editor UI without invoking AI generation.
+   * This is intentionally limited to chapter metadata so manual writing workflows
+   * can update progress while preserving the user's current draft/content untouched.
+   */
+  async markCompletedManually(chapterId: string, actualWordCount?: number) {
+    const chapter = await this.getById(chapterId);
+    const updatedChapter = await this.prisma.chapter.update({
+      where: { id: chapterId },
+      data: {
+        status: 'drafted',
+        ...(typeof actualWordCount === 'number' && actualWordCount >= 0 ? { actualWordCount } : {}),
+      },
+    });
+
+    // 更新章节上下文缓存，让后续生成/事实层读取到最新完成状态。
+    await this.refreshChapterContext(chapter.projectId, updatedChapter.id);
+    return updatedChapter;
+  }
+
   private async refreshChapterContext(projectId: string, chapterId: string) {
     const chapter = await this.prisma.chapter.findUnique({
       where: { id: chapterId },

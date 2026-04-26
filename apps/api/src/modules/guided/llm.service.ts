@@ -76,7 +76,7 @@ export class LlmService {
     const elapsed = ((Date.now() - t0) / 1000).toFixed(1);
     const usage = payload.usage as Record<string, number> | undefined;
     const tokens = usage ? `in=${usage.prompt_tokens ?? '?'} out=${usage.completion_tokens ?? '?'}` : '';
-    console.log(`[LLM] ← ${text.length}ch ${elapsed}s ${tokens}`);
+    console.log(`[LLM] ← ${config.model} ${text.length}ch ${elapsed}s ${tokens}`);
     return text;
   }
 

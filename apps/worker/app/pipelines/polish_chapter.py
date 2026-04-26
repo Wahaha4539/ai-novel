@@ -146,7 +146,18 @@ class PolishChapterPipeline:
         if characters:
             char_lines = []
             for ch in characters[:8]:
-                char_lines.append(f"- {ch['name']}：{ch.get('role', '')}，{ch.get('personality', '')}")
+                # CharacterRepository 返回的是驼峰字段名；这里必须与仓储结构保持一致，
+                # 否则润色提示词会只显示角色名，角色定位/性格等上下文为空。
+                details = []
+                if ch.get("roleType"):
+                    details.append(f"定位：{ch['roleType']}")
+                if ch.get("personalityCore"):
+                    details.append(f"性格：{ch['personalityCore']}")
+                if ch.get("motivation"):
+                    details.append(f"动机：{ch['motivation']}")
+                if ch.get("speechStyle"):
+                    details.append(f"语言风格：{ch['speechStyle']}")
+                char_lines.append(f"- {ch['name']}：{'；'.join(details) or '暂无详细设定'}")
             character_block = "\n【角色信息】\n" + "\n".join(char_lines)
 
         # ── Build user prompt ──

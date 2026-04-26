@@ -190,6 +190,8 @@ export default function HomePage() {
             selectedChapterId={data.selectedChapterId}
             chapters={chapters}
             draftRefreshKey={data.draftRefreshKey}
+            onRunAutoMaintenance={data.runAutoMaintenance}
+            onMarkChapterComplete={data.markChapterComplete}
           />
         )}
 

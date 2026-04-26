@@ -114,7 +114,8 @@ class LlmGateway:
 
                 # IncompleteRead 通常表示供应商/代理在 chunked body 结束前断开；重试同一请求。
                 logger.warning(
-                    "[LLM] 请求读取失败，准备重试 attempt=%d/%d error=%s",
+                    "[LLM] 请求读取失败，准备重试 model=%s attempt=%d/%d error=%s",
+                    config.model,
                     attempt,
                     self._MAX_ATTEMPTS,
                     exc,
@@ -142,6 +143,12 @@ class LlmGateway:
         if not text:
             preview = json.dumps(payload, ensure_ascii=False)[:1000]
             raise RuntimeError(f"LLM 返回内容为空: {preview}")
+
+        usage = payload.get("usage") if isinstance(payload.get("usage"), dict) else None
+        tokens = ""
+        if usage:
+            tokens = f" in={usage.get('prompt_tokens', '?')} out={usage.get('completion_tokens', '?')}"
+        logger.info("[LLM] ← %s %dch%s", config.model, len(text), tokens)
 
         return text
 

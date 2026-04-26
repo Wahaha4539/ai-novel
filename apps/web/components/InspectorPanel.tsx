@@ -107,6 +107,14 @@ export function InspectorPanel(props: Props) {
               selectedChapterId={props.selectedChapterId}
               onRefresh={props.onRefresh}
             />
+            {/* 预览页直接露出待审核记忆，避免概览卡片只有数量、看不到待审议内容与 AI 审核入口。 */}
+            {props.reviewQueue.length > 0 ? (
+              <ReviewQueueList
+                reviewQueue={props.reviewQueue}
+                onRunReviewAction={props.onRunReviewAction}
+                onRunAiReviewQueue={props.onRunAiReviewQueue}
+              />
+            ) : null}
             {/* 有问题时在预览页直接展示详情，避免“校验问题”统计数字和问题列表分离。 */}
             {props.validationIssues.length > 0 ? (
               <ValidationIssueList

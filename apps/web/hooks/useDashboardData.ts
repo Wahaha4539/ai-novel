@@ -34,6 +34,12 @@ type AiReviewResolveResult = {
   skippedCount?: number;
 };
 
+type ChapterCompletionResult = {
+  id: string;
+  status: 'planned' | 'drafted';
+  actualWordCount?: number | null;
+};
+
 async function apiFetch<T>(path: string, init?: RequestInit): Promise<T> {
   const response = await fetch(`${API_BASE}${path}`, {
     ...init,
@@ -288,10 +294,30 @@ export function useDashboardData() {
   };
 
   /**
+   * Mark the current chapter as complete without running AI, rebuild, validation, or memory review.
+   * The sidebar green dot is driven by chapter.status === 'drafted', so this is a deliberate manual action.
+   */
+  const markChapterComplete = async (chapterId: string) => {
+    if (!selectedProjectId || !chapterId || chapterId === 'all') return;
+
+    setActionMessage('正在标记章节完成…');
+    try {
+      await apiFetch<ChapterCompletionResult>(`/chapters/${chapterId}/complete`, {
+        method: 'PATCH',
+        body: JSON.stringify({}),
+      });
+      await loadProjectData(selectedProjectId, selectedChapterId);
+      setActionMessage('章节已标记完成。');
+    } catch (completeError) {
+      setActionMessage(completeError instanceof Error ? completeError.message : '标记章节完成失败');
+    }
+  };
+
+  /**
    * Run the unattended post-generation maintenance chain: polish newly generated drafts first,
-   * then let LLM resolve review queue, rebuild/validate facts, and batch-fix remaining chapter-scoped
-   * validation issues when possible. Polish must run before rebuild so the fact layer reflects the
-   * final readable draft rather than the raw generation output.
+   * then stabilize the chapter through rebuild/validation before reviewing memories. Pending memories
+   * are reviewed only after the text stops changing, otherwise AI may confirm facts from an intermediate
+   * draft that a later validation repair rewrites.
    */
   const runAutoMaintenance = async (chapterIds?: string[]) => {
     if (!selectedProjectId) return;
@@ -301,35 +327,40 @@ export function useDashboardData() {
     const canUseCurrentScope = selectedChapterId !== 'all';
     const targetChapterIds = scopedChapterIds.length ? Array.from(new Set(scopedChapterIds)) : canUseCurrentScope ? [selectedChapterId] : [];
 
+    const rebuildChapterFacts = async (chapterId: string) => {
+      await apiFetch<RebuildResult>(
+        `/projects/${selectedProjectId}/memory/rebuild?chapterId=${encodeURIComponent(chapterId)}&dryRun=false`,
+        { method: 'POST' },
+      );
+    };
+
+    const validateChapterFacts = async (chapterId: string) => apiFetch<ValidationRunResult>(
+      `/projects/${selectedProjectId}/validation/run?chapterId=${encodeURIComponent(chapterId)}`,
+      { method: 'POST' },
+    );
+
+    const polishChapter = async (chapterId: string, userInstruction: string) => apiFetch<PolishResult>(`/chapters/${chapterId}/polish`, {
+      method: 'POST',
+      body: JSON.stringify({ userInstruction }),
+    });
+
+    const reviewStableMemories = async (chapterId?: string) => apiFetch<AiReviewResolveResult>(`/projects/${selectedProjectId}/memory/reviews/ai-resolve`, {
+      method: 'POST',
+      body: JSON.stringify({ chapterId }),
+    });
+
     setActionMessage(targetChapterIds.length ? '全自动流程：AI 正在润色生成草稿…' : '全自动流程：AI 正在审核待确认记忆…');
     try {
       if (targetChapterIds.length) {
         for (const chapterId of targetChapterIds) {
-          await apiFetch<PolishResult>(`/chapters/${chapterId}/polish`, {
-            method: 'POST',
-            body: JSON.stringify({
-              userInstruction: '请在不改变剧情事实、人物关系和章节主线结果的前提下，润色当前章节正文：提升句子流畅度、画面感、节奏和衔接，修正明显语病与重复表达。直接输出润色后的完整章节正文，不要添加说明。',
-            }),
-          });
+          await polishChapter(chapterId, '请在不改变剧情事实、人物关系和章节主线结果的前提下，润色当前章节正文：提升句子流畅度、画面感、节奏和衔接，修正明显语病与重复表达。直接输出润色后的完整章节正文，不要添加说明。');
         }
       }
 
-      setActionMessage('全自动流程：AI 正在审核待确认记忆…');
-      const reviewScopes = targetChapterIds.length ? targetChapterIds : [undefined];
-      for (const chapterId of reviewScopes) {
-        await apiFetch<AiReviewResolveResult>(`/projects/${selectedProjectId}/memory/reviews/ai-resolve`, {
-          method: 'POST',
-          body: JSON.stringify({ chapterId }),
-        });
-      }
-
-      setActionMessage('全自动流程：正在重建事实层…');
+      setActionMessage('全自动流程：正在根据最新正文重建事实层…');
       if (targetChapterIds.length) {
         for (const chapterId of targetChapterIds) {
-          await apiFetch<RebuildResult>(
-            `/projects/${selectedProjectId}/memory/rebuild?chapterId=${encodeURIComponent(chapterId)}&dryRun=false`,
-            { method: 'POST' },
-          );
+          await rebuildChapterFacts(chapterId);
         }
       } else {
         await apiFetch<RebuildResult>(`/projects/${selectedProjectId}/memory/rebuild?dryRun=false`, { method: 'POST' });
@@ -341,26 +372,66 @@ export function useDashboardData() {
       const issuesToFix: ValidationIssue[] = [];
       for (const chapterId of validationScopes) {
         const query = chapterId ? `?chapterId=${encodeURIComponent(chapterId)}` : '';
-        latestValidationResult = await apiFetch<ValidationRunResult>(
-          `/projects/${selectedProjectId}/validation/run${query}`,
-          { method: 'POST' },
-        );
+        latestValidationResult = chapterId ? await validateChapterFacts(chapterId) : await apiFetch<ValidationRunResult>(`/projects/${selectedProjectId}/validation/run${query}`, { method: 'POST' });
         issuesToFix.push(...latestValidationResult.issues);
       }
 
       setValidationRunResult(latestValidationResult);
 
       if (issuesToFix.length && targetChapterIds.length === 1) {
-        await fixValidationIssues(issuesToFix);
+        const issueChapterId = targetChapterIds[0];
+        const issueIds = issuesToFix.map((issue) => issue.id).filter((id): id is string => Boolean(id));
+
+        // 自动流程只修复一轮：如果复检仍失败，保留问题给用户判断，避免 LLM 无限改写正文。
+        setActionMessage(`全自动流程：AI 正在修复 ${issuesToFix.length} 个校验问题…`);
+        await polishChapter(issueChapterId, buildValidationFixInstruction(issuesToFix));
+
+        setActionMessage('全自动流程：修复后正在重建事实层…');
+        await rebuildChapterFacts(issueChapterId);
+
+        setActionMessage('全自动流程：正在复查修复结果…');
+        latestValidationResult = await validateChapterFacts(issueChapterId);
+        setValidationRunResult(latestValidationResult);
+
+        if (!latestValidationResult.issues.length && issueIds.length) {
+          // 只有在复检通过后才关闭原问题；未通过时保留 issue，方便用户继续人工处理。
+          await Promise.all(issueIds.map((issueId) => apiFetch<ResolveValidationIssueResult>(`/validation-issues/${issueId}/resolve`, { method: 'POST' })));
+        }
+      }
+
+      const remainingIssues = latestValidationResult?.issues ?? [];
+      if (remainingIssues.length) {
+        await loadProjectData(selectedProjectId, selectedChapterId);
+        setDraftRefreshKey((value) => value + 1);
+        setActionMessage(`全自动流程已完成润色、重建与复检；仍有 ${remainingIssues.length} 个问题需要人工确认后再审核记忆。`);
         return;
+      }
+
+      setActionMessage('全自动流程：正文已通过校验，AI 正在审核待确认记忆…');
+      const reviewScopes = targetChapterIds.length ? targetChapterIds : [undefined];
+      let reviewedCount = 0;
+      let confirmedCount = 0;
+      let rejectedCount = 0;
+      for (const chapterId of reviewScopes) {
+        const reviewResult = await reviewStableMemories(chapterId);
+        reviewedCount += reviewResult.reviewedCount;
+        confirmedCount += reviewResult.confirmedCount;
+        rejectedCount += reviewResult.rejectedCount;
+      }
+
+      setActionMessage('全自动流程：记忆审核完成，正在刷新事实层…');
+      if (targetChapterIds.length) {
+        for (const chapterId of targetChapterIds) {
+          await rebuildChapterFacts(chapterId);
+        }
+      } else {
+        await apiFetch<RebuildResult>(`/projects/${selectedProjectId}/memory/rebuild?dryRun=false`, { method: 'POST' });
       }
 
       await loadProjectData(selectedProjectId, selectedChapterId);
       setDraftRefreshKey((value) => value + 1);
       setActionMessage(
-        issuesToFix.length
-          ? `全自动流程已完成记忆审核、事实层重建与校验；仍有 ${issuesToFix.length} 个问题需要按单章修复。`
-          : '全自动流程已完成：记忆审核、事实层重建与校验均已处理。',
+        `全自动流程已完成：正文已稳定，AI 审核 ${reviewedCount} 条记忆，采纳 ${confirmedCount} 条，拒绝 ${rejectedCount} 条；事实层已刷新。`,
       );
     } catch (autoError) {
       setActionMessage(autoError instanceof Error ? autoError.message : '全自动流程失败');
@@ -395,6 +466,7 @@ export function useDashboardData() {
     runValidation,
     fixValidationIssues,
     runAiReviewQueue,
+    markChapterComplete,
     runAutoMaintenance,
   };
 }
