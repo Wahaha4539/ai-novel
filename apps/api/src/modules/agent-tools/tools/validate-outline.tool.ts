@@ -1,4 +1,5 @@
 import { Injectable } from '@nestjs/common';
+import { PrismaService } from '../../../prisma/prisma.service';
 import { BaseTool, ToolContext } from '../base-tool';
 import { OutlinePreviewOutput } from './generate-outline-preview.tool';
 
@@ -25,6 +26,11 @@ export interface ValidateOutlineOutput {
     totalExpectedWordCount: number;
   };
   sourceRisks: string[];
+  writePreview?: {
+    volume: { action: 'create' | 'update'; volumeNo?: number; existingTitle?: string | null; nextTitle?: string };
+    summary: { createCount: number; updateCount: number; skipCount: number };
+    chapters: Array<{ chapterNo: number; title: string; action: 'create' | 'update_planned' | 'skip_existing_content'; existingStatus?: string | null }>;
+  };
 }
 
 /**
@@ -45,6 +51,8 @@ export class ValidateOutlineTool implements BaseTool<ValidateOutlineInput, Valid
   riskLevel: 'low' = 'low';
   requiresApproval = false;
   sideEffects: string[] = [];
+
+  constructor(private readonly prisma: PrismaService) {}
 
   async run(args: ValidateOutlineInput, _context: ToolContext): Promise<ValidateOutlineOutput> {
     const issues: OutlineValidationIssue[] = [];
@@ -96,11 +104,12 @@ export class ValidateOutlineTool implements BaseTool<ValidateOutlineInput, Valid
       }
     });
 
-    return this.buildOutput(issues, chapters, expectedChapterCount, preview.risks ?? []);
+    const writePreview = await this.buildWritePreview(preview, _context);
+    return this.buildOutput(issues, chapters, expectedChapterCount, preview.risks ?? [], writePreview);
   }
 
   /** 统一构建输出，确保前端和 report_result 都能稳定读取 issueCount/stats。 */
-  private buildOutput(issues: OutlineValidationIssue[], chapters: OutlinePreviewOutput['chapters'], expectedChapterCount: number | undefined, sourceRisks: string[]): ValidateOutlineOutput {
+  private buildOutput(issues: OutlineValidationIssue[], chapters: OutlinePreviewOutput['chapters'], expectedChapterCount: number | undefined, sourceRisks: string[], writePreview?: ValidateOutlineOutput['writePreview']): ValidateOutlineOutput {
     const duplicatedChapterNos = this.findDuplicatedNumbers(chapters.map((chapter) => Number(chapter.chapterNo)));
     return {
       valid: !issues.some((issue) => issue.severity === 'error'),
@@ -113,6 +122,36 @@ export class ValidateOutlineTool implements BaseTool<ValidateOutlineInput, Valid
         totalExpectedWordCount: chapters.reduce((sum, chapter) => sum + (Number(chapter.expectedWordCount) || 0), 0),
       },
       sourceRisks,
+      ...(writePreview ? { writePreview } : {}),
+    };
+  }
+
+  /**
+   * 在 Plan 阶段提前派生写入 diff，让审批台能说明哪些章节会创建、更新或跳过。
+   * 这里只读数据库，不改变正式业务数据；真正写入仍由 persist_outline 在 Act 阶段执行。
+   */
+  private async buildWritePreview(preview: OutlinePreviewOutput, context: ToolContext): Promise<ValidateOutlineOutput['writePreview']> {
+    const validChapterNos = preview.chapters.map((chapter) => Number(chapter.chapterNo)).filter((value) => Number.isFinite(value) && value > 0);
+    const [existingVolume, existingChapters] = await Promise.all([
+      this.prisma.volume.findUnique({ where: { projectId_volumeNo: { projectId: context.projectId, volumeNo: preview.volume.volumeNo } }, select: { title: true } }),
+      validChapterNos.length
+        ? this.prisma.chapter.findMany({ where: { projectId: context.projectId, chapterNo: { in: validChapterNos } }, select: { chapterNo: true, status: true, title: true } })
+        : Promise.resolve([]),
+    ]);
+    const existingByNo = new Map(existingChapters.map((chapter) => [chapter.chapterNo, chapter]));
+    const chapters = preview.chapters.map((chapter) => {
+      const existing = existingByNo.get(Number(chapter.chapterNo));
+      const action: 'create' | 'update_planned' | 'skip_existing_content' = !existing ? 'create' : existing.status === 'planned' ? 'update_planned' : 'skip_existing_content';
+      return { chapterNo: Number(chapter.chapterNo), title: chapter.title, action, existingStatus: existing?.status ?? null };
+    });
+    return {
+      volume: { action: existingVolume ? 'update' : 'create', volumeNo: preview.volume.volumeNo, existingTitle: existingVolume?.title ?? null, nextTitle: preview.volume.title },
+      summary: {
+        createCount: chapters.filter((chapter) => chapter.action === 'create').length,
+        updateCount: chapters.filter((chapter) => chapter.action === 'update_planned').length,
+        skipCount: chapters.filter((chapter) => chapter.action === 'skip_existing_content').length,
+      },
+      chapters,
     };
   }
 

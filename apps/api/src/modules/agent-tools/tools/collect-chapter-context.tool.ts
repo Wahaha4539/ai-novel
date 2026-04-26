@@ -13,6 +13,13 @@ interface ChapterContextOutput {
   characters: Array<{ name: string; roleType: string | null; personalityCore: string | null; motivation: string | null; speechStyle: string | null }>;
   lorebookEntries: Array<{ title: string; entryType: string; summary: string | null; content: string }>;
   memoryChunks: Array<{ memoryType: string; summary: string | null; content: string }>;
+  writePreview: {
+    draft: { action: 'create_first_draft' | 'create_new_version'; currentDraftId: string | null; currentVersionNo: number | null; currentWordCount: number; currentExcerpt: string | null };
+    facts: { existingAutoEventCount: number; existingAutoCharacterStateCount: number; existingAutoForeshadowCount: number; action: 'replace_auto_facts_after_generation' };
+    memory: { existingAutoMemoryCount: number; action: 'replace_agent_generated_memory_after_generation' };
+    validation: { openIssueCount: number; openErrorCount: number };
+    approvalRiskHints: string[];
+  };
 }
 
 /**
@@ -26,8 +33,8 @@ export class CollectChapterContextTool implements BaseTool<CollectChapterContext
   inputSchema = { type: 'object' as const, properties: { chapterId: { type: 'string' as const } } };
   outputSchema = {
     type: 'object' as const,
-    required: ['project', 'chapter', 'previousChapters', 'characters', 'lorebookEntries', 'memoryChunks'],
-    properties: { project: { type: 'object' as const }, chapter: { type: 'object' as const }, previousChapters: { type: 'array' as const }, characters: { type: 'array' as const }, lorebookEntries: { type: 'array' as const }, memoryChunks: { type: 'array' as const } },
+    required: ['project', 'chapter', 'previousChapters', 'characters', 'lorebookEntries', 'memoryChunks', 'writePreview'],
+    properties: { project: { type: 'object' as const }, chapter: { type: 'object' as const }, previousChapters: { type: 'array' as const }, characters: { type: 'array' as const }, lorebookEntries: { type: 'array' as const }, memoryChunks: { type: 'array' as const }, writePreview: { type: 'object' as const } },
   };
   allowedModes: Array<'plan' | 'act'> = ['plan', 'act'];
   riskLevel: 'low' = 'low';
@@ -43,7 +50,7 @@ export class CollectChapterContextTool implements BaseTool<CollectChapterContext
     const chapter = await this.prisma.chapter.findFirst({ where: { id: chapterId, projectId: context.projectId }, include: { project: true } });
     if (!chapter) throw new NotFoundException(`章节不存在或不属于当前项目：${chapterId}`);
 
-    const [previousChapters, characters, lorebookEntries, memoryChunks] = await Promise.all([
+    const [previousChapters, characters, lorebookEntries, memoryChunks, currentDraft, factCounts, autoMemoryCount, openIssues] = await Promise.all([
       this.prisma.chapter.findMany({
         where: { projectId: context.projectId, chapterNo: { lt: chapter.chapterNo } },
         orderBy: { chapterNo: 'desc' },
@@ -53,7 +60,12 @@ export class CollectChapterContextTool implements BaseTool<CollectChapterContext
       this.prisma.character.findMany({ where: { projectId: context.projectId }, orderBy: { createdAt: 'asc' }, take: 20 }),
       this.prisma.lorebookEntry.findMany({ where: { projectId: context.projectId, status: 'active' }, orderBy: [{ priority: 'desc' }, { createdAt: 'asc' }], take: 20 }),
       this.prisma.memoryChunk.findMany({ where: { projectId: context.projectId }, orderBy: [{ importanceScore: 'desc' }, { recencyScore: 'desc' }], take: 12 }),
+      this.prisma.chapterDraft.findFirst({ where: { chapterId, isCurrent: true }, orderBy: { versionNo: 'desc' } }),
+      this.countCurrentDraftFacts(context.projectId, chapterId),
+      this.prisma.memoryChunk.count({ where: { projectId: context.projectId, sourceType: 'chapter', sourceId: chapterId, metadata: { path: ['generatedBy'], equals: 'agent_memory_rebuild' } } }),
+      this.prisma.validationIssue.findMany({ where: { projectId: context.projectId, chapterId, status: 'open' }, select: { severity: true } }),
     ]);
+    const writePreview = this.buildWritePreview(currentDraft, factCounts, autoMemoryCount, openIssues);
 
     return {
       project: { id: chapter.project.id, title: chapter.project.title, genre: chapter.project.genre, theme: chapter.project.theme, tone: chapter.project.tone, synopsis: chapter.project.synopsis, outline: chapter.project.outline },
@@ -69,6 +81,57 @@ export class CollectChapterContextTool implements BaseTool<CollectChapterContext
       characters: characters.map((item) => ({ name: item.name, roleType: item.roleType, personalityCore: item.personalityCore, motivation: item.motivation, speechStyle: item.speechStyle })),
       lorebookEntries: lorebookEntries.map((item) => ({ title: item.title, entryType: item.entryType, summary: item.summary, content: item.content.slice(0, 1000) })),
       memoryChunks: memoryChunks.map((item) => ({ memoryType: item.memoryType, summary: item.summary, content: item.content.slice(0, 1000) })),
+      writePreview,
     };
+  }
+
+  /**
+   * 统计当前章节由 Agent 自动生成的事实层记录，用于审批前展示“将替换哪些自动产物”。
+   * 这里刻意只统计 generatedBy=agent_fact_extractor 的记录，避免把人工维护事实误标为会被覆盖。
+   */
+  private async countCurrentDraftFacts(projectId: string, chapterId: string) {
+    const where = { projectId, chapterId, metadata: { path: ['generatedBy'], equals: 'agent_fact_extractor' } };
+    const [existingAutoEventCount, existingAutoCharacterStateCount, existingAutoForeshadowCount] = await Promise.all([
+      this.prisma.storyEvent.count({ where }),
+      this.prisma.characterStateSnapshot.count({ where }),
+      this.prisma.foreshadowTrack.count({ where }),
+    ]);
+    return { existingAutoEventCount, existingAutoCharacterStateCount, existingAutoForeshadowCount };
+  }
+
+  /** 生成面向用户的章节写入前 diff 摘要，供 Plan 阶段审批和风险解释使用。 */
+  private buildWritePreview(
+    currentDraft: { id: string; versionNo: number; content: string } | null,
+    factCounts: { existingAutoEventCount: number; existingAutoCharacterStateCount: number; existingAutoForeshadowCount: number },
+    autoMemoryCount: number,
+    openIssues: Array<{ severity: string }>,
+  ): ChapterContextOutput['writePreview'] {
+    const openErrorCount = openIssues.filter((issue) => issue.severity === 'error').length;
+    const approvalRiskHints = [
+      currentDraft ? `当前已有 v${currentDraft.versionNo} 草稿；执行后会创建 v${currentDraft.versionNo + 1} 并切换为当前版本。` : '当前没有草稿；执行后会创建首个当前草稿。',
+      factCounts.existingAutoEventCount + factCounts.existingAutoCharacterStateCount + factCounts.existingAutoForeshadowCount > 0 ? '事实抽取步骤会替换本章已有 Agent 自动事实层记录。' : '事实抽取步骤会新增本章 Agent 自动事实层记录。',
+      autoMemoryCount > 0 ? `记忆重建步骤会替换 ${autoMemoryCount} 条本章 Agent 自动记忆。` : '记忆重建步骤会新增本章 Agent 自动记忆。',
+      ...(openErrorCount > 0 ? [`当前章节仍有 ${openErrorCount} 个 open error 级校验问题，生成前门禁可能阻断写入。`] : []),
+    ];
+
+    return {
+      draft: {
+        action: currentDraft ? 'create_new_version' : 'create_first_draft',
+        currentDraftId: currentDraft?.id ?? null,
+        currentVersionNo: currentDraft?.versionNo ?? null,
+        currentWordCount: currentDraft ? this.countChineseLikeWords(currentDraft.content) : 0,
+        currentExcerpt: currentDraft?.content.slice(0, 260) ?? null,
+      },
+      facts: { ...factCounts, action: 'replace_auto_facts_after_generation' },
+      memory: { existingAutoMemoryCount: autoMemoryCount, action: 'replace_agent_generated_memory_after_generation' },
+      validation: { openIssueCount: openIssues.length, openErrorCount },
+      approvalRiskHints,
+    };
+  }
+
+  private countChineseLikeWords(content: string) {
+    const cjk = content.match(/[\u4e00-\u9fff]/g)?.length ?? 0;
+    const words = content.match(/[A-Za-z0-9]+/g)?.length ?? 0;
+    return cjk + words;
   }
 }

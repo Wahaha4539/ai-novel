@@ -39,6 +39,7 @@ export class PersistProjectAssetsTool implements BaseTool<PersistProjectAssetsIn
   async run(args: PersistProjectAssetsInput, context: ToolContext) {
     if (!args.preview) throw new BadRequestException('persist_project_assets 需要 import preview');
     const preview = args.preview;
+    this.assertSafePreview(preview);
 
     return this.prisma.$transaction(async (tx) => {
       await tx.project.update({
@@ -60,12 +61,22 @@ export class PersistProjectAssetsTool implements BaseTool<PersistProjectAssetsIn
       for (const character of preview.characters) {
         if (existingNames.has(character.name)) continue;
         await tx.character.create({ data: { projectId: context.projectId, name: character.name, roleType: character.roleType, personalityCore: character.personalityCore, motivation: character.motivation, backstory: character.backstory, source: 'auto_extracted' } });
+        // 同一批导入内也要更新去重集合，避免重复角色名在本次事务中被连续创建。
+        existingNames.add(character.name);
         characterCreatedCount += 1;
       }
 
+      const existingLorebook = await tx.lorebookEntry.findMany({ where: { projectId: context.projectId }, select: { title: true } });
+      const existingLorebookTitles = new Set(existingLorebook.map((item) => item.title));
       let lorebookCreatedCount = 0;
+      let lorebookSkippedCount = 0;
       for (const entry of preview.lorebookEntries) {
+        if (existingLorebookTitles.has(entry.title)) {
+          lorebookSkippedCount += 1;
+          continue;
+        }
         await tx.lorebookEntry.create({ data: { projectId: context.projectId, title: entry.title, entryType: entry.entryType, content: entry.content, summary: entry.summary, tags: (entry.tags ?? []) as Prisma.InputJsonValue, sourceType: 'agent_import' } });
+        existingLorebookTitles.add(entry.title);
         lorebookCreatedCount += 1;
       }
 
@@ -96,7 +107,19 @@ export class PersistProjectAssetsTool implements BaseTool<PersistProjectAssetsIn
         }
       }
 
-      return { characterCreatedCount, lorebookCreatedCount, volumeCount: preview.volumes.length, chapterCreatedCount, chapterUpdatedCount, chapterSkippedCount };
+      return { characterCreatedCount, lorebookCreatedCount, lorebookSkippedCount, volumeCount: preview.volumes.length, chapterCreatedCount, chapterUpdatedCount, chapterSkippedCount };
     });
+  }
+
+  /** 批量导入写库前的最后防线，避免重复卷号/章节号造成 upsert 或章节覆盖语义不明确。 */
+  private assertSafePreview(preview: ImportPreviewOutput) {
+    const volumeNos = preview.volumes.map((volume) => Number(volume.volumeNo));
+    const chapterNos = preview.chapters.map((chapter) => Number(chapter.chapterNo));
+    if (volumeNos.some((volumeNo) => !Number.isFinite(volumeNo) || volumeNo <= 0)) throw new BadRequestException('卷号必须是正数');
+    if (chapterNos.some((chapterNo) => !Number.isFinite(chapterNo) || chapterNo <= 0)) throw new BadRequestException('章节编号必须是正数');
+    const duplicatedVolumes = volumeNos.filter((volumeNo, index) => volumeNos.indexOf(volumeNo) !== index);
+    const duplicatedChapters = chapterNos.filter((chapterNo, index) => chapterNos.indexOf(chapterNo) !== index);
+    if (duplicatedVolumes.length) throw new BadRequestException(`卷号重复，已阻止写入：${[...new Set(duplicatedVolumes)].join(', ')}`);
+    if (duplicatedChapters.length) throw new BadRequestException(`章节编号重复，已阻止写入：${[...new Set(duplicatedChapters)].join(', ')}`);
   }
 }

@@ -1,7 +1,7 @@
 'use client';
 
 import { useEffect, useMemo, useState } from 'react';
-import { AgentPlanPayload, AgentRun, AgentRunListItem, AgentRunStepRecord, useAgentRun } from '../../hooks/useAgentRun';
+import { AgentAuditEvent, AgentPlanPayload, AgentPlanRecord, AgentRun, AgentRunListItem, AgentRunStepRecord, useAgentRun } from '../../hooks/useAgentRun';
 import { AgentApprovalDialog } from './AgentApprovalDialog';
 import { AgentInputBox } from './AgentInputBox';
 
@@ -12,11 +12,24 @@ interface AgentWorkspaceProps {
 }
 
 function latestPlan(run: AgentRun | null): AgentPlanPayload | undefined {
-  return [...(run?.plans ?? [])].sort((a, b) => (b.version ?? 0) - (a.version ?? 0))[0]?.plan;
+  const record = [...(run?.plans ?? [])].sort((a, b) => (b.version ?? 0) - (a.version ?? 0))[0];
+  return record ? normalizePlan(record) : undefined;
+}
+
+function latestPlanVersion(run: AgentRun | null) {
+  return [...(run?.plans ?? [])].sort((a, b) => (b.version ?? 0) - (a.version ?? 0))[0]?.version ?? 1;
 }
 
 function planVersionLabel(plan: { version?: number; createdAt?: string }) {
   return `v${plan.version ?? 1}${plan.createdAt ? ` · ${formatDate(plan.createdAt)}` : ''}`;
+}
+
+/**
+ * 后端可能返回 Prisma AgentPlan 字段，也可能返回旧版嵌套 plan 字段。
+ * 这里统一投影为前端展示契约，保证生产接口演进期间工作台仍可读。
+ */
+function normalizePlan(record: AgentPlanRecord): AgentPlanPayload {
+  return record.plan ?? { summary: record.summary, assumptions: record.assumptions, risks: record.risks, steps: record.steps, requiredApprovals: record.requiredApprovals };
 }
 
 function safeJson(value: unknown) {
@@ -40,17 +53,33 @@ function numberValue(value: unknown, fallback = 0) {
   return typeof value === 'number' && Number.isFinite(value) ? value : fallback;
 }
 
+function approvalRiskSummary(plan: AgentPlanPayload | undefined, approvedStepNos: number[]) {
+  const requiredStepNos = plan?.requiredApprovals?.flatMap((item) => item.target?.stepNos ?? []) ?? [];
+  const requiredTools = plan?.requiredApprovals?.flatMap((item) => item.target?.tools ?? []) ?? [];
+  const uncheckedCount = requiredStepNos.filter((stepNo) => !approvedStepNos.includes(stepNo)).length;
+  const summaries: string[] = [];
+  if (requiredStepNos.length) summaries.push(`计划要求审批 ${requiredStepNos.length} 个写入/高风险步骤，当前已勾选 ${requiredStepNos.length - uncheckedCount} 个。`);
+  if (uncheckedCount > 0) summaries.push(`有 ${uncheckedCount} 个要求审批步骤未勾选，确认执行时后端不会把这些步骤视为已审批。`);
+  if (requiredTools.some((tool) => ['write_chapter', 'polish_chapter', 'postprocess_chapter', 'auto_repair_chapter'].includes(tool))) summaries.push('草稿写入：可能创建或切换当前章节草稿版本。');
+  if (requiredTools.some((tool) => ['extract_chapter_facts', 'fact_validation'].includes(tool))) summaries.push('事实层写入：可能更新剧情事件、角色状态、伏笔或校验问题。');
+  if (requiredTools.some((tool) => ['rebuild_memory', 'review_memory'].includes(tool))) summaries.push('记忆写入：可能重建自动记忆并复核待确认记忆。');
+  if (requiredTools.some((tool) => ['persist_outline', 'persist_project_assets'].includes(tool))) summaries.push('项目资产写入：可能新增或更新大纲、角色、设定、卷和章节。');
+  return summaries;
+}
+
 /** Agent Workspace 提供自然语言创作任务入口，并串联后端 Plan/Approval/Act 全流程。 */
 export function AgentWorkspace({ projectId, selectedChapterId, onRefresh }: AgentWorkspaceProps) {
-  const { currentRun, runHistory, loading, error, actionMessage, createPlan, act, retry, replan, refresh, cancel, listByProject } = useAgentRun();
+  const { currentRun, runHistory, auditEvents, loading, error, actionMessage, createPlan, act, retry, replan, refresh, cancel, listByProject, loadAudit } = useAgentRun();
   const [goal, setGoal] = useState('');
   const [approvedStepNos, setApprovedStepNos] = useState<number[]>([]);
   const [artifactQuery, setArtifactQuery] = useState('');
   const plan = latestPlan(currentRun);
+  const activePlanVersion = latestPlanVersion(currentRun);
   const approvalStepNos = useMemo(() => plan?.requiredApprovals?.flatMap((item) => item.target?.stepNos ?? []) ?? [], [plan]);
   const canAct = !!currentRun && (currentRun.status === 'waiting_approval' || currentRun.status === 'waiting_review');
   const canRetry = !!currentRun && (currentRun.status === 'failed' || currentRun.status === 'waiting_review');
   const canReplan = !!currentRun && currentRun.status !== 'acting' && currentRun.status !== 'running';
+  const riskSummary = useMemo(() => approvalRiskSummary(plan, approvedStepNos), [plan, approvedStepNos]);
 
   useEffect(() => {
     // 项目切换时拉取最近 AgentRun，让工作台具备“从历史恢复上下文”的入口。
@@ -108,16 +137,17 @@ export function AgentWorkspace({ projectId, selectedChapterId, onRefresh }: Agen
         <section className="grid gap-5 xl:grid-cols-[430px_1fr]">
           <div className="space-y-5">
             <AgentInputBox goal={goal} loading={loading} canReplan={canReplan} hasCurrentRun={!!currentRun} onGoalChange={setGoal} onSubmit={handleSubmit} onReplan={handleReplan} onRefresh={async () => { if (currentRun) await refresh(currentRun.id); }} />
-            <RunHistoryPanel runs={runHistory} currentRunId={currentRun?.id} loading={loading} onRefresh={async () => { await listByProject(projectId); }} onSelect={async (id) => { await refresh(id); }} />
+            <RunHistoryPanel runs={runHistory} currentRunId={currentRun?.id} loading={loading} onRefresh={async () => { await listByProject(projectId); }} onSelect={async (id) => { await refresh(id); await loadAudit(id); }} />
           </div>
 
           <div className="space-y-5">
             <PlanPanel run={currentRun} plan={plan} />
             <div className="grid gap-5 lg:grid-cols-2">
-              <TimelinePanel steps={currentRun?.steps ?? []} plan={plan} approvedStepNos={approvedStepNos} onToggleApproval={(stepNo) => setApprovedStepNos((current) => (current.includes(stepNo) ? current.filter((item) => item !== stepNo) : [...current, stepNo].sort((a, b) => a - b)))} />
+              <TimelinePanel steps={currentRun?.steps ?? []} plan={plan} planVersion={activePlanVersion} approvedStepNos={approvedStepNos} onToggleApproval={(stepNo) => setApprovedStepNos((current) => (current.includes(stepNo) ? current.filter((item) => item !== stepNo) : [...current, stepNo].sort((a, b) => a - b)))} />
               <ArtifactPanel run={currentRun} query={artifactQuery} onQueryChange={setArtifactQuery} />
             </div>
-            <AgentApprovalDialog canAct={canAct} canRetry={canRetry} loading={loading} status={currentRun?.status} hasCurrentRun={!!currentRun} onCancel={async () => { if (currentRun) await cancel(currentRun.id); }} onRetry={handleRetry} onAct={handleAct} />
+            <AuditPanel events={auditEvents} />
+            <AgentApprovalDialog canAct={canAct} canRetry={canRetry} loading={loading} status={currentRun?.status} hasCurrentRun={!!currentRun} riskSummary={riskSummary} onCancel={async () => { if (currentRun) await cancel(currentRun.id); }} onRetry={handleRetry} onAct={handleAct} />
             <ResultPanel output={currentRun?.output} error={currentRun?.error} />
           </div>
         </section>
@@ -150,25 +180,40 @@ function PlanPanel({ run, plan }: { run: AgentRun | null; plan?: AgentPlanPayloa
 function buildPlanVersionDiff(plans: NonNullable<AgentRun['plans']>) {
   if (plans.length < 2) return null;
   const [latest, previous] = plans;
-  const latestSteps = latest.plan?.steps ?? [];
-  const previousSteps = previous.plan?.steps ?? [];
+  const latestPlanPayload = normalizePlan(latest);
+  const previousPlanPayload = normalizePlan(previous);
+  const latestSteps = latestPlanPayload.steps ?? [];
+  const previousSteps = previousPlanPayload.steps ?? [];
   const latestKeys = new Set(latestSteps.map((step) => `${step.stepNo}:${step.tool ?? ''}`));
   const previousKeys = new Set(previousSteps.map((step) => `${step.stepNo}:${step.tool ?? ''}`));
   const added = [...latestKeys].filter((key) => !previousKeys.has(key)).length;
   const removed = [...previousKeys].filter((key) => !latestKeys.has(key)).length;
-  const approvalChanged = Math.abs((latest.plan?.requiredApprovals?.flatMap((item) => item.target?.stepNos ?? []) ?? []).length - (previous.plan?.requiredApprovals?.flatMap((item) => item.target?.stepNos ?? []) ?? []).length);
+  const approvalChanged = Math.abs((latestPlanPayload.requiredApprovals?.flatMap((item) => item.target?.stepNos ?? []) ?? []).length - (previousPlanPayload.requiredApprovals?.flatMap((item) => item.target?.stepNos ?? []) ?? []).length);
   return { added, removed, approvalChanged };
 }
 
-function TimelinePanel({ steps, plan, approvedStepNos, onToggleApproval }: { steps: AgentRunStepRecord[]; plan?: AgentPlanPayload; approvedStepNos: number[]; onToggleApproval: (stepNo: number) => void }) {
+function TimelinePanel({ steps, plan, planVersion, approvedStepNos, onToggleApproval }: { steps: AgentRunStepRecord[]; plan?: AgentPlanPayload; planVersion: number; approvedStepNos: number[]; onToggleApproval: (stepNo: number) => void }) {
   const planSteps = plan?.steps ?? [];
-  return <section className="panel p-5"><h2 className="text-sm font-bold mb-4" style={{ color: 'var(--text-main)' }}>执行时间线</h2><div className="space-y-3">{planSteps.length ? planSteps.map((step) => { const record = steps.find((item) => item.stepNo === step.stepNo); const approved = approvedStepNos.includes(step.stepNo); return <div key={step.stepNo} className="p-3" style={{ borderRadius: '0.9rem', border: `1px solid ${step.requiresApproval ? 'rgba(251,191,36,0.38)' : 'var(--border-dim)'}`, background: record ? 'rgba(6,182,212,0.06)' : step.requiresApproval ? 'rgba(251,191,36,0.06)' : 'rgba(255,255,255,0.02)' }}><div className="flex items-center justify-between gap-3"><div className="text-sm font-semibold" style={{ color: 'var(--text-main)' }}>{step.stepNo}. {step.name}</div><span className="text-xs" style={{ color: step.requiresApproval ? '#fbbf24' : 'var(--text-dim)' }}>{record?.status ?? (step.requiresApproval ? '需审批' : '待执行')}</span></div>{step.requiresApproval && <div className="mt-2 text-[11px] leading-5" style={{ color: '#fbbf24' }}>风险提示：此步骤可能写入草稿、事实层、记忆或项目资料；取消勾选则后端不会把该步骤视为已审批。</div>}<div className="mt-2 flex items-center justify-between gap-3"><div className="text-xs" style={{ color: 'var(--text-muted)' }}>{step.tool}</div>{step.requiresApproval && <label className="inline-flex items-center gap-2 text-xs" style={{ color: approved ? '#86efac' : 'var(--text-dim)' }}><input type="checkbox" checked={approved} onChange={() => onToggleApproval(step.stepNo)} />审批此步</label>}</div></div>; }) : <EmptyText text="暂无步骤。" />}</div></section>;
+  return <section className="panel p-5"><h2 className="text-sm font-bold mb-4" style={{ color: 'var(--text-main)' }}>执行时间线</h2><div className="space-y-3">{planSteps.length ? planSteps.map((step) => { const sameStepRecords = steps.filter((item) => item.stepNo === step.stepNo && (item.planVersion ?? 1) === planVersion); const record = sameStepRecords.find((item) => item.mode === 'act') ?? sameStepRecords.find((item) => item.mode === 'plan'); const approved = approvedStepNos.includes(step.stepNo); return <div key={step.stepNo} className="p-3" style={{ borderRadius: '0.9rem', border: `1px solid ${step.requiresApproval ? 'rgba(251,191,36,0.38)' : 'var(--border-dim)'}`, background: record ? 'rgba(6,182,212,0.06)' : step.requiresApproval ? 'rgba(251,191,36,0.06)' : 'rgba(255,255,255,0.02)' }}><div className="flex items-center justify-between gap-3"><div className="text-sm font-semibold" style={{ color: 'var(--text-main)' }}>{step.stepNo}. {step.name}</div><span className="text-xs" style={{ color: step.requiresApproval ? '#fbbf24' : 'var(--text-dim)' }}>{record?.status ?? (step.requiresApproval ? '需审批' : '待执行')}{record?.mode ? ` · ${record.mode}` : ''}</span></div>{step.requiresApproval && <div className="mt-2 text-[11px] leading-5" style={{ color: '#fbbf24' }}>风险提示：此步骤可能写入草稿、事实层、记忆或项目资料；取消勾选则后端不会把该步骤视为已审批。</div>}<div className="mt-2 flex items-center justify-between gap-3"><div className="text-xs" style={{ color: 'var(--text-muted)' }}>{step.tool}</div>{step.requiresApproval && <label className="inline-flex items-center gap-2 text-xs" style={{ color: approved ? '#86efac' : 'var(--text-dim)' }}><input type="checkbox" checked={approved} onChange={() => onToggleApproval(step.stepNo)} />审批此步</label>}</div></div>; }) : <EmptyText text="暂无步骤。" />}</div></section>;
 }
 
 function ArtifactPanel({ run, query, onQueryChange }: { run: AgentRun | null; query: string; onQueryChange: (value: string) => void }) {
   const artifacts = dedupeArtifacts(run?.artifacts ?? []);
   const filteredArtifacts = filterArtifacts(artifacts, query);
   return <section className="panel p-5"><div className="mb-4 flex items-center justify-between gap-3"><h2 className="text-sm font-bold" style={{ color: 'var(--text-main)' }}>产物预览</h2><input value={query} onChange={(event) => onQueryChange(event.target.value)} placeholder="搜索产物/JSON…" className="px-3 py-2 text-xs outline-none" style={{ width: 160, borderRadius: '0.7rem', border: '1px solid var(--border-dim)', background: 'rgba(0,0,0,0.2)', color: 'var(--text-main)' }} /></div>{filteredArtifacts.length ? <div className="space-y-3">{filteredArtifacts.map((artifact) => <ArtifactCard key={artifact.id} artifactType={artifact.artifactType} title={artifact.title} content={artifact.content} />)}</div> : <EmptyText text={artifacts.length ? '没有匹配的产物。' : '计划产物和预览会在这里展开。'} />}</section>;
+}
+
+/** 审计视图把审批、计划、步骤和产物串成统一时间线，便于生产排障和人工复核。 */
+function AuditPanel({ events }: { events: AgentAuditEvent[] }) {
+  const recentEvents = [...events].slice(-12).reverse();
+  return <section className="panel p-5"><div className="mb-4 flex items-center justify-between gap-3"><h2 className="text-sm font-bold" style={{ color: 'var(--text-main)' }}>审计轨迹</h2><span className="text-[11px]" style={{ color: 'var(--text-dim)' }}>{events.length} 条事件</span></div>{recentEvents.length ? <div className="space-y-2">{recentEvents.map((event) => <div key={event.id} className="p-3" style={{ borderRadius: '0.85rem', border: `1px solid ${auditColor(event.severity)}33`, background: `${auditColor(event.severity)}0f` }}><div className="flex flex-wrap items-center justify-between gap-2"><div className="text-xs font-bold" style={{ color: auditColor(event.severity) }}>{event.title}</div><div className="text-[10px]" style={{ color: 'var(--text-dim)' }}>{formatDate(event.timestamp)}</div></div><div className="mt-2 flex flex-wrap gap-2 text-[10px]" style={{ color: 'var(--text-dim)' }}><span>{event.eventType}</span>{event.planVersion !== undefined && <span>v{event.planVersion}</span>}{event.mode && <span>{event.mode}</span>}{event.stepNo !== undefined && <span>step {event.stepNo}</span>}{event.toolName && <span>{event.toolName}</span>}{event.status && <span>{event.status}</span>}</div></div>)}</div> : <EmptyText text="创建或执行 AgentRun 后会展示可追踪审计事件。" />}</section>;
+}
+
+function auditColor(severity?: AgentAuditEvent['severity']) {
+  if (severity === 'danger') return '#fb7185';
+  if (severity === 'warn') return '#fbbf24';
+  if (severity === 'ok') return '#86efac';
+  return '#67e8f9';
 }
 
 function filterArtifacts(artifacts: NonNullable<AgentRun['artifacts']>, query: string) {
@@ -218,7 +263,20 @@ function ValidationSummary({ content }: { content: unknown }) {
   const data = asRecord(content);
   const issues = asArray(data?.issues);
   const hasError = issues.some((item) => asRecord(item)?.severity === 'error');
-  return <div className="space-y-3"><div className="grid gap-2 md:grid-cols-3"><Metric label="状态" value={data?.valid === false ? '需复核' : '可继续'} tone={hasError ? 'danger' : issues.length ? 'warn' : 'ok'} /><Metric label="问题数" value={numberValue(data?.issueCount, issues.length)} /><Metric label="来源风险" value={asArray(data?.sourceRisks).length} /></div><div className="space-y-2">{issues.slice(0, 5).map((item, index) => { const issue = asRecord(item); return <div key={index} className="text-xs leading-5" style={{ color: issue?.severity === 'error' ? '#fb7185' : '#fbbf24' }}>[{textValue(issue?.severity)}] {textValue(issue?.message)}</div>; })}{!issues.length && <div className="text-xs" style={{ color: 'var(--text-muted)' }}>未发现阻断性问题。</div>}</div></div>;
+  return <div className="space-y-3"><div className="grid gap-2 md:grid-cols-3"><Metric label="状态" value={data?.valid === false ? '需复核' : '可继续'} tone={hasError ? 'danger' : issues.length ? 'warn' : 'ok'} /><Metric label="问题数" value={numberValue(data?.issueCount, issues.length)} /><Metric label="来源风险" value={asArray(data?.sourceRisks).length} /></div><WritePreviewSummary content={data?.writePreview} /><div className="space-y-2">{issues.slice(0, 5).map((item, index) => { const issue = asRecord(item); return <div key={index} className="text-xs leading-5" style={{ color: issue?.severity === 'error' ? '#fb7185' : '#fbbf24' }}>[{textValue(issue?.severity)}] {textValue(issue?.message)}</div>; })}{!issues.length && <div className="text-xs" style={{ color: 'var(--text-muted)' }}>未发现阻断性问题。</div>}</div></div>;
+}
+
+/** 展示写入前 diff 摘要，帮助用户在审批前理解会新增、更新或跳过哪些资产。 */
+function WritePreviewSummary({ content }: { content: unknown }) {
+  const preview = asRecord(content);
+  const summary = asRecord(preview?.summary);
+  if (!preview || !summary) return null;
+  const chapterCreate = numberValue(summary.chapterCreateCount, numberValue(summary.createCount));
+  const chapterUpdate = numberValue(summary.chapterUpdateCount, numberValue(summary.updateCount));
+  const chapterSkip = numberValue(summary.chapterSkipCount, numberValue(summary.skipCount));
+  const chapters = asArray(preview.chapters);
+  const volume = asRecord(preview.volume);
+  return <div className="space-y-2" style={{ borderTop: '1px solid var(--border-dim)', paddingTop: '0.75rem' }}><div className="grid gap-2 md:grid-cols-3"><Metric label="将创建" value={chapterCreate + numberValue(summary.characterCreateCount) + numberValue(summary.lorebookCreateCount) + numberValue(summary.volumeCreateCount)} tone="ok" /><Metric label="将更新" value={chapterUpdate + numberValue(summary.volumeUpdateCount) + (volume?.action === 'update' ? 1 : 0)} tone={chapterUpdate ? 'warn' : undefined} /><Metric label="将跳过" value={chapterSkip + numberValue(summary.characterSkipCount) + numberValue(summary.lorebookSkipCount)} tone={chapterSkip ? 'warn' : undefined} /></div><div className="space-y-1">{chapters.slice(0, 4).map((item, index) => { const chapter = asRecord(item); return <div key={index} className="text-xs leading-5" style={{ color: chapter?.action === 'skip_existing_content' ? '#fbbf24' : 'var(--text-muted)' }}>第 {numberValue(chapter?.chapterNo, index + 1)} 章：{textValue(chapter?.title, '未命名')} · {textValue(chapter?.action, 'unknown')}</div>; })}</div></div>;
 }
 
 function ProjectProfileSummary({ content }: { content: unknown }) {
@@ -245,10 +303,12 @@ function ChapterDraftSummary({ content }: { content: unknown }) {
 function GenerationQualitySummary({ content }: { content: unknown }) {
   const data = asRecord(content);
   const preflight = asRecord(data?.preflight);
+  const qualityGate = asRecord(data?.qualityGate);
   const retrieval = asRecord(data?.retrievalDiagnostics);
-  const warnings = [...asArray(preflight?.warnings), ...asArray(retrieval?.warnings)];
-  const blocked = preflight?.valid === false || retrieval?.qualityStatus === 'blocked';
-  return <div className="space-y-3"><div className="grid gap-2 md:grid-cols-3"><Metric label="Preflight" value={preflight?.valid === false ? '未通过' : '通过'} tone={preflight?.valid === false ? 'danger' : warnings.length ? 'warn' : 'ok'} /><Metric label="召回方式" value={textValue(retrieval?.searchMethod, '未知')} tone={retrieval?.searchMethod === 'keyword_fallback' ? 'warn' : 'ok'} /><Metric label="质量分" value={numberValue(retrieval?.qualityScore).toFixed(2)} tone={blocked ? 'danger' : warnings.length ? 'warn' : 'ok'} /></div><div className="space-y-1">{warnings.slice(0, 5).map((item, index) => <div key={index} className="text-xs leading-5" style={{ color: '#fbbf24' }}>⚠ {textValue(item)}</div>)}{!warnings.length && <div className="text-xs" style={{ color: 'var(--text-muted)' }}>生成前检查与召回质量均正常。</div>}</div></div>;
+  const warnings = [...asArray(preflight?.warnings), ...asArray(qualityGate?.warnings), ...asArray(retrieval?.warnings)];
+  const blockers = [...asArray(preflight?.blockers), ...asArray(qualityGate?.blockers)];
+  const blocked = preflight?.valid === false || qualityGate?.blocked === true || retrieval?.qualityStatus === 'blocked';
+  return <div className="space-y-3"><div className="grid gap-2 md:grid-cols-4"><Metric label="Preflight" value={preflight?.valid === false ? '未通过' : '通过'} tone={preflight?.valid === false ? 'danger' : warnings.length ? 'warn' : 'ok'} /><Metric label="生成后门禁" value={qualityGate?.blocked === true ? '阻断' : qualityGate ? '通过' : '未记录'} tone={qualityGate?.blocked === true ? 'danger' : warnings.length ? 'warn' : 'ok'} /><Metric label="召回方式" value={textValue(retrieval?.searchMethod, '未知')} tone={retrieval?.searchMethod === 'keyword_fallback' ? 'warn' : 'ok'} /><Metric label="质量分" value={numberValue(qualityGate?.score, numberValue(retrieval?.qualityScore) * 100).toFixed(0)} tone={blocked ? 'danger' : warnings.length ? 'warn' : 'ok'} /></div><div className="space-y-1">{blockers.slice(0, 4).map((item, index) => <div key={`blocker-${index}`} className="text-xs leading-5" style={{ color: '#fb7185' }}>✖ {textValue(item)}</div>)}{warnings.slice(0, 5).map((item, index) => <div key={`warning-${index}`} className="text-xs leading-5" style={{ color: '#fbbf24' }}>⚠ {textValue(item)}</div>)}{!warnings.length && !blockers.length && <div className="text-xs" style={{ color: 'var(--text-muted)' }}>生成前检查、生成后门禁与召回质量均正常。</div>}</div></div>;
 }
 
 function ChapterPolishSummary({ content }: { content: unknown }) {
@@ -259,7 +319,16 @@ function ChapterPolishSummary({ content }: { content: unknown }) {
 function ChapterContextSummary({ content }: { content: unknown }) {
   const data = asRecord(content);
   const chapter = asRecord(data?.chapter);
-  return <div className="space-y-3"><div className="grid gap-2 md:grid-cols-3"><Metric label="章节" value={`${numberValue(chapter?.chapterNo)} · ${textValue(chapter?.title, '未命名')}`} /><Metric label="角色" value={asArray(data?.characters).length} /><Metric label="记忆片段" value={asArray(data?.memoryChunks).length} /></div><div className="text-xs leading-5" style={{ color: 'var(--text-muted)' }}>{textValue(chapter?.objective ?? chapter?.outline, '暂无章节目标')}</div></div>;
+  const writePreview = asRecord(data?.writePreview);
+  const draft = asRecord(writePreview?.draft);
+  const facts = asRecord(writePreview?.facts);
+  const memory = asRecord(writePreview?.memory);
+  const validation = asRecord(writePreview?.validation);
+  const hints = asArray(writePreview?.approvalRiskHints);
+  const currentVersionNo = numberValue(draft?.currentVersionNo);
+  const currentExcerpt = textValue(draft?.currentExcerpt, '');
+  const autoFactCount = numberValue(facts?.existingAutoEventCount) + numberValue(facts?.existingAutoCharacterStateCount) + numberValue(facts?.existingAutoForeshadowCount);
+  return <div className="space-y-3"><div className="grid gap-2 md:grid-cols-3"><Metric label="章节" value={`${numberValue(chapter?.chapterNo)} · ${textValue(chapter?.title, '未命名')}`} /><Metric label="角色" value={asArray(data?.characters).length} /><Metric label="记忆片段" value={asArray(data?.memoryChunks).length} /></div><div className="text-xs leading-5" style={{ color: 'var(--text-muted)' }}>{textValue(chapter?.objective ?? chapter?.outline, '暂无章节目标')}</div>{writePreview && <div className="space-y-2" style={{ borderTop: '1px solid var(--border-dim)', paddingTop: '0.75rem' }}><div className="grid gap-2 md:grid-cols-4"><Metric label="草稿动作" value={textValue(draft?.action, 'unknown')} tone={draft?.action === 'create_new_version' ? 'warn' : 'ok'} /><Metric label="当前版本" value={currentVersionNo ? `v${currentVersionNo}` : '无'} /><Metric label="自动事实" value={autoFactCount} tone={autoFactCount ? 'warn' : undefined} /><Metric label="自动记忆" value={numberValue(memory?.existingAutoMemoryCount)} tone={numberValue(memory?.existingAutoMemoryCount) ? 'warn' : undefined} /></div><div className="grid gap-2 md:grid-cols-2"><Metric label="Open 校验问题" value={numberValue(validation?.openIssueCount)} tone={numberValue(validation?.openErrorCount) ? 'danger' : numberValue(validation?.openIssueCount) ? 'warn' : 'ok'} /><Metric label="当前草稿字数" value={numberValue(draft?.currentWordCount)} /></div><div className="space-y-1">{hints.slice(0, 5).map((item, index) => <div key={index} className="text-xs leading-5" style={{ color: '#fbbf24' }}>⚠ {textValue(item)}</div>)}</div>{currentExcerpt ? <div className="text-xs leading-5" style={{ color: 'var(--text-dim)' }}>当前草稿摘录：{currentExcerpt}</div> : null}</div>}</div>;
 }
 
 function FactExtractionSummary({ content }: { content: unknown }) {

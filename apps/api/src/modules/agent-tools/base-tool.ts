@@ -17,8 +17,13 @@ export interface ToolJsonSchema {
   items?: ToolJsonSchema;
   enum?: unknown[];
   minLength?: number;
+  maxLength?: number;
   minimum?: number;
   maximum?: number;
+  integer?: boolean;
+  pattern?: string;
+  minItems?: number;
+  maxItems?: number;
   additionalProperties?: boolean;
 }
 

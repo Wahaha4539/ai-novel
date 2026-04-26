@@ -1,4 +1,4 @@
-import { useCallback, useState } from 'react';
+import { useCallback, useRef, useState } from 'react';
 
 const API_BASE = process.env.NEXT_PUBLIC_API_BASE_URL ?? 'http://127.0.0.1:3001/api';
 
@@ -23,9 +23,11 @@ export interface AgentPlanPayload {
 
 export interface AgentRunStepRecord {
   id: string;
+  planVersion?: number;
   stepNo: number;
   name?: string;
   tool?: string;
+  mode?: string;
   status?: string;
   input?: unknown;
   output?: unknown;
@@ -42,6 +44,20 @@ export interface AgentRunArtifact {
   createdAt?: string;
 }
 
+export interface AgentAuditEvent {
+  id: string;
+  eventType: string;
+  title: string;
+  severity?: 'info' | 'ok' | 'warn' | 'danger';
+  timestamp?: string;
+  status?: string;
+  mode?: string;
+  planVersion?: number;
+  stepNo?: number;
+  toolName?: string;
+  detail?: unknown;
+}
+
 export interface AgentRun {
   id: string;
   projectId: string;
@@ -54,16 +70,23 @@ export interface AgentRun {
   input?: unknown;
   output?: unknown;
   error?: unknown;
-  plans?: Array<{ id: string; version?: number; plan?: AgentPlanPayload; createdAt?: string }>;
+  plans?: AgentPlanRecord[];
   steps?: AgentRunStepRecord[];
   artifacts?: AgentRunArtifact[];
   createdAt?: string;
   updatedAt?: string;
 }
 
-export interface AgentRunListItem extends Omit<AgentRun, 'steps' | 'artifacts' | 'approvals'> {
-  plans?: Array<{ id: string; version?: number; plan?: AgentPlanPayload; createdAt?: string }>;
+export interface AgentPlanRecord extends AgentPlanPayload {
+  id: string;
+  version?: number;
+  status?: string;
+  taskType?: string;
+  createdAt?: string;
+  plan?: AgentPlanPayload;
 }
+
+export interface AgentRunListItem extends Omit<AgentRun, 'steps' | 'artifacts' | 'approvals'> {}
 
 async function apiFetch<T>(path: string, init?: RequestInit): Promise<T> {
   const response = await fetch(`${API_BASE}${path}`, {
@@ -84,15 +107,31 @@ async function apiFetch<T>(path: string, init?: RequestInit): Promise<T> {
 }
 
 /**
+ * 为创建计划生成前端幂等键。键中包含项目、章节和消息摘要。
+ * 具体复用由 useAgentRun 内的 Map 控制，避免每次重试都因 Date.now 生成新键。
+ */
+function createClientRequestId(projectId: string, message: string, currentChapterId?: string) {
+  const normalizedMessage = message.trim().slice(0, 120);
+  const hash = Array.from(normalizedMessage).reduce((acc, char) => (acc * 31 + char.charCodeAt(0)) >>> 0, 0).toString(36);
+  return `agent_${projectId}_${currentChapterId ?? 'project'}_${Date.now().toString(36)}_${hash}`;
+}
+
+function createPlanRequestFingerprint(projectId: string, message: string, currentChapterId?: string) {
+  return `${projectId}:${currentChapterId ?? 'project'}:${message.trim()}`;
+}
+
+/**
  * 管理 AgentRun 的 Plan → Approval → Act 请求状态。
  * Hook 只保存当前会话的 AgentRun，正式执行状态仍以后端 AgentStep/Artifact 为准。
  */
 export function useAgentRun() {
   const [currentRun, setCurrentRun] = useState<AgentRun | null>(null);
   const [runHistory, setRunHistory] = useState<AgentRunListItem[]>([]);
+  const [auditEvents, setAuditEvents] = useState<AgentAuditEvent[]>([]);
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState('');
   const [actionMessage, setActionMessage] = useState('');
+  const createPlanRequestIdsRef = useRef(new Map<string, string>());
 
   const listByProject = useCallback(async (projectId: string) => {
     setLoading(true);
@@ -110,10 +149,22 @@ export function useAgentRun() {
     }
   }, []);
 
+  const loadAudit = useCallback(async (agentRunId: string) => {
+    const events = await apiFetch<AgentAuditEvent[]>(`/agent-runs/${agentRunId}/audit`);
+    setAuditEvents(events);
+    return events;
+  }, []);
+
   const createPlan = useCallback(async (projectId: string, message: string, currentChapterId?: string) => {
     setLoading(true);
     setError('');
     setActionMessage('正在生成 Agent 执行计划…');
+    const fingerprint = createPlanRequestFingerprint(projectId, message, currentChapterId);
+    let clientRequestId = createPlanRequestIdsRef.current.get(fingerprint);
+    if (!clientRequestId) {
+      clientRequestId = createClientRequestId(projectId, message, currentChapterId);
+      createPlanRequestIdsRef.current.set(fingerprint, clientRequestId);
+    }
     try {
       const run = await apiFetch<AgentRun>('/agent-runs/plan', {
         method: 'POST',
@@ -121,12 +172,19 @@ export function useAgentRun() {
           projectId,
           message,
           context: currentChapterId ? { currentChapterId } : {},
+          clientRequestId,
         }),
       });
-      setCurrentRun(run);
+      // 后端已成功返回 Run 后释放指纹，用户再次提交相同文本应创建新的创作任务。
+      createPlanRequestIdsRef.current.delete(fingerprint);
+      const agentRunId = run.id ?? (run as AgentRun & { agentRunId?: string }).agentRunId;
+      // /plan 为轻量响应；成功后再读取完整 Run，确保前端 Plan/Step/Artifact 视图使用同一数据结构。
+      const fullRun = agentRunId ? await apiFetch<AgentRun>(`/agent-runs/${agentRunId}`) : run;
+      setCurrentRun(fullRun);
+      if (agentRunId) await loadAudit(agentRunId);
       await listByProject(projectId);
       setActionMessage('计划已生成，请检查风险和步骤后确认执行。');
-      return run;
+      return fullRun;
     } catch (planError) {
       const messageText = planError instanceof Error ? planError.message : '生成计划失败';
       setError(messageText);
@@ -135,7 +193,7 @@ export function useAgentRun() {
     } finally {
       setLoading(false);
     }
-  }, [listByProject]);
+  }, [listByProject, loadAudit]);
 
   const refresh = useCallback(async (agentRunId: string) => {
     setLoading(true);
@@ -143,6 +201,7 @@ export function useAgentRun() {
     try {
       const run = await apiFetch<AgentRun>(`/agent-runs/${agentRunId}`);
       setCurrentRun(run);
+      await loadAudit(agentRunId);
       return run;
     } catch (refreshError) {
       const messageText = refreshError instanceof Error ? refreshError.message : '刷新 AgentRun 失败';
@@ -151,7 +210,7 @@ export function useAgentRun() {
     } finally {
       setLoading(false);
     }
-  }, []);
+  }, [loadAudit]);
 
   const act = useCallback(async (agentRunId: string, approvedStepNos?: number[]) => {
     setLoading(true);
@@ -163,6 +222,7 @@ export function useAgentRun() {
         body: JSON.stringify({ approval: true, approvedStepNos, confirmation: { confirmHighRisk: true }, comment: '用户在 Agent Workspace 确认执行' }),
       });
       setCurrentRun(run);
+      await loadAudit(agentRunId);
       setActionMessage(run.status === 'succeeded' ? 'Agent 执行完成。' : `Agent 当前状态：${run.status}`);
       return run;
     } catch (actError) {
@@ -173,7 +233,7 @@ export function useAgentRun() {
     } finally {
       setLoading(false);
     }
-  }, []);
+  }, [loadAudit]);
 
   const retry = useCallback(async (agentRunId: string, approvedStepNos?: number[]) => {
     setLoading(true);
@@ -185,6 +245,7 @@ export function useAgentRun() {
         body: JSON.stringify({ approval: true, approvedStepNos, confirmation: { confirmHighRisk: true }, comment: '用户在 Agent Workspace 触发失败重试' }),
       });
       setCurrentRun(run);
+      await loadAudit(agentRunId);
       setActionMessage(run.status === 'succeeded' ? 'Agent 重试执行完成。' : `Agent 当前状态：${run.status}`);
       return run;
     } catch (retryError) {
@@ -195,7 +256,7 @@ export function useAgentRun() {
     } finally {
       setLoading(false);
     }
-  }, []);
+  }, [loadAudit]);
 
   const replan = useCallback(async (agentRunId: string, message?: string) => {
     setLoading(true);
@@ -207,6 +268,7 @@ export function useAgentRun() {
         body: JSON.stringify({ message }),
       });
       setCurrentRun(run);
+      await loadAudit(agentRunId);
       setActionMessage('重新规划已完成，请重新检查计划与预览。');
       return run;
     } catch (replanError) {
@@ -217,7 +279,7 @@ export function useAgentRun() {
     } finally {
       setLoading(false);
     }
-  }, []);
+  }, [loadAudit]);
 
   const cancel = useCallback(async (agentRunId: string) => {
     setLoading(true);
@@ -226,6 +288,7 @@ export function useAgentRun() {
     try {
       const run = await apiFetch<AgentRun>(`/agent-runs/${agentRunId}/cancel`, { method: 'POST' });
       setCurrentRun(run);
+      await loadAudit(agentRunId);
       setActionMessage('AgentRun 已取消。');
       return run;
     } catch (cancelError) {
@@ -235,7 +298,7 @@ export function useAgentRun() {
     } finally {
       setLoading(false);
     }
-  }, []);
+  }, [loadAudit]);
 
-  return { currentRun, runHistory, loading, error, actionMessage, createPlan, refresh, act, retry, replan, cancel, listByProject, setCurrentRun };
+  return { currentRun, runHistory, auditEvents, loading, error, actionMessage, createPlan, refresh, act, retry, replan, cancel, listByProject, loadAudit, setCurrentRun };
 }

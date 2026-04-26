@@ -1,4 +1,4 @@
-import { IsArray, IsBoolean, IsOptional, IsString, ValidateNested } from 'class-validator';
+import { IsArray, IsBoolean, IsInt, IsOptional, IsString, Min, ValidateNested } from 'class-validator';
 
 class AgentRunConfirmationDto {
   @IsOptional()
@@ -16,6 +16,8 @@ export class ExecuteAgentRunDto {
 
   @IsOptional()
   @IsArray()
+  @IsInt({ each: true })
+  @Min(1, { each: true })
   approvedStepNos?: number[];
 
   @IsOptional()

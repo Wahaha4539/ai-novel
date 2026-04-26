@@ -7,35 +7,41 @@ import { PrismaService } from '../../prisma/prisma.service';
 export class AgentTraceService {
   constructor(private readonly prisma: PrismaService) {}
 
-  startStep(agentRunId: string, stepNo: number, data: { stepType: string; name: string; toolName?: string; mode: string; input?: unknown }) {
+  /** 开始或重置某个计划版本下的步骤 trace；同 stepNo 的 Plan/Act 记录不会互相覆盖。 */
+  startStep(agentRunId: string, stepNo: number, data: { stepType: string; name: string; toolName?: string; mode: string; planVersion?: number; input?: unknown }) {
     const input = data.input === undefined ? undefined : (data.input as Prisma.InputJsonValue);
+    const planVersion = data.planVersion ?? 1;
     return this.prisma.agentStep.upsert({
-      where: { agentRunId_stepNo: { agentRunId, stepNo } },
-      create: { agentRunId, stepNo, stepType: data.stepType, name: data.name, toolName: data.toolName, mode: data.mode, input, status: 'running', startedAt: new Date() },
-      update: { stepType: data.stepType, name: data.name, toolName: data.toolName, mode: data.mode, input, status: 'running', startedAt: new Date(), error: null },
+      where: { agentRunId_mode_planVersion_stepNo: { agentRunId, mode: data.mode, planVersion, stepNo } },
+      create: { agentRunId, planVersion, stepNo, stepType: data.stepType, name: data.name, toolName: data.toolName, mode: data.mode, input, status: 'running', startedAt: new Date() },
+      update: { stepType: data.stepType, name: data.name, toolName: data.toolName, input, status: 'running', startedAt: new Date(), error: null },
     });
   }
 
-  finishStep(agentRunId: string, stepNo: number, output: unknown) {
-    return this.prisma.agentStep.update({ where: { agentRunId_stepNo: { agentRunId, stepNo } }, data: { status: 'succeeded', output: output as Prisma.InputJsonValue, finishedAt: new Date() } });
+  /** 标记步骤成功，并把 Tool 输出保存为后续步骤和失败续跑的可校验输入。 */
+  finishStep(agentRunId: string, stepNo: number, output: unknown, mode: string = 'act', planVersion = 1) {
+    return this.prisma.agentStep.update({ where: { agentRunId_mode_planVersion_stepNo: { agentRunId, mode, planVersion, stepNo } }, data: { status: 'succeeded', output: output as Prisma.InputJsonValue, finishedAt: new Date() } });
   }
 
-  failStep(agentRunId: string, stepNo: number, error: unknown) {
+  /** 标记步骤失败，同时保留结构化错误详情，便于前端展示和生产排障。 */
+  failStep(agentRunId: string, stepNo: number, error: unknown, mode: string = 'act', planVersion = 1) {
     const normalized = this.formatError(error);
     return this.prisma.agentStep.update({
-      where: { agentRunId_stepNo: { agentRunId, stepNo } },
+      where: { agentRunId_mode_planVersion_stepNo: { agentRunId, mode, planVersion, stepNo } },
       data: { status: 'failed', error: normalized.message, output: normalized.detail as Prisma.InputJsonValue, finishedAt: new Date() },
     });
   }
 
   /** 记录非 Tool 型步骤，例如 Planner 的 LLM/fallback 决策，使用 stepNo=0 避免和计划步骤冲突。 */
-  recordDecision(agentRunId: string, data: { stepNo?: number; name: string; mode: string; input?: unknown; output?: unknown; status?: 'succeeded' | 'failed'; error?: unknown }) {
+  recordDecision(agentRunId: string, data: { stepNo?: number; planVersion?: number; name: string; mode: string; input?: unknown; output?: unknown; status?: 'succeeded' | 'failed'; error?: unknown }) {
     const stepNo = data.stepNo ?? 0;
+    const planVersion = data.planVersion ?? 1;
     const now = new Date();
     return this.prisma.agentStep.upsert({
-      where: { agentRunId_stepNo: { agentRunId, stepNo } },
+      where: { agentRunId_mode_planVersion_stepNo: { agentRunId, mode: data.mode, planVersion, stepNo } },
       create: {
         agentRunId,
+        planVersion,
         stepNo,
         stepType: 'decision',
         name: data.name,

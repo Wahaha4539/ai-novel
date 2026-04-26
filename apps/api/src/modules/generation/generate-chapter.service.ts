@@ -25,6 +25,25 @@ export interface GenerateChapterPreflightResult {
   currentDraftVersionNo?: number;
 }
 
+export interface GeneratedDraftQualityGateResult {
+  valid: boolean;
+  blocked: boolean;
+  score: number;
+  blockers: string[];
+  warnings: string[];
+  metrics: {
+    actualWordCount: number;
+    targetWordCount: number;
+    targetRatio: number;
+    paragraphCount: number;
+    duplicateParagraphCount: number;
+    duplicateParagraphRatio: number;
+    hasWrapperOrMarkdown: boolean;
+    hasRefusalPattern: boolean;
+    hasTemplateMarker: boolean;
+  };
+}
+
 export interface GenerateChapterResult {
   draftId: string;
   chapterId: string;
@@ -33,6 +52,7 @@ export interface GenerateChapterResult {
   summary: string;
   retrievalPayload: Record<string, unknown>;
   preflight: GenerateChapterPreflightResult;
+  qualityGate: GeneratedDraftQualityGateResult;
   promptDebug: Record<string, unknown>;
   modelInfo: Record<string, unknown>;
 }
@@ -112,19 +132,25 @@ export class GenerateChapterService {
     if (!content) throw new BadRequestException('write_chapter 生成正文为空');
 
     const actualWordCount = this.countChineseLikeWords(content);
+    const qualityGate = this.assessGeneratedDraftQuality(content, actualWordCount, targetWordCount);
+    if (qualityGate.blocked) {
+      throw new BadRequestException(`生成后质量门禁未通过：${qualityGate.blockers.join('；')}`);
+    }
     const modelInfo = { model: llmResult.model, usage: llmResult.usage, rawPayloadSummary: llmResult.rawPayloadSummary };
-    const retrievalPayload = { lorebookHits: retrievalBundle.lorebookHits, memoryHits: retrievalBundle.memoryHits, rankedHits: retrievalBundle.rankedHits, diagnostics: retrievalBundle.diagnostics, preflight };
+    const retrievalPayload = { lorebookHits: retrievalBundle.lorebookHits, memoryHits: retrievalBundle.memoryHits, rankedHits: retrievalBundle.rankedHits, diagnostics: retrievalBundle.diagnostics, preflight, qualityGate };
 
     const draft = await this.prisma.$transaction(async (tx) => {
+      // 版本号必须在事务内重新读取，避免并发生成同一章节时用到过期 latest 导致版本冲突。
+      const latestInTransaction = await tx.chapterDraft.findFirst({ where: { chapterId }, orderBy: { versionNo: 'desc' } });
       await tx.chapterDraft.updateMany({ where: { chapterId, isCurrent: true }, data: { isCurrent: false } });
       const created = await tx.chapterDraft.create({
         data: {
           chapterId,
-          versionNo: (latest?.versionNo ?? 0) + 1,
+          versionNo: (latestInTransaction?.versionNo ?? 0) + 1,
           content,
           source: 'agent_generate_service',
           modelInfo: modelInfo as Prisma.InputJsonValue,
-          generationContext: { agentRunId: input.agentRunId, instruction: input.instruction, targetWordCount, preflight, promptDebug: prompt.debug, retrievalPayload } as unknown as Prisma.InputJsonValue,
+          generationContext: { agentRunId: input.agentRunId, instruction: input.instruction, targetWordCount, preflight, qualityGate, promptDebug: prompt.debug, retrievalPayload } as unknown as Prisma.InputJsonValue,
           isCurrent: true,
           createdBy: input.userId,
         },
@@ -133,7 +159,54 @@ export class GenerateChapterService {
       return created;
     });
 
-    return { draftId: draft.id, chapterId, versionNo: draft.versionNo, actualWordCount, summary: content.slice(0, 160), retrievalPayload, preflight, promptDebug: prompt.debug, modelInfo };
+    return { draftId: draft.id, chapterId, versionNo: draft.versionNo, actualWordCount, summary: content.slice(0, 160), retrievalPayload, preflight, qualityGate, promptDebug: prompt.debug, modelInfo };
+  }
+
+  /**
+   * 生成后质量门禁：阻断明显异常输出，警告低质量但可人工复核的草稿。
+   * 该检查只基于确定性文本特征，避免为了“评估”再次调用 LLM 造成额外成本和不稳定性。
+   */
+  private assessGeneratedDraftQuality(content: string, actualWordCount: number, targetWordCount: number): GeneratedDraftQualityGateResult {
+    const paragraphs = content
+      .split(/\n+/)
+      .map((item) => item.trim())
+      .filter(Boolean);
+    const normalizedParagraphs = paragraphs.map((item) => item.replace(/\s+/g, '')).filter((item) => item.length >= 24);
+    const seen = new Set<string>();
+    let duplicateParagraphCount = 0;
+    for (const paragraph of normalizedParagraphs) {
+      if (seen.has(paragraph)) duplicateParagraphCount += 1;
+      seen.add(paragraph);
+    }
+
+    const targetRatio = targetWordCount > 0 ? actualWordCount / targetWordCount : 1;
+    const duplicateParagraphRatio = normalizedParagraphs.length ? duplicateParagraphCount / normalizedParagraphs.length : 0;
+    const hasWrapperOrMarkdown = /```|^#{1,6}\s|<\/?(?:rewrite|chapter|正文)>/im.test(content);
+    const hasRefusalPattern = /作为(?:一个)?AI|我无法|不能完成(?:该|这个)?请求|以下是(?:你要的)?章节|当然可以/im.test(content);
+    const hasTemplateMarker = /{{[^}]+}}|\[[^\]]*(?:待补充|TODO|占位)[^\]]*\]|TODO|待补充/im.test(content);
+
+    const blockers = [
+      ...(actualWordCount < Math.min(500, Math.max(120, targetWordCount * 0.18)) ? [`正文过短：${actualWordCount} 字，低于生产写入下限。`] : []),
+      ...(hasRefusalPattern ? ['输出疑似包含模型拒答或说明性话术。'] : []),
+      ...(duplicateParagraphRatio >= 0.35 && duplicateParagraphCount >= 3 ? ['重复段落比例过高，疑似生成退化。'] : []),
+      ...(hasTemplateMarker ? ['输出包含模板占位符或待补充标记。'] : []),
+    ];
+    const warnings = [
+      ...(targetRatio < 0.6 ? [`正文长度仅达到目标的 ${(targetRatio * 100).toFixed(0)}%，建议人工复核或重试。`] : []),
+      ...(targetRatio > 1.8 ? [`正文长度达到目标的 ${(targetRatio * 100).toFixed(0)}%，可能超出章节节奏。`] : []),
+      ...(duplicateParagraphRatio >= 0.18 && duplicateParagraphRatio < 0.35 ? ['存在一定比例重复段落，建议检查节奏和表达。'] : []),
+      ...(hasWrapperOrMarkdown ? ['输出包含 Markdown/包裹标签痕迹，后处理可能需要清理。'] : []),
+    ];
+    const score = Math.max(0, Math.min(100, 100 - blockers.length * 35 - warnings.length * 10 - Math.round(duplicateParagraphRatio * 40)));
+
+    return {
+      valid: blockers.length === 0,
+      blocked: blockers.length > 0,
+      score,
+      blockers,
+      warnings,
+      metrics: { actualWordCount, targetWordCount, targetRatio, paragraphCount: paragraphs.length, duplicateParagraphCount, duplicateParagraphRatio, hasWrapperOrMarkdown, hasRefusalPattern, hasTemplateMarker },
+    };
   }
 
   /**

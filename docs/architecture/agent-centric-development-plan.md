@@ -10,6 +10,14 @@
 
 > 开发进度同步（2026-04-27）：阶段 7 的 P0-P3 增强项已落地。P0 已补生成前 preflight、召回质量诊断/阻断和 embedding / pgvector 失败时的关键词降级，避免低质量上下文继续写库或因向量服务异常导致主链路硬失败；P1 已新增正式 `MemoryChunk.embeddingVector` pgvector 列、HNSW 索引迁移、`RetrievalService` pgvector SQL 检索切换，以及支持 `cursor` 续跑和 `force` 重算的批量 embedding backfill；P2 已新增单次召回评测指标 `recallAt10` / `precisionAt10` / `mrr` 和批量 benchmark API；P3 已新增 `chapter_generation_quality_report` AgentArtifact，并在 Agent Workspace 中提供“生成前与召回质量报告”摘要卡片。已通过 `pnpm --dir apps/api build` 与 `pnpm --dir apps/web build`。
 
+> 开发进度同步（2026-04-27 审计增强）：继续按生产化方向补强 AgentRun 可观测性。后端新增 `GET /agent-runs/:id/audit`，在不新增写路径的前提下从 AgentRun / AgentPlan / AgentStep / AgentApproval / AgentArtifact 派生统一审计事件，覆盖创建、计划、审批、步骤成功/失败、产物生成和当前状态；前端 Agent Workspace 新增“审计轨迹”面板，并在 plan/refresh/act/retry/replan/cancel 后同步拉取审计事件。顺手修正 `/agent-runs/plan` 轻量响应与前端完整 Run 视图契约不一致的问题：创建计划成功后自动读取完整 Run；同时将取消按钮限制为非终态可用。已通过 `pnpm --dir apps/api test:agent`、`pnpm --dir apps/api build` 与 `pnpm --dir apps/web build`。
+
+> 开发进度同步（2026-04-27 生产质量门禁）：继续以 `chapter_write` 作为生产级样板链路补强 P0/P1。`GenerateChapterService` 新增生成后确定性质量门禁，阻断模型拒答/说明话术、模板占位符、正文过短和高比例重复段落等异常输出，避免低质量草稿写入正式 `ChapterDraft`；质量门禁结果随 `generationContext`、`retrievalPayload` 和 `chapter_generation_quality_report` Artifact 一起沉淀，前端“生成前、生成后与召回质量报告”已展示门禁状态、阻断/警告和质量分。并发写稿可靠性继续收敛：生成、润色、自动修复创建新草稿版本时均在事务内重新读取最新 `versionNo`，降低并发请求导致版本冲突或当前草稿错乱的风险。已补充 Agent 服务测试覆盖质量门禁拒答/占位符和重复段落退化场景。
+
+> 开发进度同步（2026-04-27 写入前 Diff 与导入安全）：继续把生产化能力从 `chapter_write` 复制到大纲和导入链路。`validate_outline` 与 `validate_imported_assets` 现在会在只读 Plan 阶段查询现有卷、章节、角色和设定，派生写入前 `writePreview` diff，标记将创建、更新或跳过的资产；前端校验报告卡片已展示写入前创建/更新/跳过摘要和章节样例，降低批量导入与大纲覆盖风险。`persist_outline` 与 `persist_project_assets` 增加写库前最终保护，阻止重复卷号/章节号等不明确预览进入持久化；项目导入同时修正同批次重复角色名与重复设定标题的跳过逻辑。已补充 Agent 服务测试覆盖写入前 diff 和重复章节阻断，并通过 `pnpm --dir apps/api test:agent`、`pnpm --dir apps/api build` 与 `pnpm --dir apps/web build`。
+
+> 开发进度同步（2026-04-27 章节写入前 Diff）：继续把写入前 Diff 扩展回 `chapter_write` 样板链路。`collect_chapter_context` 在 Plan 预览阶段新增只读 `writePreview`：统计当前草稿版本与摘录、执行后草稿版本动作、已有 Agent 自动事实层记录、已有 Agent 自动记忆、open 校验问题和审批风险提示；Runtime 将章节上下文预览标题升级为“章节上下文与写入预览”；前端章节上下文 Artifact 已展示草稿动作、当前版本、自动事实/记忆替换数量、open 校验问题和风险提示，帮助用户在确认执行前理解草稿、事实和记忆层影响。已补充 Agent 服务测试覆盖章节写入前预览，并通过 `pnpm --dir apps/api test:agent`、`pnpm --dir apps/api build` 与 `pnpm --dir apps/web build`。
+
 ## 当前开发进度快照（2026-04-27）
 
 | 阶段 | 状态 | 说明 |
@@ -17,14 +25,48 @@
 | 阶段 1：Agent 数据模型与 API 基础 | 基本完成 | AgentRun / AgentPlan / AgentStep / AgentArtifact / AgentApproval 模型和基础 API 已落地。 |
 | 阶段 2：LLM Gateway 迁移到 API | MVP 完成并已补强 | 已支持 OpenAI-compatible chat、路由配置、超时、重试、tools 字段预留和 `chatJson<T>()` JSON 解析入口；本轮新增 `EmbeddingGatewayService` 和 `embedding`/`agent_planner` 路由步骤。 |
 | 阶段 3：Agent Runtime / ToolRegistry / Policy / Executor | MVP 完成并已补强 | Runtime / Planner / Executor / Policy / Trace / ToolRegistry 已可运行；Executor 已支持步骤审批范围、变量引用、Tool 超时、高风险 `waiting_review`、Plan 阶段只读预览执行和失败重试复用成功步骤输出；本轮补齐全部 Tool Schema 契约校验，并把 maxSteps、maxLlmCalls、二次确认、事实层/删除类副作用保护统一下沉到 Rule/Policy。 |
-| 阶段 4：Agent 同步执行闭环 | MVP 完成并已补强 | Plan / Approval / Act 同步闭环已跑通，步骤会写入 AgentStep，失败会更新 AgentRun.error；已新增 `retry`、`replan` 与 `approve-step` API，支持失败重试、同一 Run 内新增计划版本和独立记录步骤级审批范围。 |
-| 阶段 5：接入 chapter_write | 主链路已补齐后处理/校验/有界修复/事实抽取/记忆回写 | 已支持 `resolve_chapter → collect_chapter_context → write_chapter → postprocess_chapter → fact_validation → auto_repair_chapter → extract_chapter_facts → rebuild_memory → review_memory → report_result`，可以生成草稿、执行轻量后处理、运行确定性事实校验、最多一轮自动修复、抽取剧情事件/角色状态/伏笔、重建自动章节记忆、复核待确认记忆并汇总报告。 |
-| 阶段 6：project_import_preview / outline_design | 主链路已开始并补充校验与 Artifact 拆分 | outline_design 已新增 `inspect_project_context`、`generate_outline_preview`、`validate_outline`、`persist_outline` Tools；project_import_preview 已新增 `analyze_source_text`、`build_import_preview`、`validate_imported_assets`、`persist_project_assets` Tools，支持文案分析、导入预览、写入前只读校验和审批后写入项目资料/角色/设定/卷/章节；Runtime 已在 Plan 阶段提前生成预览类 Artifact，并在 Act 成功后生成写入结果等细分 Artifact。 |
-| 阶段 7：逐步迁移 Worker Pipeline 到 API Service | 主链路已不再依赖 Worker，MemoryWriter/embedding 召回已迁入 API 并补强质量门禁 | 已新增 API 内 `PostProcessChapterService`、`ValidationService.runFactRules()` 过渡校验、`MemoryRebuildService`、`PolishChapterService`、`FactExtractorService`、`MemoryReviewService`、`RetrievalService`、`PromptBuilderService`、`GenerateChapterService` 和 `ChapterAutoRepairService`；`write_chapter` 已改为调用 API 内生成主链路；旧生成/润色/memory rebuild HTTP 入口已改为 API 内同步执行，删除 `GenerationQueueService` Worker dispatch，并移除 LLM 配置变更通知 Worker reload；`MemoryWriterService` 与 `EmbeddingGatewayService` 已迁入 API，记忆重建可生成章节摘要/关键场景多 chunk 并附加 embedding；本轮新增生成前 preflight、召回质量诊断与阻断、embedding/pgvector 失败关键词降级、正式 `embeddingVector` pgvector 列与 HNSW 索引迁移、支持 cursor/force 的批量 embedding backfill，以及单次/批量召回 benchmark API。 |
-| 阶段 8：前端 Agent Workspace | 基础入口已落地并增强失败恢复/Artifact/历史/审批/质量报告体验 | 已新增 `apps/web/hooks/useAgentRun.ts` 与 `apps/web/components/agent/AgentWorkspace.tsx`，接入侧边栏“Agent 工作台”和主页视图，支持输入目标、生成计划、展示风险/步骤/Artifact、确认执行、取消、刷新、失败重试和重新规划；ArtifactPanel 已支持按 artifactType 展示大纲、校验报告、项目资料、角色、设定、写入结果、草稿、润色结果、章节上下文、事实抽取、自动修复、记忆重建和记忆复核摘要卡片；工作台左侧已新增项目内历史 Run 列表，可选择最近 Run 恢复详情；已新增多版本 Plan 标签、Artifact 去重和步骤级审批勾选；本轮补充 Plan 版本差异摘要、Artifact 搜索和原始 JSON 二级折叠，并在需审批步骤上展示写入风险提示；新增 `chapter_generation_quality_report` 生成前与召回质量报告卡片；审批台文案已明确“确认执行”同时作为高风险/事实覆盖/删除类副作用二次确认。组件当前仍以 `AgentWorkspace.tsx` 聚合为主，后续再按设计拆分为独立视图组件。已通过 `pnpm --dir apps/web build`。 |
+| 阶段 4：Agent 同步执行闭环 | MVP 完成并已补强 | Plan / Approval / Act 同步闭环已跑通，步骤会写入 AgentStep，失败会更新 AgentRun.error；已新增 `retry`、`replan` 与 `approve-step` API，支持失败重试、同一 Run 内新增计划版本和独立记录步骤级审批范围；本轮新增派生审计轨迹 API，统一串联 Run 创建、计划、审批、步骤、产物和最终状态。 |
+| 阶段 5：接入 chapter_write | 主链路已补齐后处理/校验/有界修复/事实抽取/记忆回写，并补充写入前 Diff | 已支持 `resolve_chapter → collect_chapter_context → write_chapter → postprocess_chapter → fact_validation → auto_repair_chapter → extract_chapter_facts → rebuild_memory → review_memory → report_result`，可以生成草稿、执行轻量后处理、运行确定性事实校验、最多一轮自动修复、抽取剧情事件/角色状态/伏笔、重建自动章节记忆、复核待确认记忆并汇总报告；`collect_chapter_context` 已在 Plan 阶段派生章节草稿、事实层和记忆层写入前 `writePreview`。 |
+| 阶段 6：project_import_preview / outline_design | 主链路已开始并补充校验、写入前 Diff 与 Artifact 拆分 | outline_design 已新增 `inspect_project_context`、`generate_outline_preview`、`validate_outline`、`persist_outline` Tools；project_import_preview 已新增 `analyze_source_text`、`build_import_preview`、`validate_imported_assets`、`persist_project_assets` Tools，支持文案分析、导入预览、写入前只读校验和审批后写入项目资料/角色/设定/卷/章节；`validate_outline` / `validate_imported_assets` 已派生只读 `writePreview` diff，标记将创建、更新、跳过的卷/章节/角色/设定；持久化 Tool 已增加重复编号最终阻断和同批次去重保护；Runtime 已在 Plan 阶段提前生成预览类 Artifact，并在 Act 成功后生成写入结果等细分 Artifact。 |
+| 阶段 7：逐步迁移 Worker Pipeline 到 API Service | 主链路已不再依赖 Worker，MemoryWriter/embedding 召回已迁入 API 并补强质量门禁 | 已新增 API 内 `PostProcessChapterService`、`ValidationService.runFactRules()` 过渡校验、`MemoryRebuildService`、`PolishChapterService`、`FactExtractorService`、`MemoryReviewService`、`RetrievalService`、`PromptBuilderService`、`GenerateChapterService` 和 `ChapterAutoRepairService`；`write_chapter` 已改为调用 API 内生成主链路；旧生成/润色/memory rebuild HTTP 入口已改为 API 内同步执行，删除 `GenerationQueueService` Worker dispatch，并移除 LLM 配置变更通知 Worker reload；`MemoryWriterService` 与 `EmbeddingGatewayService` 已迁入 API，记忆重建可生成章节摘要/关键场景多 chunk 并附加 embedding；本轮新增生成前 preflight、召回质量诊断与阻断、embedding/pgvector 失败关键词降级、正式 `embeddingVector` pgvector 列与 HNSW 索引迁移、支持 cursor/force 的批量 embedding backfill，以及单次/批量召回 benchmark API；继续新增生成后质量门禁和事务内版本号读取，降低异常输出入库与并发草稿版本冲突风险。 |
+| 阶段 8：前端 Agent Workspace | 基础入口已落地并增强失败恢复/Artifact/历史/审批/质量报告/审计/Diff 体验 | 已新增 `apps/web/hooks/useAgentRun.ts` 与 `apps/web/components/agent/AgentWorkspace.tsx`，接入侧边栏“Agent 工作台”和主页视图，支持输入目标、生成计划、展示风险/步骤/Artifact、确认执行、取消、刷新、失败重试和重新规划；ArtifactPanel 已支持按 artifactType 展示大纲、校验报告、项目资料、角色、设定、写入结果、草稿、润色结果、章节上下文、事实抽取、自动修复、记忆重建和记忆复核摘要卡片；工作台左侧已新增项目内历史 Run 列表，可选择最近 Run 恢复详情；已新增多版本 Plan 标签、Artifact 去重和步骤级审批勾选；本轮补充 Plan 版本差异摘要、Artifact 搜索和原始 JSON 二级折叠，并在需审批步骤上展示写入风险提示；新增 `chapter_generation_quality_report` 生成前、生成后与召回质量报告卡片；校验报告卡片已展示大纲/导入写入前 diff 摘要，章节上下文卡片已展示草稿版本、事实层和记忆层写入前 diff；审批台文案已明确“确认执行”同时作为高风险/事实覆盖/删除类副作用二次确认；本轮新增“审计轨迹”面板，展示计划、审批、步骤、产物和状态事件。组件当前仍以 `AgentWorkspace.tsx` 聚合为主，后续再按设计拆分为独立视图组件。已通过 `pnpm --dir apps/web build`。 |
 | 阶段 9：清理 Worker 依赖与文档更新 | 持续推进 | `.env.example` 已移除 `WORKER_PORT` / `WORKER_BASE_URL` 并新增 `EMBEDDING_*`；README 已改为 Web + API 单体启动、API 内 MemoryWriter/embedding 召回说明，并说明 Worker 仅作为历史参考；根 `package.json` 已移除 `dev:worker`；代码层已清除 API 对 Worker internal route 的主链路调用。 |
 
-当前建议下一步：继续细化各 Tool 的 JSON Schema 到更强字段级约束，补充 Policy/Rule 单元测试和端到端审批用例；继续阶段 9 收敛旧 Worker 参考代码、验证脚本和历史架构文档；在真实数据上运行 pgvector migration、embedding backfill 与召回 benchmark，沉淀默认质量阈值。
+当前建议下一步：以 `chapter_write` 作为生产级样板链路，先收敛可靠性、安全边界和质量门禁，再复制到大纲、导入和润色场景。第一批 P0 已开始落地：`POST /agent-runs/plan` 支持 `clientRequestId` 请求级幂等复用，避免前端超时重试重复创建 Run；`/act` 增加状态守卫，防止 succeeded/acting/cancelled 等状态被重复执行；`/cancel` 增加终态保护，Executor 每个步骤前检查取消状态，尽量阻止后续写入；轻量 Tool Schema 新增整数、字符串最大长度、正则格式、数组长度等字段级约束，并补充对应测试。第二批 P0 继续加固执行可靠性：Runtime 进入 Act 前通过条件更新获取轻量执行租约，防止并发 `/act` 或 `/retry` 同时执行同一计划；Executor 取消检测改为结构化 `AgentCancelledError`，Runtime 不再把用户取消误标成 failed；Act 执行完成后再次读取 Run 状态，避免取消发生在最后一个长 Tool 执行期间时被 succeeded 覆盖。第三批 P0 已收敛失败续跑安全性：Executor 重试复用成功步骤输出时，必须匹配当前计划的 `stepNo + toolName`，并重新校验 cached output 的 Tool Schema；如果 replan 后相同步骤号对应不同工具，或旧输出不再符合契约，则跳过复用并重新执行该步骤。第四批 P0 已缓解 Plan/Act trace 覆盖问题：在不改库表的前提下，Plan 预览工具步骤使用负 `stepNo` 存储，Act 执行步骤继续使用正 `stepNo`，让预览 trace 和执行 trace 可以并存。第五批 P0 已补充 Policy/Rule 安全边界测试，覆盖 Plan 禁写、Act 禁止未计划工具、步骤数上限、高风险二次确认和风险 ID 精准确认路径。第六批 P0 已接通前端请求幂等：`useAgentRun.createPlan()` 会生成并提交 `clientRequestId`，让后端幂等能力真正进入 Agent Workspace 主链路；本轮继续修正前端幂等键复用语义，同一项目/章节/消息在成功返回前会复用同一个 key，成功返回后释放，避免后续主动创建相同任务被错误复用。第七批 P0 已增强审批风险说明：审批控制台会按计划中的审批工具展示草稿写入、事实层写入、记忆写入、项目资产写入和未勾选审批步骤提示。第八批 P0 已将 AgentStep trace 升级为正式 `mode + planVersion + stepNo` 唯一维度，新增 `planVersion` 字段和迁移，Plan 预览、Act 执行、retry 与 replan trace 不再依赖负 `stepNo` 规避覆盖；Executor 续跑复用限定到当前 Plan 版本，前端时间线也按最新 planVersion 展示对应 trace。已重新生成 Prisma Client，并通过 `pnpm --dir apps/api test:agent`、`pnpm --dir apps/api build` 与 `pnpm --dir apps/web build`。
+
+## 生产化推进计划（MVP → Production）
+
+### P0：可靠性与安全边界（先做）
+
+- AgentRun 幂等：前端创建计划时已传 `clientRequestId`，后端按项目复用已有 Run；同一项目/章节/消息在成功返回前固定复用同一个 key，成功后释放；后续可升级为数据库唯一键或独立 Idempotency 表。
+- 状态机硬化：限制 `plan / act / retry / cancel / replan` 的合法状态迁移，避免重复执行、终态回退和并发覆盖。
+- Act 执行租约：进入 Act 时必须用条件更新从 `waiting_approval / waiting_review / failed` 抢占到 `acting`，抢占失败即拒绝执行，避免并发请求重复写入。
+- 取消语义：取消不是失败；Executor 应在步骤边界停止后续 Tool，Runtime 需避免把取消覆盖为 failed 或 succeeded。
+- 步骤级恢复：继续复用已成功步骤输出，但只能复用当前计划版本中 `stepNo + toolName` 一致且输出仍满足 Tool Schema 的记录；AgentStep 已补正式的 `mode + planVersion + stepNo` 维度唯一键，Plan 预览、Act 执行和 replan trace 可并存。
+- Tool 强 Schema：把所有写入 Tool 的 input/output 从轻量校验升级为字段级约束，覆盖枚举、整数、长度、数组数量、格式和禁止额外字段。
+- Policy 测试：已覆盖 Plan 禁写、Act 只执行已批准计划、步骤数上限、高风险二次确认和风险 ID 精准确认；后续继续补审批范围、删除类副作用和端到端审批用例。
+- 写入事务与版本化：`write_chapter`、`extract_chapter_facts`、`rebuild_memory` 等写入 Tool 逐步使用事务，并保留 draft/fact/memory 的来源、版本和审批痕迹。
+- 审计：已新增派生审计轨迹 API 与前端“审计轨迹”面板，把审批、二次确认、失败重试、取消、步骤失败和产物生成串成统一事件流；后续再升级为独立审计表/导出能力。
+- 前端审批说明：审批控制台已按工具类型展示草稿、事实层、记忆和项目资产写入风险；大纲/导入校验报告和章节上下文预览已展示写入前 diff，覆盖章节草稿、事实和记忆层影响。
+
+### P1：质量门禁与评测集
+
+- 章节生成门禁：生成前检查大纲、角色、设定、前文、召回质量；低质量上下文阻断写库或进入人工复核。
+- 生成后评估：已新增确定性生成后质量门禁并沉淀字数、目标比例、段落数、重复段落、拒答/说明话术和模板占位符指标；后续继续补角色一致性、设定冲突、事实校验、记忆写入质量等指标。
+- 评测集：用真实项目构建 chapter_write golden cases，覆盖正常生成、上下文不足、事实冲突、LLM JSON 失败和召回降级。
+- LLM 稳定性：独立统计 Planner JSON 成功率、修复成功率、拒绝执行率、token 成本和延迟。
+
+### P2：前端生产体验
+
+- 实时进度：长任务使用轮询或 SSE 展示 AgentStep 进度，仍以数据库状态为唯一事实源。
+- 失败恢复：明确“失败重试 / 重新规划 / 取消 / 继续审批”的差异，展示可复用步骤和将要重跑的步骤。
+- 差异预览：大纲、导入资产和章节写作已展示写入前 diff；后续继续补齐润色、事实覆盖细项和记忆审批解释，降低误覆盖风险。
+- 审批说明：高风险、事实覆盖、删除类副作用和批量写入必须有可读解释。
+
+### P3：规模化与多 Agent 拆分
+
+- 在 chapter_write 生产闭环稳定后，再按相同标准扩展 `RevisionAgent`、`ConsistencyAgent`、`MemoryAgent`。
+- 将通用的质量报告、审批、审计、评测和成本统计抽成跨 Agent 能力，而不是为每个场景重复实现。
 
 本文档描述 AI Novel 接入 Agent 的完整开发计划。当前目标是让用户通过自然语言提出创作目标，由 Agent 理解意图、制定 Plan、等待确认，并在 Act 阶段通过后端进程内函数调用完成写作、拆解、校验、入库等动作。
 

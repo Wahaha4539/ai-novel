@@ -12,6 +12,12 @@ export class AgentRunsController {
     return this.agentRuns.createPlan(dto);
   }
 
+  // 更具体的 audit 路由必须放在 :id 路由前，避免被动态参数路由抢先匹配。
+  @Get('agent-runs/:id/audit')
+  auditTrail(@Param('id') id: string) {
+    return this.agentRuns.auditTrail(id);
+  }
+
   @Get('agent-runs/:id')
   get(@Param('id') id: string) {
     return this.agentRuns.get(id);

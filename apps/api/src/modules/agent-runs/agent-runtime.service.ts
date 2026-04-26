@@ -1,7 +1,7 @@
 import { Injectable } from '@nestjs/common';
 import { Prisma } from '@prisma/client';
 import { PrismaService } from '../../prisma/prisma.service';
-import { AgentExecutorService, AgentWaitingReviewError } from './agent-executor.service';
+import { AgentCancelledError, AgentExecutorService, AgentWaitingReviewError } from './agent-executor.service';
 import { AgentPlannerFailedError, AgentPlannerService, AgentPlanSpec } from './agent-planner.service';
 import { AgentTraceService } from './agent-trace.service';
 
@@ -45,7 +45,7 @@ export class AgentRuntimeService {
         data: { agentRunId, artifactType: 'agent_plan_preview', title: 'Agent 执行计划预览', content: plan as unknown as Prisma.InputJsonValue, status: 'preview' },
       });
 
-      const previewOutputs = await this.executor.execute(agentRunId, plan.steps, { mode: 'plan', approved: false, previewOnly: true });
+      const previewOutputs = await this.executor.execute(agentRunId, plan.steps, { mode: 'plan', planVersion: savedPlan.version, approved: false, previewOnly: true });
       const previewArtifacts = this.buildPreviewArtifacts(plan.taskType, previewOutputs);
       if (previewArtifacts.length) {
         await this.prisma.agentArtifact.createMany({
@@ -73,9 +73,13 @@ export class AgentRuntimeService {
     if (!latestPlan) throw new Error('缺少可执行计划');
 
     try {
-      await this.prisma.agentRun.update({ where: { id: agentRunId }, data: { status: 'acting', mode: 'act' } });
+      // 通过条件更新获取轻量执行租约，避免两个 /act 或 /retry 请求并发执行同一份计划。
+      const lease = await this.prisma.agentRun.updateMany({ where: { id: agentRunId, status: { in: ['waiting_approval', 'waiting_review', 'failed'] } }, data: { status: 'acting', mode: 'act', error: null } });
+      if (lease.count !== 1) throw new Error('AgentRun 当前状态不允许进入 Act，可能正在执行或已结束');
       const spec = { steps: latestPlan.steps } as unknown as Pick<AgentPlanSpec, 'steps'>;
-      const outputs = await this.executor.execute(agentRunId, spec.steps, { mode: 'act', approved: true, approvedStepNos, confirmation, reuseSucceeded: true });
+      const outputs = await this.executor.execute(agentRunId, spec.steps, { mode: 'act', planVersion: latestPlan.version, approved: true, approvedStepNos, confirmation, reuseSucceeded: true });
+      const currentRun = await this.prisma.agentRun.findUnique({ where: { id: agentRunId } });
+      if (currentRun?.status === 'cancelled') return currentRun;
       const artifactDrafts = this.buildExecutionArtifacts(String(latestPlan.taskType), outputs);
       if (artifactDrafts.length) {
         await this.prisma.agentArtifact.createMany({
@@ -91,10 +95,13 @@ export class AgentRuntimeService {
       const updated = await this.prisma.agentRun.update({ where: { id: agentRunId }, data: { status: 'succeeded', output: { outputs } as unknown as Prisma.InputJsonValue } });
       return updated;
     } catch (error) {
+      if (error instanceof AgentCancelledError) {
+        return this.prisma.agentRun.update({ where: { id: agentRunId }, data: { status: 'cancelled', error: error.message } });
+      }
       if (error instanceof AgentWaitingReviewError) {
         return this.prisma.agentRun.update({ where: { id: agentRunId }, data: { status: 'waiting_review', error: error.message } });
       }
-      await this.prisma.agentRun.update({ where: { id: agentRunId }, data: { status: 'failed', error: error instanceof Error ? error.message : String(error) } });
+      await this.prisma.agentRun.updateMany({ where: { id: agentRunId, status: { not: 'cancelled' } }, data: { status: 'failed', error: error instanceof Error ? error.message : String(error) } });
       throw error;
     }
   }
@@ -110,11 +117,12 @@ export class AgentRuntimeService {
 
     try {
       const plan = await this.planner.createPlan(nextGoal);
-      await this.trace.recordDecision(agentRunId, { name: '重新生成 Agent Plan', mode: 'plan', input: { goal: nextGoal, replannedFromVersion: latest?.version ?? null }, output: { taskType: plan.taskType, stepCount: plan.steps.length, plannerDiagnostics: plan.plannerDiagnostics } });
+      const nextVersion = (latest?.version ?? 0) + 1;
+      await this.trace.recordDecision(agentRunId, { name: '重新生成 Agent Plan', mode: 'plan', planVersion: nextVersion, input: { goal: nextGoal, replannedFromVersion: latest?.version ?? null }, output: { taskType: plan.taskType, stepCount: plan.steps.length, plannerDiagnostics: plan.plannerDiagnostics } });
       const savedPlan = await this.prisma.agentPlan.create({
         data: {
           agentRunId,
-          version: (latest?.version ?? 0) + 1,
+          version: nextVersion,
           status: 'waiting_approval',
           taskType: plan.taskType,
           summary: plan.summary,
@@ -129,7 +137,7 @@ export class AgentRuntimeService {
         data: { agentRunId, artifactType: 'agent_plan_preview', title: `Agent 执行计划预览 v${savedPlan.version}`, content: plan as unknown as Prisma.InputJsonValue, status: 'preview' },
       });
 
-      const previewOutputs = await this.executor.execute(agentRunId, plan.steps, { mode: 'plan', approved: false, previewOnly: true });
+      const previewOutputs = await this.executor.execute(agentRunId, plan.steps, { mode: 'plan', planVersion: savedPlan.version, approved: false, previewOnly: true });
       const previewArtifacts = this.buildPreviewArtifacts(plan.taskType, previewOutputs);
       if (previewArtifacts.length) {
         await this.prisma.agentArtifact.createMany({
@@ -187,7 +195,7 @@ export class AgentRuntimeService {
     }
 
     if (taskType === 'chapter_write' || taskType === 'chapter_polish') {
-      return outputs[2] ? [{ artifactType: 'chapter_context_preview', title: '章节上下文预览', content: outputs[2] }] : [];
+      return outputs[2] ? [{ artifactType: 'chapter_context_preview', title: '章节上下文与写入预览', content: outputs[2] }] : [];
     }
 
     return [];
@@ -238,7 +246,7 @@ export class AgentRuntimeService {
       const memory = outputs[8];
       const memoryReview = outputs[9];
       return [
-        ...(draft ? [{ artifactType: 'chapter_generation_quality_report', title: '生成前与召回质量报告', content: { preflight: this.readPath(draft, ['preflight']), retrievalDiagnostics: this.readPath(draft, ['retrievalPayload', 'diagnostics']) } }] : []),
+        ...(draft ? [{ artifactType: 'chapter_generation_quality_report', title: '生成前、生成后与召回质量报告', content: { preflight: this.readPath(draft, ['preflight']), qualityGate: this.readPath(draft, ['qualityGate']), retrievalDiagnostics: this.readPath(draft, ['retrievalPayload', 'diagnostics']) } }] : []),
         ...(draft ? [{ artifactType: 'chapter_draft_result', title: '章节草稿结果', content: draft }] : []),
         ...(validation ? [{ artifactType: 'fact_validation_report', title: '事实校验报告', content: validation }] : []),
         ...(autoRepair ? [{ artifactType: 'auto_repair_report', title: '有界自动修复报告', content: autoRepair }] : []),

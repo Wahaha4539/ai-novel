@@ -37,6 +37,7 @@ export class PersistOutlineTool implements BaseTool<PersistOutlineInput, Record<
   async run(args: PersistOutlineInput, context: ToolContext) {
     if (!args.preview?.chapters?.length) throw new BadRequestException('persist_outline 需要 outline preview');
     const preview = args.preview;
+    this.assertSafePreview(preview);
 
     const result = await this.prisma.$transaction(async (tx) => {
       const volume = await tx.volume.upsert({
@@ -66,5 +67,14 @@ export class PersistOutlineTool implements BaseTool<PersistOutlineInput, Record<
     });
 
     return { ...result, chapterCount: preview.chapters.length, risks: preview.risks };
+  }
+
+  /** 写入前做一次确定性保护，防止绕过 validate_outline 的重复编号预览进入持久化。 */
+  private assertSafePreview(preview: OutlinePreviewOutput) {
+    const chapterNos = preview.chapters.map((chapter) => Number(chapter.chapterNo));
+    if (!Number.isFinite(Number(preview.volume.volumeNo)) || Number(preview.volume.volumeNo) <= 0) throw new BadRequestException('卷号必须是正数');
+    if (chapterNos.some((chapterNo) => !Number.isFinite(chapterNo) || chapterNo <= 0)) throw new BadRequestException('章节编号必须是正数');
+    const duplicated = chapterNos.filter((chapterNo, index) => chapterNos.indexOf(chapterNo) !== index);
+    if (duplicated.length) throw new BadRequestException(`章节编号重复，已阻止写入：${[...new Set(duplicated)].join(', ')}`);
   }
 }

@@ -65,16 +65,17 @@ export class PolishChapterService {
 
     const originalWordCount = this.countChineseLikeWords(originalText);
     const polishedWordCount = this.countChineseLikeWords(polishedText);
-    const latest = await this.prisma.chapterDraft.findFirst({ where: { chapterId }, orderBy: { versionNo: 'desc' } });
     const changed = polishedText !== currentDraft.content;
 
     const finalDraft = changed
       ? await this.prisma.$transaction(async (tx) => {
+          // 润色可能与生成/修复并发触发，版本号必须在事务内读取以保证单调递增。
+          const latestInTransaction = await tx.chapterDraft.findFirst({ where: { chapterId }, orderBy: { versionNo: 'desc' } });
           await tx.chapterDraft.updateMany({ where: { chapterId, isCurrent: true }, data: { isCurrent: false } });
           const draft = await tx.chapterDraft.create({
             data: {
               chapterId,
-              versionNo: (latest?.versionNo ?? 0) + 1,
+              versionNo: (latestInTransaction?.versionNo ?? 0) + 1,
               content: polishedText,
               source: 'agent_polish',
               modelInfo: { model: result.model, usage: result.usage, rawPayloadSummary: result.rawPayloadSummary } as Prisma.InputJsonValue,

@@ -1,4 +1,5 @@
 import { Injectable } from '@nestjs/common';
+import { PrismaService } from '../../../prisma/prisma.service';
 import { BaseTool, ToolContext } from '../base-tool';
 import { ImportPreviewOutput } from './build-import-preview.tool';
 
@@ -30,6 +31,23 @@ export interface ValidateImportedAssetsOutput {
     duplicatedChapterNos: number[];
   };
   sourceRisks: string[];
+  writePreview?: {
+    summary: {
+      characterCreateCount: number;
+      characterSkipCount: number;
+      lorebookCreateCount: number;
+      lorebookSkipCount: number;
+      volumeCreateCount: number;
+      volumeUpdateCount: number;
+      chapterCreateCount: number;
+      chapterUpdateCount: number;
+      chapterSkipCount: number;
+    };
+    characters: Array<{ name: string; action: 'create' | 'skip_existing' | 'skip_duplicate_in_preview' }>;
+    lorebookEntries: Array<{ title: string; action: 'create' | 'skip_existing' | 'skip_duplicate_in_preview' }>;
+    volumes: Array<{ volumeNo: number; title: string; action: 'create' | 'update' }>;
+    chapters: Array<{ chapterNo: number; title: string; action: 'create' | 'update_planned' | 'skip_existing_content'; existingStatus?: string | null }>;
+  };
 }
 
 /**
@@ -50,6 +68,8 @@ export class ValidateImportedAssetsTool implements BaseTool<ValidateImportedAsse
   riskLevel: 'low' = 'low';
   requiresApproval = false;
   sideEffects: string[] = [];
+
+  constructor(private readonly prisma: PrismaService) {}
 
   async run(args: ValidateImportedAssetsInput, _context: ToolContext): Promise<ValidateImportedAssetsOutput> {
     const issues: ImportedAssetsValidationIssue[] = [];
@@ -110,11 +130,12 @@ export class ValidateImportedAssetsTool implements BaseTool<ValidateImportedAsse
       if (!chapter.outline?.trim()) issues.push({ severity: 'warning', area: 'chapters', message: `${label} 缺少章节梗概。` });
     });
 
-    return this.buildOutput(issues, preview);
+    const writePreview = await this.buildWritePreview(preview, _context);
+    return this.buildOutput(issues, preview, writePreview);
   }
 
   /** 输出统计保持固定结构，便于前端按区域展示导入预览质量。 */
-  private buildOutput(issues: ImportedAssetsValidationIssue[], preview?: ImportPreviewOutput): ValidateImportedAssetsOutput {
+  private buildOutput(issues: ImportedAssetsValidationIssue[], preview?: ImportPreviewOutput, writePreview?: ValidateImportedAssetsOutput['writePreview']): ValidateImportedAssetsOutput {
     const characters = preview?.characters ?? [];
     const volumes = preview?.volumes ?? [];
     const chapters = preview?.chapters ?? [];
@@ -132,6 +153,71 @@ export class ValidateImportedAssetsTool implements BaseTool<ValidateImportedAsse
         duplicatedChapterNos: this.findDuplicatedNumbers(chapters.map((chapter) => Number(chapter.chapterNo))),
       },
       sourceRisks: preview?.risks ?? [],
+      ...(writePreview ? { writePreview } : {}),
+    };
+  }
+
+  /**
+   * 派生导入写入 diff：标记角色/设定去重、卷 upsert 和章节创建/更新/跳过。
+   * 该结果只用于审批解释，不产生副作用；Act 阶段的 persist 工具会再次执行安全写入逻辑。
+   */
+  private async buildWritePreview(preview: ImportPreviewOutput, context: ToolContext): Promise<ValidateImportedAssetsOutput['writePreview']> {
+    const characterNames = [...new Set((preview.characters ?? []).map((item) => item.name?.trim()).filter(Boolean))] as string[];
+    const lorebookTitles = [...new Set((preview.lorebookEntries ?? []).map((item) => item.title?.trim()).filter(Boolean))] as string[];
+    const volumeNos = [...new Set((preview.volumes ?? []).map((item) => Number(item.volumeNo)).filter((value) => Number.isFinite(value) && value > 0))];
+    const chapterNos = [...new Set((preview.chapters ?? []).map((item) => Number(item.chapterNo)).filter((value) => Number.isFinite(value) && value > 0))];
+    const [existingCharacters, existingLorebookEntries, existingVolumes, existingChapters] = await Promise.all([
+      characterNames.length ? this.prisma.character.findMany({ where: { projectId: context.projectId, name: { in: characterNames } }, select: { name: true } }) : Promise.resolve([]),
+      lorebookTitles.length ? this.prisma.lorebookEntry.findMany({ where: { projectId: context.projectId, title: { in: lorebookTitles } }, select: { title: true } }) : Promise.resolve([]),
+      volumeNos.length ? this.prisma.volume.findMany({ where: { projectId: context.projectId, volumeNo: { in: volumeNos } }, select: { volumeNo: true } }) : Promise.resolve([]),
+      chapterNos.length ? this.prisma.chapter.findMany({ where: { projectId: context.projectId, chapterNo: { in: chapterNos } }, select: { chapterNo: true, status: true, title: true } }) : Promise.resolve([]),
+    ]);
+
+    const existingCharacterNames = new Set(existingCharacters.map((item) => item.name));
+    const existingLorebookTitles = new Set(existingLorebookEntries.map((item) => item.title));
+    const existingVolumeNos = new Set(existingVolumes.map((item) => item.volumeNo));
+    const existingChapterByNo = new Map(existingChapters.map((item) => [item.chapterNo, item]));
+    const seenCharacters = new Set<string>();
+    const seenLorebook = new Set<string>();
+
+    const characters = (preview.characters ?? []).map((item) => {
+      const name = item.name?.trim() || '';
+      const action: 'create' | 'skip_existing' | 'skip_duplicate_in_preview' = seenCharacters.has(name) ? 'skip_duplicate_in_preview' : existingCharacterNames.has(name) ? 'skip_existing' : 'create';
+      if (name) seenCharacters.add(name);
+      return { name, action };
+    });
+    const lorebookEntries = (preview.lorebookEntries ?? []).map((item) => {
+      const title = item.title?.trim() || '';
+      const action: 'create' | 'skip_existing' | 'skip_duplicate_in_preview' = seenLorebook.has(title) ? 'skip_duplicate_in_preview' : existingLorebookTitles.has(title) ? 'skip_existing' : 'create';
+      if (title) seenLorebook.add(title);
+      return { title, action };
+    });
+    const volumes = (preview.volumes ?? []).map((item) => {
+      const action: 'create' | 'update' = existingVolumeNos.has(Number(item.volumeNo)) ? 'update' : 'create';
+      return { volumeNo: Number(item.volumeNo), title: item.title, action };
+    });
+    const chapters = (preview.chapters ?? []).map((item) => {
+      const existing = existingChapterByNo.get(Number(item.chapterNo));
+      const action: 'create' | 'update_planned' | 'skip_existing_content' = !existing ? 'create' : existing.status === 'planned' ? 'update_planned' : 'skip_existing_content';
+      return { chapterNo: Number(item.chapterNo), title: item.title, action, existingStatus: existing?.status ?? null };
+    });
+
+    return {
+      summary: {
+        characterCreateCount: characters.filter((item) => item.action === 'create').length,
+        characterSkipCount: characters.filter((item) => item.action !== 'create').length,
+        lorebookCreateCount: lorebookEntries.filter((item) => item.action === 'create').length,
+        lorebookSkipCount: lorebookEntries.filter((item) => item.action !== 'create').length,
+        volumeCreateCount: volumes.filter((item) => item.action === 'create').length,
+        volumeUpdateCount: volumes.filter((item) => item.action === 'update').length,
+        chapterCreateCount: chapters.filter((item) => item.action === 'create').length,
+        chapterUpdateCount: chapters.filter((item) => item.action === 'update_planned').length,
+        chapterSkipCount: chapters.filter((item) => item.action === 'skip_existing_content').length,
+      },
+      characters,
+      lorebookEntries,
+      volumes,
+      chapters,
     };
   }
 

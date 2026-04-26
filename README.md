@@ -1,77 +1,67 @@
-# AI Novel System Scaffold
+# AI Novel
 
-这是一个面向**长篇小说创作系统**的 monorepo MVP，目标是把设定 / 大纲 / 章节生成链路推进到**本地可跑通、可接真实数据库与真实模型网关**的状态。
+AI Novel 是一个面向长篇小说创作的 Agent-Centric 创作系统。当前版本已经从“前端按钮 + 固定 Worker Pipeline”收敛为 **Web + API 单体同步执行**：用户可以在 Agent 工作台中用自然语言提出创作目标，API 内的 Agent Runtime 会生成计划、等待确认，并在确认后调用受控 Tool 完成章节写作、大纲生成、文案拆解、事实校验、记忆重建等任务。
 
-当前脚手架包含：
+> 重点：当前核心功能不再需要启动 Python Worker。`apps/worker` 仅作为历史 pipeline 参考保留。
 
-- `apps/web`：Next.js + Tailwind 的最小前端骨架
-- `apps/api`：NestJS 风格 API 服务，已切到 Prisma + PostgreSQL
-- `apps/worker`：历史 Python pipeline 参考实现；当前核心生成 / 校验 / 记忆 / embedding 召回主链路已迁入 `apps/api`
-- `packages/shared-types`：共享 DTO / 类型定义
-- `packages/prompt-templates`：Prompt 模板占位
-- `infra/docker`：Postgres(pgvector) / Redis / MinIO 本地开发编排
-- `docs/`：架构、API、Pipeline、Prompt 规范文档
-
-## 目录概览
+## 当前架构
 
 ```text
-novel-system/
+apps/web
+  ↓ HTTP
+apps/api
+  - REST API
+  - AgentRun / Plan / Approval / Step / Artifact
+  - AgentRuntime / Planner / Executor / Policy / Trace
+  - ToolRegistry / SkillRegistry / RuleEngine
+  - Generation / Validation / Memory / Retrieval / LLM / Embedding Services
+  ↓
+PostgreSQL(pgvector) / Redis / LLM Provider / Embedding Provider
+```
+
+核心约束：
+
+- Agent Runtime、Tools、Skills、Rules、LLM Gateway 均在 `apps/api` 内运行。
+- Agent 调用 Tool 是后端进程内函数调用，不再通过 API 调 Worker。
+- Plan 阶段只生成计划、预览和校验产物，不写正式业务表。
+- Act 阶段必须经过用户确认，并由 Policy / Schema / Approval / Trace 保护写入行为。
+- Redis 只保留缓存、锁、上下文暂存等辅助用途，不承担 Agent 任务调度。
+
+## 目录结构
+
+```text
+ai-novel/
 ├─ apps/
-│  ├─ web/
-│  ├─ api/
-│  └─ worker/
+│  ├─ web/        # Next.js 前端与 Agent 工作台
+│  ├─ api/        # NestJS API、Agent Runtime、业务 Service、Prisma
+│  └─ worker/     # 历史 Python pipeline 参考实现，当前无需启动
 ├─ packages/
 │  ├─ shared-types/
 │  └─ prompt-templates/
 ├─ infra/
-│  └─ docker/
+│  └─ docker/     # PostgreSQL(pgvector)、Redis、MinIO 本地编排
+├─ scripts/
+│  └─ dev/        # 数据库创建、验证、召回评测等开发脚本
 └─ docs/
+   └─ architecture/
 ```
 
-## 当前实现范围
+## 本地快速启动
 
-当前仓库仍然是 MVP，不是完整业务系统，但已经具备以下核心能力：
+以下命令默认在仓库根目录执行。示例以 **Windows PowerShell** 为主；如果你使用 CMD，请将 `Copy-Item` 替换为 `copy`。
 
-1. monorepo 结构
-2. 关键领域对象与核心表模型
-3. Agent-Centric API 内同步章节生成、后处理、事实抽取、校验、记忆重建链路
-4. Prompt Builder、召回、校验、摘要、MemoryWriter 记忆回写与 embedding 降级召回的 API 内分层
-5. `GenerateChapterService` 的真实数据库读写链路
-6. OpenAI-compatible 模型网关接入
-7. Redis 作为缓存 / 辅助基础设施保留，不再承担章节生成 Worker 调度主链路
-8. Agent Workspace 支持自然语言 Plan / Approval / Act 创作任务
+### 1. 准备依赖
 
-## Agent-Centric 收敛验证
+需要提前安装：
 
-当前 Agent-Centric MVP 的基本功能已经迁入 API 内同步链路。为减少回归风险，API 包增加了轻量 Agent 服务测试：
+- Docker / Docker Desktop：启动 PostgreSQL、Redis、MinIO。
+- Node.js：建议使用当前 LTS 或项目兼容版本。
+- pnpm：仓库声明包管理器为 `pnpm@10.0.0`。
+- Python 3：仅用于 `scripts/dev/*.py` 开发脚本；Web + API 主链路不依赖 Python Worker。
+- OpenAI-compatible LLM 网关：用于章节生成、Planner JSON Plan、导入/大纲等 LLM 能力。
+- OpenAI-compatible Embedding 网关：可选；未配置时 Retrieval 会降级为关键词召回。
 
-```powershell
-pnpm --dir apps/api run test:agent
-```
-
-真实数据上的 embedding 回填与召回质量可通过开发脚本验证。脚本默认只执行 dry-run backfill，不会改写数据库；确认结果后再追加 `--apply-backfill`：
-
-```powershell
-python scripts/dev/verify_embedding_retrieval.py --project-id <PROJECT_ID> --query "主角父亲遗物与祠堂线索"
-```
-
-如需计算 recall / precision / MRR，可通过 `--expected-memory-ids` 传入逗号分隔的期望 MemoryChunk ID，或用 `--cases` 指向 benchmark JSON 文件。
-
-## 本地启动方案
-
-> 以下命令默认在仓库根目录执行，示例以 **Windows PowerShell** 为主。
-> 如果你使用 CMD，请将 `Copy-Item` 替换为 `copy`。
-
-### 1. 启动前准备
-
-本地跑通当前 MVP，建议先准备好以下依赖：
-
-- Docker / Docker Desktop：用于启动 PostgreSQL、Redis、MinIO
-- Node.js + pnpm：仓库声明的包管理器为 `pnpm@10.0.0`
-- Python 3：仅用于可选开发脚本；核心 Web/API 链路不再要求启动 Python Worker
-- 一个可访问的 OpenAI-compatible 模型网关：用于章节生成链路
-
-如果本机尚未启用 pnpm，可先执行：
+如果本机尚未启用 pnpm：
 
 ```powershell
 corepack enable
@@ -83,69 +73,68 @@ corepack enable
 docker compose -f infra/docker/docker-compose.yml up -d
 ```
 
-默认会启动以下本地依赖：
+默认服务：
 
-| 服务 | 默认地址 | 说明 |
+| 服务 | 默认地址 | 用途 |
 | --- | --- | --- |
-| PostgreSQL (pgvector) | `127.0.0.1:5432` | 主业务数据库 |
-| Redis | `127.0.0.1:6379` | 任务队列与缓存 |
-| MinIO API | `127.0.0.1:9000` | 预留的本地对象存储 |
+| PostgreSQL(pgvector) | `127.0.0.1:5432` | 主业务数据库与向量检索 |
+| Redis | `127.0.0.1:6379` | 缓存、锁、上下文暂存 |
+| MinIO API | `127.0.0.1:9000` | 预留对象存储 |
 | MinIO Console | `http://127.0.0.1:9001` | MinIO 管理后台 |
 
-> `docker-compose.yml` 里的 PostgreSQL 默认库名是 `novel_system`，而应用真正使用的业务库由 `.env` 中的 `DATABASE_NAME` 决定，后续会通过脚本自动创建。
-
-> 当前仓库里的 MinIO **还没有接入现有 MVP 主链路**。现在能看到的只是 Docker 编排与环境变量预留，仓库内 API / Worker / Web 代码目前没有实际读写 MinIO。也就是说，MinIO 更像是为后续对象存储场景预留的基础设施；当前你主要验证“项目 / 章节 / 生成 / 记忆 / 校验”链路时，核心依赖仍然是 PostgreSQL、Redis、LLM 网关。
+> Docker Compose 中 PostgreSQL 默认创建的库名是 `novel_system`；应用实际使用的业务库由 `.env` 中的 `DATABASE_NAME` / `DATABASE_URL` 决定，后续通过 `pnpm db:create` 创建。
 
 ### 3. 准备环境变量
 
-当前仓库有两套启动时会实际读取的环境文件：
+当前主要读取两份环境文件：
 
-- 根目录 `.env`：给开发脚本与本地基础配置使用
-- `apps/api/.env`：给 NestJS / Prisma 使用
+- 根目录 `.env`：供开发脚本和通用本地配置使用。
+- `apps/api/.env`：供 NestJS / Prisma 使用。
 
-先复制模板，再把 API 环境文件同步一份：
+复制模板：
 
 ```powershell
 Copy-Item .env.example .env
-Copy-Item .env apps/api/.env
+Copy-Item .env.example apps/api/.env
 ```
 
-如果你使用 `infra/docker/docker-compose.yml` 里的默认本地端口，建议先把两份环境文件至少改成下面这些值：
+如果使用本仓库 Docker 默认配置，建议把两份文件至少调整为：
 
 ```env
 DATABASE_NAME=ai_novel_mvp
 DATABASE_URL=postgresql://postgres:postgres@127.0.0.1:5432/ai_novel_mvp
 POSTGRES_ADMIN_URL=postgresql://postgres:postgres@127.0.0.1:5432/postgres
+
 REDIS_URL=redis://127.0.0.1:6379/0
 CACHE_PROJECT_SNAPSHOT_TTL_SECONDS=300
 CACHE_CHAPTER_CONTEXT_TTL_SECONDS=300
 CACHE_RECALL_RESULT_TTL_SECONDS=120
+
 MINIO_ENDPOINT=127.0.0.1:9000
 MINIO_ACCESS_KEY=minioadmin
 MINIO_SECRET_KEY=minioadmin
+
 API_PORT=3001
+WEB_PORT=3000
+
 LLM_BASE_URL=http://YOUR_LLM_HOST:8318/v1
 LLM_API_KEY=YOUR_LLM_API_KEY
 LLM_MODEL=gpt-5.4
-EMBEDDING_BASE_URL=http://YOUR_EMBEDDING_HOST:8319/v1
-EMBEDDING_API_KEY=YOUR_EMBEDDING_API_KEY
-EMBEDDING_MODEL=text-embedding-3-small
+
+EMBEDDING_BASE_URL=http://YOUR_EMBEDDING_HOST:18319/v1
+EMBEDDING_API_KEY=
+EMBEDDING_MODEL=bge-base-zh
 ```
 
-补充说明：
+说明：
 
-- `apps/api/.env` 与根目录 `.env` 中的数据库、Redis、LLM 配置建议保持一致
-- 章节生成、润色、memory rebuild 与 Agent 执行已在 API 内同步完成，不再需要 `WORKER_BASE_URL`
-- `EMBEDDING_*` 为 API 内 MemoryWriter / RetrievalService 使用；未配置或调用失败时会自动降级为关键词召回，不阻断生成主链路
-- Redis 默认连接为 `redis://127.0.0.1:6379/0`，如本机地址不同，请同步修改 `REDIS_URL`
-- `MINIO_*` 变量目前属于预留配置，当前代码未实际消费；先保留默认值即可
-- 如果 PostgreSQL 密码包含 `&`、`^` 等特殊字符，必须先做 URL encode 再写进连接串
-- 当前 `web` 默认直接回退到 `http://127.0.0.1:3001/api`，只有在你修改 API 地址或端口时，才需要额外创建 `apps/web/.env.local`
-
-如果你改了 API 地址或端口，可选地新增：
+- `DATABASE_URL` 和 `POSTGRES_ADMIN_URL` 如果包含 `&`、`^`、`@` 等特殊字符，密码部分必须先做 URL encode。
+- `LLM_*` 是章节生成、Agent Planner、导入/大纲预览等能力的核心配置；未配置时，依赖真实模型的功能会失败或拒绝继续执行。
+- `EMBEDDING_*` 由 API 内 MemoryWriter / RetrievalService 使用；未配置或调用失败时会自动降级为关键词召回。
+- `MINIO_*` 目前主要是预留配置，当前 MVP 主链路不依赖 MinIO。
+- Web 默认访问 `http://127.0.0.1:3001/api`。只有修改 API 地址或端口时，才需要新增 `apps/web/.env.local`：
 
 ```env
-# apps/web/.env.local
 NEXT_PUBLIC_API_BASE_URL=http://127.0.0.1:3001/api
 ```
 
@@ -155,311 +144,247 @@ NEXT_PUBLIC_API_BASE_URL=http://127.0.0.1:3001/api
 pnpm install
 ```
 
-> Python 虚拟环境只在运行旧 Worker 参考实现或 Python 开发脚本时需要；正常验证 Web + API + Agent 工作台时只需要 `pnpm install`。
-
-> 如果你已经手动激活了虚拟环境，那么下面 README 中出现的 `.\.venv\Scripts\python.exe` 都可以直接替换成 `python`。
-
 ### 5. 初始化数据库
 
 ```powershell
-.\.venv\Scripts\python.exe scripts/dev/create_database.py
+pnpm db:create
 pnpm db:generate
 pnpm db:migrate
 ```
 
-这一步会完成三件事：
+这三步分别会：
 
-1. `create_database.py` 只负责按 `.env` 中的 `DATABASE_NAME` 创建业务数据库（不存在时才创建），**不会建表**
-2. `pnpm db:generate` 生成 Prisma Client
-3. `pnpm db:migrate` 执行 `apps/api/prisma/migrations` 下已有迁移，真正创建 / 补齐表结构
+1. 根据 `.env` 中的 `DATABASE_NAME` 创建业务数据库，不存在时才创建。
+2. 生成 Prisma Client。
+3. 执行 `apps/api/prisma/migrations` 下的迁移，创建和更新表结构。
 
-当前仓库里，表结构初始化主要由两次迁移共同完成：
-
-- `202604220001_init`：创建第一批核心表与枚举，包括 `Project`、`StyleProfile`、`ModelProfile`、`Character`、`LorebookEntry`、`Chapter`、`ChapterDraft`、`MemoryChunk`、`ValidationIssue`、`GenerationJob`
-- `202604220002_phase2_memory_facts`：补充 `MemoryChunk` 的字段 / 索引，并新增 `StoryEvent`、`CharacterStateSnapshot`、`ForeshadowTrack`
-
-按当前 `schema.prisma` 对照，**现有两次 migration 合起来已覆盖全部 13 个核心业务模型**。也就是说：只要 `pnpm db:migrate` 正常执行完成，当前 Prisma schema 对应的业务表就会完整创建出来。
-
-#### 安装 pgvector 扩展（向量检索，可选）
-
-API 内 MemoryWriter 会尽量给 MemoryChunk 写入 `embedding` 字段，用于向量语义检索。如需启用 pgvector 扩展，可按下方步骤安装；未启用时仍可使用 JSON embedding + 应用层 cosine 召回。
-
-**方式一：Docker 环境（已内置）**
-
-`docker-compose.yml` 使用的 `pgvector/pgvector:pg16` 镜像已内置 pgvector，只需启用：
+如果你使用的是本仓库 Docker PostgreSQL 镜像，pgvector 已内置。需要手动确认扩展时可执行：
 
 ```powershell
 docker exec -it novel-postgres psql -U postgres -d ai_novel_mvp -c "CREATE EXTENSION IF NOT EXISTS vector;"
 ```
 
-**方式二：远程服务器（Ubuntu + 系统安装的 PostgreSQL）**
+### 6. 启动 Web + API
 
-SSH 到服务器后执行：
-
-```bash
-# 安装 pgvector 包（将 14 替换为你的 PostgreSQL 大版本号）
-sudo apt update && sudo apt install -y postgresql-14-pgvector
-
-# 重启 PostgreSQL
-sudo systemctl restart postgresql
-
-# 在目标数据库中启用扩展
-sudo -u postgres psql -d ai_novel_mvp -c "CREATE EXTENSION IF NOT EXISTS vector;"
-```
-
-> 查看 PostgreSQL 版本：`psql --version` 或 `SELECT version();`
-
-**验证安装：**
-
-```bash
-sudo -u postgres psql -d ai_novel_mvp -c "SELECT extname, extversion FROM pg_extension WHERE extname = 'vector';"
-```
-
-输出含 `vector | 0.x.x` 即安装成功。
-
-#### 部署 Embedding 服务（向量检索，可选）
-
-MemoryChunk 的向量语义检索需要 embedding 模型将文本转换为向量。如果你的主 LLM API 不提供 `/v1/embeddings` 端点，可以单独部署一个轻量 embedding 服务，并通过 `EMBEDDING_*` 环境变量接入 API。
-
-> 模型 `BAAI/bge-base-zh-v1.5`，约 400MB，**纯 CPU 即可运行**，无需 GPU。
-
-**第 1 步：安装依赖**
-
-```bash
-apt install -y python3-pip
-pip3 install sentence-transformers fastapi uvicorn
-```
-
-**第 2 步：创建服务文件**
-
-```bash
-cat > /opt/embedding_server.py << 'EOF'
-"""轻量 Embedding API 服务 — 兼容 OpenAI /v1/embeddings 格式"""
-from sentence_transformers import SentenceTransformer
-from fastapi import FastAPI
-from pydantic import BaseModel
-import uvicorn
-
-model = SentenceTransformer("BAAI/bge-base-zh-v1.5")
-app = FastAPI(title="Embedding Server")
-
-class EmbeddingRequest(BaseModel):
-    input: str | list[str]
-    model: str = "bge-base-zh"
-
-@app.post("/v1/embeddings")
-def create_embedding(req: EmbeddingRequest):
-    texts = [req.input] if isinstance(req.input, str) else req.input
-    vectors = model.encode(texts, normalize_embeddings=True).tolist()
-    return {
-        "object": "list",
-        "model": "bge-base-zh-v1.5",
-        "data": [
-            {"object": "embedding", "embedding": vec, "index": i}
-            for i, vec in enumerate(vectors)
-        ],
-        "usage": {"prompt_tokens": sum(len(t) for t in texts), "total_tokens": sum(len(t) for t in texts)},
-    }
-
-@app.get("/healthz")
-def health():
-    return {"status": "ok", "model": "BAAI/bge-base-zh-v1.5", "dimension": 768}
-
-if __name__ == "__main__":
-    uvicorn.run(app, host="0.0.0.0", port=18319)
-EOF
-```
-
-**第 3 步：配置 systemd 开机自启**
-
-```bash
-cat > /etc/systemd/system/embedding.service << 'EOF'
-[Unit]
-Description=Embedding API Server
-After=network.target
-
-[Service]
-ExecStart=/usr/bin/python3 /opt/embedding_server.py
-Restart=always
-RestartSec=5
-
-[Install]
-WantedBy=multi-user.target
-EOF
-
-systemctl daemon-reload
-systemctl enable embedding
-systemctl start embedding
-```
-
-> 首次启动会自动下载模型（约 400MB），之后使用本地缓存。
-
-**第 4 步：验证**
-
-```bash
-curl -X POST http://localhost:8319/v1/embeddings \
-  -H "Content-Type: application/json" \
-  -d '{"input": "测试文本"}' | python3 -m json.tool | head -5
-```
-
-返回含 768 维的 `embedding` 数组即安装成功。
-
-**第 5 步：配置环境变量**
-
-在项目 `.env` 中添加：
-
-```env
-EMBEDDING_BASE_URL=http://YOUR_SERVER_IP:8319/v1
-EMBEDDING_API_KEY=YOUR_EMBEDDING_API_KEY
-EMBEDDING_MODEL=bge-base-zh
-```
-
-
-如果你想进一步确认是否已经真实落库，可以在数据库启动后执行下面任一方式检查：
-
-```powershell
-pnpm --filter api exec prisma migrate status
-pnpm --filter api exec prisma studio
-```
-
-也可以直接在 PostgreSQL 中确认这些表是否存在：
-
-- `Project`
-- `StyleProfile`
-- `ModelProfile`
-- `Character`
-- `LorebookEntry`
-- `Chapter`
-- `ChapterDraft`
-- `MemoryChunk`
-- `StoryEvent`
-- `CharacterStateSnapshot`
-- `ForeshadowTrack`
-- `ValidationIssue`
-- `GenerationJob`
-
-### 6. 启动本地服务
-
-推荐使用 **1 个终端** 启动 Web + API：
-
-#### 同时启动 Web + API
+推荐使用一个终端启动当前核心服务：
 
 ```powershell
 pnpm dev
 ```
 
-该命令等价于同时执行：
+该命令会并行启动：
 
-- `pnpm --filter web dev`
-- `pnpm --filter api start:dev`
+- `web`：Next.js，固定监听 `http://127.0.0.1:3000`
+- `api`：NestJS，默认监听 `http://127.0.0.1:3001/api`
 
-如果你更习惯分别启动，也可以使用：
+也可以拆成两个终端分别启动：
+
+```powershell
+pnpm dev:web
+pnpm dev:api
+```
+
+等价的 workspace 命令是：
 
 ```powershell
 pnpm --filter web dev
 pnpm --filter api start:dev
 ```
 
-> `apps/worker` 仅保留为迁移参考，不再是本地核心功能的必启动服务；根脚本也不再提供 `dev:worker`。
+> 不要再寻找或启动 `dev:worker`：根 `package.json` 已移除该脚本，Agent、章节生成、润色、校验、记忆回写主链路都在 API 内同步执行。
 
-### 7. 启动后访问地址
+### 7. 访问地址
 
 - Web：`http://127.0.0.1:3000`
 - API Base：`http://127.0.0.1:3001/api`
 - MinIO Console：`http://127.0.0.1:9001`
 
-### 8. 自检建议
+## 常用开发命令
 
-服务都起来后，建议至少做一次最小验证：
+| 命令 | 说明 |
+| --- | --- |
+| `pnpm dev` | 同时启动 Web + API |
+| `pnpm dev:web` | 只启动 Web |
+| `pnpm dev:api` | 只启动 API |
+| `pnpm db:create` | 按 `.env` 创建业务数据库 |
+| `pnpm db:generate` | 生成 Prisma Client |
+| `pnpm db:migrate` | 执行 Prisma 迁移 |
+| `pnpm --dir apps/api build` | 构建 API |
+| `pnpm --dir apps/web build` | 构建 Web |
+| `pnpm --dir apps/api run test:agent` | 运行 Agent 服务轻量测试 |
+| `pnpm db:maintenance` | 执行数据库维护脚本，如 embedding backfill |
+
+## 最小自检
+
+服务启动后，可以先检查 API 与数据库是否连通：
 
 ```powershell
 curl http://127.0.0.1:3001/api/projects
 ```
 
-- `GET /api/projects` 能返回 `[]` 或项目列表，说明 API + 数据库链路基本可用
+返回 `[]` 或项目列表即可说明 API + PostgreSQL 基本可用。
 
-如果你已经配置了真实的 `LLM_BASE_URL` / `LLM_API_KEY`，还可以继续执行验证脚本：
-
-```powershell
-.\.venv\Scripts\python.exe scripts/dev/verify_mvp.py
-.\.venv\Scripts\python.exe scripts/dev/verify_idempotency.py
-```
-
-建议在 **API 已经手动启动** 后再运行这两个脚本。因为当 API 未启动时，`verify_mvp.py` 会尝试使用 `apps/api/dist/main.js` 拉起 API，此时需要你额外先执行一次：
+Agent-Centric 后端能力可用轻量测试验证：
 
 ```powershell
-pnpm --filter api build
+pnpm --dir apps/api run test:agent
 ```
 
-### 9. 常见问题
+真实数据上的 embedding 回填与召回质量可用开发脚本验证。默认 dry-run，不会改写数据库；确认后再追加 `--apply-backfill`：
 
-#### 1) `pnpm db:migrate` 或 API 启动时报数据库连接错误
-
-优先检查：
-
-- `apps/api/.env` 是否存在
-- `apps/api/.env` 里的 `DATABASE_URL` 是否和根目录 `.env` 保持一致
-- PostgreSQL 容器是否已经启动并监听 `5432`
-
-#### 2) 一生成章节就报 `缺少 LLM_API_KEY`
-
-这是预期保护逻辑。当前 API 内生成链路接的是**真实 OpenAI-compatible 网关**，没有可用的 `LLM_API_KEY` 时，章节生成链路不会继续执行。
-
-#### 3) Web 页面打开了，但请求打不到 API
-
-如果你没有使用默认 `3001` 端口，请显式创建 `apps/web/.env.local` 并设置：
-
-```env
-NEXT_PUBLIC_API_BASE_URL=http://你的API地址/api
+```powershell
+python scripts/dev/verify_embedding_retrieval.py --project-id <PROJECT_ID> --query "主角父亲遗物与祠堂线索"
 ```
 
-#### 4) 改了 `.env` 里的 `WEB_PORT`，但服务端口没变化
+如需计算 recall / precision / MRR，可通过 `--expected-memory-ids` 传入逗号分隔的期望 MemoryChunk ID，或用 `--cases` 指向 benchmark JSON 文件。
 
-当前仓库的启动命令里：
+## 当前主要功能
 
-- `web` 脚本固定使用 `3000`
+### Agent 工作台
 
-也就是说，这个环境变量目前更像“约定值”，并不会自动改掉启动命令。若你需要改端口，请同时调整：
+Web 侧已提供 Agent 工作台入口，支持：
 
-- `apps/web/.env.local` 中的 `NEXT_PUBLIC_API_BASE_URL`（如果 API 地址也变了）
+- 输入自然语言创作目标。
+- 生成结构化 Plan。
+- 展示步骤、风险、预览 Artifact、写入前 Diff 和质量报告。
+- 用户确认后执行 Act。
+- 展示执行时间线、审计轨迹和最终报告。
+- 支持取消、失败重试、重新规划、步骤级审批。
 
-## 关键接口
+典型目标示例：
+
+```text
+帮我写第 12 章正文，压迫感强一点，字数 3500。
+这是我的小说文案，帮我拆成角色、世界观和前三卷大纲。
+帮我把第一卷拆成 30 章，每章要有目标、冲突和钩子。
+帮我检查当前大纲有没有剧情矛盾。
+```
+
+### 章节写作主链路
+
+当前章节生成不再依赖 Worker。主链路为：
+
+```text
+resolve_chapter
+  → collect_chapter_context
+  → write_chapter
+  → postprocess_chapter
+  → fact_validation
+  → auto_repair_chapter
+  → extract_chapter_facts
+  → rebuild_memory
+  → review_memory
+  → report_result
+```
+
+执行内容包括：
+
+- 读取项目、卷、章节、角色、设定、前文、记忆召回上下文。
+- 通过 PromptBuilder / Retrieval / LLM Gateway 生成正文。
+- 写入 `ChapterDraft`，并维护草稿版本。
+- 执行确定性后处理和质量门禁。
+- 抽取剧情事件、角色状态、伏笔。
+- 运行事实校验与最多一轮有界自动修复。
+- 重建章节记忆，并尽量附加 embedding。
+- 输出 AgentArtifact、AgentStep、审计轨迹和最终报告。
+
+### 文案导入与大纲设计
+
+Agent 已支持：
+
+- `project_import_preview`：从用户文案生成项目资料、角色、设定、卷和章节预览，确认后写入。
+- `outline_design`：生成或拆分卷 / 章节大纲，执行只读校验和写入前 Diff，确认后持久化。
+
+所有批量写入都需要用户确认；Plan 阶段只生成预览和校验 Artifact。
+
+## 关键 API
+
+常用业务接口：
 
 - `POST /api/projects`
 - `GET /api/projects/:projectId`
 - `POST /api/projects/:projectId/chapters`
 - `POST /api/chapters/:chapterId/generate`
-- `GET /api/jobs/:jobId`
-- `POST /api/agent-runs/plan`
-- `POST /api/agent-runs/:id/act`
+- `POST /api/chapters/:chapterId/polish`
 - `POST /api/projects/:projectId/memory/rebuild`
 
-## 当前 MVP 链路
+Agent 接口：
 
-当前可验证的主链路为：
+- `POST /api/agent-runs/plan`
+- `GET /api/agent-runs/:id`
+- `GET /api/agent-runs/:id/audit`
+- `GET /api/projects/:projectId/agent-runs`
+- `POST /api/agent-runs/:id/act`
+- `POST /api/agent-runs/:id/retry`
+- `POST /api/agent-runs/:id/replan`
+- `POST /api/agent-runs/:id/cancel`
+- `POST /api/agent-runs/:id/approve-step`
 
-1. 创建项目
-2. 创建章节
-3. 调用章节生成接口
-4. API 创建 `GenerationJob` 并在当前后端进程内同步调用 `GenerateChapterService`
-5. `PromptBuilderService` / `RetrievalService` 装配章节上下文、设定与记忆召回，优先使用 embedding 向量相似度，失败时降级关键词召回
-6. 调用 OpenAI-compatible 模型网关生成正文
-7. API 内同步执行后处理、事实抽取、硬规则校验、记忆重建与记忆复核
-8. 回写 `ChapterDraft` / `StoryEvent` / `CharacterStateSnapshot` / `ForeshadowTrack` / `ValidationIssue` / `MemoryChunk`
+## Embedding 与 pgvector
 
-缓存更新策略：
+MemoryWriter 会尽量为 MemoryChunk 写入 embedding，用于语义召回。当前支持三层降级：
 
-- 项目创建后回写 `project snapshot` 缓存
-- 章节创建 / drafted 状态更新后回写对应 `chapter context` 缓存
-- 角色新增后失效该项目全部 `chapter context` 缓存
-- lorebook / memory 更新后失效该项目的 recall result 缓存
+1. 优先使用 pgvector SQL 检索。
+2. pgvector 不可用时，降级为 JSON embedding + 应用层 cosine 相似度。
+3. embedding 服务不可用时，降级为关键词召回。
 
-## 后续建议
+如果你的主 LLM 网关不提供 `/v1/embeddings`，可以单独部署兼容 OpenAI 格式的 embedding 服务，并将 `EMBEDDING_BASE_URL` 指向该服务。
 
-优先继续补齐以下内容：
+## Worker 状态说明
 
-1. Agent Planner 的 LLM JSON Plan 已接入，后续继续补 schema 修复重试和可观测性
-2. embedding 召回与 MemoryWriter 已迁入 API，后续继续做批量重算、召回评测与 pgvector SQL 检索优化
-3. Scenes / Drafts / Rollback / Diff 接口补齐
-4. Lorebook / Memory / Validation 面板继续联调
-5. OpenAPI 自动生成与端到端测试
+`apps/worker` 当前只作为历史 Python pipeline 参考实现保留，包含旧的生成、后处理、润色、事实校验、记忆重建等逻辑。当前主链路已经迁入 `apps/api`：
+
+- 根目录不再提供 `dev:worker`。
+- `.env.example` 不再包含 `WORKER_PORT` / `WORKER_BASE_URL`。
+- API 不再通过 Worker internal route 执行章节生成、润色或 memory rebuild 主流程。
+
+如需对照旧实现，可阅读 `apps/worker/README.md` 和相关 Python 文件，但本地验证核心功能时无需启动 Worker。
+
+## 常见问题
+
+### `pnpm db:migrate` 或 API 启动时报数据库连接错误
+
+优先检查：
+
+- Docker PostgreSQL 是否已启动并监听 `5432`。
+- 根目录 `.env` 和 `apps/api/.env` 是否都存在。
+- 两份 `.env` 中的 `DATABASE_URL` 是否一致。
+- 使用 Docker 默认密码时，连接串是否为 `postgresql://postgres:postgres@127.0.0.1:5432/ai_novel_mvp`。
+
+### 章节生成或 Agent Act 报缺少 LLM 配置
+
+这是预期保护。章节生成、Planner JSON Plan、导入/大纲 LLM 预览需要真实 OpenAI-compatible 网关。请检查：
+
+- `LLM_BASE_URL`
+- `LLM_API_KEY`
+- `LLM_MODEL`
+
+### Web 页面打开了，但请求不到 API
+
+默认情况下 Web 会请求 `http://127.0.0.1:3001/api`。如果 API 地址或端口不是默认值，请创建或修改 `apps/web/.env.local`：
+
+```env
+NEXT_PUBLIC_API_BASE_URL=http://你的API地址/api
+```
+
+### 改了 `WEB_PORT` 但 Web 端口没变
+
+当前 `apps/web/package.json` 中 `dev` 脚本固定使用 `3000`：
+
+```text
+next dev -p 3000
+```
+
+因此 `WEB_PORT` 目前是约定配置，不会自动改变启动端口。需要改端口时，请同步修改 Web 启动脚本和前端 API 地址配置。
+
+### Redis 现在还需要吗
+
+需要保留，但用途已经变化。Redis 当前用于缓存、锁、上下文暂存等辅助能力，不再承担章节生成 Worker 队列调度主链路。
+
+## 相关文档
+
+- `docs/architecture/agent-centric-design.md`：Agent-Centric 创作系统设计。
+- `docs/architecture/agent-centric-development-plan.md`：Agent-Centric 同步后端开发计划与当前进度。
+- `docs/prompt-template-guide.md`：Prompt 模板指南。
+- `docs/api/`：API 相关文档。
+- `docs/database/`：数据库相关文档。

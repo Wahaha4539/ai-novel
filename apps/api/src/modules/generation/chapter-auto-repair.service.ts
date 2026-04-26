@@ -56,14 +56,15 @@ export class ChapterAutoRepairService {
     if (!repairedText) throw new BadRequestException('自动修复返回正文为空');
     if (repairedText === draft.content) return { skipped: true, reason: 'llm_no_change', draftId: draft.id, chapterId, originalDraftId: draft.id, originalWordCount, repairedWordCount: originalWordCount, repairedIssueCount: repairableIssues.length, maxRounds, summary: originalText.slice(0, 160) };
 
-    const latest = await this.prisma.chapterDraft.findFirst({ where: { chapterId }, orderBy: { versionNo: 'desc' } });
     const repairedWordCount = this.countChineseLikeWords(repairedText);
     const finalDraft = await this.prisma.$transaction(async (tx) => {
+      // 自动修复写入新草稿时重新读取最新版本，避免与其他写稿 Tool 并发导致 versionNo 冲突。
+      const latestInTransaction = await tx.chapterDraft.findFirst({ where: { chapterId }, orderBy: { versionNo: 'desc' } });
       await tx.chapterDraft.updateMany({ where: { chapterId, isCurrent: true }, data: { isCurrent: false } });
       const created = await tx.chapterDraft.create({
         data: {
           chapterId,
-          versionNo: (latest?.versionNo ?? 0) + 1,
+          versionNo: (latestInTransaction?.versionNo ?? 0) + 1,
           content: repairedText,
           source: 'agent_auto_repair',
           modelInfo: { model: llmResult.model, usage: llmResult.usage, rawPayloadSummary: llmResult.rawPayloadSummary } as Prisma.InputJsonValue,

@@ -8,6 +8,7 @@ import { AgentTraceService } from './agent-trace.service';
 
 interface AgentExecuteOptions {
   mode?: 'plan' | 'act';
+  planVersion?: number;
   approved?: boolean;
   approvedStepNos?: number[];
   confirmation?: { confirmHighRisk?: boolean; confirmedRiskIds?: string[] };
@@ -19,6 +20,13 @@ export class AgentWaitingReviewError extends Error {
   constructor(message: string) {
     super(message);
     this.name = 'AgentWaitingReviewError';
+  }
+}
+
+export class AgentCancelledError extends Error {
+  constructor(message: string) {
+    super(message);
+    this.name = 'AgentCancelledError';
   }
 }
 
@@ -50,11 +58,13 @@ export class AgentExecutorService {
 
     const options: AgentExecuteOptions = typeof approvedOrOptions === 'boolean' ? { mode: 'act', approved: approvedOrOptions, approvedStepNos } : approvedOrOptions;
     const mode = options.mode ?? 'act';
-    const outputs: Record<number, unknown> = options.reuseSucceeded ? await this.loadSucceededOutputs(agentRunId, mode) : {};
+    const planVersion = options.planVersion ?? 1;
+    const outputs: Record<number, unknown> = options.reuseSucceeded ? await this.loadSucceededOutputs(agentRunId, mode, planVersion, steps) : {};
     const plannedTools = steps.map((step) => step.tool);
     this.policy.assertPlanExecutable(steps);
 
     for (const step of steps) {
+      await this.assertRunNotCancelled(agentRunId);
       const tool = this.tools.get(step.tool);
       if (!tool) throw new BadRequestException(`未注册工具：${step.tool}`);
 
@@ -70,7 +80,7 @@ export class AgentExecutorService {
       }
 
       const resolvedArgs = this.resolveValue(step.args, outputs) as Record<string, unknown>;
-      await this.trace.startStep(agentRunId, step.stepNo, { stepType: 'tool', name: step.name, toolName: step.tool, mode, input: resolvedArgs });
+      await this.trace.startStep(agentRunId, step.stepNo, { stepType: 'tool', name: step.name, toolName: step.tool, mode, planVersion, input: resolvedArgs });
       try {
         const context = { agentRunId, projectId: run.projectId, chapterId: run.chapterId ?? undefined, mode, approved: stepApproved, outputs, policy: { confirmation: options.confirmation } };
         this.policy.assertAllowed(tool, context, plannedTools);
@@ -78,9 +88,9 @@ export class AgentExecutorService {
         const output = await this.withTimeout(tool.run(resolvedArgs, context), 120_000, `工具 ${tool.name} 执行超时`);
         this.assertSchema(tool.outputSchema, output, `${tool.name}.output`);
         outputs[step.stepNo] = output;
-        await this.trace.finishStep(agentRunId, step.stepNo, output);
+        await this.trace.finishStep(agentRunId, step.stepNo, output, mode, planVersion);
       } catch (error) {
-        await this.trace.failStep(agentRunId, step.stepNo, this.formatStepError(step.stepNo, tool.name, mode, error));
+        await this.trace.failStep(agentRunId, step.stepNo, this.formatStepError(step.stepNo, tool.name, mode, error), mode, planVersion);
         throw error;
       }
     }
@@ -88,10 +98,29 @@ export class AgentExecutorService {
     return outputs;
   }
 
-  /** 失败重试时复用已成功的 Act 步骤输出，避免重复创建草稿或重复写入项目资产。 */
-  private async loadSucceededOutputs(agentRunId: string, mode: 'plan' | 'act'): Promise<Record<number, unknown>> {
-    const records = await this.prisma.agentStep.findMany({ where: { agentRunId, mode, status: 'succeeded' }, orderBy: { stepNo: 'asc' } });
-    return Object.fromEntries(records.filter((step) => step.output !== null).map((step) => [step.stepNo, step.output]));
+  /**
+   * 失败重试时复用已成功的 Act 步骤输出，避免重复创建草稿或重复写入项目资产。
+   * 只复用“当前计划 stepNo + toolName 完全一致且输出仍符合 Tool Schema”的记录，
+   * 防止 replan 后相同步骤号对应不同工具时误用旧输出。
+   */
+  private async loadSucceededOutputs(agentRunId: string, mode: 'plan' | 'act', planVersion: number, steps: AgentPlanStepSpec[]): Promise<Record<number, unknown>> {
+    const records = await this.prisma.agentStep.findMany({ where: { agentRunId, mode, planVersion, status: 'succeeded' }, orderBy: { stepNo: 'asc' } });
+    const plannedByStepNo = new Map(steps.map((step) => [step.stepNo, step.tool]));
+    const outputs: Record<number, unknown> = {};
+    for (const record of records) {
+      const plannedToolName = plannedByStepNo.get(record.stepNo);
+      if (!plannedToolName || plannedToolName !== record.toolName || record.output === null) continue;
+      const tool = this.tools.get(plannedToolName);
+      if (!tool) continue;
+      // 旧 trace 可能来自早期版本；复用前重新校验输出契约，失败则跳过并让 Executor 重跑该步骤。
+      try {
+        this.assertSchema(tool.outputSchema, record.output, `${plannedToolName}.cachedOutput`);
+        outputs[record.stepNo] = record.output;
+      } catch {
+        continue;
+      }
+    }
+    return outputs;
   }
 
   private withTimeout<T>(promise: Promise<T>, timeoutMs: number, message: string): Promise<T> {
@@ -100,6 +129,12 @@ export class AgentExecutorService {
       timer = setTimeout(() => reject(new BadRequestException(message)), timeoutMs);
     });
     return Promise.race([promise, timeout]).finally(() => timer && clearTimeout(timer));
+  }
+
+  /** 每个步骤前读取最新 Run 状态，让用户取消请求能尽快阻止后续 Tool 写入。 */
+  private async assertRunNotCancelled(agentRunId: string) {
+    const run = await this.prisma.agentRun.findUnique({ where: { id: agentRunId }, select: { status: true } });
+    if (run?.status === 'cancelled') throw new AgentCancelledError('AgentRun 已取消，停止执行后续步骤');
   }
 
   /** 将 Tool/Policy 异常结构化写入 AgentStep，便于前端和排障脚本直接展示失败原因。 */
@@ -141,7 +176,14 @@ export class AgentExecutorService {
     if (typeof value === 'string' && schema.minLength !== undefined && value.length < schema.minLength) {
       throw new BadRequestException(`${path} 长度不能小于 ${schema.minLength}`);
     }
+    if (typeof value === 'string' && schema.maxLength !== undefined && value.length > schema.maxLength) {
+      throw new BadRequestException(`${path} 长度不能大于 ${schema.maxLength}`);
+    }
+    if (typeof value === 'string' && schema.pattern && !new RegExp(schema.pattern).test(value)) {
+      throw new BadRequestException(`${path} 格式不符合 Tool Schema`);
+    }
     if (typeof value === 'number') {
+      if (schema.integer && !Number.isInteger(value)) throw new BadRequestException(`${path} 必须是整数`);
       if (schema.minimum !== undefined && value < schema.minimum) throw new BadRequestException(`${path} 不能小于 ${schema.minimum}`);
       if (schema.maximum !== undefined && value > schema.maximum) throw new BadRequestException(`${path} 不能大于 ${schema.maximum}`);
     }
@@ -162,6 +204,8 @@ export class AgentExecutorService {
     }
 
     if (this.schemaIncludesType(schema.type, 'array') && Array.isArray(value) && schema.items) {
+      if (schema.minItems !== undefined && value.length < schema.minItems) throw new BadRequestException(`${path} 数组长度不能小于 ${schema.minItems}`);
+      if (schema.maxItems !== undefined && value.length > schema.maxItems) throw new BadRequestException(`${path} 数组长度不能大于 ${schema.maxItems}`);
       value.forEach((item, index) => this.assertSchema(schema.items, item, `${path}[${index}]`));
     }
   }

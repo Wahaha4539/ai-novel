@@ -7,6 +7,13 @@ import { LlmGatewayService } from '../llm/llm-gateway.service';
 import { AgentExecutorService } from './agent-executor.service';
 import { AgentPlannerService } from './agent-planner.service';
 import { AgentPolicyService } from './agent-policy.service';
+import { AgentTraceService } from './agent-trace.service';
+import { AgentRunsService } from './agent-runs.service';
+import { GenerateChapterService } from '../generation/generate-chapter.service';
+import { ValidateOutlineTool } from '../agent-tools/tools/validate-outline.tool';
+import { ValidateImportedAssetsTool } from '../agent-tools/tools/validate-imported-assets.tool';
+import { PersistOutlineTool } from '../agent-tools/tools/persist-outline.tool';
+import { CollectChapterContextTool } from '../agent-tools/tools/collect-chapter-context.tool';
 
 type TestCase = { name: string; run: () => void | Promise<void> };
 
@@ -46,6 +53,28 @@ test('Policy 阻止未审批写入类 Tool 执行', () => {
   );
 });
 
+test('Policy 阻止 Plan 模式执行副作用 Tool', () => {
+  const policy = new AgentPolicyService(new RuleEngineService());
+  assert.throws(
+    () => policy.assertAllowed(createTool({ allowedModes: ['plan', 'act'], requiresApproval: false }), { agentRunId: 'run1', projectId: 'p1', mode: 'plan', approved: false, outputs: {}, policy: {} }, ['write_chapter']),
+    /Plan 模式禁止执行有副作用工具/,
+  );
+});
+
+test('Policy 阻止 Act 执行未出现在计划中的 Tool', () => {
+  const policy = new AgentPolicyService(new RuleEngineService());
+  assert.throws(
+    () => policy.assertAllowed(createTool({ requiresApproval: false }), { agentRunId: 'run1', projectId: 'p1', mode: 'act', approved: true, outputs: {}, policy: {} }, ['resolve_chapter']),
+    /不在已批准计划中/,
+  );
+});
+
+test('Policy 阻止超过步骤上限的计划执行', () => {
+  const policy = new AgentPolicyService(new RuleEngineService());
+  const tooManySteps = Array.from({ length: 21 }, (_, index) => ({ stepNo: index + 1, name: `步骤${index + 1}`, tool: 'echo_report', mode: 'act' as const, requiresApproval: false, args: {} }));
+  assert.throws(() => policy.assertPlanExecutable(tooManySteps), /步骤数超过上限/);
+});
+
 test('Policy 要求事实层/高风险 Tool 二次确认', () => {
   const policy = new AgentPolicyService(new RuleEngineService());
   const tool = createTool({ name: 'extract_chapter_facts', riskLevel: 'high', sideEffects: ['replace_auto_story_events'] });
@@ -54,6 +83,13 @@ test('Policy 要求事实层/高风险 Tool 二次确认', () => {
     /需要二次确认/,
   );
   assert.doesNotThrow(() => policy.assertAllowed(tool, { agentRunId: 'run1', projectId: 'p1', mode: 'act', approved: true, outputs: {}, policy: { confirmation: { confirmHighRisk: true } } }, ['extract_chapter_facts']));
+  assert.doesNotThrow(() =>
+    policy.assertAllowed(
+      tool,
+      { agentRunId: 'run1', projectId: 'p1', mode: 'act', approved: true, outputs: {}, policy: { confirmation: { confirmedRiskIds: ['high_risk', 'destructive_side_effect', 'fact_layer_write'] } } },
+      ['extract_chapter_facts'],
+    ),
+  );
 });
 
 test('Executor Schema 校验必填、额外字段和数值范围', () => {
@@ -71,6 +107,214 @@ test('Executor Schema 校验必填、额外字段和数值范围', () => {
   assert.throws(() => executor.assertSchema(schema, { chapterId: 'c1', wordCount: 50 }, 'tool.input'), /不能小于/);
   assert.throws(() => executor.assertSchema(schema, { chapterId: 'c1', wordCount: 1000, extra: true }, 'tool.input'), /不是允许的字段/);
   assert.doesNotThrow(() => executor.assertSchema(schema, { chapterId: 'c1', wordCount: 1000 }, 'tool.input'));
+});
+
+test('Executor Schema 校验整数、字符串格式和数组长度', () => {
+  const executor = new AgentExecutorService({} as never, {} as never, {} as never, {} as never) as unknown as { assertSchema: (schema: unknown, value: unknown, path: string) => void };
+  const schema = {
+    type: 'object' as const,
+    required: ['chapterNo', 'requestId', 'tags'],
+    properties: {
+      chapterNo: { type: 'number' as const, integer: true, minimum: 1 },
+      requestId: { type: 'string' as const, minLength: 8, maxLength: 64, pattern: '^[a-zA-Z0-9_-]+$' },
+      tags: { type: 'array' as const, minItems: 1, maxItems: 3, items: { type: 'string' as const } },
+    },
+  };
+  assert.throws(() => executor.assertSchema(schema, { chapterNo: 1.5, requestId: 'req_123456', tags: ['a'] }, 'tool.input'), /必须是整数/);
+  assert.throws(() => executor.assertSchema(schema, { chapterNo: 1, requestId: 'bad id !', tags: ['a'] }, 'tool.input'), /格式不符合/);
+  assert.throws(() => executor.assertSchema(schema, { chapterNo: 1, requestId: 'req_123456', tags: [] }, 'tool.input'), /数组长度不能小于/);
+  assert.doesNotThrow(() => executor.assertSchema(schema, { chapterNo: 1, requestId: 'req_123456', tags: ['a', 'b'] }, 'tool.input'));
+});
+
+test('GenerateChapterService 生成后质量门禁阻断拒答和占位符', () => {
+  const service = new GenerateChapterService({} as never, {} as never, {} as never, {} as never, {} as never) as unknown as {
+    assessGeneratedDraftQuality: (content: string, actualWordCount: number, targetWordCount: number) => { blocked: boolean; blockers: string[]; warnings: string[]; score: number };
+  };
+  const result = service.assessGeneratedDraftQuality('作为AI，我无法完成这个请求。{{待补充正文}}', 24, 3500);
+  assert.equal(result.blocked, true);
+  assert.ok(result.blockers.length >= 2);
+  assert.ok(result.score < 50);
+});
+
+test('GenerateChapterService 生成后质量门禁标记重复段落退化', () => {
+  const service = new GenerateChapterService({} as never, {} as never, {} as never, {} as never, {} as never) as unknown as {
+    assessGeneratedDraftQuality: (content: string, actualWordCount: number, targetWordCount: number) => { blocked: boolean; blockers: string[] };
+  };
+  const repeated = Array.from({ length: 5 }, () => '走廊尽头的灯忽明忽暗，脚步声一次次逼近，像有什么东西贴着墙面缓慢爬行。').join('\n');
+  const result = service.assessGeneratedDraftQuality(repeated, 2200, 3000);
+  assert.equal(result.blocked, true);
+  assert.match(result.blockers.join('；'), /重复段落/);
+});
+
+test('Executor 在 Run 被取消后停止后续步骤', async () => {
+  let lookupCount = 0;
+  const prisma = {
+    agentRun: {
+      async findUnique(args: { select?: { status?: boolean } }) {
+        lookupCount += 1;
+        // 第一次读取用于加载上下文，后续带 select.status 的读取用于取消检查。
+        return args.select?.status ? { status: 'cancelled' } : { id: 'run1', projectId: 'p1', chapterId: null, status: 'acting' };
+      },
+    },
+  };
+  const tools = { get: () => createTool({ requiresApproval: false, riskLevel: 'low', sideEffects: [] }) };
+  const policy = { assertPlanExecutable() {}, assertAllowed() {} };
+  const trace = { startStep() {}, finishStep() {}, failStep() {} };
+  const executor = new AgentExecutorService(prisma as never, tools as never, policy as never, trace as never);
+  await assert.rejects(
+    () => executor.execute('run1', [{ stepNo: 1, name: '测试步骤', tool: 'write_chapter', mode: 'act', requiresApproval: false, args: {} }], { mode: 'act', approved: true }),
+    /已取消/,
+  );
+  assert.equal(lookupCount, 2);
+});
+
+test('Executor 重试只复用当前计划中同 stepNo 且同 toolName 的成功输出', async () => {
+  const prisma = {
+    agentStep: {
+      async findMany() {
+        return [
+          { stepNo: 1, toolName: 'resolve_chapter', output: { chapterId: 'c1' } },
+          { stepNo: 2, toolName: 'old_tool', output: { stale: true } },
+          { stepNo: 3, toolName: 'write_chapter', output: null },
+        ];
+      },
+    },
+  };
+  const tools = {
+    get(name: string) {
+      return createTool({ name, requiresApproval: false, riskLevel: 'low', sideEffects: [], outputSchema: { type: 'object' } });
+    },
+  };
+  const executor = new AgentExecutorService(prisma as never, tools as never, {} as never, {} as never) as unknown as {
+    loadSucceededOutputs: (agentRunId: string, mode: 'act', planVersion: number, steps: Array<{ stepNo: number; tool: string }>) => Promise<Record<number, unknown>>;
+  };
+  const outputs = await executor.loadSucceededOutputs('run1', 'act', 2, [
+    { stepNo: 1, tool: 'resolve_chapter' },
+    { stepNo: 2, tool: 'collect_chapter_context' },
+    { stepNo: 3, tool: 'write_chapter' },
+  ]);
+  assert.deepEqual(outputs, { 1: { chapterId: 'c1' } });
+});
+
+test('Trace 使用 mode + planVersion 隔离 Plan 预览、Act 执行和 replan 步骤', async () => {
+  const upserts: Array<{ agentRunId: string; stepNo: number; mode: string; planVersion: number }> = [];
+  const updates: Array<{ agentRunId: string; stepNo: number; mode: string; planVersion: number }> = [];
+  const prisma = {
+    agentStep: {
+      async upsert(args: { where: { agentRunId_mode_planVersion_stepNo: { agentRunId: string; stepNo: number; mode: string; planVersion: number } }; create: { mode: string } }) {
+        upserts.push(args.where.agentRunId_mode_planVersion_stepNo);
+      },
+      async update(args: { where: { agentRunId_mode_planVersion_stepNo: { agentRunId: string; stepNo: number; mode: string; planVersion: number } } }) {
+        updates.push(args.where.agentRunId_mode_planVersion_stepNo);
+      },
+    },
+  };
+  const trace = new AgentTraceService(prisma as never);
+  await trace.startStep('run1', 2, { stepType: 'tool', name: 'Plan 预览', toolName: 'collect_chapter_context', mode: 'plan', planVersion: 2 });
+  await trace.finishStep('run1', 2, { ok: true }, 'plan', 2);
+  await trace.startStep('run1', 2, { stepType: 'tool', name: 'Act 执行', toolName: 'collect_chapter_context', mode: 'act', planVersion: 2 });
+  await trace.finishStep('run1', 2, { ok: true }, 'act', 2);
+  assert.deepEqual(upserts, [
+    { agentRunId: 'run1', stepNo: 2, mode: 'plan', planVersion: 2 },
+    { agentRunId: 'run1', stepNo: 2, mode: 'act', planVersion: 2 },
+  ]);
+  assert.deepEqual(updates, [
+    { agentRunId: 'run1', stepNo: 2, mode: 'plan', planVersion: 2 },
+    { agentRunId: 'run1', stepNo: 2, mode: 'act', planVersion: 2 },
+  ]);
+});
+
+test('AgentRunsService 审计轨迹按时间聚合 Run/Plan/Approval/Step/Artifact', async () => {
+  const base = new Date('2026-04-27T00:00:00.000Z');
+  const prisma = {
+    agentRun: {
+      async findUnique() {
+        return {
+          id: 'run1',
+          goal: '帮我写第 1 章',
+          taskType: 'chapter_write',
+          status: 'failed',
+          input: {},
+          output: null,
+          error: '写入失败',
+          createdAt: base,
+          updatedAt: new Date(base.getTime() + 5000),
+          plans: [{ id: 'plan1', version: 1, status: 'waiting_approval', taskType: 'chapter_write', summary: '章节写作计划', risks: ['写入草稿'], requiredApprovals: [], createdAt: new Date(base.getTime() + 1000) }],
+          approvals: [{ id: 'approval1', approvalType: 'plan', status: 'approved', target: {}, comment: 'ok', createdAt: new Date(base.getTime() + 2000), approvedAt: new Date(base.getTime() + 2000) }],
+          steps: [{ id: 'step1', stepNo: 3, planVersion: 1, mode: 'act', name: '写入草稿', toolName: 'write_chapter', status: 'failed', input: {}, output: null, error: 'boom', createdAt: new Date(base.getTime() + 3000), startedAt: new Date(base.getTime() + 3000), finishedAt: new Date(base.getTime() + 4000) }],
+          artifacts: [{ id: 'artifact1', title: '诊断', artifactType: 'planner_diagnostics', status: 'final', sourceStepNo: null, createdAt: new Date(base.getTime() + 4500) }],
+        };
+      },
+    },
+  };
+  const service = new AgentRunsService(prisma as never, {} as never);
+  const events = await service.auditTrail('run1');
+  assert.deepEqual(events.map((event) => event.eventType), ['run_created', 'plan_created', 'approval_recorded', 'step_failed', 'artifact_created', 'current_status']);
+  assert.equal(events.find((event) => event.eventType === 'step_failed')?.severity, 'danger');
+});
+
+test('ValidateOutlineTool 生成写入前 diff，区分创建、更新和跳过章节', async () => {
+  const prisma = {
+    volume: { async findUnique() { return { title: '旧第一卷' }; } },
+    chapter: { async findMany() { return [{ chapterNo: 1, status: 'planned', title: '旧第 1 章' }, { chapterNo: 2, status: 'drafted', title: '旧第 2 章' }]; } },
+  };
+  const tool = new ValidateOutlineTool(prisma as never);
+  const result = await tool.run(
+    { preview: { volume: { volumeNo: 1, title: '新第一卷', synopsis: '卷简介', objective: '卷目标', chapterCount: 3 }, chapters: [{ chapterNo: 1, title: '一', objective: '目标', conflict: '冲突', hook: '钩子', outline: '梗概', expectedWordCount: 2000 }, { chapterNo: 2, title: '二', objective: '目标', conflict: '冲突', hook: '钩子', outline: '梗概', expectedWordCount: 2000 }, { chapterNo: 3, title: '三', objective: '目标', conflict: '冲突', hook: '钩子', outline: '梗概', expectedWordCount: 2000 }], risks: [] } },
+    { agentRunId: 'run1', projectId: 'p1', mode: 'plan', approved: false, outputs: {}, policy: {} },
+  );
+  assert.deepEqual(result.writePreview?.summary, { createCount: 1, updateCount: 1, skipCount: 1 });
+});
+
+test('ValidateImportedAssetsTool 生成导入写入前 diff，并标记重复/已存在资产', async () => {
+  const prisma = {
+    character: { async findMany() { return [{ name: '林岚' }]; } },
+    lorebookEntry: { async findMany() { return [{ title: '雾城' }]; } },
+    volume: { async findMany() { return [{ volumeNo: 1 }]; } },
+    chapter: { async findMany() { return [{ chapterNo: 1, status: 'drafted', title: '旧章' }]; } },
+  };
+  const tool = new ValidateImportedAssetsTool(prisma as never);
+  const result = await tool.run(
+    { preview: { projectProfile: { title: '项目' }, characters: [{ name: '林岚' }, { name: '林岚' }, { name: '沈砚' }], lorebookEntries: [{ title: '雾城', entryType: 'location', content: '旧城' }, { title: '灯塔', entryType: 'place', content: '信号' }], volumes: [{ volumeNo: 1, title: '卷一' }], chapters: [{ chapterNo: 1, title: '一' }, { chapterNo: 2, title: '二' }], risks: [] } },
+    { agentRunId: 'run1', projectId: 'p1', mode: 'plan', approved: false, outputs: {}, policy: {} },
+  );
+  assert.equal(result.writePreview?.summary.characterCreateCount, 1);
+  assert.equal(result.writePreview?.summary.characterSkipCount, 2);
+  assert.equal(result.writePreview?.summary.chapterCreateCount, 1);
+  assert.equal(result.writePreview?.summary.chapterSkipCount, 1);
+});
+
+test('CollectChapterContextTool 生成章节草稿、事实和记忆写入前预览', async () => {
+  const prisma = {
+    chapter: {
+      async findFirst() { return { id: 'c1', projectId: 'p1', chapterNo: 3, title: '第三章', objective: '目标', conflict: '冲突', outline: '梗概', expectedWordCount: 3000, project: { id: 'p1', title: '项目', genre: null, theme: null, tone: null, synopsis: null, outline: null } }; },
+      async findMany() { return []; },
+    },
+    character: { async findMany() { return []; } },
+    lorebookEntry: { async findMany() { return []; } },
+    memoryChunk: { async findMany() { return []; }, async count() { return 2; } },
+    chapterDraft: { async findFirst() { return { id: 'd1', versionNo: 4, content: '旧草稿内容'.repeat(120) }; } },
+    storyEvent: { async count() { return 3; } },
+    characterStateSnapshot: { async count() { return 1; } },
+    foreshadowTrack: { async count() { return 1; } },
+    validationIssue: { async findMany() { return [{ severity: 'error' }, { severity: 'warning' }]; } },
+  };
+  const tool = new CollectChapterContextTool(prisma as never);
+  const result = await tool.run({ chapterId: 'c1' }, { agentRunId: 'run1', projectId: 'p1', mode: 'plan', approved: false, outputs: {}, policy: {} });
+  assert.equal(result.writePreview.draft.action, 'create_new_version');
+  assert.equal(result.writePreview.draft.currentVersionNo, 4);
+  assert.equal(result.writePreview.facts.existingAutoEventCount, 3);
+  assert.equal(result.writePreview.memory.existingAutoMemoryCount, 2);
+  assert.equal(result.writePreview.validation.openErrorCount, 1);
+  assert.ok(result.writePreview.approvalRiskHints.some((item) => item.includes('切换为当前版本')));
+});
+
+test('PersistOutlineTool 阻止重复章节编号写入', async () => {
+  const tool = new PersistOutlineTool({} as never);
+  await assert.rejects(
+    () => tool.run({ preview: { volume: { volumeNo: 1, title: '卷一', synopsis: '卷简介', objective: '卷目标', chapterCount: 2 }, chapters: [{ chapterNo: 1, title: '一', objective: '目标', conflict: '冲突', hook: '钩子', outline: '梗概', expectedWordCount: 2000 }, { chapterNo: 1, title: '重复', objective: '目标', conflict: '冲突', hook: '钩子', outline: '梗概', expectedWordCount: 2000 }], risks: [] } }, { agentRunId: 'run1', projectId: 'p1', mode: 'act', approved: true, outputs: {}, policy: {} }),
+    /章节编号重复/,
+  );
 });
 
 test('Planner 确定性 baseline 优先识别大纲类目标', () => {
