@@ -476,6 +476,38 @@ textarea.input, textarea.input-field {
   background: rgba(6, 182, 212, 0.015);
 }
 
+/* ── 编辑器右下角浮动操作按钮组 ── */
+.editor-fab-btn {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.3rem;
+  padding: 0.65rem 1rem;
+  border: none;
+  background: transparent;
+  font-family: inherit;
+  font-size: 0.82rem;
+  font-weight: 700;
+  cursor: pointer;
+  white-space: nowrap;
+  transition: background 0.2s ease, color 0.2s ease, transform 0.15s ease;
+}
+.editor-fab-btn:hover:not(:disabled) {
+  background: var(--bg-hover-subtle);
+  transform: translateY(-1px);
+}
+.editor-fab-btn:disabled {
+  cursor: not-allowed;
+  opacity: 0.45;
+}
+/* 按钮之间的竖线分隔 */
+.editor-fab-divider {
+  display: block;
+  width: 1px;
+  height: 1.2rem;
+  background: var(--border-light);
+  flex-shrink: 0;
+}
+
 .select {
   appearance: none;
   background-image: url("data:image/svg+xml,%3csvg xmlns='http://www.w3.org/2000/svg' fill='none' viewBox='0 0 20 20'%3e%3cpath stroke='%236b7280' stroke-linecap='round' stroke-linejoin='round' stroke-width='1.5' d='M6 8l4 4 4-4'/%3e%3c/svg%3e");
@@ -842,6 +874,41 @@ textarea.input, textarea.input-field {
   transform: scale(1.05);
 }
 
+/* ── 新增会话按钮：使用轻量胶囊样式，强调“开启干净上下文”而不抢占主发送按钮。 ── */
+.agent-new-session-btn {
+  min-height: 30px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 0.32rem;
+  padding: 0.28rem 0.72rem;
+  border: 1px solid color-mix(in srgb, var(--agent-accent) 38%, var(--agent-border));
+  border-radius: 999px;
+  background:
+    linear-gradient(135deg, color-mix(in srgb, var(--agent-accent) 10%, transparent), transparent 62%),
+    var(--agent-glass);
+  color: var(--agent-text-accent);
+  font-family: inherit;
+  font-size: 0.72rem;
+  font-weight: 800;
+  letter-spacing: 0.04em;
+  cursor: pointer;
+  box-shadow: 0 8px 22px -18px var(--agent-accent);
+  transition: transform 0.2s ease, border-color 0.2s ease, background 0.2s ease, opacity 0.2s ease;
+}
+.agent-new-session-btn:hover:not(:disabled) {
+  border-color: var(--agent-border-strong);
+  background:
+    linear-gradient(135deg, color-mix(in srgb, var(--agent-accent) 16%, transparent), transparent 58%),
+    var(--agent-glass);
+  transform: translateY(-1px);
+}
+.agent-new-session-btn:disabled {
+  cursor: not-allowed;
+  opacity: 0.45;
+  transform: none;
+}
+
 /* ── Tab 切换栏 ── */
 .agent-tabs {
   display: flex;
@@ -955,6 +1022,11 @@ textarea.input, textarea.input-field {
   display: flex;
   flex-direction: column;
   gap: 0.75rem;
+  /* 限制高度使聊天区可滚动，避免消息堆积撑破面板 */
+  max-height: 60vh;
+  overflow-y: auto;
+  scroll-behavior: smooth;
+  padding-right: 0.25rem;
 }
 .agent-chat-row {
   display: flex;
@@ -1051,6 +1123,97 @@ textarea.input, textarea.input-field {
   display: flex;
   align-items: flex-start;
   gap: 0.4rem;
+}
+/* ── 用户消息气泡 — 右对齐、品牌渐变背景 ── */
+.agent-chat-bubble--user {
+  border-top-right-radius: 0.35rem;
+  border-top-left-radius: 1rem;
+  background:
+    linear-gradient(135deg, var(--agent-accent), var(--agent-accent-2));
+  border-color: color-mix(in srgb, var(--agent-accent) 50%, transparent);
+  color: #fff;
+}
+.theme-paper-ink .agent-chat-bubble--user,
+.theme-light .agent-chat-bubble--user {
+  color: #faf7f0;
+}
+.agent-chat-bubble--user:hover {
+  border-color: color-mix(in srgb, var(--agent-accent) 70%, transparent);
+  box-shadow: 0 4px 16px -6px var(--agent-accent);
+}
+/* 气泡内文字段落 */
+.agent-chat-bubble__text {
+  margin: 0;
+  white-space: pre-wrap;
+  word-break: break-word;
+}
+/* 气泡内时间戳 */
+.agent-chat-bubble__time {
+  display: block;
+  margin-top: 0.35rem;
+  font-size: 0.6rem;
+  opacity: 0.5;
+  text-align: right;
+  letter-spacing: 0.04em;
+}
+.agent-chat-bubble--plan {
+  max-width: min(100%, 28rem);
+  border-color: color-mix(in srgb, var(--agent-accent) 38%, var(--agent-border));
+  background:
+    linear-gradient(135deg, color-mix(in srgb, var(--agent-accent) 10%, transparent), transparent 45%),
+    var(--agent-glass);
+}
+.agent-chat-plan__goal {
+  margin-bottom: 0.45rem;
+  color: var(--agent-text-label);
+  font-size: 0.72rem;
+  line-height: 1.55;
+}
+.agent-chat-plan__summary {
+  margin: 0;
+  color: var(--text-muted);
+}
+.agent-chat-plan__steps,
+.agent-chat-plan__risks {
+  margin: 0.65rem 0 0;
+  padding: 0;
+  list-style: none;
+}
+.agent-chat-plan__steps li {
+  display: flex;
+  align-items: flex-start;
+  gap: 0.45rem;
+  padding: 0.28rem 0;
+  color: var(--text-muted);
+}
+.agent-chat-plan__step-no {
+  min-width: 1.25rem;
+  height: 1.25rem;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  border-radius: 999px;
+  border: 1px solid var(--agent-border);
+  color: var(--agent-text-accent);
+  font-size: 0.65rem;
+  font-weight: 800;
+  line-height: 1;
+}
+.agent-chat-plan__risks li {
+  margin-top: 0.35rem;
+  color: #fbbf24;
+  font-size: 0.72rem;
+  line-height: 1.55;
+}
+.agent-chat-confirm-hint {
+  margin-top: 0.7rem;
+  padding: 0.6rem 0.7rem;
+  border: 1px dashed color-mix(in srgb, var(--agent-accent) 48%, transparent);
+  border-radius: 0.75rem;
+  background: color-mix(in srgb, var(--agent-accent) 8%, transparent);
+  color: var(--agent-text-label);
+  font-size: 0.72rem;
+  line-height: 1.6;
 }
 /* 系统消息前的小圆点指示器 */
 .agent-chat-bubble__dot {
@@ -1316,6 +1479,265 @@ textarea.input, textarea.input-field {
 /* paper-ink 主题下滑块上文字更深 */
 .theme-paper-ink .agent-mode-toggle__btn--active {
   color: #faf7f0;
+}
+
+/* ── 审批控制台按钮组 ── */
+.agent-approval-risks {
+  margin: 0 0 0.85rem;
+  padding: 0.65rem 0.75rem;
+  list-style: none;
+  border-radius: 0.75rem;
+  border: 1px dashed color-mix(in srgb, #fbbf24 30%, var(--agent-border));
+  background: color-mix(in srgb, #fbbf24 6%, transparent);
+}
+.agent-approval-risks li {
+  display: flex;
+  align-items: flex-start;
+  gap: 0.4rem;
+  padding: 0.2rem 0;
+  font-size: 0.72rem;
+  line-height: 1.6;
+  color: #fbbf24;
+}
+.agent-approval-risks__icon {
+  flex-shrink: 0;
+  font-size: 0.7rem;
+}
+/* 操作按钮行 */
+.agent-approval-actions {
+  display: flex;
+  align-items: center;
+  gap: 0.5rem;
+  flex-wrap: wrap;
+}
+/* 按钮基础样式 */
+.agent-approval-btn {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.3rem;
+  padding: 0.55rem 1rem;
+  border-radius: 0.75rem;
+  font-family: inherit;
+  font-size: 0.78rem;
+  font-weight: 700;
+  cursor: pointer;
+  transition: all 0.2s ease;
+  white-space: nowrap;
+  border: 1.5px solid transparent;
+}
+.agent-approval-btn:disabled {
+  opacity: 0.4;
+  cursor: not-allowed;
+  transform: none !important;
+  filter: none !important;
+}
+/* 幽灵按钮 — 轻量级操作 */
+.agent-approval-btn--ghost {
+  background: transparent;
+}
+.agent-approval-btn--ghost:hover:not(:disabled) {
+  background: var(--agent-glass);
+  transform: translateY(-1px);
+}
+.agent-approval-btn--danger {
+  border-color: color-mix(in srgb, var(--status-err) 35%, transparent);
+  color: var(--status-err);
+}
+.agent-approval-btn--warn {
+  border-color: color-mix(in srgb, #fbbf24 35%, transparent);
+  color: #fbbf24;
+}
+/* 主操作按钮 — 醒目渐变 */
+.agent-approval-btn--primary {
+  border: none;
+  color: #fff;
+  background: linear-gradient(135deg, var(--agent-accent), var(--agent-accent-2));
+  box-shadow: 0 6px 20px -8px var(--agent-accent);
+}
+.agent-approval-btn--primary:hover:not(:disabled) {
+  transform: translateY(-1px);
+  filter: brightness(1.1);
+  box-shadow: 0 8px 24px -6px var(--agent-accent);
+}
+.theme-paper-ink .agent-approval-btn--primary,
+.theme-light .agent-approval-btn--primary {
+  color: #faf7f0;
+}
+/* 主按钮内旋转加载器 */
+.agent-approval-btn__spinner {
+  width: 12px;
+  height: 12px;
+  border: 2px solid rgba(255,255,255,0.3);
+  border-top-color: #fff;
+  border-radius: 50%;
+  animation: btnSpin 0.6s linear infinite;
+}
+/* 等待审批脉冲指示点 */
+.agent-approval-ready-dot {
+  position: relative;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 10px;
+  height: 10px;
+  border-radius: 50%;
+  background: var(--agent-accent);
+}
+.agent-approval-ready-dot__pulse {
+  position: absolute;
+  inset: -4px;
+  border-radius: 50%;
+  border: 2px solid var(--agent-accent);
+  opacity: 0;
+  animation: approvalPulse 2s ease-out infinite;
+}
+@keyframes approvalPulse {
+  0% { transform: scale(0.6); opacity: 0.7; }
+  100% { transform: scale(1.4); opacity: 0; }
+}
+
+/* ── 产物预览搜索框 ── */
+.agent-artifact-search {
+  width: 160px;
+  padding: 0.4rem 0.65rem;
+  border-radius: 0.65rem;
+  border: 1.5px solid var(--agent-border);
+  background: var(--agent-glass);
+  color: var(--text-main);
+  font-family: inherit;
+  font-size: 0.72rem;
+  outline: none;
+  transition: border-color 0.2s ease, box-shadow 0.2s ease;
+}
+.agent-artifact-search:focus {
+  border-color: var(--agent-border-strong);
+  box-shadow: 0 0 0 3px var(--agent-shadow-glow);
+}
+.agent-artifact-search::placeholder {
+  color: var(--agent-text-label);
+  opacity: 0.7;
+}
+
+/* ── 产物卡片 ── */
+.agent-artifact-card {
+  border-radius: 0.85rem;
+  border: 1px solid var(--agent-border);
+  background: var(--agent-glass);
+  transition: border-color 0.25s ease, box-shadow 0.25s ease;
+  overflow: hidden;
+}
+.agent-artifact-card[open] {
+  border-color: var(--agent-border-strong);
+  box-shadow: 0 4px 16px -8px var(--agent-shadow);
+}
+.agent-artifact-card__summary {
+  display: flex;
+  align-items: center;
+  gap: 0.5rem;
+  padding: 0.65rem 0.85rem;
+  cursor: pointer;
+  list-style: none;
+  transition: background 0.2s ease;
+}
+/* 隐藏默认三角 */
+.agent-artifact-card__summary::-webkit-details-marker { display: none; }
+.agent-artifact-card__summary::marker { display: none; content: ''; }
+.agent-artifact-card__summary:hover {
+  background: color-mix(in srgb, var(--agent-accent) 5%, transparent);
+}
+.agent-artifact-card__icon {
+  font-size: 0.9rem;
+  flex-shrink: 0;
+}
+.agent-artifact-card__title {
+  flex: 1;
+  font-size: 0.8rem;
+  font-weight: 700;
+  color: var(--text-main);
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.agent-artifact-card__type {
+  padding: 0.15rem 0.45rem;
+  border-radius: 999px;
+  border: 1px solid var(--agent-border);
+  font-size: 0.6rem;
+  font-weight: 600;
+  color: var(--agent-text-label);
+  white-space: nowrap;
+  letter-spacing: 0.02em;
+  flex-shrink: 0;
+}
+.agent-artifact-card__arrow {
+  color: var(--agent-text-label);
+  font-size: 0.7rem;
+  transition: transform 0.25s ease;
+  flex-shrink: 0;
+}
+.agent-artifact-card[open] > .agent-artifact-card__summary .agent-artifact-card__arrow {
+  transform: rotate(90deg);
+}
+.agent-artifact-card__body {
+  padding: 0.75rem 0.85rem;
+  border-top: 1px solid var(--agent-border);
+}
+.agent-artifact-card__json-toggle {
+  margin-top: 0.65rem;
+  padding-top: 0.55rem;
+  border-top: 1px dashed var(--agent-border);
+}
+.agent-artifact-card__json {
+  margin-top: 0.5rem;
+  padding: 0.65rem;
+  border-radius: 0.5rem;
+  background: color-mix(in srgb, var(--agent-glass) 50%, transparent);
+  color: var(--agent-text-label);
+  font-size: 0.68rem;
+  line-height: 1.55;
+  white-space: pre-wrap;
+  word-break: break-all;
+  overflow: auto;
+  max-height: 18rem;
+}
+
+/* ── 历史 Run 列表项 ── */
+.agent-history-item {
+  display: block;
+  width: 100%;
+  padding: 0.65rem 0.85rem;
+  border-radius: 0.85rem;
+  border: 1px solid var(--agent-border);
+  background: var(--agent-glass);
+  text-align: left;
+  cursor: pointer;
+  font-family: inherit;
+  transition: border-color 0.2s ease, background 0.2s ease, transform 0.15s ease, box-shadow 0.2s ease;
+}
+.agent-history-item:hover {
+  border-color: var(--agent-border-strong);
+  background: color-mix(in srgb, var(--agent-accent) 5%, var(--agent-glass));
+  transform: translateY(-1px);
+  box-shadow: 0 4px 12px -6px var(--agent-shadow);
+}
+/* 状态标签 */
+.agent-history-item__status {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.3rem;
+  padding: 0.15rem 0.45rem;
+  border-radius: 999px;
+  border: 1px solid;
+  font-size: 0.62rem;
+  font-weight: 700;
+  letter-spacing: 0.04em;
+}
+.agent-history-item__dot {
+  width: 5px;
+  height: 5px;
+  border-radius: 50%;
+  flex-shrink: 0;
 }
 
 /* ─── Document-Editor Layout for Guided Wizard ─── */

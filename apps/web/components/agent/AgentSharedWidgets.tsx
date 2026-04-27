@@ -1,6 +1,6 @@
 'use client';
 
-import { AgentPlanPayload, AgentPlanRecord, AgentRun } from '../../hooks/useAgentRun';
+import type { AgentPlanPayload, AgentPlanRecord, AgentRun } from '../../hooks/useAgentRun';
 
 // ────────────────────────────────────────────
 // 通用值处理工具函数

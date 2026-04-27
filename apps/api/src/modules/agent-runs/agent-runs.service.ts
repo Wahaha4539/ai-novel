@@ -3,11 +3,13 @@ import { Prisma } from '@prisma/client';
 import { PrismaService } from '../../prisma/prisma.service';
 import { CreateAgentPlanDto, ReplanAgentRunDto } from './dto/create-agent-plan.dto';
 import { ExecuteAgentRunDto } from './dto/execute-agent-run.dto';
+import { InterpretAgentMessageDto } from './dto/interpret-agent-message.dto';
+import { AgentMessageIntentService } from './agent-message-intent.service';
 import { AgentRuntimeService } from './agent-runtime.service';
 
 @Injectable()
 export class AgentRunsService {
-  constructor(private readonly prisma: PrismaService, private readonly runtime: AgentRuntimeService) {}
+  constructor(private readonly prisma: PrismaService, private readonly runtime: AgentRuntimeService, private readonly messageIntent: AgentMessageIntentService) {}
 
   /**
    * 从现有 Run/Plan/Step/Approval/Artifact 表派生审计事件。
@@ -117,6 +119,27 @@ export class AgentRunsService {
     };
   }
 
+  /**
+   * 前端“全选已声明审批步骤”代表审批整份计划；执行时传 undefined 让 Executor 按全局审批处理。
+   * 这样可兼容旧 Plan 中 requiredApprovals 遗漏了后续写入 Tool 的情况，避免重试在新策略下误判未审批。
+   */
+  private async normalizeApprovedStepScope(agentRunId: string, approvedStepNos?: number[]) {
+    if (!approvedStepNos?.length) return approvedStepNos;
+    const latestPlan = await this.prisma.agentPlan.findFirst({ where: { agentRunId }, orderBy: { version: 'desc' }, select: { requiredApprovals: true } });
+    const requiredStepNos = this.extractRequiredStepNos(latestPlan?.requiredApprovals);
+    if (requiredStepNos.length && requiredStepNos.every((stepNo) => approvedStepNos.includes(stepNo))) return undefined;
+    return approvedStepNos;
+  }
+
+  private extractRequiredStepNos(value: unknown): number[] {
+    if (!Array.isArray(value)) return [];
+    return [...new Set(value.flatMap((item) => {
+      const target = item && typeof item === 'object' ? (item as Record<string, unknown>).target : undefined;
+      const stepNos = target && typeof target === 'object' ? (target as Record<string, unknown>).stepNos : undefined;
+      return Array.isArray(stepNos) ? stepNos.filter((stepNo): stepNo is number => typeof stepNo === 'number' && Number.isInteger(stepNo)) : [];
+    }))].sort((a, b) => a - b);
+  }
+
   /** 返回已有 Run 的最新可展示结果，用于前端重试 createPlan 时实现请求级幂等。 */
   private async buildExistingRunResponse(agentRunId: string) {
     const record = await this.get(agentRunId);
@@ -161,8 +184,14 @@ export class AgentRunsService {
     if (!dto.approval) throw new BadRequestException('执行 Act 前必须审批计划');
     if (!['waiting_approval', 'waiting_review'].includes(run.status)) throw new BadRequestException(`当前状态 ${run.status} 不能执行 Act，请重新规划或使用重试入口`);
 
+    const effectiveApprovedStepNos = await this.normalizeApprovedStepScope(id, dto.approvedStepNos);
     await this.prisma.agentApproval.create({ data: { agentRunId: id, approvalType: 'plan', status: 'approved', target: this.buildApprovalTarget(dto.approvedStepNos, dto.confirmation, 'all'), approvedAt: new Date(), comment: dto.comment } });
-    return this.runtime.act(id, dto.approvedStepNos, dto.confirmation);
+    return this.runtime.act(id, effectiveApprovedStepNos, dto.confirmation);
+  }
+
+  /** 使用 LLM 判断聊天消息是否是在确认执行当前计划；该接口只判定，不直接执行 Tool。 */
+  interpretMessage(id: string, dto: InterpretAgentMessageDto) {
+    return this.messageIntent.interpret(id, dto.message);
   }
 
   async retry(id: string, dto: ExecuteAgentRunDto) {
@@ -171,8 +200,9 @@ export class AgentRunsService {
     if (!['failed', 'waiting_review'].includes(run.status)) throw new BadRequestException('只有 failed 或 waiting_review 状态可以重试执行');
     if (!dto.approval) throw new BadRequestException('重试 Act 前必须重新审批计划');
 
+    const effectiveApprovedStepNos = await this.normalizeApprovedStepScope(id, dto.approvedStepNos);
     await this.prisma.agentApproval.create({ data: { agentRunId: id, approvalType: 'retry', status: 'approved', target: this.buildApprovalTarget(dto.approvedStepNos, dto.confirmation, 'all'), approvedAt: new Date(), comment: dto.comment } });
-    return this.runtime.act(id, dto.approvedStepNos, dto.confirmation);
+    return this.runtime.act(id, effectiveApprovedStepNos, dto.confirmation);
   }
 
   /** 兼容设计文档中的步骤级审批接口：记录审批范围，真正执行仍由 /act 触发。 */

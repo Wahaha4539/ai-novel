@@ -4,9 +4,10 @@ import { ToolRegistryService } from '../agent-tools/tool-registry.service';
 import { RuleEngineService } from '../agent-rules/rule-engine.service';
 import { SkillRegistryService } from '../agent-skills/skill-registry.service';
 import { LlmGatewayService } from '../llm/llm-gateway.service';
-import { AgentExecutorService } from './agent-executor.service';
+import { AgentExecutorService, AgentWaitingReviewError } from './agent-executor.service';
+import { AgentRuntimeService } from './agent-runtime.service';
 import { AgentPlannerService } from './agent-planner.service';
-import { AgentPolicyService } from './agent-policy.service';
+import { AgentPolicyService, AgentSecondConfirmationRequiredError } from './agent-policy.service';
 import { AgentTraceService } from './agent-trace.service';
 import { AgentRunsService } from './agent-runs.service';
 import { GenerateChapterService } from '../generation/generate-chapter.service';
@@ -81,6 +82,10 @@ test('Policy 要求事实层/高风险 Tool 二次确认', () => {
   assert.throws(
     () => policy.assertAllowed(tool, { agentRunId: 'run1', projectId: 'p1', mode: 'act', approved: true, outputs: {}, policy: {} }, ['extract_chapter_facts']),
     /需要二次确认/,
+  );
+  assert.throws(
+    () => policy.assertAllowed(tool, { agentRunId: 'run1', projectId: 'p1', mode: 'act', approved: true, outputs: {}, policy: {} }, ['extract_chapter_facts']),
+    AgentSecondConfirmationRequiredError,
   );
   assert.doesNotThrow(() => policy.assertAllowed(tool, { agentRunId: 'run1', projectId: 'p1', mode: 'act', approved: true, outputs: {}, policy: { confirmation: { confirmHighRisk: true } } }, ['extract_chapter_facts']));
   assert.doesNotThrow(() =>
@@ -176,6 +181,49 @@ test('Executor 在 Run 被取消后停止后续步骤', async () => {
     /已取消/,
   );
   assert.equal(lookupCount, 2);
+});
+
+test('Executor 将二次确认缺失转换为等待复核而不是执行失败', async () => {
+  const reviewed: Array<{ stepNo: number; error: unknown }> = [];
+  const prisma = {
+    agentRun: { async findUnique(args: { select?: { status?: boolean } }) { return args.select?.status ? { status: 'acting' } : { id: 'run1', projectId: 'p1', chapterId: null, status: 'acting' }; } },
+  };
+  const tools = { get: () => createTool({ name: 'fact_validation', requiresApproval: true, sideEffects: ['replace_fact_rule_validation_issues'] }) };
+  const policy = {
+    assertPlanExecutable() {},
+    assertAllowed() { throw new AgentSecondConfirmationRequiredError('fact_validation', ['destructive_side_effect', 'fact_layer_write']); },
+  };
+  const trace = {
+    startStep() {},
+    finishStep() {},
+    failStep() { throw new Error('二次确认不应记录为 failed step'); },
+    reviewStep(_agentRunId: string, stepNo: number, error: unknown) { reviewed.push({ stepNo, error }); },
+  };
+  const executor = new AgentExecutorService(prisma as never, tools as never, policy as never, trace as never);
+
+  await assert.rejects(
+    () => executor.execute('run1', [{ stepNo: 1, name: '事实校验', tool: 'fact_validation', mode: 'act', requiresApproval: true, args: {} }], { mode: 'act', approved: true }),
+    /需要二次确认/,
+  );
+  assert.equal(reviewed.length, 1);
+  assert.equal(reviewed[0].stepNo, 1);
+});
+
+test('Runtime 遇到等待复核异常时保持 Run 为 waiting_review', async () => {
+  const updates: Array<Record<string, unknown>> = [];
+  const prisma = {
+    agentPlan: { async findFirst() { return { version: 1, taskType: 'chapter_write', steps: [] }; } },
+    agentRun: {
+      async updateMany(args: { data: Record<string, unknown> }) { updates.push(args.data); return { count: 1 }; },
+      async update(args: { data: Record<string, unknown> }) { updates.push(args.data); return { id: 'run1', status: args.data.status, error: args.data.error }; },
+    },
+  };
+  const executor = { async execute() { throw new AgentWaitingReviewError('工具 fact_validation 命中风险 destructive_side_effect, fact_layer_write，需要二次确认'); } };
+  const runtime = new AgentRuntimeService(prisma as never, {} as never, executor as never, {} as never);
+
+  const result = await runtime.act('run1');
+  assert.equal(result.status, 'waiting_review');
+  assert.ok(updates.some((item) => item.status === 'waiting_review'));
 });
 
 test('Executor 重试只复用当前计划中同 stepNo 且同 toolName 的成功输出', async () => {
@@ -298,7 +346,7 @@ test('AgentRunsService 审计轨迹按时间聚合 Run/Plan/Approval/Step/Artifa
       },
     },
   };
-  const service = new AgentRunsService(prisma as never, {} as never);
+  const service = new AgentRunsService(prisma as never, {} as never, {} as never);
   const events = await service.auditTrail('run1');
   assert.deepEqual(events.map((event) => event.eventType), ['run_created', 'plan_created', 'approval_recorded', 'step_failed', 'artifact_created', 'current_status']);
   assert.equal(events.find((event) => event.eventType === 'step_failed')?.severity, 'danger');
@@ -397,7 +445,8 @@ test('Planner 归一化 LLM Plan 时强制使用 act mode', () => {
 });
 
 test('Planner 接受 LLM 语义判定的 taskType，不再被后端 baseline 锁死', () => {
-  const tools = { list: () => [createTool({ name: 'resolve_chapter', requiresApproval: false, sideEffects: [] }), createTool({ name: 'collect_chapter_context', requiresApproval: false, sideEffects: [] }), createTool({ name: 'write_chapter' })] } as unknown as ToolRegistryService;
+  const toolNames = ['resolve_chapter', 'collect_chapter_context', 'write_chapter', 'polish_chapter', 'fact_validation', 'auto_repair_chapter', 'extract_chapter_facts', 'rebuild_memory', 'review_memory'];
+  const tools = { list: () => toolNames.map((name) => createTool({ name, requiresApproval: !['resolve_chapter', 'collect_chapter_context'].includes(name), sideEffects: name === 'resolve_chapter' || name === 'collect_chapter_context' ? [] : ['write'] })) } as unknown as ToolRegistryService;
   const planner = new AgentPlannerService(new SkillRegistryService(), tools, new RuleEngineService(), {} as LlmGatewayService) as unknown as {
     validateAndNormalizeLlmPlan: (data: unknown, baseline: { taskType: string; summary: string; assumptions: string[]; risks: string[] }) => { taskType: string; steps: Array<{ tool: string }> };
   };
@@ -417,7 +466,115 @@ test('Planner 接受 LLM 语义判定的 taskType，不再被后端 baseline 锁
   );
 
   assert.equal(plan.taskType, 'chapter_write');
-  assert.deepEqual(plan.steps.map((step) => step.tool), ['resolve_chapter', 'collect_chapter_context', 'write_chapter']);
+  assert.deepEqual(plan.steps.slice(0, 3).map((step) => step.tool), ['resolve_chapter', 'collect_chapter_context', 'write_chapter']);
+});
+
+test('Planner 为 write_chapter 强制追加章节质量门禁链路', () => {
+  const toolNames = ['resolve_chapter', 'collect_chapter_context', 'write_chapter', 'polish_chapter', 'fact_validation', 'auto_repair_chapter', 'extract_chapter_facts', 'rebuild_memory', 'review_memory'];
+  const tools = { list: () => toolNames.map((name) => createTool({ name, requiresApproval: !['resolve_chapter', 'collect_chapter_context'].includes(name), sideEffects: name === 'resolve_chapter' || name === 'collect_chapter_context' ? [] : ['write'] })) } as unknown as ToolRegistryService;
+  const planner = new AgentPlannerService(new SkillRegistryService(), tools, new RuleEngineService(), {} as LlmGatewayService) as unknown as {
+    validateAndNormalizeLlmPlan: (data: unknown, baseline: { taskType: string; summary: string; assumptions: string[]; risks: string[] }) => { steps: Array<{ stepNo: number; tool: string; args: Record<string, unknown>; runIf?: { ref: string; operator: string; value?: unknown } }> };
+  };
+
+  const plan = planner.validateAndNormalizeLlmPlan(
+    {
+      taskType: 'chapter_write',
+      summary: '章节写作计划',
+      assumptions: [],
+      risks: [],
+      steps: [
+        { stepNo: 1, name: '解析章节', tool: 'resolve_chapter', mode: 'act', requiresApproval: false, args: { chapterNo: 1 } },
+        { stepNo: 2, name: '收集上下文', tool: 'collect_chapter_context', mode: 'act', requiresApproval: false, args: { chapterId: '{{steps.1.output.chapterId}}' } },
+        { stepNo: 3, name: '写正文', tool: 'write_chapter', mode: 'act', requiresApproval: true, args: { chapterId: '{{steps.1.output.chapterId}}', context: '{{steps.2.output}}', instruction: '帮我写第一章内容' } },
+      ],
+    },
+    { taskType: 'general', summary: 'fallback', assumptions: [], risks: [] },
+  );
+
+  assert.deepEqual(plan.steps.map((step) => step.tool), [
+    'resolve_chapter',
+    'collect_chapter_context',
+    'write_chapter',
+    'polish_chapter',
+    'fact_validation',
+    'auto_repair_chapter',
+    'polish_chapter',
+    'fact_validation',
+    'auto_repair_chapter',
+    'extract_chapter_facts',
+    'rebuild_memory',
+    'review_memory',
+  ]);
+  assert.equal(plan.steps[3].args.draftId, '{{runtime.currentDraftId}}');
+  assert.deepEqual(plan.steps[6].runIf, { ref: '{{steps.5.output.createdCount}}', operator: 'gt', value: 0 });
+  assert.equal(plan.steps[8].args.issues, '{{steps.8.output.issues}}');
+});
+
+test('Executor 使用运行时最新草稿指针并跳过无问题的二次修复链路', async () => {
+  const executed: Array<{ name: string; args: Record<string, unknown> }> = [];
+  const skipped: number[] = [];
+  const prisma = {
+    agentRun: {
+      async findUnique(args: { select?: { status?: boolean } }) {
+        return args.select?.status ? { status: 'acting' } : { id: 'run1', projectId: 'p1', chapterId: null, status: 'acting' };
+      },
+    },
+  };
+  const outputsByTool: Record<string, unknown> = {
+    write_chapter: { chapterId: 'c1', draftId: 'draft-write', versionNo: 1, actualWordCount: 1000 },
+    polish_chapter: { chapterId: 'c1', draftId: 'draft-polish', polishedWordCount: 1000 },
+    fact_validation: { deletedCount: 0, createdCount: 0, factCounts: {}, issues: [] },
+    auto_repair_chapter: { skipped: true, reason: 'no_repairable_issues', chapterId: 'c1', draftId: 'draft-polish', repairedWordCount: 1000, repairedIssueCount: 0, maxRounds: 1 },
+    extract_chapter_facts: { chapterId: 'c1', draftId: 'draft-polish', summary: '摘要', createdEvents: 1, createdCharacterStates: 0, createdForeshadows: 0 },
+    rebuild_memory: { createdCount: 1, deletedCount: 0, embeddingAttachedCount: 0, chunks: [] },
+    review_memory: { reviewedCount: 0, confirmedCount: 0, rejectedCount: 0, skippedCount: 0, decisions: [] },
+  };
+  const tools = {
+    get(name: string) {
+      return createTool({ name, requiresApproval: false, riskLevel: 'low', sideEffects: [], outputSchema: { type: 'object' }, async run(args: Record<string, unknown>) { executed.push({ name, args }); return outputsByTool[name] ?? {}; } });
+    },
+  };
+  const policy = { assertPlanExecutable() {}, assertAllowed() {} };
+  const trace = { startStep() {}, finishStep() {}, failStep() {}, skipStep(_agentRunId: string, stepNo: number) { skipped.push(stepNo); } };
+  const executor = new AgentExecutorService(prisma as never, tools as never, policy as never, trace as never);
+  await executor.execute(
+    'run1',
+    [
+      { stepNo: 1, name: '写正文', tool: 'write_chapter', mode: 'act', requiresApproval: false, args: {} },
+      { stepNo: 2, name: '润色', tool: 'polish_chapter', mode: 'act', requiresApproval: false, args: { chapterId: '{{runtime.currentChapterId}}', draftId: '{{runtime.currentDraftId}}' } },
+      { stepNo: 3, name: '校验', tool: 'fact_validation', mode: 'act', requiresApproval: false, args: { chapterId: '{{runtime.currentChapterId}}' } },
+      { stepNo: 4, name: '修复', tool: 'auto_repair_chapter', mode: 'act', requiresApproval: false, args: { chapterId: '{{runtime.currentChapterId}}', draftId: '{{runtime.currentDraftId}}', issues: '{{steps.3.output.issues}}', maxRounds: 1 } },
+      { stepNo: 5, name: '二次润色', tool: 'polish_chapter', mode: 'act', requiresApproval: false, runIf: { ref: '{{steps.3.output.createdCount}}', operator: 'gt', value: 0 }, args: { chapterId: '{{runtime.currentChapterId}}', draftId: '{{runtime.currentDraftId}}' } },
+      { stepNo: 6, name: '抽取事实', tool: 'extract_chapter_facts', mode: 'act', requiresApproval: false, args: { chapterId: '{{runtime.currentChapterId}}', draftId: '{{runtime.currentDraftId}}' } },
+      { stepNo: 7, name: '重建记忆', tool: 'rebuild_memory', mode: 'act', requiresApproval: false, args: { chapterId: '{{runtime.currentChapterId}}', draftId: '{{runtime.currentDraftId}}' } },
+      { stepNo: 8, name: '复核记忆', tool: 'review_memory', mode: 'act', requiresApproval: false, args: { chapterId: '{{runtime.currentChapterId}}' } },
+    ],
+    { mode: 'act', approved: true },
+  );
+
+  assert.deepEqual(skipped, [5]);
+  assert.equal(executed.find((item) => item.name === 'polish_chapter')?.args.draftId, 'draft-write');
+  assert.equal(executed.find((item) => item.name === 'auto_repair_chapter')?.args.draftId, 'draft-polish');
+  assert.equal(executed.find((item) => item.name === 'extract_chapter_facts')?.args.draftId, 'draft-polish');
+});
+
+test('AgentRunsService 全选 requiredApprovals 时将重试审批提升为整份计划审批', async () => {
+  let receivedApprovedStepNos: number[] | undefined = [0];
+  const prisma = {
+    agentRun: { async findUnique() { return { id: 'run1', status: 'failed' }; } },
+    agentPlan: { async findFirst() { return { requiredApprovals: [{ target: { stepNos: [3, 4] } }] }; } },
+    agentApproval: { async create() { return {}; } },
+  };
+  const runtime = {
+    async act(_id: string, approvedStepNos?: number[]) {
+      receivedApprovedStepNos = approvedStepNos;
+      return { id: 'run1', status: 'succeeded' };
+    },
+  };
+  const service = new AgentRunsService(prisma as never, runtime as never, {} as never);
+  await service.retry('run1', { approval: true, approvedStepNos: [3, 4], confirmation: { confirmHighRisk: true } });
+
+  assert.equal(receivedApprovedStepNos, undefined);
 });
 
 async function main() {

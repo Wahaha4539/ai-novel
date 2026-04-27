@@ -3,6 +3,17 @@ import { RuleEngineService } from '../agent-rules/rule-engine.service';
 import { BaseTool, ToolContext } from '../agent-tools/base-tool';
 import { AgentPlanStepSpec } from './agent-planner.service';
 
+/**
+ * 表示 Tool 已通过基础审批，但仍缺少高风险/事实层写入的二次确认。
+ * 这不是执行失败，应由 Runtime 映射为 waiting_review，等待用户补充确认。
+ */
+export class AgentSecondConfirmationRequiredError extends Error {
+  constructor(readonly toolName: string, readonly riskIds: string[]) {
+    super(`工具 ${toolName} 命中风险 ${riskIds.join(', ')}，需要二次确认`);
+    this.name = 'AgentSecondConfirmationRequiredError';
+  }
+}
+
 /** 执行硬策略校验，确保 Plan/Act 边界和审批规则不会被 Planner 输出绕过。 */
 @Injectable()
 export class AgentPolicyService {
@@ -25,7 +36,7 @@ export class AgentPolicyService {
     const confirmedIds = new Set(confirmation?.confirmedRiskIds ?? []);
     const requiresSecondConfirm = riskIds.some((riskId) => this.rules.getPolicy().secondConfirmRiskIds.includes(riskId));
     if (context.mode === 'act' && requiresSecondConfirm && !confirmation?.confirmHighRisk && !riskIds.every((riskId) => confirmedIds.has(riskId))) {
-      throw new BadRequestException(`工具 ${tool.name} 命中风险 ${riskIds.join(', ')}，需要二次确认`);
+      throw new AgentSecondConfirmationRequiredError(tool.name, riskIds);
     }
   }
 

@@ -154,41 +154,6 @@ export function EditorPanel({ selectedProject, selectedChapterId, chapters, draf
             <span className="text-xs font-medium text-slate-500">
               正文：{wordCount.toLocaleString()} 字
             </span>
-            {/* AI Generate button — single chapter */}
-            {!isGlobal && (
-              <button
-                onClick={handleGenerate}
-                disabled={isGenerating}
-                className="btn-generate"
-                style={{
-                  display: 'flex',
-                  alignItems: 'center',
-                  gap: '0.4rem',
-                  padding: '0.4rem 1rem',
-                  borderRadius: '0.5rem',
-                  fontSize: '0.8rem',
-                  fontWeight: 600,
-                  cursor: isGenerating ? 'wait' : 'pointer',
-                  border: '1px solid',
-                  borderColor: isGenerating ? 'var(--border-light)' : 'var(--accent-cyan)',
-                  background: isGenerating
-                    ? 'var(--bg-card)'
-                    : 'var(--accent-cyan-bg)',
-                  color: isGenerating ? 'var(--text-muted)' : 'var(--accent-cyan)',
-                  transition: 'all 0.2s ease',
-                  boxShadow: isGenerating ? 'none' : '0 0 12px var(--accent-cyan-glow)',
-                }}
-              >
-                {isGenerating ? (
-                  <>
-                    <span className="animate-spin" style={{ display: 'inline-block', width: '14px', height: '14px', border: '2px solid var(--text-muted)', borderTopColor: 'var(--accent-cyan)', borderRadius: '50%' }} />
-                    {gen.state === 'generating' ? '提交中…' : '生成中…'}
-                  </>
-                ) : (
-                  <>🤖 AI 生成</>
-                )}
-              </button>
-            )}
           </div>
         </div>
       </header>
@@ -258,81 +223,65 @@ export function EditorPanel({ selectedProject, selectedChapterId, chapters, draf
         )}
       </div>
 
-      {/* 章节详情页右下角主操作入口：恢复用户在正文页完成/生成的固定触达点。 */}
+      {/* 章节详情页右下角操作组：完成、AI审核、AI生成 合并为横向紧凑按钮条 */}
       {showFloatingActions && (
         <div
-          className="animate-fade-in"
+          className="editor-fab-group animate-fade-in"
           style={{
             position: 'absolute',
             right: '2rem',
             bottom: '1.5rem',
             zIndex: 30,
             display: 'flex',
-            flexDirection: 'column',
-            alignItems: 'flex-end',
-            gap: '0.65rem',
-            pointerEvents: 'none',
+            alignItems: 'center',
+            gap: 0,
+            borderRadius: '999px',
+            border: '1px solid var(--border-light)',
+            background: 'var(--bg-card)',
+            backdropFilter: 'blur(20px)',
+            boxShadow: '0 8px 32px rgba(0,0,0,0.12), 0 0 0 1px var(--border-light)',
+            overflow: 'hidden',
           }}
         >
+          {/* 完成 */}
           <button
             type="button"
             onClick={handleMarkComplete}
             disabled={!onMarkChapterComplete || isMarkingComplete || isGenerating || isAutoMaintaining}
+            className="editor-fab-btn"
             style={{
-              pointerEvents: 'auto',
-              padding: '0.85rem 1.25rem',
-              borderRadius: '999px',
-              border: '1px solid rgba(16, 185, 129, 0.45)',
-              background: isMarkingComplete ? 'var(--bg-card)' : 'rgba(16, 185, 129, 0.14)',
               color: isMarkingComplete ? 'var(--text-muted)' : '#10b981',
-              fontSize: '0.9rem',
-              fontWeight: 700,
-              cursor: !onMarkChapterComplete || isMarkingComplete || isGenerating || isAutoMaintaining ? 'wait' : 'pointer',
-              boxShadow: isMarkingComplete ? 'none' : '0 10px 28px rgba(16, 185, 129, 0.22)',
-              backdropFilter: 'blur(16px)',
             }}
           >
             {isMarkingComplete ? '✅ 标记中…' : '✅ 完成'}
           </button>
+          {/* 分隔线 */}
+          <span className="editor-fab-divider" />
+          {/* AI 审核 */}
           <button
             type="button"
             onClick={handleRunAiReview}
             disabled={!onRunAutoMaintenance || isAutoMaintaining || isGenerating || isMarkingComplete}
+            className="editor-fab-btn"
             style={{
-              pointerEvents: 'auto',
-              padding: '0.85rem 1.25rem',
-              borderRadius: '999px',
-              border: '1px solid rgba(245, 158, 11, 0.45)',
-              background: isAutoMaintaining ? 'var(--bg-card)' : 'rgba(245, 158, 11, 0.14)',
               color: isAutoMaintaining ? 'var(--text-muted)' : '#f59e0b',
-              fontSize: '0.9rem',
-              fontWeight: 700,
-              cursor: !onRunAutoMaintenance || isAutoMaintaining || isGenerating || isMarkingComplete ? 'wait' : 'pointer',
-              boxShadow: isAutoMaintaining ? 'none' : '0 10px 28px rgba(245, 158, 11, 0.22)',
-              backdropFilter: 'blur(16px)',
             }}
           >
-            {isAutoMaintaining ? '🤖 AI审核中…' : '🤖 AI审核'}
+            {isAutoMaintaining ? '🤖 审核中…' : '🤖 AI审核'}
           </button>
+          {/* 分隔线 */}
+          <span className="editor-fab-divider" />
+          {/* AI 生成 */}
           <button
             type="button"
             onClick={handleGenerate}
             disabled={isGenerating || isAutoMaintaining || isMarkingComplete}
+            className="editor-fab-btn"
             style={{
-              pointerEvents: 'auto',
-              padding: '0.85rem 1.25rem',
-              borderRadius: '999px',
-              border: '1px solid var(--accent-cyan)',
-              background: isGenerating ? 'var(--bg-card)' : 'var(--accent-cyan-bg)',
               color: isGenerating ? 'var(--text-muted)' : 'var(--accent-cyan)',
-              fontSize: '0.9rem',
-              fontWeight: 700,
-              cursor: isGenerating || isAutoMaintaining || isMarkingComplete ? 'wait' : 'pointer',
-              boxShadow: isGenerating ? 'none' : '0 10px 28px var(--accent-cyan-glow)',
-              backdropFilter: 'blur(16px)',
             }}
           >
-            {isGenerating ? '🤖 AI生成中…' : '🤖 AI生成'}
+            {isGenerating ? '🤖 生成中…' : '🤖 AI生成'}
           </button>
         </div>
       )}

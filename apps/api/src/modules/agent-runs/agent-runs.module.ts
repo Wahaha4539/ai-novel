@@ -5,6 +5,7 @@ import { AgentSkillsModule } from '../agent-skills/agent-skills.module';
 import { AgentToolsModule } from '../agent-tools/agent-tools.module';
 import { LlmModule } from '../llm/llm.module';
 import { AgentExecutorService } from './agent-executor.service';
+import { AgentMessageIntentService } from './agent-message-intent.service';
 import { AgentPlannerService } from './agent-planner.service';
 import { AgentPolicyService } from './agent-policy.service';
 import { AgentRunsController } from './agent-runs.controller';
@@ -15,6 +16,6 @@ import { AgentTraceService } from './agent-trace.service';
 @Module({
   imports: [PrismaModule, AgentToolsModule, AgentSkillsModule, AgentRulesModule, LlmModule],
   controllers: [AgentRunsController],
-  providers: [AgentRunsService, AgentRuntimeService, AgentPlannerService, AgentExecutorService, AgentPolicyService, AgentTraceService],
+  providers: [AgentRunsService, AgentRuntimeService, AgentPlannerService, AgentMessageIntentService, AgentExecutorService, AgentPolicyService, AgentTraceService],
 })
 export class AgentRunsModule {}

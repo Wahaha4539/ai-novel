@@ -11,6 +11,13 @@ export interface AgentPlanStepSpec {
   mode: 'act';
   requiresApproval: boolean;
   args: Record<string, unknown>;
+  runIf?: AgentStepCondition;
+}
+
+export interface AgentStepCondition {
+  ref: string;
+  operator: 'exists' | 'not_exists' | 'truthy' | 'falsy' | 'eq' | 'neq' | 'gt' | 'gte' | 'lt' | 'lte';
+  value?: unknown;
 }
 
 export interface AgentPlanSpec {
@@ -223,6 +230,7 @@ export class AgentPlannerService {
       if (!registeredTools.has(tool)) throw new Error(`LLM Plan 使用未注册工具：${tool}`);
       const args = this.asRecord(step.args);
       this.assertArgsOnlyReferencePreviousSteps(args, index + 1);
+      const runIf = this.normalizeRunIf(step.runIf, index + 1);
       return {
         stepNo: index + 1,
         name: typeof step.name === 'string' && step.name.trim() ? step.name.trim() : `执行 ${tool}`,
@@ -231,20 +239,58 @@ export class AgentPlannerService {
         // 审批需求以后端 Tool 元数据为准，避免模型把写入类工具降级为无需审批。
         requiresApproval: toolRequiresApproval.get(tool) ?? Boolean(step.requiresApproval),
         args,
+        ...(runIf ? { runIf } : {}),
       };
     });
 
-    const approvalSteps = steps.filter((step) => step.requiresApproval);
+    const normalizedSteps = this.enforceChapterWriteQualityPipeline(steps, (tool) => toolRequiresApproval.get(tool) ?? false);
+    if (normalizedSteps.length > maxSteps) throw new Error(`规范化后的 Agent Plan steps 数量非法，最多 ${maxSteps} 步`);
+    const missingTool = normalizedSteps.find((step) => !registeredTools.has(step.tool));
+    if (missingTool) throw new Error(`规范化后的 Agent Plan 使用未注册工具：${missingTool.tool}`);
+    const approvalSteps = normalizedSteps.filter((step) => step.requiresApproval);
     return {
       taskType: record.taskType,
       summary: typeof record.summary === 'string' && record.summary.trim() ? record.summary.trim() : defaults.summary,
       assumptions: this.stringArray(record.assumptions, defaults.assumptions),
       risks: this.stringArray(record.risks, defaults.risks),
-      steps,
+      steps: normalizedSteps,
       requiredApprovals: approvalSteps.length
         ? [{ approvalType: 'plan', target: { stepNos: approvalSteps.map((step) => step.stepNo), tools: approvalSteps.map((step) => step.tool) } }]
         : [],
     };
+  }
+
+  /**
+   * 章节写作必须走固定质量门禁：写稿后润色、事实校验、最多二轮修复，再沉淀事实和记忆。
+   * 这里覆盖 LLM 在 write_chapter 之后给出的自由编排，避免漏掉后置校验或产生无限修复循环。
+   */
+  private enforceChapterWriteQualityPipeline(steps: AgentPlanStepSpec[], requiresApproval: (tool: string) => boolean): AgentPlanStepSpec[] {
+    const writeIndex = steps.findIndex((step) => step.tool === 'write_chapter');
+    if (writeIndex < 0) return steps;
+
+    const baseSteps = steps.slice(0, writeIndex + 1);
+    const chapterId = '{{runtime.currentChapterId}}';
+    const draftId = '{{runtime.currentDraftId}}';
+    const firstValidationStepNo = baseSteps.length + 2;
+    const secondValidationRunIf: AgentStepCondition = { ref: `{{steps.${firstValidationStepNo}.output.createdCount}}`, operator: 'gt', value: 0 };
+
+    const followups: AgentPlanStepSpec[] = [
+      this.createPlannedStep('初次润色章节草稿', 'polish_chapter', { chapterId, draftId, instruction: '在不改变剧情事实的前提下润色章节正文，统一文风、清理生硬表达，并保留章节目标和关键事件。' }, requiresApproval),
+      this.createPlannedStep('初次事实一致性校验', 'fact_validation', { chapterId }, requiresApproval),
+      this.createPlannedStep('按初次校验结果自动修复', 'auto_repair_chapter', { chapterId, draftId, issues: `{{steps.${firstValidationStepNo}.output.issues}}`, instruction: '根据事实校验问题做最小必要修复，不新增重大剧情、角色或设定。', maxRounds: 1 }, requiresApproval),
+      this.createPlannedStep('二次润色修复后草稿', 'polish_chapter', { chapterId, draftId, instruction: '仅在初次校验发现问题后，对修复后的章节做第二轮轻量润色，保持剧情事实不变。' }, requiresApproval, secondValidationRunIf),
+      this.createPlannedStep('二次事实一致性校验', 'fact_validation', { chapterId }, requiresApproval, secondValidationRunIf),
+      this.createPlannedStep('按二次校验结果自动修复', 'auto_repair_chapter', { chapterId, draftId, issues: `{{steps.${firstValidationStepNo + 3}.output.issues}}`, instruction: '根据二次事实校验问题做最后一轮有界修复；若无可修复问题则跳过。', maxRounds: 1 }, requiresApproval, secondValidationRunIf),
+      this.createPlannedStep('抽取章节事实', 'extract_chapter_facts', { chapterId, draftId }, requiresApproval),
+      this.createPlannedStep('重建章节记忆', 'rebuild_memory', { chapterId, draftId }, requiresApproval),
+      this.createPlannedStep('复核章节记忆', 'review_memory', { chapterId }, requiresApproval),
+    ];
+
+    return [...baseSteps, ...followups].map((step, index) => ({ ...step, stepNo: index + 1 }));
+  }
+
+  private createPlannedStep(name: string, tool: string, args: Record<string, unknown>, requiresApproval: (tool: string) => boolean, runIf?: AgentStepCondition): AgentPlanStepSpec {
+    return { stepNo: 0, name, tool, mode: 'act', requiresApproval: requiresApproval(tool), args, ...(runIf ? { runIf } : {}) };
   }
 
   /** 统计 Planner 的模型调用次数，避免 JSON 修复循环失控。 */
@@ -256,6 +302,7 @@ export class AgentPlannerService {
   /** 校验 Tool 参数中的变量引用只能读取前序步骤输出，避免计划形成循环依赖。 */
   private assertArgsOnlyReferencePreviousSteps(value: unknown, currentStepNo: number) {
     if (typeof value === 'string') {
+      if (value.match(/^{{runtime\.(?:currentDraftId|currentChapterId)}}$/)) return;
       const match = value.match(/^{{steps\.(\d+)\.output(?:\.[\w.]+)?}}$/);
       if (match && Number(match[1]) >= currentStepNo) throw new Error(`LLM Plan 第 ${currentStepNo} 步引用了非前序步骤 ${match[1]}`);
       return;
@@ -267,6 +314,18 @@ export class AgentPlannerService {
     if (value && typeof value === 'object') {
       Object.values(value).forEach((item) => this.assertArgsOnlyReferencePreviousSteps(item, currentStepNo));
     }
+  }
+
+  /** 校验条件执行表达式只读取前序步骤或运行时当前草稿，避免条件分支形成循环依赖。 */
+  private normalizeRunIf(value: unknown, currentStepNo: number): AgentStepCondition | undefined {
+    const record = this.asRecord(value);
+    if (!Object.keys(record).length) return undefined;
+    if (typeof record.ref !== 'string') throw new Error(`LLM Plan 第 ${currentStepNo} 步 runIf.ref 必须是字符串`);
+    const operator = record.operator;
+    const allowed = new Set<AgentStepCondition['operator']>(['exists', 'not_exists', 'truthy', 'falsy', 'eq', 'neq', 'gt', 'gte', 'lt', 'lte']);
+    if (!allowed.has(operator as AgentStepCondition['operator'])) throw new Error(`LLM Plan 第 ${currentStepNo} 步 runIf.operator 非法`);
+    this.assertArgsOnlyReferencePreviousSteps(record.ref, currentStepNo);
+    return { ref: record.ref, operator: operator as AgentStepCondition['operator'], ...(record.value !== undefined ? { value: record.value } : {}) };
   }
 
   private failureDetail(stage: string, error: unknown) {

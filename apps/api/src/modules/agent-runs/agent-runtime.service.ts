@@ -80,7 +80,7 @@ export class AgentRuntimeService {
       const outputs = await this.executor.execute(agentRunId, spec.steps, { mode: 'act', planVersion: latestPlan.version, approved: true, approvedStepNos, confirmation, reuseSucceeded: true });
       const currentRun = await this.prisma.agentRun.findUnique({ where: { id: agentRunId } });
       if (currentRun?.status === 'cancelled') return currentRun;
-      const artifactDrafts = this.buildExecutionArtifacts(String(latestPlan.taskType), outputs);
+      const artifactDrafts = this.buildExecutionArtifacts(String(latestPlan.taskType), outputs, spec.steps);
       if (artifactDrafts.length) {
         await this.prisma.agentArtifact.createMany({
           data: artifactDrafts.map((artifact) => ({
@@ -205,7 +205,7 @@ export class AgentRuntimeService {
    * 将关键 Tool 输出提升为 AgentArtifact，便于前端按业务类型预览，而不是只看原始 step JSON。
    * 这里不重新解释 LLM 内容，只按已审批执行结果做只读拆分，避免引入额外副作用。
    */
-  private buildExecutionArtifacts(taskType: string, outputs: Record<number, unknown>): AgentArtifactDraft[] {
+  private buildExecutionArtifacts(taskType: string, outputs: Record<number, unknown>, steps: Pick<AgentPlanSpec, 'steps'>['steps'] = []): AgentArtifactDraft[] {
     if (taskType === 'outline_design') {
       const preview = outputs[2];
       const validation = outputs[3];
@@ -239,12 +239,12 @@ export class AgentRuntimeService {
     }
 
     if (taskType === 'chapter_write') {
-      const draft = outputs[4] ?? outputs[3];
-      const validation = outputs[5];
-      const autoRepair = outputs[6];
-      const facts = outputs[7];
-      const memory = outputs[8];
-      const memoryReview = outputs[9];
+      const draft = this.latestOutputByTools(outputs, steps, ['auto_repair_chapter', 'polish_chapter', 'postprocess_chapter', 'write_chapter']);
+      const validation = this.latestOutputByTools(outputs, steps, ['fact_validation']);
+      const autoRepair = this.latestOutputByTools(outputs, steps, ['auto_repair_chapter']);
+      const facts = this.latestOutputByTools(outputs, steps, ['extract_chapter_facts']);
+      const memory = this.latestOutputByTools(outputs, steps, ['rebuild_memory']);
+      const memoryReview = this.latestOutputByTools(outputs, steps, ['review_memory']);
       return [
         ...(draft ? [{ artifactType: 'chapter_generation_quality_report', title: '生成前、生成后与召回质量报告', content: { preflight: this.readPath(draft, ['preflight']), qualityGate: this.readPath(draft, ['qualityGate']), retrievalDiagnostics: this.readPath(draft, ['retrievalPayload', 'diagnostics']) } }] : []),
         ...(draft ? [{ artifactType: 'chapter_draft_result', title: '章节草稿结果', content: draft }] : []),
@@ -278,5 +278,11 @@ export class AgentRuntimeService {
 
   private readPath(value: unknown, path: string[]) {
     return path.reduce<unknown>((current, key) => (current && typeof current === 'object' ? (current as Record<string, unknown>)[key] : undefined), value);
+  }
+
+  /** 按计划中的 tool 名称动态定位最新输出，避免章节写作质量门禁插入条件步骤后 Artifact 错位。 */
+  private latestOutputByTools(outputs: Record<number, unknown>, steps: Pick<AgentPlanSpec, 'steps'>['steps'], tools: string[]): unknown {
+    const candidates = steps.filter((step) => tools.includes(step.tool) && outputs[step.stepNo] !== undefined).sort((a, b) => b.stepNo - a.stepNo);
+    return candidates.length ? outputs[candidates[0].stepNo] : undefined;
   }
 }

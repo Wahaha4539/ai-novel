@@ -47,8 +47,7 @@ export function AgentArtifactPanel({ run, query, onQueryChange }: AgentArtifactP
           value={query}
           onChange={(event) => onQueryChange(event.target.value)}
           placeholder="搜索产物/JSON…"
-          className="px-3 py-2 text-xs outline-none"
-          style={{ width: 160, borderRadius: '0.7rem', border: '1px solid var(--border-dim)', background: 'rgba(0,0,0,0.2)', color: 'var(--text-main)' }}
+          className="agent-artifact-search"
         />
       </div>
       {filteredArtifacts.length ? (
@@ -68,18 +67,36 @@ export function AgentArtifactPanel({ run, query, onQueryChange }: AgentArtifactP
 // ArtifactCard + TypedArtifactPreview
 // ────────────────────────────────────────────
 
+/** 产物类型的 emoji 映射，提升视觉扫描效率 */
+function typeEmoji(type?: string): string {
+  if (!type) return '📦';
+  if (type.includes('outline')) return '📑';
+  if (type.includes('chapter')) return '📝';
+  if (type.includes('character')) return '👤';
+  if (type.includes('validation') || type.includes('quality')) return '🔍';
+  if (type.includes('fact')) return '🧩';
+  if (type.includes('memory')) return '🧠';
+  if (type.includes('profile') || type.includes('project')) return '📋';
+  if (type.includes('lorebook')) return '📚';
+  if (type.includes('repair')) return '🔧';
+  if (type.includes('polish')) return '✨';
+  return '📦';
+}
+
 function ArtifactCard({ artifactType, title, content }: { artifactType?: string; title?: string; content?: unknown }) {
   return (
-    <details className="p-3" style={{ borderRadius: '0.9rem', border: '1px solid var(--border-dim)', background: 'rgba(0,0,0,0.18)' }}>
-      <summary className="cursor-pointer text-sm" style={{ color: 'var(--text-main)' }}>
-        {title ?? artifactType ?? 'Artifact'}
-        <span className="ml-2 text-[10px]" style={{ color: 'var(--text-dim)' }}>点击展开/折叠原始 JSON</span>
+    <details className="agent-artifact-card">
+      <summary className="agent-artifact-card__summary">
+        <span className="agent-artifact-card__icon" aria-hidden="true">{typeEmoji(artifactType)}</span>
+        <span className="agent-artifact-card__title">{title ?? artifactType ?? 'Artifact'}</span>
+        {artifactType && <span className="agent-artifact-card__type">{artifactType}</span>}
+        <span className="agent-artifact-card__arrow" aria-hidden="true">▸</span>
       </summary>
-      <div className="mt-3">
+      <div className="agent-artifact-card__body">
         <TypedArtifactPreview artifactType={artifactType} content={content} />
-        <details className="mt-3">
-          <summary className="cursor-pointer text-xs" style={{ color: 'var(--text-dim)' }}>原始 JSON</summary>
-          <pre className="mt-3 text-xs whitespace-pre-wrap overflow-auto max-h-72" style={{ color: 'var(--text-dim)', borderTop: '1px solid var(--border-dim)', paddingTop: '0.75rem' }}>{safeJson(content)}</pre>
+        <details className="agent-artifact-card__json-toggle">
+          <summary className="cursor-pointer text-xs" style={{ color: 'var(--agent-text-label)' }}>📄 原始 JSON</summary>
+          <pre className="agent-artifact-card__json">{safeJson(content)}</pre>
         </details>
       </div>
     </details>

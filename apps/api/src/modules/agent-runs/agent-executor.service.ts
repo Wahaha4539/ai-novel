@@ -2,8 +2,8 @@ import { BadRequestException, Injectable } from '@nestjs/common';
 import { PrismaService } from '../../prisma/prisma.service';
 import { ToolJsonSchema, ToolSchemaType } from '../agent-tools/base-tool';
 import { ToolRegistryService } from '../agent-tools/tool-registry.service';
-import { AgentPolicyService } from './agent-policy.service';
-import { AgentPlanStepSpec } from './agent-planner.service';
+import { AgentPolicyService, AgentSecondConfirmationRequiredError } from './agent-policy.service';
+import { AgentPlanStepSpec, AgentStepCondition } from './agent-planner.service';
 import { AgentTraceService } from './agent-trace.service';
 
 interface AgentExecuteOptions {
@@ -38,6 +38,11 @@ interface AgentStepExecutionError {
   message: string;
 }
 
+interface RuntimeReferenceState {
+  currentChapterId?: string;
+  currentDraftId?: string;
+}
+
 /** 遍历已审批计划并执行 Tool，当前为同步进程内函数调用，不依赖外部 Worker。 */
 @Injectable()
 export class AgentExecutorService {
@@ -60,6 +65,7 @@ export class AgentExecutorService {
     const mode = options.mode ?? 'act';
     const planVersion = options.planVersion ?? 1;
     const outputs: Record<number, unknown> = options.reuseSucceeded ? await this.loadReusableOutputs(agentRunId, mode, planVersion, steps) : {};
+    const runtimeState = this.deriveRuntimeState(outputs);
     const plannedTools = steps.map((step) => step.tool);
     this.policy.assertPlanExecutable(steps);
 
@@ -73,13 +79,18 @@ export class AgentExecutorService {
 
       if (options.reuseSucceeded && outputs[step.stepNo] !== undefined) continue;
 
+      if (!this.shouldRunStep(step.runIf, outputs, runtimeState)) {
+        await this.trace.skipStep(agentRunId, step.stepNo, { stepType: 'tool', name: step.name, toolName: step.tool, mode, planVersion, input: { runIf: step.runIf } });
+        continue;
+      }
+
       const hasExplicitApprovalScope = Array.isArray(options.approvedStepNos);
       const stepApproved = Boolean(options.approved) && (!hasExplicitApprovalScope || options.approvedStepNos!.includes(step.stepNo));
       if (tool.riskLevel === 'high' && !stepApproved) {
         throw new AgentWaitingReviewError(`高风险工具 ${tool.name} 需要显式审批步骤 ${step.stepNo}`);
       }
 
-      const resolvedArgs = this.resolveValue(step.args, outputs) as Record<string, unknown>;
+      const resolvedArgs = this.resolveValue(step.args, outputs, runtimeState) as Record<string, unknown>;
       await this.trace.startStep(agentRunId, step.stepNo, { stepType: 'tool', name: step.name, toolName: step.tool, mode, planVersion, input: resolvedArgs });
       try {
         const context = { agentRunId, projectId: run.projectId, chapterId: run.chapterId ?? undefined, mode, approved: stepApproved, outputs, policy: { confirmation: options.confirmation } };
@@ -88,8 +99,14 @@ export class AgentExecutorService {
         const output = await this.withTimeout(tool.run(resolvedArgs, context), 120_000, `工具 ${tool.name} 执行超时`);
         this.assertSchema(tool.outputSchema, output, `${tool.name}.output`);
         outputs[step.stepNo] = output;
+        this.updateRuntimeState(runtimeState, output);
         await this.trace.finishStep(agentRunId, step.stepNo, output, mode, planVersion);
       } catch (error) {
+        if (error instanceof AgentSecondConfirmationRequiredError) {
+          // 二次确认缺失是“等待用户复核”的暂停点，不应被记录成业务执行失败。
+          await this.trace.reviewStep(agentRunId, step.stepNo, this.formatStepError(step.stepNo, tool.name, mode, error), mode, planVersion);
+          throw new AgentWaitingReviewError(error.message);
+        }
         await this.trace.failStep(agentRunId, step.stepNo, this.formatStepError(step.stepNo, tool.name, mode, error), mode, planVersion);
         throw error;
       }
@@ -161,8 +178,11 @@ export class AgentExecutorService {
     };
   }
 
-  private resolveValue(value: unknown, outputs: Record<number, unknown>): unknown {
+  private resolveValue(value: unknown, outputs: Record<number, unknown>, runtimeState: RuntimeReferenceState = {}): unknown {
     if (typeof value === 'string') {
+      const runtimeMatch = value.match(/^{{runtime\.(currentDraftId|currentChapterId)}}$/);
+      if (runtimeMatch) return runtimeState[runtimeMatch[1] as keyof RuntimeReferenceState];
+
       // 支持把前序步骤的完整输出对象作为 Tool 参数传递，避免对象被保留为模板字符串后触发 Schema 类型错误。
       const wholeOutputMatch = value.match(/^{{steps\.(\d+)\.output}}$/);
       if (wholeOutputMatch) return outputs[Number(wholeOutputMatch[1])];
@@ -171,11 +191,45 @@ export class AgentExecutorService {
       if (!match) return value;
       return match[2].split('.').reduce<unknown>((current, key) => (current && typeof current === 'object' ? (current as Record<string, unknown>)[key] : undefined), outputs[Number(match[1])]);
     }
-    if (Array.isArray(value)) return value.map((item) => this.resolveValue(item, outputs));
+    if (Array.isArray(value)) return value.map((item) => this.resolveValue(item, outputs, runtimeState));
     if (value && typeof value === 'object') {
-      return Object.fromEntries(Object.entries(value).map(([key, item]) => [key, this.resolveValue(item, outputs)]));
+      return Object.fromEntries(Object.entries(value).map(([key, item]) => [key, this.resolveValue(item, outputs, runtimeState)]));
     }
     return value;
+  }
+
+  /** 根据 runIf 条件决定是否执行步骤，用于“有问题才二次润色/校验/修复”的有界分支。 */
+  private shouldRunStep(condition: AgentStepCondition | undefined, outputs: Record<number, unknown>, runtimeState: RuntimeReferenceState): boolean {
+    if (!condition) return true;
+    const actual = this.resolveValue(condition.ref, outputs, runtimeState);
+    switch (condition.operator) {
+      case 'exists': return actual !== undefined && actual !== null;
+      case 'not_exists': return actual === undefined || actual === null;
+      case 'truthy': return Boolean(actual);
+      case 'falsy': return !actual;
+      case 'eq': return actual === condition.value;
+      case 'neq': return actual !== condition.value;
+      case 'gt': return typeof actual === 'number' && typeof condition.value === 'number' && actual > condition.value;
+      case 'gte': return typeof actual === 'number' && typeof condition.value === 'number' && actual >= condition.value;
+      case 'lt': return typeof actual === 'number' && typeof condition.value === 'number' && actual < condition.value;
+      case 'lte': return typeof actual === 'number' && typeof condition.value === 'number' && actual <= condition.value;
+      default: return false;
+    }
+  }
+
+  /** 从已复用输出恢复当前草稿指针，保证失败续跑时后续 Tool 仍使用最新 draftId/chapterId。 */
+  private deriveRuntimeState(outputs: Record<number, unknown>): RuntimeReferenceState {
+    const state: RuntimeReferenceState = {};
+    Object.keys(outputs).map(Number).sort((a, b) => a - b).forEach((stepNo) => this.updateRuntimeState(state, outputs[stepNo]));
+    return state;
+  }
+
+  /** 写章、润色、修复和事实抽取都会返回 draftId/chapterId；后续步骤用运行时指针读取最新草稿。 */
+  private updateRuntimeState(state: RuntimeReferenceState, output: unknown) {
+    if (!output || typeof output !== 'object') return;
+    const record = output as Record<string, unknown>;
+    if (typeof record.chapterId === 'string' && record.chapterId.trim()) state.currentChapterId = record.chapterId;
+    if (typeof record.draftId === 'string' && record.draftId.trim()) state.currentDraftId = record.draftId;
   }
 
   /**

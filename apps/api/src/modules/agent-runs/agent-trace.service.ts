@@ -23,6 +23,26 @@ export class AgentTraceService {
     return this.prisma.agentStep.update({ where: { agentRunId_mode_planVersion_stepNo: { agentRunId, mode, planVersion, stepNo } }, data: { status: 'succeeded', output: output as Prisma.InputJsonValue, finishedAt: new Date() } });
   }
 
+  /** 标记步骤暂停等待人工复核；用于二次确认缺失等非失败型审批中断。 */
+  reviewStep(agentRunId: string, stepNo: number, error: unknown, mode: string = 'act', planVersion = 1) {
+    const normalized = this.formatError(error);
+    return this.prisma.agentStep.update({
+      where: { agentRunId_mode_planVersion_stepNo: { agentRunId, mode, planVersion, stepNo } },
+      data: { status: 'waiting_review', error: normalized.message, output: normalized.detail as Prisma.InputJsonValue, finishedAt: new Date() },
+    });
+  }
+
+  /** 记录条件分支跳过的步骤，保留 runIf 输入，方便用户理解为什么二次修复链路没有执行。 */
+  skipStep(agentRunId: string, stepNo: number, data: { stepType: string; name: string; toolName?: string; mode: string; planVersion?: number; input?: unknown }) {
+    const planVersion = data.planVersion ?? 1;
+    const now = new Date();
+    return this.prisma.agentStep.upsert({
+      where: { agentRunId_mode_planVersion_stepNo: { agentRunId, mode: data.mode, planVersion, stepNo } },
+      create: { agentRunId, planVersion, stepNo, stepType: data.stepType, name: data.name, toolName: data.toolName, mode: data.mode, input: data.input as Prisma.InputJsonValue, status: 'skipped', startedAt: now, finishedAt: now },
+      update: { stepType: data.stepType, name: data.name, toolName: data.toolName, input: data.input as Prisma.InputJsonValue, status: 'skipped', startedAt: now, finishedAt: now, error: null },
+    });
+  }
+
   /** 标记步骤失败，同时保留结构化错误详情，便于前端展示和生产排障。 */
   failStep(agentRunId: string, stepNo: number, error: unknown, mode: string = 'act', planVersion = 1) {
     const normalized = this.formatError(error);

@@ -88,6 +88,14 @@ export interface AgentPlanRecord extends AgentPlanPayload {
 
 export interface AgentRunListItem extends Omit<AgentRun, 'steps' | 'artifacts' | 'approvals'> {}
 
+export interface AgentMessageIntentResult {
+  intent: 'approve_current_plan' | 'new_task' | 'revise_plan' | 'cancel_or_wait' | 'unclear';
+  shouldExecute: boolean;
+  confidence?: number;
+  reason?: string;
+  model?: string;
+}
+
 async function apiFetch<T>(path: string, init?: RequestInit): Promise<T> {
   const response = await fetch(`${API_BASE}${path}`, {
     ...init,
@@ -235,6 +243,27 @@ export function useAgentRun() {
     }
   }, [loadAudit]);
 
+  const interpretMessage = useCallback(async (agentRunId: string, message: string) => {
+    setLoading(true);
+    setError('');
+    setActionMessage('正在请求 LLM 判断你的聊天回复是否为审批确认…');
+    try {
+      const result = await apiFetch<AgentMessageIntentResult>(`/agent-runs/${agentRunId}/interpret-message`, {
+        method: 'POST',
+        body: JSON.stringify({ message }),
+      });
+      setActionMessage(result.shouldExecute ? 'LLM 判定为确认执行，准备开始调用工具。' : `LLM 判定为：${result.intent}${result.reason ? `（${result.reason}）` : ''}`);
+      return result;
+    } catch (intentError) {
+      const messageText = intentError instanceof Error ? intentError.message : 'LLM 意图判定失败';
+      setError(messageText);
+      setActionMessage(messageText);
+      throw intentError;
+    } finally {
+      setLoading(false);
+    }
+  }, []);
+
   const retry = useCallback(async (agentRunId: string, approvedStepNos?: number[]) => {
     setLoading(true);
     setError('');
@@ -300,5 +329,18 @@ export function useAgentRun() {
     }
   }, [loadAudit]);
 
-  return { currentRun, runHistory, auditEvents, loading, error, actionMessage, createPlan, refresh, act, retry, replan, cancel, listByProject, loadAudit, setCurrentRun };
+  /**
+   * 开启一个新的前端会话。
+   * 输入/输出：无参数，返回 void；副作用：仅清空当前选中的 Run、审计轨迹和提示信息，不删除后端历史记录。
+   */
+  const startNewSession = useCallback(() => {
+    setCurrentRun(null);
+    setAuditEvents([]);
+    setError('');
+    setActionMessage('已开启新会话，可以输入新的创作指令。');
+    // 新会话应摆脱上一次提交的幂等指纹，避免相同文本被误认为同一轮请求。
+    createPlanRequestIdsRef.current.clear();
+  }, []);
+
+  return { currentRun, runHistory, auditEvents, loading, error, actionMessage, createPlan, refresh, interpretMessage, act, retry, replan, cancel, listByProject, loadAudit, setCurrentRun, startNewSession };
 }

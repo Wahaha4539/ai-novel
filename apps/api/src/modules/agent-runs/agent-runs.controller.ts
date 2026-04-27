@@ -2,6 +2,7 @@ import { Body, Controller, Get, Param, Post } from '@nestjs/common';
 import { AgentRunsService } from './agent-runs.service';
 import { CreateAgentPlanDto } from './dto/create-agent-plan.dto';
 import { ExecuteAgentRunDto } from './dto/execute-agent-run.dto';
+import { InterpretAgentMessageDto } from './dto/interpret-agent-message.dto';
 
 @Controller()
 export class AgentRunsController {
@@ -31,6 +32,11 @@ export class AgentRunsController {
   @Post('agent-runs/:id/act')
   act(@Param('id') id: string, @Body() dto: ExecuteAgentRunDto) {
     return this.agentRuns.act(id, dto);
+  }
+
+  @Post('agent-runs/:id/interpret-message')
+  interpretMessage(@Param('id') id: string, @Body() dto: InterpretAgentMessageDto) {
+    return this.agentRuns.interpretMessage(id, dto);
   }
 
   @Post('agent-runs/:id/approve-step')

@@ -1,8 +1,8 @@
 'use client';
 
-import { useCallback, useEffect, useMemo, useState } from 'react';
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { useAgentRun } from '../../hooks/useAgentRun';
-import { AgentInputBox } from './AgentInputBox';
+import { AgentInputBox, ChatMessage } from './AgentInputBox';
 import { AgentApprovalDialog } from './AgentApprovalDialog';
 import { AgentPlanPanel } from './AgentPlanPanel';
 import { AgentTimelinePanel } from './AgentTimelinePanel';
@@ -48,8 +48,8 @@ export function AgentFloatingPanel({
 }: AgentFloatingPanelProps) {
   const {
     currentRun, runHistory, auditEvents, loading, error,
-    actionMessage, createPlan, act, retry, replan, refresh,
-    cancel, listByProject, loadAudit,
+    actionMessage, createPlan, interpretMessage, act, retry, replan, refresh,
+    cancel, listByProject, loadAudit, startNewSession,
   } = agentHook;
 
   const [activeTab, setActiveTab] = useState<PanelTab>('task');
@@ -58,6 +58,10 @@ export function AgentFloatingPanel({
   const [artifactQuery, setArtifactQuery] = useState('');
   // Plan 模式：生成计划后等待审批；Act 模式：生成计划后自动执行全部步骤
   const [agentMode, setAgentMode] = useState<AgentMode>('plan');
+  /** 聊天消息历史 — 记录用户发送的指令和 Agent 的回复 */
+  const [chatHistory, setChatHistory] = useState<ChatMessage[]>([]);
+  /** 自增 ID 计数器，保证消息唯一性 */
+  const msgIdCounter = useRef(0);
 
   const plan = latestPlan(currentRun);
   const activePlanVersion = latestPlanVersion(currentRun);
@@ -68,9 +72,14 @@ export function AgentFloatingPanel({
 
   // 审批/执行/重试条件
   const canAct = !!currentRun && (currentRun.status === 'waiting_approval' || currentRun.status === 'waiting_review');
-  const canRetry = !!currentRun && (currentRun.status === 'failed' || currentRun.status === 'waiting_review');
+  const canRetry = !!currentRun && currentRun.status === 'failed';
   const canReplan = !!currentRun && currentRun.status !== 'acting' && currentRun.status !== 'running';
   const riskSummary = useMemo(() => approvalRiskSummary(plan, approvedStepNos), [plan, approvedStepNos]);
+  const approvedScope = useMemo(() => {
+    // 全选审批项表示整份计划已审批；不传具体 step 范围，避免新增后置 Tool 后 retry 被旧范围卡住。
+    if (approvalStepNos.length && approvalStepNos.every((stepNo) => approvedStepNos.includes(stepNo))) return undefined;
+    return approvedStepNos.length ? approvedStepNos : undefined;
+  }, [approvalStepNos, approvedStepNos]);
 
   // 项目切换时拉取最近 AgentRun
   useEffect(() => {
@@ -84,11 +93,48 @@ export function AgentFloatingPanel({
 
   // ── 事件处理 ──
 
+  const handleAct = useCallback(async () => {
+    if (!currentRun) return;
+    await act(currentRun.id, approvedScope);
+    await onRefresh?.();
+  }, [currentRun, act, approvedScope, onRefresh]);
+
+  /** 向聊天历史追加一条消息 */
+  const pushMessage = useCallback((role: ChatMessage['role'], content: string) => {
+    msgIdCounter.current += 1;
+    const msg: ChatMessage = { id: `msg-${msgIdCounter.current}`, role, content, timestamp: Date.now() };
+    setChatHistory((prev) => [...prev, msg]);
+  }, []);
+
   const handleSubmit = useCallback(async () => {
-    if (!goal.trim() || loading) return;
-    const run = await createPlan(projectId, goal.trim(), selectedChapterId);
+    const message = goal.trim();
+    if (!message || loading) return;
+    // 立即将用户消息推入聊天历史并清空输入框，模拟即时发送效果
+    pushMessage('user', message);
+    setGoal('');
+    // 等待审批时先请求 LLM 判定用户回复意图；只有 LLM 明确判定为确认时才执行写入类工具。
+    if (canAct && currentRun) {
+      const intent = await interpretMessage(currentRun.id, message);
+      if (intent.shouldExecute) {
+        pushMessage('agent', '已确认执行，正在调用工具…');
+        setActiveTab('detail');
+        await handleAct();
+        return;
+      }
+      const run = await createPlan(projectId, message, selectedChapterId);
+      if (run?.id) {
+        pushMessage('agent', '已收到新任务，正在生成计划…');
+        setActiveTab('detail');
+      }
+      return;
+    }
+
+    const run = await createPlan(projectId, message, selectedChapterId);
+    if (run) {
+      pushMessage('agent', '已收到任务，正在生成计划…');
+    }
     setActiveTab('detail');
-    // Act 模式：计划生成后自动审批执行全部步骤，跳过人工审批环节
+    // Act 模式：计划生成后自动审批执行全部步骤，跳过人工审批环节。
     if (agentMode === 'act' && run?.id) {
       const allStepNos = run.plans
         ?.flatMap((p) => (p.plan?.steps ?? p.steps ?? []).map((s) => s.stepNo))
@@ -96,19 +142,13 @@ export function AgentFloatingPanel({
       await act(run.id, allStepNos.length ? allStepNos : undefined);
       await onRefresh?.();
     }
-  }, [goal, loading, createPlan, projectId, selectedChapterId, agentMode, act, onRefresh]);
-
-  const handleAct = useCallback(async () => {
-    if (!currentRun) return;
-    await act(currentRun.id, approvalStepNos.length ? approvedStepNos : undefined);
-    await onRefresh?.();
-  }, [currentRun, act, approvalStepNos, approvedStepNos, onRefresh]);
+  }, [goal, loading, canAct, currentRun, interpretMessage, handleAct, createPlan, projectId, selectedChapterId, agentMode, act, onRefresh, pushMessage]);
 
   const handleRetry = useCallback(async () => {
     if (!currentRun) return;
-    await retry(currentRun.id, approvalStepNos.length ? approvedStepNos : undefined);
+    await retry(currentRun.id, approvedScope);
     await onRefresh?.();
-  }, [currentRun, retry, approvalStepNos, approvedStepNos, onRefresh]);
+  }, [currentRun, retry, approvedScope, onRefresh]);
 
   const handleReplan = useCallback(async () => {
     if (!currentRun) return;
@@ -121,6 +161,19 @@ export function AgentFloatingPanel({
       current.includes(stepNo) ? current.filter((n) => n !== stepNo) : [...current, stepNo].sort((a, b) => a - b),
     );
   }, []);
+
+  /**
+   * 新增会话只重置前端工作区上下文，后端 Run 历史仍保留在“历史”页中可重新选择。
+   * 这样用户可以在待审批/已完成 Run 之外，快速开始一条干净的新聊天线。
+   */
+  const handleNewSession = useCallback(() => {
+    startNewSession();
+    setGoal('');
+    setApprovedStepNos([]);
+    setArtifactQuery('');
+    setChatHistory([]);
+    setActiveTab('task');
+  }, [startNewSession]);
 
   // ── 面板定位 ──
   // 根据圆球位置决定面板在左上/左下/右上/右下弹出
@@ -164,6 +217,16 @@ export function AgentFloatingPanel({
             <StatusBadge status={currentRun?.status ?? 'idle'} />
           </div>
           <div className="flex items-center gap-2">
+            <button
+              type="button"
+              className="agent-new-session-btn"
+              onClick={handleNewSession}
+              disabled={loading}
+              title="清空当前聊天上下文并开始新会话"
+            >
+              <span aria-hidden="true">＋</span>
+              新会话
+            </button>
             {/* Plan / Act 模式切换器 */}
             <AgentModeToggle mode={agentMode} onChange={setAgentMode} />
             <button type="button" className="agent-float-panel__close" onClick={onClose} aria-label="关闭">
@@ -202,6 +265,11 @@ export function AgentFloatingPanel({
               loading={loading}
               canReplan={canReplan}
               hasCurrentRun={!!currentRun}
+              canAct={canAct}
+              plan={plan}
+              currentRunGoal={currentRun?.goal}
+              riskSummary={riskSummary}
+              chatHistory={chatHistory}
               onGoalChange={setGoal}
               onSubmit={handleSubmit}
               onReplan={handleReplan}
@@ -252,6 +320,8 @@ export function AgentFloatingPanel({
 /** 任务输入 Tab */
 function TaskTabContent(props: {
   goal: string; loading: boolean; canReplan: boolean; hasCurrentRun: boolean;
+  canAct?: boolean; plan?: ReturnType<typeof latestPlan>; currentRunGoal?: string; riskSummary?: string[];
+  chatHistory?: ChatMessage[];
   onGoalChange: (v: string) => void; onSubmit: () => void | Promise<void>;
   onReplan: () => void | Promise<void>; onRefresh: () => void | Promise<void>;
 }) {
