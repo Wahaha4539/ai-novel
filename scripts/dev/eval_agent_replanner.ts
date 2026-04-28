@@ -60,12 +60,22 @@ const cases = JSON.parse(fs.readFileSync(casesPath, 'utf8')) as ReplanEvalCase[]
 const reportPath = readArg('--report');
 const historyPath = readArg('--history');
 const failOnRegression = process.argv.includes('--fail-on-regression');
+const experimentalLlmReport = process.argv.includes('--experimental-llm-replanner-report');
 
 /**
  * Replan Eval 入口：用固定 Observation 用例直接驱动真实 AgentReplannerService。
  * 该脚本不执行任何 Tool，只评估 Replanner 是否输出最小 patch、澄清或安全失败，便于把失败修复能力纳入门禁。
  */
-function main() {
+async function main() {
+  if (experimentalLlmReport) {
+    const report = await runExperimentalLlmReplannerReport();
+    for (const result of report.results) console.log(`${result.usedLlm ? '✓' : '↷'} ${result.id}：${result.action} ${result.reason}`);
+    console.log(`LLM Replanner 实验报告：${report.llmUsedCount}/${report.totalCases} 使用 LLM 兜底，${report.safePatchCount}/${report.totalCases} 输出安全 patch`);
+    if (reportPath) writeJson(reportPath, report);
+    if (historyPath) appendExperimentalHistory(historyPath, report);
+    return;
+  }
+
   const replanner = new AgentReplannerService(new EvalToolRegistry() as never);
   const results = cases.map((item) => evaluateCase(item, replanner.createPatch({
     userGoal: item.userGoal,
@@ -83,6 +93,131 @@ function main() {
   if (reportPath) writeJson(reportPath, report);
   if (historyPath) appendHistory(historyPath, report, failOnRegression);
   if (report.passedCases !== results.length) process.exitCode = 1;
+}
+
+type ExperimentalReplannerReport = {
+  generatedAt: string;
+  sourceMode: 'experimental_llm_replanner';
+  totalCases: number;
+  llmUsedCount: number;
+  safePatchCount: number;
+  skippedCount: number;
+  results: Array<{ id: string; action: ReplanPatch['action']; reason: string; usedLlm: boolean; safe: boolean }>;
+};
+
+/** 可选 LLM Replanner 报告：使用 mock LLM 验证实验兜底路径与安全过滤，不依赖外部 API，也不阻断 CI。 */
+async function runExperimentalLlmReplannerReport(): Promise<ExperimentalReplannerReport> {
+  const previous = process.env.AGENT_EXPERIMENTAL_LLM_REPLANNER;
+  process.env.AGENT_EXPERIMENTAL_LLM_REPLANNER = 'true';
+  try {
+    const replanner = new AgentReplannerService(new EvalToolRegistry() as never, new EvalLlmReplannerMock() as never);
+    // 固定 Replan Eval 用例大多已被 deterministic 策略覆盖；额外追加低风险只读失败，专门验证 LLM 只在兜底场景介入。
+    const experimentCases = [...cases, ...buildUnhandledExperimentalCases()];
+    const results = [];
+    for (const item of experimentCases) {
+      const patch = await replanner.createPatchWithExperimentalFallback({
+        userGoal: item.userGoal,
+        currentPlanSteps: item.currentPlanSteps,
+        failedObservation: item.failedObservation,
+        agentContext: buildEvalContext(item),
+        replanStats: item.replanStats,
+      });
+      const usedLlm = patch.reason.startsWith('LLM 实验：');
+      results.push({ id: item.id, action: patch.action, reason: patch.reason, usedLlm, safe: !patch.insertStepsBeforeFailedStep?.some((step) => step.requiresApproval || step.tool.startsWith('write_') || step.tool.startsWith('persist_')) });
+    }
+    return {
+      generatedAt: new Date().toISOString(),
+      sourceMode: 'experimental_llm_replanner',
+      totalCases: results.length,
+      llmUsedCount: results.filter((item) => item.usedLlm).length,
+      safePatchCount: results.filter((item) => item.safe).length,
+      skippedCount: results.filter((item) => !item.usedLlm).length,
+      results,
+    };
+  } finally {
+    if (previous === undefined) delete process.env.AGENT_EXPERIMENTAL_LLM_REPLANNER;
+    else process.env.AGENT_EXPERIMENTAL_LLM_REPLANNER = previous;
+  }
+}
+
+class EvalLlmReplannerMock {
+  /**
+   * 实验报告使用可重复 mock 覆盖多类低风险只读失败，不依赖外部模型。
+   * Mock 只返回 resolver/context/inspect 类步骤，确保报告验证的是安全过滤与 fallback 链路，而不是写入能力。
+   */
+  async chatJson<T = unknown>(messages?: Array<{ role: string; content: string }>): Promise<{ data: T; result: { model: string } }> {
+    const payload = parseLlmReplannerPayload(messages);
+    const observation = asRecord(payload.failedObservation);
+    const failedTool = textOrUndefined(observation.tool) ?? '';
+    const failedArgs = asRecord(observation.args);
+    const currentPlanSteps = Array.isArray(payload.currentPlanSteps) ? payload.currentPlanSteps.map((step) => asRecord(step)) : [];
+
+    if (failedTool === 'character_consistency_check') {
+      return this.mockPatch({
+        reason: '角色检查缺少只读任务上下文，先补充 collect_task_context 后重试。',
+        stepId: 'collect_character_context_for_llm_repair',
+        tool: 'collect_task_context',
+        args: { taskType: 'character_consistency_check', characterId: textOrUndefined(failedArgs.characterId) ?? '{{context.session.currentCharacterId}}', focus: ['character_arc', 'relationship_graph', 'known_facts'] },
+        replaceFailedStepArgs: { taskContext: '{{steps.collect_character_context_for_llm_repair.output}}' },
+      });
+    }
+
+    if (failedTool === 'plot_consistency_check') {
+      return this.mockPatch({
+        reason: '剧情检查缺少可用上下文，先补充只读剧情上下文后重试。',
+        stepId: 'collect_plot_context_for_llm_repair',
+        tool: 'collect_task_context',
+        args: { taskType: 'plot_consistency_check', focus: ['plot_events', 'relationship_graph', 'world_facts'] },
+        replaceFailedStepArgs: { taskContext: '{{steps.collect_plot_context_for_llm_repair.output}}' },
+      });
+    }
+
+    if (failedTool === 'validate_worldbuilding') {
+      return this.mockPatch({
+        reason: '世界观校验缺少项目边界信息，先执行只读项目巡检补足 locked facts。',
+        stepId: 'inspect_project_for_llm_repair',
+        tool: 'inspect_project_context',
+        args: { projectId: '{{context.session.currentProjectId}}', includeLockedFacts: true },
+        replaceFailedStepArgs: { projectContext: '{{steps.inspect_project_for_llm_repair.output}}' },
+      });
+    }
+
+    if (failedTool === 'fact_validation') {
+      return this.mockPatch({
+        reason: '事实校验缺少章节上下文，先收集只读章节上下文后重试校验。',
+        stepId: 'collect_chapter_context_for_llm_repair',
+        tool: 'collect_chapter_context',
+        args: { chapterId: textOrUndefined(failedArgs.chapterId) ?? '{{context.session.currentChapterId}}' },
+        replaceFailedStepArgs: { context: '{{steps.collect_chapter_context_for_llm_repair.output}}' },
+      });
+    }
+
+    const previousReadonlyContextStep = currentPlanSteps.find((step) => ['collect_task_context', 'collect_chapter_context', 'inspect_project_context'].includes(textOrUndefined(step.tool) ?? ''));
+    return this.mockPatch({
+      reason: '补充只读上下文后重试失败步骤。',
+      stepId: 'collect_context_for_llm_repair',
+      tool: 'collect_task_context',
+      args: { taskType: 'general' },
+      replaceFailedStepArgs: previousReadonlyContextStep ? { context: `{{steps.${textOrUndefined(previousReadonlyContextStep.id) ?? previousReadonlyContextStep.stepNo}.output}}` } : { context: '{{steps.collect_context_for_llm_repair.output}}' },
+    });
+  }
+
+  private async mockPatch<T = unknown>({ reason, stepId, tool, args, replaceFailedStepArgs }: { reason: string; stepId: string; tool: string; args: Record<string, unknown>; replaceFailedStepArgs: Record<string, unknown> }): Promise<{ data: T; result: { model: string } }> {
+    return {
+      data: { action: 'patch_plan', reason, insertStepsBeforeFailedStep: [{ id: stepId, stepNo: 1, name: '补充只读上下文', purpose: '只读补充上下文，不写库、不审批绕行。', tool, mode: 'act', requiresApproval: false, args }], replaceFailedStepArgs } as T,
+      result: { model: 'eval-llm-replanner-mock' },
+    };
+  }
+}
+
+function parseLlmReplannerPayload(messages?: Array<{ role: string; content: string }>): Record<string, unknown> {
+  const content = messages?.find((message) => message.role === 'user')?.content;
+  if (!content) return {};
+  try {
+    return JSON.parse(content) as Record<string, unknown>;
+  } catch {
+    return {};
+  }
 }
 
 function evaluateCase(item: ReplanEvalCase, patch: ReplanPatch): ReplanCaseEvaluation {
@@ -223,6 +358,47 @@ function buildEvalContext(item: ReplanEvalCase): AgentContextV2 {
   };
 }
 
+function buildUnhandledExperimentalCases(): ReplanEvalCase[] {
+  return [
+    {
+      id: 'experimental_plot_context_internal_error',
+      userGoal: '检查当前剧情证据是否足够',
+      context: { session: { currentProjectId: 'project_1' } },
+      replanStats: { previousAutoPatchCount: 0, sameStepErrorPatchCount: 0 },
+      currentPlanSteps: [{ stepNo: 2, id: 'plot_check', name: '检查剧情', tool: 'plot_consistency_check', mode: 'act', requiresApproval: false, args: { context: '{{steps.missing_context.output}}' } }],
+      failedObservation: { stepId: 'plot_check', stepNo: 2, tool: 'plot_consistency_check', mode: 'act', args: { context: '{{steps.missing_context.output}}' }, error: { code: 'TOOL_INTERNAL_ERROR', message: '缺少足够上下文，确定性 Replanner 无匹配修复策略', retryable: true }, previousOutputs: {} },
+      expected: { action: 'patch_plan' },
+    },
+    {
+      id: 'experimental_character_context_timeout',
+      userGoal: '检查男主这一段是否人设崩坏',
+      context: { session: { currentProjectId: 'project_1' } },
+      replanStats: { previousAutoPatchCount: 0, sameStepErrorPatchCount: 0 },
+      currentPlanSteps: [{ stepNo: 2, id: 'character_check', name: '检查角色', tool: 'character_consistency_check', mode: 'act', requiresApproval: false, args: { characterId: '{{steps.resolve_character.output.characterId}}' } }],
+      failedObservation: { stepId: 'character_check', stepNo: 2, tool: 'character_consistency_check', mode: 'act', args: { characterId: '{{steps.resolve_character.output.characterId}}' }, error: { code: 'TOOL_TIMEOUT', message: '只读角色检查因上下文不足超时。', retryable: true }, previousOutputs: {} },
+      expected: { action: 'patch_plan' },
+    },
+    {
+      id: 'experimental_worldbuilding_validation_context_missing',
+      userGoal: '校验世界观扩展是否会影响既有剧情',
+      context: { session: { currentProjectId: 'project_1' } },
+      replanStats: { previousAutoPatchCount: 0, sameStepErrorPatchCount: 0 },
+      currentPlanSteps: [{ stepNo: 3, id: 'validate_worldbuilding', name: '校验世界观', tool: 'validate_worldbuilding', mode: 'act', requiresApproval: false, args: { preview: '{{steps.generate_worldbuilding_preview.output}}' } }],
+      failedObservation: { stepId: 'validate_worldbuilding', stepNo: 3, tool: 'validate_worldbuilding', mode: 'act', args: { preview: '{{steps.generate_worldbuilding_preview.output}}' }, error: { code: 'TOOL_INTERNAL_ERROR', message: '缺少 locked facts 对比上下文。', retryable: true }, previousOutputs: {} },
+      expected: { action: 'patch_plan' },
+    },
+    {
+      id: 'experimental_fact_validation_context_timeout',
+      userGoal: '只检查当前章节事实一致性',
+      context: { session: { currentProjectId: 'project_1', currentChapterId: 'chapter_12' } },
+      replanStats: { previousAutoPatchCount: 0, sameStepErrorPatchCount: 0 },
+      currentPlanSteps: [{ stepNo: 2, id: 'fact_validation', name: '事实校验', tool: 'fact_validation', mode: 'act', requiresApproval: false, args: { chapterId: '{{context.session.currentChapterId}}' } }],
+      failedObservation: { stepId: 'fact_validation', stepNo: 2, tool: 'fact_validation', mode: 'act', args: { chapterId: '{{context.session.currentChapterId}}' }, error: { code: 'TOOL_TIMEOUT', message: '只读事实校验缺少章节上下文导致超时。', retryable: true }, previousOutputs: {} },
+      expected: { action: 'patch_plan' },
+    },
+  ];
+}
+
 /** Eval 专用注册表只暴露 Replanner 判断所需工具元数据，不运行工具。 */
 class EvalToolRegistry {
   private readonly tools = new Map<string, BaseTool>();
@@ -277,6 +453,12 @@ function appendHistory(filePath: string, report: ReplanEvalReport, shouldFailOnR
       process.exitCode = 1;
     }
   }
+}
+
+function appendExperimentalHistory(filePath: string, report: ExperimentalReplannerReport) {
+  const resolved = path.resolve(process.cwd(), filePath);
+  const previous = fs.existsSync(resolved) ? JSON.parse(fs.readFileSync(resolved, 'utf8')) as ExperimentalReplannerReport[] : [];
+  writeJson(filePath, [...previous, report]);
 }
 
 function writeJson(filePath: string, value: unknown) {

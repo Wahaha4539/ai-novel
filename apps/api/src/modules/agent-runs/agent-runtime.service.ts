@@ -336,7 +336,7 @@ export class AgentRuntimeService {
   private async handleExecutionObservation(agentRunId: string, run: { goal: string }, latestPlan: { version: number; taskType: string; summary: string; assumptions: unknown; risks: unknown; requiredApprovals: unknown }, steps: AgentPlanSpec['steps'], context: AgentContextV2, error: AgentExecutionObservationError) {
     const observation = error.observation;
     const replanStats = await this.loadReplanAttemptStats(agentRunId, observation);
-    const patch = this.replanner.createPatch({ userGoal: run.goal, currentPlanSteps: steps, failedObservation: observation, agentContext: context, replanStats });
+    const patch = await this.replanner.createPatchWithExperimentalFallback({ userGoal: run.goal, currentPlanSteps: steps, failedObservation: observation, agentContext: context, replanStats });
     await this.prisma.agentArtifact.create({
       data: { agentRunId, artifactType: 'agent_observation', title: `执行失败观察：步骤 ${observation.stepNo}`, content: { observation, replanPatch: patch, replanStats } as unknown as Prisma.InputJsonValue, status: 'final', sourceStepNo: observation.stepNo },
     });

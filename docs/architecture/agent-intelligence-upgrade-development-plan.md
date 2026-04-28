@@ -5,7 +5,7 @@
 
 ## 开发进度同步（2026-04-28）
 
-当前已完成第一批最小闭环中的 P0 主干改造，并补上 Observation/Replan、Agent Eval、角色一致性、剧情一致性和世界观扩展的首批 P1 基线。本轮继续把 Retrieval Eval 从 fixture 口径推进为真实 `collect_task_context` 工具驱动，补齐世界观实体类型、关系边权重和完整草稿召回控制的确定性基线，并完成关系图服务化、关系图 Artifact 可解释展示、世界观设定对比视图、条目级审计展示、剧情一致性 deterministic 证据增强、角色一致性 deterministic 证据增强、Retrieval Eval 扩展指标回归、前端实体选择专用 API 和多轮澄清状态保留。剩余工作主要是 LLM 实验开关及其 CI 可选报告。
+当前已完成第一批最小闭环中的 P0 主干改造，并补上 Observation/Replan、Agent Eval、角色一致性、剧情一致性和世界观扩展的首批 P1 基线。本轮继续把 Retrieval Eval 从 fixture 口径推进为真实 `collect_task_context` 工具驱动，补齐世界观实体类型、关系边权重和完整草稿召回控制的确定性基线，并完成关系图服务化、关系图 Artifact 可解释展示、世界观设定对比视图、条目级审计展示、剧情一致性 deterministic 证据增强、角色一致性 deterministic 证据增强、Retrieval Eval 扩展指标回归、前端实体选择专用 API、多轮澄清状态保留，以及 LLM 证据归纳实验、LLM Replanner 只读兜底实验、前端实验摘要展示与 CI 可选 LLM 环境变量兜底说明。当前清单中的 P3 后续增强项已完成，暂无未完成任务同步项。
 
 | 模块 | 状态 | 本次落地内容 |
 |---|---|---|
@@ -17,7 +17,7 @@
 | 前端 Plan 体验 | 已完成 P0 + P2 实体选择入口 | `AgentPlanPanel` 展示 Agent 理解、置信度、缺失信息、所需上下文、风险说明和用户可读步骤；创建计划时传递页面上下文；澄清卡片候选选择已升级为专用 API/DTO 链路，选择后只生成待审批计划。 |
 | Skill Playbook | 部分完成 | 扩展任务类型白名单到 `chapter_revision/character_consistency_check/worldbuilding_expand/plot_consistency_check/memory_review`，并把 `collect_task_context`、`character_consistency_check`、`plot_consistency_check`、`generate_worldbuilding_preview`、`validate_worldbuilding`、`persist_worldbuilding` 纳入默认工具；角色一致性、剧情一致性只读检查与世界观预览/校验/审批后追加写入已有确定性基线；本轮补齐世界观实体类型识别、关系边权重/证据/时间范围、完整草稿白名单/长度裁剪、关系图服务化、世界观条目级审计输出、剧情一致性非 LLM 证据增强与角色一致性非 LLM 证据增强。 |
 | Observation/Replan | 已完成 P1 基线 | 新增 `AgentObservation`、`AgentExecutionObservationError` 与 `AgentReplannerService`；Executor 将 schema/缺参/实体/Policy 等失败结构化，Runtime 写入 `agent_observation` Artifact，并对缺 `chapterId/characterId` 生成插入 resolver 的新 Plan version，歧义实体进入 `waiting_review`。 |
-| Agent Eval | 已完成 P1 增强 | 新增 12 个固定 Planner eval cases 与 `scripts/dev/eval_agent_planner.ts`，支持读取离线/导出的真实 Plan JSON、`--live-planner` 可控真实 Planner 调用、`--retrieval-eval` 真实 `collect_task_context` 工具驱动评测，以及不阻断 CI 的 `--real-llm-sample` 真实 LLM 抽样和 artifact 留档；Replan Eval 已扩展到 12 个固定 Observation 用例；`eval:agent:gate` 与 GitHub Actions 门禁串联 Live Planner、Retrieval 和 Replan 回归。 |
+| Agent Eval | 已完成 P1 增强 + P3 实验留档 | 新增 12 个固定 Planner eval cases 与 `scripts/dev/eval_agent_planner.ts`，支持读取离线/导出的真实 Plan JSON、`--live-planner` 可控真实 Planner 调用、`--retrieval-eval` 真实 `collect_task_context` 工具驱动评测，以及不阻断 CI 的 `--real-llm-sample` 真实 LLM 抽样和 artifact 留档；Replan Eval 已扩展到 12 个固定 Observation 用例；LLM Replanner 实验报告已扩展到 16 个安全样本；`eval:agent:gate` 与 GitHub Actions 门禁串联 Live Planner、Retrieval 和 Replan 回归。 |
 
 ### 本轮新增进度（2026-04-28 04:43）
 
@@ -242,21 +242,32 @@
 - 前端 `AgentObservationPanel` 新增澄清历史展示，回放最近澄清轮次、问题、候选数量、已选候选和用户补充说明，帮助用户确认 Planner 将使用哪些明确上下文。
 - 新增服务级回归测试覆盖多轮澄清状态累积与 ContextBuilder 注入 Planner session；验证结果：`pnpm --dir apps/api run test:agent` 通过 60 项，`pnpm --dir apps/api run build` 通过，`pnpm --dir apps/web exec tsc --noEmit` 通过。
 
-### 未完成任务同步（截至 2026-04-28 08:59）
+### 本轮新增进度（2026-04-28 09:19）
 
-> 说明：下列清单刻意收敛为“可按顺序执行”的工程任务。已完成项不再反复拆成新待办；每完成一项再决定是否拆下一层细节，避免未完成列表持续膨胀。
+- `character_consistency_check` 与 `plot_consistency_check` 接入默认关闭的 LLM 证据归纳实验开关：支持 Tool 参数 `experimentalLlmEvidenceSummary=true` 或环境变量 `AGENT_EXPERIMENTAL_LLM_EVIDENCE_SUMMARY=true` 显式开启。
+- LLM 证据归纳只追加 `llmEvidenceSummary` 只读字段，不改变 deterministic 的 `deviations/verdict/suggestions`，不写库、不要求审批、不改变 resolver ID 来源；LLM 不可用或失败时自动返回 fallback 元数据并保留 deterministic 结果。
+- `AgentReplannerService` 新增默认关闭的 LLM Replanner 兜底：环境变量 `AGENT_EXPERIMENTAL_LLM_REPLANNER=true` 开启后，仅在 deterministic Replanner 返回 `fail_with_reason` 且错误 retryable、未触达总次数/同类错误上限、非 Policy/Approval 阻断时尝试。
+- LLM Replanner 输出仍经过运行时安全归一化：只允许只读 resolver/context 类步骤，不允许插入写入类、`persist_*`、`write_*` 或需审批步骤；`*.Id` 替换必须来自 `{{steps.*.output.*}}` 或 `{{context.*}}` 模板引用；低置信度和多候选仍走 `ask_user`，不会自动选择。
+- `AgentRuntimeService.handleExecutionObservation()` 改为调用 `createPatchWithExperimentalFallback()`；实验关闭时行为等同 deterministic Replanner，不改变审批边界和现有 Plan version 流程。
+- Agent Eval 新增可选实验报告脚本：`eval:agent:experimental-evidence` 生成 LLM 证据归纳 artifact 报告，`eval:agent:experimental-replan` 生成 LLM Replanner 兜底安全报告；二者不进入 deterministic 主门禁。
+- `.github/workflows/agent-eval.yml` 新增 `AGENT_EVAL_LLM_EXPERIMENT_REPORTS=true` 可选 CI 步骤，实验报告 `continue-on-error: true`，并上传 `agent-eval-llm-experiments` artifact；无 API Key / 无 Provider 时跳过或降级，不阻断 PR/主干门禁。
+- 新增服务级回归测试覆盖环境变量开启证据归纳、LLM Replanner 只在确定性失败后介入、拒绝写入类/需审批实验 patch；验证结果：`pnpm --dir apps/api run test:agent` 通过 65 项，`pnpm --dir apps/api run eval:agent:replan` 通过 12/12，`pnpm --dir apps/api run eval:agent:retrieval` 通过 12/12，`pnpm --dir apps/api run eval:agent:experimental-evidence` 可生成报告，`pnpm --dir apps/api run eval:agent:experimental-replan` 通过 13/13 安全检查，`pnpm --dir apps/api run build` 通过。
 
-| 顺序 | 优先级 | 任务 | 范围边界 | 验收标准 |
-|---:|---|---|---|---|
-| 1 | P2 | LLM 证据归纳实验开关 | 仅用于 `character_consistency_check` / `plot_consistency_check` 的只读摘要；默认关闭。 | 开关关闭时行为完全 deterministic；开启时不写库、不需审批、不改变 resolver ID 来源；失败自动降级 deterministic。 |
-| 2 | P2 | LLM Replanner 实验开关 | 只在确定性 Replanner 无法处理时尝试；默认关闭。 | 保留最多 2 次 replan、同类错误 1 次、防循环、不绕过审批、不自动选择低置信度候选、不扩大写入范围；Replan Eval 继续通过。 |
-| 3 | P2 | 将实验能力纳入 CI 可选报告 | LLM 类能力只做可选留档，不阻断门禁。 | CI artifact 包含实验报告；无 API Key 时自动跳过或 continue-on-error；主门禁仍由 deterministic eval 阻断。 |
+### 本轮新增进度（2026-04-28 09:23）
 
-### 下一步建议执行顺序
+- 明确 CI 可选实验 artifact 的观察口径：短期只确认 `agent-eval-llm-experiments` 在有/无 API Key、成功/降级/跳过场景下稳定留档，不提高门禁强度。
+- 明确 API Key 来源：实验能力复用现有 `LlmGatewayService → LlmProvidersService.resolveForStep(appStep)` 链路，优先读取数据库中的 step-specific routing（`agent_evidence_summary` / `agent_replanner`），其次读取默认 Provider，最后才使用环境变量 `LLM_BASE_URL` + `LLM_API_KEY` + 可选 `LLM_MODEL` 兜底。
+- GitHub Actions 可选实验步骤支持传入 `DATABASE_URL`，并可选读取 repository variables `LLM_BASE_URL`、`LLM_MODEL` 与 secret `LLM_API_KEY`；不强制要求 API Key，无 Provider/API Key 时报告会跳过或降级，且 `continue-on-error: true` 保证不阻断 deterministic 主门禁。
+- 已将“观察 CI 可选实验 artifact 稳定性”从未完成任务中移出，后续只保留更具体的增强项：扩大低风险 LLM Replanner 样本、前端展示实验摘要元数据，以及可选补充 CI 环境变量兜底说明。
 
-1. **先做任务 1：LLM 证据归纳实验开关**。多轮澄清状态保留已完成，下一步可在角色/剧情只读检查中加入默认关闭的 LLM 摘要实验，失败必须自动降级 deterministic，不改变写入和审批边界。
-2. **再做任务 2：LLM Replanner 实验开关**。只在确定性 Replanner 无法处理时尝试，继续保留次数上限、防循环、低置信度不自动选择和审批边界。
-3. **最后做任务 3：将实验能力纳入 CI 可选报告**。LLM 类能力只做 artifact 留档，不阻断 deterministic 主门禁；无 API Key 时跳过或 continue-on-error。
+### 本轮新增进度（2026-04-28 09:36）
+
+- LLM Replanner 实验报告样本从单一未覆盖错误扩展为多类低风险只读失败：剧情检查上下文缺失、角色检查只读超时、世界观校验缺少 locked facts 对比、事实校验章节上下文超时。
+- 实验 LLM Replanner Mock 现在会根据失败工具返回不同的只读 `collect_task_context`、`collect_chapter_context` 或 `inspect_project_context` patch；仍只验证兜底路径和安全过滤，不执行真实 Tool、不插入写入类步骤、不绕过审批。
+- 前端 `character_consistency_report` 与 `plot_consistency_report` 新增 LLM 证据摘要实验元数据展示：显示 `status/fallbackUsed/model/summary/keyFindings`，并在降级时明确标识“已降级”。摘要卡片明确提示“仅作辅助阅读；审批、写入和诊断结论仍以确定性报告为准”。
+- GitHub Actions 可选真实 LLM 抽样与 LLM 实验报告步骤补充环境变量兜底：`LLM_BASE_URL`、`LLM_MODEL` 从 repository variables 读取，`LLM_API_KEY` 从 secrets 读取；数据库 step-specific routing / 默认 Provider 仍优先，无 Key 继续降级且不阻断 deterministic 主门禁。
+- 设计文档 `docs/architecture/ai-novel-agent-intelligence-upgrade.md` 已同步补充实验性 LLM Replanner 边界、前端 LLM 实验摘要元数据展示要求，以及 CI 可选 LLM 环境变量兜底说明。
+- 验证结果：`pnpm --dir apps/api run eval:agent:replan` 通过 12/12；`pnpm --dir apps/api run eval:agent:experimental-replan` 通过 16/16 安全检查，其中 4 个新增只读样本走 LLM 兜底；`pnpm --dir apps/web exec tsc --noEmit` 通过；`pnpm --dir apps/api run build` 通过；`pnpm --dir apps/api run test:agent` 通过 65 项。
 
 
 本专项计划用于承接《小说 Agent 智能化改造设计文档（完善版）》中的目标：在现有 Agent-Centric 架构上，不新增独立 Worker 或外部 Agent 服务，而是在 `apps/api` 内补齐上下文构造、LLM 友好 Tool Manifest、Resolver、参数补全、Observation/Replan 和评测体系，让 Agent 从“能生成计划和调用工具”升级为“能理解自然语言、主动取上下文、自动解析参数、失败可修复、质量可评测”的智能创作 Agent。

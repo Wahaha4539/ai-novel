@@ -114,6 +114,7 @@ const failOnRegression = process.argv.includes('--fail-on-regression');
 const livePlanner = process.argv.includes('--live-planner');
 const realLlmSample = process.argv.includes('--real-llm-sample');
 const retrievalEval = process.argv.includes('--retrieval-eval');
+const experimentalLlmEvidenceReport = process.argv.includes('--experimental-llm-evidence-report');
 
 /**
  * Agent Planner 评测入口。
@@ -123,6 +124,19 @@ const retrievalEval = process.argv.includes('--retrieval-eval');
  * 可选 --report/--history 会输出当前指标快照和历史趋势，用于观察 Prompt、Manifest、Resolver 改动后的回归。
  */
 async function main() {
+  if (experimentalLlmEvidenceReport) {
+    const outputs = await Promise.all(cases.map((item) => createExperimentalEvidenceOutput(item)));
+    const report = buildExperimentalEvidenceReport(outputs);
+    for (const result of outputs) {
+      const status = result.skipped ? '↷' : result.error ? '!' : result.output?.llmSummaryStatus === 'succeeded' ? '✓' : '↷';
+      console.log(`${status} ${result.id}：${result.skipped ? '跳过' : result.output?.llmSummaryStatus ?? result.error ?? '无摘要'}`);
+    }
+    console.log(`LLM 证据归纳实验报告：${report.succeeded}/${report.totalCases} 成功，${report.fallback}/${report.totalCases} 降级，${report.skipped}/${report.totalCases} 跳过`);
+    if (reportPath) writeJson(reportPath, report);
+    if (historyPath) appendExperimentalHistory(historyPath, report);
+    return;
+  }
+
   if (retrievalEval) {
     const outputs = await Promise.all(cases.map((item) => createRealRetrievalOutput(item)));
     const results = outputs.map(({ item, output, error }) => {
@@ -203,6 +217,88 @@ async function main() {
   if (reportPath) writeJson(reportPath, report);
   if (historyPath) appendHistory(historyPath, report, failOnRegression);
   if (report.passedCases !== results.length) process.exitCode = 1;
+}
+
+type ExperimentalEvidenceOutput = { id: string; taskType: string; skipped?: boolean; error?: string; output?: { tool: string; llmSummaryStatus?: string; fallbackUsed?: boolean; summary?: string; keyFindings?: string[]; deterministicVerdict?: unknown } };
+
+type ExperimentalEvidenceReport = {
+  generatedAt: string;
+  sourceMode: 'experimental_llm_evidence_summary';
+  totalCases: number;
+  succeeded: number;
+  fallback: number;
+  skipped: number;
+  results: ExperimentalEvidenceOutput[];
+};
+
+/**
+ * 可选 LLM 证据归纳报告：只运行角色/剧情只读检查的摘要实验。
+ * 没有 API Key 或调用失败时工具会降级，脚本本身也不设置失败码，适合 CI artifact 留档。
+ */
+async function createExperimentalEvidenceOutput(item: EvalCase): Promise<ExperimentalEvidenceOutput> {
+  if (!['character_consistency_check', 'plot_consistency_check'].includes(item.expected.taskType)) return { id: item.id, taskType: item.expected.taskType, skipped: true };
+  const previous = process.env.AGENT_EXPERIMENTAL_LLM_EVIDENCE_SUMMARY;
+  process.env.AGENT_EXPERIMENTAL_LLM_EVIDENCE_SUMMARY = 'true';
+  try {
+    const retrieval = await createRealRetrievalOutput(item);
+    if (retrieval.error || !retrieval.output) return { id: item.id, taskType: item.expected.taskType, error: retrieval.error ?? 'retrieval output missing' };
+    const llm = await createOptionalRealLlmGateway();
+    const context = { agentRunId: `experimental_evidence_${item.id}`, projectId: textOrUndefined(asRecord(asRecord(item.context).session).currentProjectId) ?? 'project_1', mode: 'plan' as const, approved: false, outputs: {}, policy: {} };
+    if (item.expected.taskType === 'character_consistency_check') {
+      const report = await new CharacterConsistencyCheckTool(llm as never).run({ characterId: 'char_protagonist', taskContext: retrieval.output as Record<string, unknown>, instruction: item.message }, context);
+      return { id: item.id, taskType: item.expected.taskType, output: summarizeExperimentalToolOutput('character_consistency_check', report) };
+    }
+    const report = await new PlotConsistencyCheckTool(llm as never).run({ taskContext: retrieval.output as Record<string, unknown>, instruction: item.message }, context);
+    return { id: item.id, taskType: item.expected.taskType, output: summarizeExperimentalToolOutput('plot_consistency_check', report) };
+  } catch (error) {
+    return { id: item.id, taskType: item.expected.taskType, error: error instanceof Error ? error.message : String(error) };
+  } finally {
+    if (previous === undefined) delete process.env.AGENT_EXPERIMENTAL_LLM_EVIDENCE_SUMMARY;
+    else process.env.AGENT_EXPERIMENTAL_LLM_EVIDENCE_SUMMARY = previous;
+  }
+}
+
+async function createOptionalRealLlmGateway(): Promise<LlmGatewayService> {
+  const moduleRef = await Test.createTestingModule({ imports: [PrismaModule], providers: [LlmGatewayService, LlmProvidersService] }).compile();
+  try {
+    await moduleRef.get(LlmProvidersService).onModuleInit();
+    return moduleRef.get(LlmGatewayService);
+  } catch {
+    // 保留无 Key/无数据库场景的降级行为：工具会捕获 chatJson 失败并返回 fallback。
+    await moduleRef.close();
+    return { async chatJson() { throw new Error('LLM evidence summary skipped: no provider or API key configured'); } } as unknown as LlmGatewayService;
+  }
+}
+
+function summarizeExperimentalToolOutput(tool: string, report: unknown) {
+  const record = asRecord(report);
+  const summary = asRecord(record.llmEvidenceSummary);
+  return {
+    tool,
+    llmSummaryStatus: textOrUndefined(summary.status) ?? 'disabled',
+    fallbackUsed: summary.fallbackUsed === true,
+    summary: textOrUndefined(summary.summary),
+    keyFindings: Array.isArray(summary.keyFindings) ? summary.keyFindings.map((item) => String(item)).slice(0, 6) : [],
+    deterministicVerdict: record.verdict,
+  };
+}
+
+function buildExperimentalEvidenceReport(results: ExperimentalEvidenceOutput[]): ExperimentalEvidenceReport {
+  return {
+    generatedAt: new Date().toISOString(),
+    sourceMode: 'experimental_llm_evidence_summary',
+    totalCases: results.length,
+    succeeded: results.filter((item) => item.output?.llmSummaryStatus === 'succeeded').length,
+    fallback: results.filter((item) => item.output?.fallbackUsed || item.error).length,
+    skipped: results.filter((item) => item.skipped).length,
+    results,
+  };
+}
+
+function appendExperimentalHistory(filePath: string, report: ExperimentalEvidenceReport) {
+  const resolved = path.resolve(process.cwd(), filePath);
+  const previous = fs.existsSync(resolved) ? JSON.parse(fs.readFileSync(resolved, 'utf8')) as ExperimentalEvidenceReport[] : [];
+  writeJson(filePath, [...previous, report]);
 }
 
 function evaluateCase(item: EvalCase, plan: AgentPlanLike): CaseEvaluation {

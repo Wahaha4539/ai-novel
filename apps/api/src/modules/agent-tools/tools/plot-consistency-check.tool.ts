@@ -94,6 +94,7 @@ export class PlotConsistencyCheckTool implements BaseTool<PlotConsistencyCheckIn
       taskContext: { source: 'previous_step', description: '来自 collect_task_context 的输出，需包含 chapters、plotEvents、characters、relationshipGraph、constraints 等字段。' },
       focusText: { source: 'context', description: '用户选中的大纲/正文片段；若有选区，优先作为当前剧情证据。' },
       instruction: { source: 'user_message', description: '保留用户原始检查重点，例如“当前大纲有没有矛盾”“伏笔是否回收”。' },
+      experimentalLlmEvidenceSummary: { source: 'runtime', description: '默认关闭的只读实验开关；Planner 不应主动开启，仅由运行时/评测显式启用。' },
     },
     examples: [
       {
@@ -138,7 +139,7 @@ export class PlotConsistencyCheckTool implements BaseTool<PlotConsistencyCheckIn
       verdict: this.buildVerdict(deviations),
       suggestions: this.buildSuggestions(deviations),
     };
-    const llmEvidenceSummary = await this.maybeSummarizeEvidence(args.experimentalLlmEvidenceSummary, deterministicOutput, args.instruction);
+    const llmEvidenceSummary = await this.maybeSummarizeEvidence(this.isEvidenceSummaryEnabled(args.experimentalLlmEvidenceSummary), deterministicOutput, args.instruction);
 
     return {
       ...deterministicOutput,
@@ -168,6 +169,11 @@ export class PlotConsistencyCheckTool implements BaseTool<PlotConsistencyCheckIn
     } catch (error) {
       return { status: 'fallback', fallbackUsed: true, error: error instanceof Error ? error.message : String(error) };
     }
+  }
+
+  /** 实验能力默认关闭；开启后也只追加摘要字段，失败会由 maybeSummarizeEvidence 降级为 deterministic。 */
+  private isEvidenceSummaryEnabled(inputFlag?: boolean): boolean {
+    return inputFlag === true || process.env.AGENT_EXPERIMENTAL_LLM_EVIDENCE_SUMMARY === 'true';
   }
 
   /** 汇总章节目标、冲突、梗概和用户选区，作为“大纲是否自洽”的主要证据。 */

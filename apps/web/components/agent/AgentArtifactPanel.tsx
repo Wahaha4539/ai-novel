@@ -415,6 +415,7 @@ function CharacterConsistencySummary({ content }: { content: unknown }) {
         <Metric label="偏差数" value={deviations.length} tone={deviations.length ? 'warn' : 'ok'} />
       </div>
       <div className="text-xs leading-5" style={{ color: 'var(--text-muted)' }}>{textValue(verdict?.summary, '暂无结论摘要')}</div>
+      <LlmEvidenceSummaryNotice content={data?.llmEvidenceSummary} />
       <div className="space-y-1">
         {deviations.slice(0, 5).map((item, index) => {
           const deviation = asRecord(item);
@@ -441,6 +442,7 @@ function PlotConsistencySummary({ content }: { content: unknown }) {
         <Metric label="关系边" value={numberValue(scope?.relationshipEdgeCount)} />
       </div>
       <div className="text-xs leading-5" style={{ color: 'var(--text-muted)' }}>{textValue(verdict?.summary, '暂无剧情一致性结论')}</div>
+      <LlmEvidenceSummaryNotice content={data?.llmEvidenceSummary} />
       <div className="grid gap-2 md:grid-cols-2">
         <Metric label="大纲证据" value={asArray(evidence?.outlineEvidence).length} />
         <Metric label="事件线证据" value={asArray(evidence?.eventTimeline).length} />
@@ -455,6 +457,36 @@ function PlotConsistencySummary({ content }: { content: unknown }) {
         })}
         {!deviations.length && <div className="text-xs" style={{ color: 'var(--text-muted)' }}>暂未发现明显剧情矛盾。</div>}
       </div>
+    </div>
+  );
+}
+
+/**
+ * LLM 证据摘要是默认关闭的只读实验元数据，只辅助阅读。
+ * 前端必须明确展示 fallback 状态，且不把摘要作为审批、写入或确定性结论依据。
+ */
+function LlmEvidenceSummaryNotice({ content }: { content: unknown }) {
+  const summary = asRecord(content);
+  if (!summary || !Object.keys(summary).length) return null;
+  const status = textValue(summary.status, 'unknown');
+  const fallbackUsed = summary.fallbackUsed === true || status === 'fallback';
+  const keyFindings = asArray(summary.keyFindings).map((item) => textValue(item)).filter(Boolean);
+  return (
+    <div className="space-y-2 rounded-xl border p-3" style={{ borderColor: fallbackUsed ? 'rgba(251,191,36,0.34)' : 'rgba(20,184,166,0.30)', background: fallbackUsed ? 'rgba(251,191,36,0.08)' : 'rgba(20,184,166,0.08)' }}>
+      <div className="grid gap-2 md:grid-cols-3">
+        <Metric label="实验摘要" value={fallbackUsed ? '已降级' : '可用'} tone={fallbackUsed ? 'warn' : 'ok'} />
+        <Metric label="状态" value={status} tone={fallbackUsed ? 'warn' : 'ok'} />
+        <Metric label="模型" value={textValue(summary.model, fallbackUsed ? '未调用' : '未记录')} />
+      </div>
+      <div className="text-xs leading-5" style={{ color: 'var(--text-muted)' }}>
+        {fallbackUsed ? `LLM 摘要降级：${textValue(summary.error, '未启用或不可用')}` : textValue(summary.summary, '暂无实验摘要内容')}
+      </div>
+      {!fallbackUsed && keyFindings.length > 0 && (
+        <div className="space-y-1">
+          {keyFindings.slice(0, 4).map((item, index) => <div key={index} className="text-xs leading-5" style={{ color: 'var(--text-muted)' }}>实验发现：{item}</div>)}
+        </div>
+      )}
+      <div className="text-xs" style={{ color: 'var(--text-dim)' }}>仅作辅助阅读；审批、写入和诊断结论仍以确定性报告为准。</div>
     </div>
   );
 }

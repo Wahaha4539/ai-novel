@@ -101,6 +101,7 @@ export class CharacterConsistencyCheckTool implements BaseTool<CharacterConsiste
       taskContext: { source: 'previous_step', description: '来自 collect_task_context 的输出，需包含 characters、chapters、constraints 等字段。' },
       focusText: { source: 'context', description: '用户选中的文本片段；若有选区，优先作为当前表现证据。' },
       instruction: { source: 'user_message', description: '保留用户原始检查重点，例如“这里是不是太冲动了”。' },
+      experimentalLlmEvidenceSummary: { source: 'runtime', description: '默认关闭的只读实验开关；Planner 不应主动开启，仅由运行时/评测显式启用。' },
     },
     examples: [
       {
@@ -145,7 +146,7 @@ export class CharacterConsistencyCheckTool implements BaseTool<CharacterConsiste
       verdict,
       suggestions: this.buildSuggestions(deviations),
     };
-    const llmEvidenceSummary = await this.maybeSummarizeEvidence(args.experimentalLlmEvidenceSummary, deterministicOutput, args.instruction);
+    const llmEvidenceSummary = await this.maybeSummarizeEvidence(this.isEvidenceSummaryEnabled(args.experimentalLlmEvidenceSummary), deterministicOutput, args.instruction);
 
     return {
       ...deterministicOutput,
@@ -175,6 +176,11 @@ export class CharacterConsistencyCheckTool implements BaseTool<CharacterConsiste
     } catch (error) {
       return { status: 'fallback', fallbackUsed: true, error: error instanceof Error ? error.message : String(error) };
     }
+  }
+
+  /** 实验能力默认关闭；既支持单次 Tool 参数，也支持 CI/本地用环境变量统一开启。 */
+  private isEvidenceSummaryEnabled(inputFlag?: boolean): boolean {
+    return inputFlag === true || process.env.AGENT_EXPERIMENTAL_LLM_EVIDENCE_SUMMARY === 'true';
   }
 
   private pickCharacter(characters: Array<Record<string, unknown>>, characterId?: string): Record<string, unknown> {

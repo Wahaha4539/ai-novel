@@ -12,6 +12,7 @@ jobs:
     runs-on: ubuntu-latest
     env:
       RUN_REAL_LLM_SAMPLE: ${{ vars.AGENT_EVAL_REAL_LLM_SAMPLE }}
+      RUN_LLM_EXPERIMENT_REPORTS: ${{ vars.AGENT_EVAL_LLM_EXPERIMENT_REPORTS }}
     steps:
       - name: Checkout
         uses: actions/checkout@v4
@@ -30,13 +31,16 @@ jobs:
       - name: Run Agent Eval gate
         run: pnpm run eval:agent:gate
 
-      # 真实 LLM 抽样只作为漂移观察：复用项目 LLM 配置模块读取 agent_planner 路由/默认 Provider，失败不阻断门禁。
+      # 真实 LLM 抽样只作为漂移观察：优先复用数据库 Provider；若团队未配置数据库 Provider，可选传入 LLM_* 兜底变量，失败不阻断门禁。
       - name: Run optional real LLM sample eval
         if: ${{ env.RUN_REAL_LLM_SAMPLE == 'true' }}
         continue-on-error: true
         run: pnpm --dir apps/api run eval:agent:real-sample
         env:
           DATABASE_URL: ${{ secrets.DATABASE_URL }}
+          LLM_BASE_URL: ${{ vars.LLM_BASE_URL }}
+          LLM_MODEL: ${{ vars.LLM_MODEL }}
+          LLM_API_KEY: ${{ secrets.LLM_API_KEY }}
 
       # 即使真实 LLM 抽样发现漂移或执行失败，也上传报告/历史文件供 PR 留档排查。
       - name: Upload real LLM sample eval artifact
@@ -47,4 +51,27 @@ jobs:
           path: |
             tmp/agent-eval-real-sample-report.json
             tmp/agent-eval-real-sample-history.json
+          if-no-files-found: ignore
+
+      # LLM 实验能力只做可选报告留档：无 Provider/API Key 时会降级或跳过，且不影响 deterministic 主门禁。
+      - name: Run optional LLM experiment reports
+        if: ${{ env.RUN_LLM_EXPERIMENT_REPORTS == 'true' }}
+        continue-on-error: true
+        run: pnpm --dir apps/api run eval:agent:experimental-evidence && pnpm --dir apps/api run eval:agent:experimental-replan
+        env:
+          DATABASE_URL: ${{ secrets.DATABASE_URL }}
+          LLM_BASE_URL: ${{ vars.LLM_BASE_URL }}
+          LLM_MODEL: ${{ vars.LLM_MODEL }}
+          LLM_API_KEY: ${{ secrets.LLM_API_KEY }}
+
+      - name: Upload LLM experiment eval artifacts
+        if: ${{ always() && env.RUN_LLM_EXPERIMENT_REPORTS == 'true' }}
+        uses: actions/upload-artifact@v4
+        with:
+          name: agent-eval-llm-experiments
+          path: |
+            tmp/agent-eval-experimental-evidence-report.json
+            tmp/agent-eval-experimental-evidence-history.json
+            tmp/agent-eval-experimental-replanner-report.json
+            tmp/agent-eval-experimental-replanner-history.json
           if-no-files-found: ignore

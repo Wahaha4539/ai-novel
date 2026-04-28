@@ -1029,6 +1029,38 @@ export interface AgentObservation {
 - Resolver 低置信度不自动选择。
 - 已成功且有副作用的步骤默认不重跑，除非工具声明幂等。
 
+### 11.6 实验性 LLM Replanner 兜底
+
+在 deterministic Replanner 已覆盖缺参、schema、引用、低置信度和 validation failed 等主路径后，可以增加默认关闭的 LLM Replanner 兜底，用于观察“确定性规则无法覆盖但风险很低”的只读失败场景。
+
+启用方式：
+
+```text
+AGENT_EXPERIMENTAL_LLM_REPLANNER=true
+```
+
+适用范围必须严格限制：
+
+- 仅当 deterministic Replanner 返回 `fail_with_reason` 时尝试。
+- 仅处理 `retryable=true` 的 Observation。
+- 不处理 `POLICY_BLOCKED` / `APPROVAL_REQUIRED`。
+- 不处理已触达总 replan 次数上限或同一步同类错误上限的场景。
+- 只允许插入只读 resolver/context 类步骤，例如 `resolve_chapter`、`resolve_character`、`collect_task_context`、`collect_chapter_context`、`inspect_project_context`。
+- 禁止插入写入类、`persist_*`、`write_*` 或 `requiresApproval=true` 的步骤。
+- `*.Id` 参数替换必须来自 `{{steps.*.output.*}}` 或 `{{context.*}}` 模板引用。
+- Resolver 低置信度、多候选或候选接近时仍必须 `ask_user`，不得自动选择。
+
+推荐先覆盖的低风险样本：
+
+| 场景 | 失败类型 | 允许的兜底方向 |
+|---|---|---|
+| 剧情一致性检查缺少上下文 | `TOOL_INTERNAL_ERROR` | 插入 `collect_task_context(taskType=plot_consistency_check)` |
+| 角色一致性检查只读超时 | `TOOL_TIMEOUT` | 插入 `collect_task_context(taskType=character_consistency_check)` |
+| 世界观校验缺少 locked facts 对比 | `TOOL_INTERNAL_ERROR` | 插入 `inspect_project_context` 补充只读项目边界 |
+| 事实校验缺少章节上下文 | `TOOL_TIMEOUT` | 插入 `collect_chapter_context` 后重试只读校验 |
+
+实验输出只能进入评测报告或新的待审批计划版本，不得在后台继续执行写入步骤。
+
 ---
 
 ## 12. Skill / Task Playbook 设计
@@ -1259,6 +1291,43 @@ B. 沈怀舟（第一卷视角角色，出现 5 章）
 - 接受为正式正文
 - 继续要求修改
 ```
+
+### 14.4 LLM 实验摘要元数据展示
+
+角色一致性检查和剧情一致性检查可以接入默认关闭的 LLM 证据归纳实验，用于把 deterministic 报告压缩成更易读的摘要。前端展示时必须坚持：摘要只辅助阅读，不作为审批、写入或确定性结论依据。
+
+后端输出建议：
+
+```json
+{
+  "llmEvidenceSummary": {
+    "status": "succeeded",
+    "fallbackUsed": false,
+    "model": "evidence-summary-model",
+    "summary": "这次偏差主要集中在动机过渡不足。",
+    "keyFindings": ["关系冲突有证据支撑", "当前台词缺少克制型角色的过渡"]
+  }
+}
+```
+
+降级时：
+
+```json
+{
+  "llmEvidenceSummary": {
+    "status": "fallback",
+    "fallbackUsed": true,
+    "error": "LLM evidence summary gateway unavailable"
+  }
+}
+```
+
+前端展示要求：
+
+- 展示 `status`、`fallbackUsed`、`model`、`summary`、`keyFindings`。
+- `fallbackUsed=true` 或 `status=fallback` 时明确标识“实验摘要已降级”。
+- 实验关闭时不展示该卡片，UI 与 deterministic 报告保持一致。
+- 卡片必须提示“仅作辅助阅读；审批、写入和诊断结论仍以确定性报告为准”。
 
 ---
 
@@ -1572,6 +1641,32 @@ resolver alternatives
 
 - 每次改 Prompt / Tool Manifest / Resolver 后能看到指标变化。
 - 智能化不再靠主观感觉判断。
+
+### Phase 5：LLM 实验报告与 CI 可选留档
+
+目标：在 deterministic 主门禁稳定的前提下，观察真实 LLM 漂移、LLM 证据归纳和 LLM Replanner 兜底表现，但不让真实模型、API Key 或 Provider 配置影响主干质量门禁。
+
+任务：
+
+1. `eval:agent:gate` 只串联 deterministic / mock LLM 可重复评测，例如 Live Planner、Retrieval、Replan Eval。
+2. 真实 LLM 抽样使用 `--real-llm-sample`，只输出漂移观察报告，失败时 `console.warn`，不设置失败码。
+3. LLM 实验报告使用可选脚本生成 artifact，例如 `eval:agent:experimental-evidence` 与 `eval:agent:experimental-replan`。
+4. GitHub Actions 中通过 repository variables 控制是否运行可选步骤：
+   - `AGENT_EVAL_REAL_LLM_SAMPLE=true`
+   - `AGENT_EVAL_LLM_EXPERIMENT_REPORTS=true`
+5. CI 可选 LLM 配置优先级：
+   - 数据库 step-specific routing（如 `agent_planner`、`agent_evidence_summary`、`agent_replanner`）；
+   - 默认 Provider；
+   - 环境变量兜底：`LLM_BASE_URL`、`LLM_API_KEY`、可选 `LLM_MODEL`。
+6. 如果团队希望 CI 可选实验脱离数据库 Provider，可配置：
+   - repository variables：`LLM_BASE_URL`、`LLM_MODEL`；
+   - repository secret：`LLM_API_KEY`。
+
+验收：
+
+- 无 API Key / 无 Provider 时，可选报告降级或跳过，不阻断 PR/主干门禁。
+- 可选实验 artifact 能记录成功、降级、跳过和使用模型信息。
+- 主门禁仍不依赖真实 LLM，不因模型漂移失败。
 
 ---
 

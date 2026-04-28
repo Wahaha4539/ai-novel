@@ -1,0 +1,122 @@
+{
+  "generatedAt": "2026-04-28T01:48:44.342Z",
+  "sourceMode": "experimental_llm_replanner",
+  "totalCases": 16,
+  "llmUsedCount": 4,
+  "safePatchCount": 16,
+  "skippedCount": 12,
+  "results": [
+    {
+      "id": "missing_chapter_id_001",
+      "action": "patch_plan",
+      "reason": "失败步骤缺少真实 chapterId，需要先把用户的章节自然语言引用解析为系统章节 ID。",
+      "usedLlm": false,
+      "safe": true
+    },
+    {
+      "id": "natural_language_chapter_id_002",
+      "action": "patch_plan",
+      "reason": "失败步骤缺少真实 chapterId，需要先把用户的章节自然语言引用解析为系统章节 ID。",
+      "usedLlm": false,
+      "safe": true
+    },
+    {
+      "id": "natural_language_character_id_003",
+      "action": "patch_plan",
+      "reason": "失败步骤缺少真实 characterId，需要先解析用户提到的角色引用。",
+      "usedLlm": false,
+      "safe": true
+    },
+    {
+      "id": "ambiguous_entity_004",
+      "action": "ask_user",
+      "reason": "实体解析存在多个接近候选，自动选择可能导致误写。",
+      "usedLlm": false,
+      "safe": true
+    },
+    {
+      "id": "non_retryable_policy_005",
+      "action": "fail_with_reason",
+      "reason": "该错误不可安全自动修复，或失败步骤已不在当前计划中。",
+      "usedLlm": false,
+      "safe": true
+    },
+    {
+      "id": "auto_patch_total_limit_006",
+      "action": "fail_with_reason",
+      "reason": "自动修复已达到本次 AgentRun 的 2 次上限，请人工检查计划后重新规划。",
+      "usedLlm": false,
+      "safe": true
+    },
+    {
+      "id": "same_step_loop_guard_007",
+      "action": "fail_with_reason",
+      "reason": "同一步骤的同类错误已经自动修复过 1 次，继续重试可能形成循环，请人工检查参数或上下文。",
+      "usedLlm": false,
+      "safe": true
+    },
+    {
+      "id": "schema_number_coercion_008",
+      "action": "patch_plan",
+      "reason": "Tool schema 校验失败，但存在可安全转换的数值类型参数，因此仅做最小类型转换补丁。",
+      "usedLlm": false,
+      "safe": true
+    },
+    {
+      "id": "future_step_reference_009",
+      "action": "patch_plan",
+      "reason": "失败步骤引用了当前或未来步骤输出，需要改为引用已完成的前序上下文步骤。",
+      "usedLlm": false,
+      "safe": true
+    },
+    {
+      "id": "resolver_low_confidence_010",
+      "action": "ask_user",
+      "reason": "Resolver 返回低置信度结果，自动选择可能把自然语言引用解析到错误实体。",
+      "usedLlm": false,
+      "safe": true
+    },
+    {
+      "id": "tool_output_missing_field_011",
+      "action": "ask_user",
+      "reason": "前序工具输出缺少 characterId，但返回了候选项，需要用户确认后才能继续。",
+      "usedLlm": false,
+      "safe": true
+    },
+    {
+      "id": "validation_failed_minimal_repair_012",
+      "action": "patch_plan",
+      "reason": "章节校验失败后只能进行最小必要修复，限制修复轮数并强化不改剧情事实的约束。",
+      "usedLlm": false,
+      "safe": true
+    },
+    {
+      "id": "experimental_plot_context_internal_error",
+      "action": "patch_plan",
+      "reason": "LLM 实验：剧情检查缺少可用上下文，先补充只读剧情上下文后重试。",
+      "usedLlm": true,
+      "safe": true
+    },
+    {
+      "id": "experimental_character_context_timeout",
+      "action": "patch_plan",
+      "reason": "LLM 实验：角色检查缺少只读任务上下文，先补充 collect_task_context 后重试。",
+      "usedLlm": true,
+      "safe": true
+    },
+    {
+      "id": "experimental_worldbuilding_validation_context_missing",
+      "action": "patch_plan",
+      "reason": "LLM 实验：世界观校验缺少项目边界信息，先执行只读项目巡检补足 locked facts。",
+      "usedLlm": true,
+      "safe": true
+    },
+    {
+      "id": "experimental_fact_validation_context_timeout",
+      "action": "patch_plan",
+      "reason": "LLM 实验：事实校验缺少章节上下文，先收集只读章节上下文后重试校验。",
+      "usedLlm": true,
+      "safe": true
+    }
+  ]
+}

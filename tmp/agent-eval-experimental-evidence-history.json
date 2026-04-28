@@ -1,0 +1,204 @@
+[
+  {
+    "generatedAt": "2026-04-28T01:15:31.709Z",
+    "sourceMode": "experimental_llm_evidence_summary",
+    "totalCases": 12,
+    "succeeded": 3,
+    "fallback": 0,
+    "skipped": 9,
+    "results": [
+      {
+        "id": "chapter_write_001",
+        "taskType": "chapter_write",
+        "skipped": true
+      },
+      {
+        "id": "chapter_write_next_002",
+        "taskType": "chapter_write",
+        "skipped": true
+      },
+      {
+        "id": "chapter_revision_003",
+        "taskType": "chapter_revision",
+        "skipped": true
+      },
+      {
+        "id": "selected_text_polish_004",
+        "taskType": "chapter_polish",
+        "skipped": true
+      },
+      {
+        "id": "character_consistency_005",
+        "taskType": "character_consistency_check",
+        "output": {
+          "tool": "character_consistency_check",
+          "llmSummaryStatus": "succeeded",
+          "fallbackUsed": false,
+          "keyFindings": [],
+          "deterministicVerdict": {
+            "status": "consistent",
+            "summary": "林烬暂未发现明显人设崩坏。",
+            "needsRevision": false
+          }
+        }
+      },
+      {
+        "id": "plot_consistency_006",
+        "taskType": "plot_consistency_check",
+        "output": {
+          "tool": "plot_consistency_check",
+          "llmSummaryStatus": "succeeded",
+          "fallbackUsed": false,
+          "keyFindings": [],
+          "deterministicVerdict": {
+            "status": "consistent",
+            "summary": "基于当前召回上下文，暂未发现明显大纲矛盾、事件倒置或动机断裂。",
+            "needsRevision": false
+          }
+        }
+      },
+      {
+        "id": "worldbuilding_expand_007",
+        "taskType": "worldbuilding_expand",
+        "skipped": true
+      },
+      {
+        "id": "outline_split_008",
+        "taskType": "outline_design",
+        "skipped": true
+      },
+      {
+        "id": "project_import_009",
+        "taskType": "project_import_preview",
+        "skipped": true
+      },
+      {
+        "id": "fuzzy_chapter_ref_010",
+        "taskType": "chapter_revision",
+        "skipped": true
+      },
+      {
+        "id": "ambiguous_character_011",
+        "taskType": "character_consistency_check",
+        "output": {
+          "tool": "character_consistency_check",
+          "llmSummaryStatus": "succeeded",
+          "fallbackUsed": false,
+          "keyFindings": [],
+          "deterministicVerdict": {
+            "status": "consistent",
+            "summary": "林烬暂未发现明显人设崩坏。",
+            "needsRevision": false
+          }
+        }
+      },
+      {
+        "id": "missing_project_012",
+        "taskType": "chapter_write",
+        "skipped": true
+      }
+    ]
+  },
+  {
+    "generatedAt": "2026-04-28T01:48:59.445Z",
+    "sourceMode": "experimental_llm_evidence_summary",
+    "totalCases": 12,
+    "succeeded": 3,
+    "fallback": 0,
+    "skipped": 9,
+    "results": [
+      {
+        "id": "chapter_write_001",
+        "taskType": "chapter_write",
+        "skipped": true
+      },
+      {
+        "id": "chapter_write_next_002",
+        "taskType": "chapter_write",
+        "skipped": true
+      },
+      {
+        "id": "chapter_revision_003",
+        "taskType": "chapter_revision",
+        "skipped": true
+      },
+      {
+        "id": "selected_text_polish_004",
+        "taskType": "chapter_polish",
+        "skipped": true
+      },
+      {
+        "id": "character_consistency_005",
+        "taskType": "character_consistency_check",
+        "output": {
+          "tool": "character_consistency_check",
+          "llmSummaryStatus": "succeeded",
+          "fallbackUsed": false,
+          "summary": "当前表现与“克制隐忍”的基线一致，冲突场景中仍保持压抑与克制，没有看到与既有人设直接冲突的证据。",
+          "keyFindings": [],
+          "deterministicVerdict": {
+            "status": "consistent",
+            "summary": "林烬暂未发现明显人设崩坏。",
+            "needsRevision": false
+          }
+        }
+      },
+      {
+        "id": "plot_consistency_006",
+        "taskType": "plot_consistency_check",
+        "output": {
+          "tool": "plot_consistency_check",
+          "llmSummaryStatus": "succeeded",
+          "fallbackUsed": false,
+          "summary": "基于当前召回上下文，暂未发现明显大纲矛盾、事件倒置或动机断裂。",
+          "keyFindings": [],
+          "deterministicVerdict": {
+            "status": "consistent",
+            "summary": "基于当前召回上下文，暂未发现明显大纲矛盾、事件倒置或动机断裂。",
+            "needsRevision": false
+          }
+        }
+      },
+      {
+        "id": "worldbuilding_expand_007",
+        "taskType": "worldbuilding_expand",
+        "skipped": true
+      },
+      {
+        "id": "outline_split_008",
+        "taskType": "outline_design",
+        "skipped": true
+      },
+      {
+        "id": "project_import_009",
+        "taskType": "project_import_preview",
+        "skipped": true
+      },
+      {
+        "id": "fuzzy_chapter_ref_010",
+        "taskType": "chapter_revision",
+        "skipped": true
+      },
+      {
+        "id": "ambiguous_character_011",
+        "taskType": "character_consistency_check",
+        "output": {
+          "tool": "character_consistency_check",
+          "llmSummaryStatus": "succeeded",
+          "fallbackUsed": false,
+          "keyFindings": [],
+          "deterministicVerdict": {
+            "status": "consistent",
+            "summary": "林烬暂未发现明显人设崩坏。",
+            "needsRevision": false
+          }
+        }
+      },
+      {
+        "id": "missing_project_012",
+        "taskType": "chapter_write",
+        "skipped": true
+      }
+    ]
+  }
+]

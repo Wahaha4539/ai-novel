@@ -1,8 +1,11 @@
-import { Injectable } from '@nestjs/common';
+import { Injectable, Optional } from '@nestjs/common';
 import { ToolRegistryService } from '../agent-tools/tool-registry.service';
+import { LlmGatewayService } from '../llm/llm-gateway.service';
 import { AgentContextV2 } from './agent-context-builder.service';
 import { AgentObservation, ReplanAttemptStats, ReplanPatch } from './agent-observation.types';
 import { AgentPlanStepSpec } from './agent-planner.service';
+
+type ReplannerInput = { userGoal: string; currentPlanSteps: AgentPlanStepSpec[]; failedObservation: AgentObservation; agentContext?: AgentContextV2; replanStats?: ReplanAttemptStats };
 
 /**
  * 根据结构化 Observation 生成最小修复补丁。
@@ -10,9 +13,12 @@ import { AgentPlanStepSpec } from './agent-planner.service';
  */
 @Injectable()
 export class AgentReplannerService {
-  constructor(private readonly tools: ToolRegistryService) {}
+  constructor(
+    private readonly tools: ToolRegistryService,
+    @Optional() private readonly llm?: LlmGatewayService,
+  ) {}
 
-  createPatch(input: { userGoal: string; currentPlanSteps: AgentPlanStepSpec[]; failedObservation: AgentObservation; agentContext?: AgentContextV2; replanStats?: ReplanAttemptStats }): ReplanPatch {
+  createPatch(input: ReplannerInput): ReplanPatch {
     const { userGoal, currentPlanSteps, failedObservation, agentContext, replanStats } = input;
     const failedStep = currentPlanSteps.find((step) => step.stepNo === failedObservation.stepNo);
     if (!failedObservation.error.retryable || !failedStep) {
@@ -53,6 +59,96 @@ export class AgentReplannerService {
     }
 
     return { action: 'fail_with_reason', reason: '当前 Observation 没有匹配到可自动修复的最小补丁。' };
+  }
+
+  /**
+   * 默认关闭的 LLM Replanner 实验兜底。
+   * 只有 deterministic Replanner 返回不可修复时才尝试；输出仍经过硬安全校验，不能绕过审批、低置信度澄清或循环上限。
+   */
+  async createPatchWithExperimentalFallback(input: ReplannerInput): Promise<ReplanPatch> {
+    const deterministic = this.createPatch(input);
+    if (deterministic.action !== 'fail_with_reason') return deterministic;
+    if (!this.isExperimentalLlmReplannerEnabled() || !this.llm || !this.canTryLlmReplanner(input)) return deterministic;
+
+    try {
+      const response = await this.llm.chatJson<ReplanPatch>([
+        {
+          role: 'system',
+          content: [
+            '你是 AI Novel 的实验性 Agent Replanner。你只能输出严格 JSON。',
+            '只在确定性 Replanner 无法处理时给出一个最小补丁，不要重写整份计划。',
+            '不得绕过 Policy、Approval 或 Tool Schema；不得插入写入类、persist_*、write_* 或需审批步骤。',
+            'Resolver 低置信度或多候选必须输出 ask_user，不能自动选择候选。',
+            '如果无法安全修复，输出 fail_with_reason。',
+          ].join('\n'),
+        },
+        {
+          role: 'user',
+          content: JSON.stringify({
+            userGoal: input.userGoal,
+            currentPlanSteps: input.currentPlanSteps,
+            failedObservation: input.failedObservation,
+            agentContext: input.agentContext,
+            deterministicFailure: deterministic.reason,
+            outputContract: {
+              action: 'patch_plan|ask_user|fail_with_reason',
+              reason: 'string',
+              insertStepsBeforeFailedStep: 'optional readonly resolver/context steps only',
+              replaceFailedStepArgs: 'optional minimal args patch; *.Id must be template references from context or resolver output',
+              questionForUser: 'required when ask_user',
+              choices: 'optional candidates from observation only',
+            },
+          }),
+        },
+      ], { appStep: 'agent_replanner', temperature: 0, maxTokens: 1200, timeoutMs: 30_000, retries: 0 });
+      return this.normalizeAndValidateLlmPatch(response.data, input, deterministic);
+    } catch (error) {
+      return { ...deterministic, reason: `${deterministic.reason}；LLM Replanner 实验降级：${error instanceof Error ? error.message : String(error)}` };
+    }
+  }
+
+  private isExperimentalLlmReplannerEnabled(): boolean {
+    return process.env.AGENT_EXPERIMENTAL_LLM_REPLANNER === 'true';
+  }
+
+  /** LLM 兜底不处理不可重试、审批/策略阻断和已触达循环上限的场景。 */
+  private canTryLlmReplanner(input: ReplannerInput): boolean {
+    const code = input.failedObservation.error.code;
+    if (!input.failedObservation.error.retryable) return false;
+    if (code === 'APPROVAL_REQUIRED' || code === 'POLICY_BLOCKED') return false;
+    if (this.guardAutoPatchLimit(input.replanStats)) return false;
+    return true;
+  }
+
+  private normalizeAndValidateLlmPatch(raw: unknown, input: ReplannerInput, fallback: ReplanPatch): ReplanPatch {
+    const patch = raw && typeof raw === 'object' ? raw as ReplanPatch : fallback;
+    if (!['patch_plan', 'ask_user', 'fail_with_reason'].includes(patch.action)) return fallback;
+    const normalized: ReplanPatch = {
+      action: patch.action,
+      reason: typeof patch.reason === 'string' && patch.reason.trim() ? `LLM 实验：${patch.reason}` : 'LLM 实验给出修复建议。',
+      ...(patch.questionForUser ? { questionForUser: String(patch.questionForUser) } : {}),
+      ...(Array.isArray(patch.choices) ? { choices: patch.choices.slice(0, 5).map((choice, index) => ({ id: String(choice.id ?? `candidate_${index + 1}`), label: String(choice.label ?? `候选 ${index + 1}`), payload: choice.payload })) } : {}),
+      ...(patch.replaceFailedStepArgs && typeof patch.replaceFailedStepArgs === 'object' ? { replaceFailedStepArgs: patch.replaceFailedStepArgs } : {}),
+      ...(Array.isArray(patch.insertStepsBeforeFailedStep) ? { insertStepsBeforeFailedStep: patch.insertStepsBeforeFailedStep.slice(0, 1) } : {}),
+    };
+    return this.isSafeLlmPatch(normalized, input) ? normalized : fallback;
+  }
+
+  /** 实验 LLM patch 只允许只读 resolver/context 修复，ID 只能来自模板引用，避免扩大写入范围。 */
+  private isSafeLlmPatch(patch: ReplanPatch, input: ReplannerInput): boolean {
+    if (patch.action === 'fail_with_reason') return true;
+    if (patch.action === 'ask_user') return Boolean(patch.questionForUser);
+    const inserted = patch.insertStepsBeforeFailedStep ?? [];
+    if (inserted.some((step) => step.requiresApproval || !['resolve_chapter', 'resolve_character', 'collect_task_context', 'collect_chapter_context', 'inspect_project_context'].includes(step.tool))) return false;
+    const replacements = patch.replaceFailedStepArgs ?? {};
+    if (Object.entries(replacements).some(([key, value]) => /(^id$|Id$)/.test(key) && !this.isSafeIdReplacement(value))) return false;
+    const failedStep = input.currentPlanSteps.find((step) => step.stepNo === input.failedObservation.stepNo);
+    if (!failedStep) return false;
+    return !inserted.some((step) => step.tool.startsWith('write_') || step.tool.startsWith('persist_'));
+  }
+
+  private isSafeIdReplacement(value: unknown): boolean {
+    return typeof value === 'string' && /^{{(steps\.[A-Za-z0-9_]+\.output\.[A-Za-z0-9_]+|context\.[A-Za-z0-9_.]+)}}$/.test(value);
   }
 
   /** 自动修复必须有界：总轮数和同类错误都设硬上限，避免 Replan 循环扩大风险。 */
