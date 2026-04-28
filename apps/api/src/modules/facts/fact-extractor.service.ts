@@ -2,6 +2,7 @@ import { Injectable, NotFoundException } from '@nestjs/common';
 import { Prisma } from '@prisma/client';
 import { PrismaService } from '../../prisma/prisma.service';
 import { LlmGatewayService } from '../llm/llm-gateway.service';
+import { MemoryWriterService } from '../memory/memory-writer.service';
 
 interface ExtractedEvent {
   title: string;
@@ -31,6 +32,8 @@ export interface FactExtractionResult {
   createdEvents: number;
   createdCharacterStates: number;
   createdForeshadows: number;
+  createdMemoryChunks: number;
+  pendingReviewMemoryChunks: number;
   events: ExtractedEvent[];
   characterStates: ExtractedCharacterState[];
   foreshadows: ExtractedForeshadow[];
@@ -44,7 +47,11 @@ const MAX_TEXT_CHARS = 8000;
  */
 @Injectable()
 export class FactExtractorService {
-  constructor(private readonly prisma: PrismaService, private readonly llm: LlmGatewayService) {}
+  constructor(
+    private readonly prisma: PrismaService,
+    private readonly llm: LlmGatewayService,
+    private readonly memoryWriter: MemoryWriterService,
+  ) {}
 
   async extractChapterFacts(projectId: string, chapterId: string, draftId?: string): Promise<FactExtractionResult> {
     const chapter = await this.prisma.chapter.findFirst({ where: { id: chapterId, projectId }, include: { project: true } });
@@ -136,6 +143,19 @@ export class FactExtractorService {
       return { createdEvents, createdStates, createdForeshadows };
     });
 
+    // 与旧 Worker rebuild/generate 链路保持一致：事实抽取后同步生成 MemoryChunk。
+    // 其中角色状态和伏笔会进入 pending_review，供后续 review_memory 自动采纳或拒绝。
+    const memory = await this.memoryWriter.replaceGeneratedChapterFactMemories({
+      projectId,
+      chapter: { id: chapter.id, chapterNo: chapter.chapterNo },
+      generatedBy: 'agent_fact_extractor',
+      summary,
+      events,
+      characterStates,
+      foreshadows,
+    });
+    const pendingReviewMemoryChunks = memory.chunks.filter((chunk) => chunk.status === 'pending_review').length;
+
     return {
       chapterId,
       draftId: draft.id,
@@ -143,6 +163,8 @@ export class FactExtractorService {
       createdEvents: created.createdEvents.length,
       createdCharacterStates: created.createdStates.length,
       createdForeshadows: created.createdForeshadows.length,
+      createdMemoryChunks: memory.createdCount,
+      pendingReviewMemoryChunks,
       events,
       characterStates,
       foreshadows,

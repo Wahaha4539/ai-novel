@@ -16,11 +16,11 @@ export class ExtractChapterFactsTool implements BaseTool<ExtractChapterFactsInpu
   name = 'extract_chapter_facts';
   description = '从章节草稿抽取剧情事件、角色状态、伏笔和章节摘要，并写入事实层表。';
   inputSchema = { type: 'object' as const, required: ['chapterId', 'draftId'], additionalProperties: false, properties: { chapterId: { type: 'string' as const, minLength: 1 }, draftId: { type: 'string' as const, minLength: 1 } } };
-  outputSchema = { type: 'object' as const, required: ['chapterId', 'draftId', 'summary', 'createdEvents', 'createdCharacterStates', 'createdForeshadows'], properties: { chapterId: { type: 'string' as const, minLength: 1 }, draftId: { type: 'string' as const, minLength: 1 }, summary: { type: 'string' as const }, createdEvents: { type: 'number' as const, minimum: 0 }, createdCharacterStates: { type: 'number' as const, minimum: 0 }, createdForeshadows: { type: 'number' as const, minimum: 0 }, events: { type: 'array' as const }, characterStates: { type: 'array' as const }, foreshadows: { type: 'array' as const } } };
+  outputSchema = { type: 'object' as const, required: ['chapterId', 'draftId', 'summary', 'createdEvents', 'createdCharacterStates', 'createdForeshadows', 'createdMemoryChunks', 'pendingReviewMemoryChunks'], properties: { chapterId: { type: 'string' as const, minLength: 1 }, draftId: { type: 'string' as const, minLength: 1 }, summary: { type: 'string' as const }, createdEvents: { type: 'number' as const, minimum: 0 }, createdCharacterStates: { type: 'number' as const, minimum: 0 }, createdForeshadows: { type: 'number' as const, minimum: 0 }, createdMemoryChunks: { type: 'number' as const, minimum: 0 }, pendingReviewMemoryChunks: { type: 'number' as const, minimum: 0 }, events: { type: 'array' as const }, characterStates: { type: 'array' as const }, foreshadows: { type: 'array' as const } } };
   allowedModes: Array<'plan' | 'act'> = ['act'];
   riskLevel: 'medium' = 'medium';
   requiresApproval = true;
-  sideEffects = ['replace_auto_story_events', 'replace_auto_character_states', 'replace_auto_foreshadows'];
+  sideEffects = ['replace_auto_story_events', 'replace_auto_character_states', 'replace_auto_foreshadows', 'replace_auto_memory_chunks'];
 
   constructor(private readonly factExtractor: FactExtractorService) {}
 

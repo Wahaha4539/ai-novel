@@ -1,6 +1,6 @@
 'use client';
 
-import { useState, useCallback, useEffect } from 'react';
+import { useState, useCallback, useEffect, useRef } from 'react';
 import { useDashboardData } from '../hooks/useDashboardData';
 import { WorkspaceSidebar } from '../components/WorkspaceSidebar';
 import { EditorPanel } from '../components/EditorPanel';
@@ -24,10 +24,23 @@ export default function HomePage() {
   const [selectedVolumeId, setSelectedVolumeId] = useState('');
   const [autoStartGuided, setAutoStartGuided] = useState(false);
   const [isToastVisible, setIsToastVisible] = useState(false);
+  const loadProjectDataRef = useRef(data.loadProjectData);
 
   const selectedProject = data.projects.find((item) => item.id === data.selectedProjectId) ?? data.dashboard?.project;
   const chapters = data.dashboard?.chapters ?? [];
   const toastMessage = data.error || data.actionMessage;
+
+  useEffect(() => {
+    loadProjectDataRef.current = data.loadProjectData;
+  }, [data.loadProjectData]);
+
+  useEffect(() => {
+    if (activeView !== 'foreshadow' || !data.selectedProjectId) return;
+
+    // 伏笔看板依赖全局 dashboard 缓存；从 AI 引导页写入后切换过来时，
+    // 主数据可能尚未重新拉取，因此进入看板时主动刷新一次事实层伏笔。
+    void loadProjectDataRef.current(data.selectedProjectId, data.selectedChapterId);
+  }, [activeView, data.selectedChapterId, data.selectedProjectId]);
 
   useEffect(() => {
     if (!toastMessage) {
@@ -227,6 +240,7 @@ export default function HomePage() {
           characterStates={data.characterStates}
           foreshadowTracks={data.foreshadowTracks}
           reviewQueue={data.reviewQueue}
+          acceptedMemories={data.acceptedMemories}
           validationIssues={data.validationIssues}
           loading={data.loading}
           rebuildResult={data.rebuildResult}

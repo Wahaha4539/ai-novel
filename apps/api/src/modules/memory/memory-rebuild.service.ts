@@ -8,7 +8,7 @@ export interface MemoryRebuildResult {
   deletedCount: number;
   createdCount: number;
   embeddingAttachedCount: number;
-  chunks: Array<{ id: string; memoryType: string; summary: string }>;
+  chunks: Array<{ id: string; memoryType: string; summary: string; status: string }>;
 }
 
 export interface MemoryRebuildProjectResult {

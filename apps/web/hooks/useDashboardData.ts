@@ -97,6 +97,7 @@ export function useDashboardData() {
   const [characterStates, setCharacterStates] = useState<CharacterStateItem[]>([]);
   const [foreshadowTracks, setForeshadowTracks] = useState<ForeshadowItem[]>([]);
   const [reviewQueue, setReviewQueue] = useState<ReviewItem[]>([]);
+  const [acceptedMemories, setAcceptedMemories] = useState<ReviewItem[]>([]);
   const [validationIssues, setValidationIssues] = useState<ValidationIssue[]>([]);
   const [volumes, setVolumes] = useState<VolumeSummary[]>([]);
   const [loading, setLoading] = useState(false);
@@ -123,15 +124,18 @@ export function useDashboardData() {
     if (!projectId) return;
 
     const query = chapterId !== 'all' ? `?chapterId=${encodeURIComponent(chapterId)}` : '';
+    // 同一个 reviews 接口可按 status 过滤；这里显式请求已采纳记忆，避免和 pending_review 队列混在一起。
+    const acceptedMemoryQuery = `${query}${query ? '&' : '?'}status=user_confirmed`;
     setLoading(true);
     setError('');
     try {
-      const [dashboardData, eventData, stateData, foreshadowData, reviewData, validationData, volumeData] = await Promise.all([
+      const [dashboardData, eventData, stateData, foreshadowData, reviewData, acceptedMemoryData, validationData, volumeData] = await Promise.all([
         apiFetch<DashboardPayload>(`/projects/${projectId}/memory/dashboard${query}`),
         apiFetch<StoryEventItem[]>(`/projects/${projectId}/story-events${query}`),
         apiFetch<CharacterStateItem[]>(`/projects/${projectId}/character-state-snapshots${query}`),
         apiFetch<ForeshadowItem[]>(`/projects/${projectId}/foreshadow-tracks${query}`),
         apiFetch<ReviewItem[]>(`/projects/${projectId}/memory/reviews${query}`),
+        apiFetch<ReviewItem[]>(`/projects/${projectId}/memory/reviews${acceptedMemoryQuery}`),
         apiFetch<ValidationIssue[]>(`/projects/${projectId}/validation-issues${query}`),
         apiFetch<VolumeSummary[]>(`/projects/${projectId}/volumes`),
       ]);
@@ -141,6 +145,7 @@ export function useDashboardData() {
       setCharacterStates(stateData);
       setForeshadowTracks(foreshadowData);
       setReviewQueue(reviewData);
+      setAcceptedMemories(acceptedMemoryData);
       setValidationIssues(validationData);
       setVolumes(volumeData);
     } catch (loadError) {
@@ -451,6 +456,7 @@ export function useDashboardData() {
     characterStates,
     foreshadowTracks,
     reviewQueue,
+    acceptedMemories,
     validationIssues,
     loading,
     error,

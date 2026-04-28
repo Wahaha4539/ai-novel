@@ -7,6 +7,7 @@ import { ProjectOverviewPanel } from './ProjectOverviewPanel';
 import { RebuildToolPanel } from './RebuildToolPanel';
 import { ValidationConsolePanel } from './ValidationConsolePanel';
 import { ReviewQueueList } from './ReviewQueueList';
+import { AcceptedMemoryList } from './AcceptedMemoryList';
 import { StoryEventItem, CharacterStateItem, ForeshadowItem, ValidationIssue, RebuildResult, ValidationRunResult, ReviewItem, ProjectSummary, ChapterSummary } from '../types/dashboard';
 
 interface Props {
@@ -19,6 +20,7 @@ interface Props {
   characterStates: CharacterStateItem[];
   foreshadowTracks: ForeshadowItem[];
   reviewQueue: ReviewItem[];
+  acceptedMemories: ReviewItem[];
   validationIssues: ValidationIssue[];
   loading: boolean;
   rebuildResult: RebuildResult | null;
@@ -107,6 +109,7 @@ export function InspectorPanel(props: Props) {
               selectedChapterId={props.selectedChapterId}
               onRefresh={props.onRefresh}
             />
+            <AcceptedMemoryList acceptedMemories={props.acceptedMemories} />
             {/* 预览页直接露出待审核记忆，避免概览卡片只有数量、看不到待审议内容与 AI 审核入口。 */}
             {props.reviewQueue.length > 0 ? (
               <ReviewQueueList
@@ -146,6 +149,7 @@ export function InspectorPanel(props: Props) {
               onRunReviewAction={props.onRunReviewAction}
               onRunAiReviewQueue={props.onRunAiReviewQueue}
             />
+            <AcceptedMemoryList acceptedMemories={props.acceptedMemories} />
             <ValidationIssueList
               validationIssues={props.validationIssues}
               onFixIssues={props.onFixValidationIssues}

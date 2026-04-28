@@ -20,7 +20,7 @@ export interface MemoryWriterResult {
   deletedCount: number;
   createdCount: number;
   embeddingAttachedCount: number;
-  chunks: Array<{ id: string; memoryType: string; summary: string }>;
+  chunks: Array<{ id: string; memoryType: string; summary: string; status: string }>;
 }
 
 export interface ChapterMemorySource {
@@ -150,7 +150,7 @@ export class MemoryWriterService {
       deletedCount: result.deletedCount,
       createdCount: result.created.length,
       embeddingAttachedCount: embedding.vectors.filter(Boolean).length,
-      chunks: result.created.map((chunk) => ({ id: chunk.id, memoryType: chunk.memoryType, summary: chunk.summary ?? chunk.content.slice(0, 160) })),
+      chunks: result.created.map((chunk) => ({ id: chunk.id, memoryType: chunk.memoryType, summary: chunk.summary ?? chunk.content.slice(0, 160), status: chunk.status })),
     };
   }
 
