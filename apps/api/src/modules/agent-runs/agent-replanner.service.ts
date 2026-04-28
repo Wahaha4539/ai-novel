@@ -1,0 +1,236 @@
+import { Injectable } from '@nestjs/common';
+import { ToolRegistryService } from '../agent-tools/tool-registry.service';
+import { AgentContextV2 } from './agent-context-builder.service';
+import { AgentObservation, ReplanAttemptStats, ReplanPatch } from './agent-observation.types';
+import { AgentPlanStepSpec } from './agent-planner.service';
+
+/**
+ * 根据结构化 Observation 生成最小修复补丁。
+ * 当前先覆盖缺 ID 与歧义实体等高频可恢复场景；不会绕过审批，也不会重写整份计划。
+ */
+@Injectable()
+export class AgentReplannerService {
+  constructor(private readonly tools: ToolRegistryService) {}
+
+  createPatch(input: { userGoal: string; currentPlanSteps: AgentPlanStepSpec[]; failedObservation: AgentObservation; agentContext?: AgentContextV2; replanStats?: ReplanAttemptStats }): ReplanPatch {
+    const { userGoal, currentPlanSteps, failedObservation, agentContext, replanStats } = input;
+    const failedStep = currentPlanSteps.find((step) => step.stepNo === failedObservation.stepNo);
+    if (!failedObservation.error.retryable || !failedStep) {
+      return { action: 'fail_with_reason', reason: '该错误不可安全自动修复，或失败步骤已不在当前计划中。' };
+    }
+
+    const ambiguous = this.patchAmbiguousEntity(failedObservation);
+    if (ambiguous) return ambiguous;
+
+    const lowConfidence = this.patchLowConfidenceResolver(failedObservation);
+    if (lowConfidence) return lowConfidence;
+
+    const missingField = this.patchMissingToolOutputField(failedObservation, failedStep);
+    if (missingField) return missingField;
+
+    const guard = this.guardAutoPatchLimit(replanStats);
+    if (guard) return guard;
+
+    const schemaCoercion = this.patchSafeSchemaCoercion(failedObservation);
+    if (schemaCoercion) return schemaCoercion;
+
+    const referenceRepair = this.patchInvalidPreviousStepReference(failedObservation, failedStep, currentPlanSteps);
+    if (referenceRepair) return referenceRepair;
+
+    const validationRepair = this.patchValidationFailure(failedObservation);
+    if (validationRepair) return validationRepair;
+
+    const missingChapterId = failedObservation.error.code === 'MISSING_REQUIRED_ARGUMENT' && failedObservation.error.missing?.includes('chapterId');
+    const schemaChapterId = failedObservation.error.code === 'SCHEMA_VALIDATION_FAILED' && this.hasNaturalLanguageId(failedObservation.args, 'chapterId');
+    if ((missingChapterId || schemaChapterId) && this.tools.get('resolve_chapter')) {
+      return this.patchMissingChapterId(userGoal, failedStep, agentContext);
+    }
+
+    const missingCharacterId = failedObservation.error.code === 'MISSING_REQUIRED_ARGUMENT' && failedObservation.error.missing?.includes('characterId');
+    const schemaCharacterId = failedObservation.error.code === 'SCHEMA_VALIDATION_FAILED' && this.hasNaturalLanguageId(failedObservation.args, 'characterId');
+    if ((missingCharacterId || schemaCharacterId) && this.tools.get('resolve_character')) {
+      return this.patchMissingCharacterId(userGoal, failedStep, agentContext);
+    }
+
+    return { action: 'fail_with_reason', reason: '当前 Observation 没有匹配到可自动修复的最小补丁。' };
+  }
+
+  /** 自动修复必须有界：总轮数和同类错误都设硬上限，避免 Replan 循环扩大风险。 */
+  private guardAutoPatchLimit(stats?: ReplanAttemptStats): ReplanPatch | undefined {
+    if (!stats) return undefined;
+    if (stats.previousAutoPatchCount >= 2) {
+      return { action: 'fail_with_reason', reason: '自动修复已达到本次 AgentRun 的 2 次上限，请人工检查计划后重新规划。' };
+    }
+    if (stats.sameStepErrorPatchCount >= 1) {
+      return { action: 'fail_with_reason', reason: '同一步骤的同类错误已经自动修复过 1 次，继续重试可能形成循环，请人工检查参数或上下文。' };
+    }
+    return undefined;
+  }
+
+  private patchMissingChapterId(userGoal: string, failedStep: AgentPlanStepSpec, agentContext?: AgentContextV2): ReplanPatch {
+    const resolver = this.tools.get('resolve_chapter');
+    const resolverStepId = this.uniqueRepairStepId('resolve_chapter_for_failed_step', failedStep.stepNo);
+    return {
+      action: 'patch_plan',
+      reason: '失败步骤缺少真实 chapterId，需要先把用户的章节自然语言引用解析为系统章节 ID。',
+      insertStepsBeforeFailedStep: [{
+        id: resolverStepId,
+        stepNo: failedStep.stepNo,
+        name: '解析失败步骤所需章节',
+        purpose: '将用户目标中的章节引用解析为真实 chapterId，避免自然语言冒充内部 ID。',
+        tool: 'resolve_chapter',
+        mode: 'act',
+        requiresApproval: resolver?.requiresApproval ?? false,
+        args: {
+          projectId: agentContext?.session.currentProjectId ? '{{context.session.currentProjectId}}' : undefined,
+          chapterRef: userGoal,
+          currentChapterId: agentContext?.session.currentChapterId ? '{{context.session.currentChapterId}}' : undefined,
+        },
+        produces: ['chapterResolution'],
+      }],
+      replaceFailedStepArgs: { chapterId: `{{steps.${resolverStepId}.output.chapterId}}` },
+    };
+  }
+
+  private patchMissingCharacterId(userGoal: string, failedStep: AgentPlanStepSpec, agentContext?: AgentContextV2): ReplanPatch {
+    const resolver = this.tools.get('resolve_character');
+    const resolverStepId = this.uniqueRepairStepId('resolve_character_for_failed_step', failedStep.stepNo);
+    return {
+      action: 'patch_plan',
+      reason: '失败步骤缺少真实 characterId，需要先解析用户提到的角色引用。',
+      insertStepsBeforeFailedStep: [{
+        id: resolverStepId,
+        stepNo: failedStep.stepNo,
+        name: '解析失败步骤所需角色',
+        purpose: '将用户目标中的角色引用解析为真实 characterId，低置信度时由 resolver 返回候选供用户选择。',
+        tool: 'resolve_character',
+        mode: 'act',
+        requiresApproval: resolver?.requiresApproval ?? false,
+        args: {
+          projectId: agentContext?.session.currentProjectId ? '{{context.session.currentProjectId}}' : undefined,
+          characterRef: userGoal,
+        },
+        produces: ['characterResolution'],
+      }],
+      replaceFailedStepArgs: { characterId: `{{steps.${resolverStepId}.output.characterId}}` },
+    };
+  }
+
+  private patchAmbiguousEntity(observation: AgentObservation): ReplanPatch | undefined {
+    if (observation.error.code !== 'AMBIGUOUS_ENTITY') return undefined;
+    const candidates = observation.error.candidates ?? [];
+    return {
+      action: 'ask_user',
+      reason: '实体解析存在多个接近候选，自动选择可能导致误写。',
+      questionForUser: '我不确定你指的是哪一个对象，请选择后我继续。',
+      choices: candidates.map((candidate, index) => ({ id: `candidate_${index + 1}`, label: this.formatCandidateLabel(candidate, index), payload: candidate })),
+    };
+  }
+
+  /** Resolver 低置信度不能由 Replanner 自动选中候选，只能显式交给用户确认。 */
+  private patchLowConfidenceResolver(observation: AgentObservation): ReplanPatch | undefined {
+    if (observation.error.code !== 'VALIDATION_FAILED' || !observation.tool.startsWith('resolve_')) return undefined;
+    const candidates = observation.error.candidates ?? [];
+    if (!candidates.length && !/低置信度|confidence|置信度/.test(observation.error.message)) return undefined;
+    return {
+      action: 'ask_user',
+      reason: 'Resolver 返回低置信度结果，自动选择可能把自然语言引用解析到错误实体。',
+      questionForUser: '我找到了一些可能的对象，但置信度不够高，请选择你真正指的是哪一个。',
+      choices: candidates.map((candidate, index) => ({ id: `candidate_${index + 1}`, label: this.formatCandidateLabel(candidate, index), payload: candidate })),
+    };
+  }
+
+  /** 上游工具输出缺少下游必填字段时，不盲目重跑写入步骤；有候选则澄清，否则安全失败。 */
+  private patchMissingToolOutputField(observation: AgentObservation, failedStep: AgentPlanStepSpec): ReplanPatch | undefined {
+    if (observation.error.code !== 'MISSING_REQUIRED_ARGUMENT') return undefined;
+    const missingField = observation.error.missing?.find((field) => typeof failedStep.args[field] === 'string' && String(failedStep.args[field]).startsWith('{{steps.'));
+    if (!missingField) return undefined;
+    const candidates = this.findCandidatesInPreviousOutputs(observation.previousOutputs);
+    if (candidates.length) {
+      return {
+        action: 'ask_user',
+        reason: `前序工具输出缺少 ${missingField}，但返回了候选项，需要用户确认后才能继续。`,
+        questionForUser: `前序工具没有给出可直接使用的 ${missingField}，请选择正确对象。`,
+        choices: candidates.map((candidate, index) => ({ id: `candidate_${index + 1}`, label: this.formatCandidateLabel(candidate, index), payload: candidate })),
+      };
+    }
+    return { action: 'fail_with_reason', reason: `前序工具输出缺少 ${missingField}，且没有候选可供选择，不能安全自动修复。` };
+  }
+
+  /** 只做显然安全的 schema 类型转换，例如 “3500” → 3500；ID 和引用字符串绝不转换。 */
+  private patchSafeSchemaCoercion(observation: AgentObservation): ReplanPatch | undefined {
+    if (observation.error.code !== 'SCHEMA_VALIDATION_FAILED') return undefined;
+    const replacements: Record<string, unknown> = {};
+    for (const [key, value] of Object.entries(observation.args)) {
+      if (!this.isSafelyCoercibleNumberField(key, value)) continue;
+      replacements[key] = Number(String(value).trim());
+    }
+    if (!Object.keys(replacements).length) return undefined;
+    return {
+      action: 'patch_plan',
+      reason: 'Tool schema 校验失败，但存在可安全转换的数值类型参数，因此仅做最小类型转换补丁。',
+      replaceFailedStepArgs: replacements,
+    };
+  }
+
+  /** 修复 LLM 把 context 参数错误指向未来步骤/不存在步骤的常见引用问题。 */
+  private patchInvalidPreviousStepReference(observation: AgentObservation, failedStep: AgentPlanStepSpec, currentPlanSteps: AgentPlanStepSpec[]): ReplanPatch | undefined {
+    if (observation.error.code !== 'SCHEMA_VALIDATION_FAILED' || !/引用|非前序步骤|future|previous step/i.test(observation.error.message)) return undefined;
+    const previousContextStep = [...currentPlanSteps]
+      .filter((step) => step.stepNo < failedStep.stepNo && ['collect_task_context', 'collect_chapter_context', 'inspect_project_context'].includes(step.tool))
+      .at(-1);
+    if (!previousContextStep) return undefined;
+    const stepRef = previousContextStep.id ?? String(previousContextStep.stepNo);
+    return {
+      action: 'patch_plan',
+      reason: '失败步骤引用了当前或未来步骤输出，需要改为引用已完成的前序上下文步骤。',
+      replaceFailedStepArgs: { context: `{{steps.${stepRef}.output}}` },
+    };
+  }
+
+  /** validation failed 场景只允许收紧为最小修复，不扩大写入范围或自动绕过审批。 */
+  private patchValidationFailure(observation: AgentObservation): ReplanPatch | undefined {
+    if (observation.error.code !== 'VALIDATION_FAILED' || observation.tool !== 'auto_repair_chapter') return undefined;
+    return {
+      action: 'patch_plan',
+      reason: '章节校验失败后只能进行最小必要修复，限制修复轮数并强化不改剧情事实的约束。',
+      replaceFailedStepArgs: {
+        maxRounds: 1,
+        instruction: '仅根据 validation failed 的具体问题做最小必要修复；不得新增重大剧情、角色长期状态或世界观设定。',
+      },
+    };
+  }
+
+  private hasNaturalLanguageId(args: Record<string, unknown>, key: string): boolean {
+    const value = args[key];
+    return typeof value === 'string' && !value.startsWith('{{') && !/^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i.test(value);
+  }
+
+  private isSafelyCoercibleNumberField(key: string, value: unknown): boolean {
+    if (/(^id$|Id$|Ref$)/.test(key) || typeof value !== 'string' || value.startsWith('{{')) return false;
+    if (!/^(targetWordCount|wordCount|maxRounds|chapterNo|chapterIndex|versionNo|priority)$/.test(key)) return false;
+    return /^\d+(?:\.\d+)?$/.test(value.trim());
+  }
+
+  private findCandidatesInPreviousOutputs(previousOutputs: Record<string, unknown>): unknown[] {
+    for (const output of Object.values(previousOutputs)) {
+      if (!output || typeof output !== 'object') continue;
+      const record = output as Record<string, unknown>;
+      const candidates = Array.isArray(record.candidates) ? record.candidates : Array.isArray(record.alternatives) ? record.alternatives : [];
+      if (candidates.length) return candidates;
+    }
+    return [];
+  }
+
+  private uniqueRepairStepId(base: string, failedStepNo: number): string {
+    return `${base}_${failedStepNo}`;
+  }
+
+  private formatCandidateLabel(candidate: unknown, index: number): string {
+    if (candidate && typeof candidate === 'object') {
+      const record = candidate as Record<string, unknown>;
+      return String(record.name ?? record.title ?? record.label ?? `候选 ${index + 1}`);
+    }
+    return String(candidate ?? `候选 ${index + 1}`);
+  }
+}

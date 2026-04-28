@@ -1,5 +1,20 @@
 import { IsObject, IsOptional, IsString, IsUUID, MinLength } from 'class-validator';
 
+export interface CreateAgentPlanContextDto {
+  currentProjectId?: string;
+  currentVolumeId?: string;
+  currentVolumeTitle?: string;
+  currentChapterId?: string;
+  currentChapterTitle?: string;
+  currentChapterIndex?: number;
+  currentDraftId?: string;
+  currentDraftVersion?: number;
+  selectedText?: string;
+  selectedRange?: { start: number; end: number };
+  sourcePage?: string;
+  [key: string]: unknown;
+}
+
 export class CreateAgentPlanDto {
   @IsUUID()
   projectId!: string;
@@ -10,7 +25,7 @@ export class CreateAgentPlanDto {
 
   @IsOptional()
   @IsObject()
-  context?: { currentChapterId?: string; [key: string]: unknown };
+  context?: CreateAgentPlanContextDto;
 
   @IsOptional()
   attachments?: unknown[];
@@ -26,6 +41,36 @@ export class CreateAgentPlanDto {
 }
 
 export class ReplanAgentRunDto {
+  @IsOptional()
+  @IsString()
+  @MinLength(2)
+  message?: string;
+
+  @IsOptional()
+  @IsObject()
+  worldbuildingSelection?: {
+    selectedTitles?: string[];
+  };
+}
+
+export class AgentClarificationChoiceDto {
+  @IsOptional()
+  @IsString()
+  id?: string;
+
+  @IsOptional()
+  @IsString()
+  label?: string;
+
+  /** 候选实体的结构化 payload；仅作为用户显式选择的上下文写入，不直接触发工具执行。 */
+  @IsOptional()
+  payload?: unknown;
+}
+
+export class SubmitAgentClarificationChoiceDto {
+  @IsObject()
+  choice!: AgentClarificationChoiceDto;
+
   @IsOptional()
   @IsString()
   @MinLength(2)

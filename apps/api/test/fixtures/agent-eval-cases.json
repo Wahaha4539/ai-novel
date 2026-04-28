@@ -1,0 +1,74 @@
+[
+  {
+    "id": "chapter_write_001",
+    "message": "帮我写第十二章，压迫感强一点。",
+    "context": { "session": { "currentProjectId": "project_1", "currentChapterId": "chapter_11" } },
+    "expected": { "taskType": "chapter_write", "mustUseTools": ["resolve_chapter", "collect_chapter_context", "write_chapter"], "mustContainInstruction": ["压迫感"], "mustRequireApproval": true, "forbidInventedIds": true }
+  },
+  {
+    "id": "chapter_write_next_002",
+    "message": "根据前三章，继续写下一章。",
+    "context": { "session": { "currentProjectId": "project_1", "currentChapterId": "chapter_3", "currentChapterIndex": 3 } },
+    "expected": { "taskType": "chapter_write", "mustUseTools": ["resolve_chapter", "collect_chapter_context", "write_chapter"], "mustContainInstruction": ["前三章", "下一章"], "mustRequireApproval": true, "forbidInventedIds": true }
+  },
+  {
+    "id": "chapter_revision_003",
+    "message": "这一章太平了，改得紧张点，别改结局。",
+    "context": { "session": { "currentProjectId": "project_1", "currentChapterId": "chapter_12", "currentDraftId": "draft_2" } },
+    "expected": { "taskType": "chapter_revision", "mustUseTools": ["collect_chapter_context", "polish_chapter", "fact_validation"], "mustContainInstruction": ["紧张", "别改结局"], "mustRequireApproval": true, "forbidInventedIds": true, "retrieval": { "mustUseDimensions": ["chapter_compact", "full_current_draft", "validation_issues"], "mustIncludeFullDraft": true, "minMemoryChunks": 1, "maxMissingContext": 0 } }
+  },
+  {
+    "id": "selected_text_polish_004",
+    "message": "把这段去 AI 味。",
+    "context": { "session": { "currentProjectId": "project_1", "currentChapterId": "chapter_4", "selectedText": "他看着远方，心中五味杂陈。" } },
+    "expected": { "taskType": "chapter_polish", "mustUseTools": ["polish_chapter"], "mustContainInstruction": ["去 AI 味"], "mustRequireApproval": true, "forbidInventedIds": true }
+  },
+  {
+    "id": "character_consistency_005",
+    "message": "男主这里是不是人设崩了？",
+    "context": { "session": { "currentProjectId": "project_1", "currentChapterId": "chapter_8" } },
+    "expected": { "taskType": "character_consistency_check", "mustUseTools": ["resolve_character"], "mustContainInstruction": ["男主", "人设"], "mustRequireApproval": false, "forbidInventedIds": true, "retrieval": { "mustUseDimensions": ["characters", "plot_events", "relationship_graph", "memory_chunks"], "minPlotEvents": 1, "minRelationshipEdges": 1, "minConflictRelationshipEdges": 1, "requiredRelationshipEdgeFields": ["relationType", "weight", "evidenceSources", "timeRange", "conflict"], "minLockedWorldFacts": 1, "minMemoryChunks": 1, "maxMissingContext": 0, "requireCharacterEvidenceKeywords": ["关系证据", "剧情事件", "锁定事实边界"] } }
+  },
+  {
+    "id": "plot_consistency_006",
+    "message": "当前大纲有没有矛盾？",
+    "context": { "session": { "currentProjectId": "project_1" } },
+    "expected": { "taskType": "plot_consistency_check", "mustUseTools": ["collect_task_context", "plot_consistency_check"], "mustRequireApproval": false, "forbidInventedIds": true, "retrieval": { "mustUseDimensions": ["plot_events", "relationship_graph", "world_facts", "memory_chunks"], "minPlotEvents": 1, "minRelationshipEdges": 1, "minConflictRelationshipEdges": 1, "requiredRelationshipEdgeFields": ["relationType", "weight", "evidenceSources", "timeRange", "conflict"], "minWorldFacts": 1, "minLockedWorldFacts": 1, "minMemoryChunks": 1, "maxMissingContext": 0, "requirePlotEvidenceFields": ["lockedFactEvidence", "motivationEvidence", "eventTimeline"] } }
+  },
+  {
+    "id": "worldbuilding_expand_007",
+    "message": "补充宗门体系，但不要影响已有剧情。",
+    "context": { "session": { "currentProjectId": "project_1" } },
+    "expected": { "taskType": "worldbuilding_expand", "mustUseTools": ["inspect_project_context"], "mustContainInstruction": ["宗门体系", "不要影响已有剧情"], "mustRequireApproval": true, "forbidInventedIds": true, "retrieval": { "mustUseDimensions": ["world_facts", "plot_events", "memory_chunks"], "minWorldFacts": 6, "minWorldEntityTypes": ["faction", "rule", "location", "item", "history_event", "relationship"], "minLockedWorldFacts": 1, "minPlotEvents": 1, "minMemoryChunks": 1, "maxMissingContext": 0, "requireWorldbuildingValidationComparison": true, "requireWorldbuildingPersistAudit": true } }
+  },
+  {
+    "id": "outline_split_008",
+    "message": "把第一卷拆成 30 章。",
+    "context": { "session": { "currentProjectId": "project_1" } },
+    "expected": { "taskType": "outline_design", "mustUseTools": ["generate_outline_preview", "validate_outline"], "mustContainInstruction": ["第一卷", "30"], "mustRequireApproval": true, "forbidInventedIds": true }
+  },
+  {
+    "id": "project_import_009",
+    "message": "把这段文案拆成角色、世界观和三卷大纲。",
+    "context": { "session": { "selectedText": "这里放置待导入的小说卖点文案。" } },
+    "expected": { "taskType": "project_import_preview", "mustUseTools": ["analyze_source_text", "build_import_preview", "validate_imported_assets"], "mustRequireApproval": true, "forbidInventedIds": true }
+  },
+  {
+    "id": "fuzzy_chapter_ref_010",
+    "message": "帮我改一下他和师姐对峙那章。",
+    "context": { "session": { "currentProjectId": "project_1" } },
+    "expected": { "taskType": "chapter_revision", "mustUseTools": ["resolve_chapter"], "mustContainInstruction": ["师姐", "对峙"], "mustRequireApproval": true, "forbidInventedIds": true, "retrieval": { "mustUseDimensions": ["chapter_compact", "plot_events", "relationship_graph"], "minPlotEvents": 1, "minRelationshipEdges": 1, "minConflictRelationshipEdges": 1, "requiredRelationshipEdgeFields": ["relationType", "weight", "evidenceSources", "timeRange", "conflict"], "maxMissingContext": 0 } }
+  },
+  {
+    "id": "ambiguous_character_011",
+    "message": "帮我检查小林的人设。",
+    "context": { "session": { "currentProjectId": "project_1" } },
+    "expected": { "taskType": "character_consistency_check", "mustUseTools": ["resolve_character"], "mustContainInstruction": ["小林"], "mustRequireApproval": false, "forbidInventedIds": true, "retrieval": { "mustUseDimensions": ["characters", "relationship_graph", "memory_chunks"], "minRelationshipEdges": 1, "minConflictRelationshipEdges": 1, "requiredRelationshipEdgeFields": ["relationType", "weight", "evidenceSources", "timeRange", "conflict"], "minLockedWorldFacts": 1, "minMemoryChunks": 1, "maxMissingContext": 0, "requireCharacterEvidenceKeywords": ["关系证据", "锁定事实边界"] } }
+  },
+  {
+    "id": "missing_project_012",
+    "message": "帮我写下一章。",
+    "context": { "session": {} },
+    "expected": { "taskType": "chapter_write", "mustUseTools": [], "mustHaveMissingInfo": ["project"], "mustRequireApproval": true, "forbidInventedIds": true }
+  }
+]

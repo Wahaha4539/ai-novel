@@ -9,6 +9,7 @@ import { AgentTimelinePanel } from './AgentTimelinePanel';
 import { AgentArtifactPanel } from './AgentArtifactPanel';
 import { AgentAuditPanel } from './AgentAuditPanel';
 import { AgentResultPanel } from './AgentResultPanel';
+import { AgentObservationPanel } from './AgentObservationPanel';
 import { AgentRunHistoryPanel } from './AgentRunHistoryPanel';
 import { StatusBadge, approvalRiskSummary, latestPlan, latestPlanVersion } from './AgentSharedWidgets';
 
@@ -23,7 +24,7 @@ interface AgentWorkspaceProps {
  * 主入口已迁移至 AgentFloatingOrb，此组件保留以支持全屏 Agent 视图场景。
  */
 export function AgentWorkspace({ projectId, selectedChapterId, onRefresh }: AgentWorkspaceProps) {
-  const { currentRun, runHistory, auditEvents, loading, error, actionMessage, createPlan, interpretMessage, act, retry, replan, refresh, cancel, listByProject, loadAudit, startNewSession } = useAgentRun();
+  const { currentRun, runHistory, auditEvents, loading, error, actionMessage, createPlan, interpretMessage, act, retry, replan, answerClarification, refresh, cancel, listByProject, loadAudit, startNewSession } = useAgentRun();
   const [goal, setGoal] = useState('');
   const [approvedStepNos, setApprovedStepNos] = useState<number[]>([]);
   const [artifactQuery, setArtifactQuery] = useState('');
@@ -43,6 +44,7 @@ export function AgentWorkspace({ projectId, selectedChapterId, onRefresh }: Agen
     if (approvalStepNos.length && approvalStepNos.every((stepNo) => approvedStepNos.includes(stepNo))) return undefined;
     return approvedStepNos.length ? approvedStepNos : undefined;
   }, [approvalStepNos, approvedStepNos]);
+  const pageContext = useMemo(() => ({ currentProjectId: projectId, currentChapterId: selectedChapterId, sourcePage: 'agent_workspace' }), [projectId, selectedChapterId]);
 
   useEffect(() => { void listByProject(projectId); }, [listByProject, projectId]);
   useEffect(() => { setApprovedStepNos(approvalStepNos); }, [approvalStepNos]);
@@ -69,15 +71,33 @@ export function AgentWorkspace({ projectId, selectedChapterId, onRefresh }: Agen
         await handleAct();
         return;
       }
-      const run = await createPlan(projectId, message, selectedChapterId);
+      const run = await createPlan(projectId, message, pageContext);
       if (run) pushMessage('agent', '已收到新任务，正在生成计划…');
       return;
     }
-    const run = await createPlan(projectId, message, selectedChapterId);
+    const run = await createPlan(projectId, message, pageContext);
     if (run) pushMessage('agent', '已收到任务，正在生成计划…');
-  }, [goal, loading, canAct, currentRun, interpretMessage, handleAct, createPlan, projectId, selectedChapterId, pushMessage]);
+  }, [goal, loading, canAct, currentRun, interpretMessage, handleAct, createPlan, projectId, pageContext, pushMessage]);
   const handleRetry = useCallback(async () => { if (!currentRun) return; await retry(currentRun.id, approvedScope); await onRefresh?.(); }, [currentRun, retry, approvedScope, onRefresh]);
   const handleReplan = useCallback(async () => { if (!currentRun) return; await replan(currentRun.id, goal.trim() || undefined); await listByProject(projectId); }, [currentRun, replan, goal, listByProject, projectId]);
+  const handleClarification = useCallback(async (choice: Parameters<typeof answerClarification>[1]) => {
+    if (!currentRun) return;
+    await answerClarification(currentRun.id, choice);
+    await listByProject(projectId);
+  }, [answerClarification, currentRun, listByProject, projectId]);
+
+  const handleWorldbuildingPersistSelection = useCallback(async (titles: string[]) => {
+    if (!currentRun || !titles.length) return;
+    // 复用安全的 replan 入口表达用户显式选择；真正写入仍由新计划审批后执行，避免 Artifact 按钮直接绕过审批。
+    const message = [
+      `用户已在世界观预览中选择要写入的设定条目：${titles.join('、')}。`,
+      `系统上下文 selectedTitles：${JSON.stringify(titles)}`,
+      '请基于当前世界观预览和校验结果重新生成可审批计划；persist_worldbuilding 必须使用这些 selectedTitles，只写入被选择条目，不要绕过 validate_worldbuilding 或审批。',
+    ].join('\n');
+    pushMessage('user', `选择写入世界观设定：${titles.join('、')}`);
+    await replan(currentRun.id, message, { worldbuildingSelection: { selectedTitles: titles } });
+    await listByProject(projectId);
+  }, [currentRun, listByProject, projectId, pushMessage, replan]);
 
   /** 新增会话：清空当前全屏工作台的本地输入、聊天记录和选中 Run，不影响后端历史。 */
   const handleNewSession = useCallback(() => {
@@ -107,6 +127,9 @@ export function AgentWorkspace({ projectId, selectedChapterId, onRefresh }: Agen
             </button>
             {actionMessage && <div className="mt-3 text-sm" style={{ color: '#ccfbf1' }}>{actionMessage}</div>}
             {error && <div className="mt-3 text-sm" style={{ color: 'var(--status-err)' }}>{error}</div>}
+            <div className="mt-4 rounded-xl border px-3 py-2 text-xs leading-5" style={{ borderColor: 'var(--agent-border)', color: 'var(--text-dim)', background: 'var(--agent-glass)' }}>
+              当前上下文：项目 {projectId.slice(0, 8)}{selectedChapterId ? ` · 当前章节 ${selectedChapterId.slice(0, 8)}` : ' · 未选中章节'}
+            </div>
           </div>
         </header>
 
@@ -117,9 +140,10 @@ export function AgentWorkspace({ projectId, selectedChapterId, onRefresh }: Agen
           </div>
           <div className="space-y-5">
             <AgentPlanPanel run={currentRun} plan={plan} />
+            <AgentObservationPanel run={currentRun} loading={loading} onAnswerClarification={handleClarification} />
             <div className="grid gap-5 lg:grid-cols-2">
               <AgentTimelinePanel steps={currentRun?.steps ?? []} plan={plan} planVersion={activePlanVersion} approvedStepNos={approvedStepNos} onToggleApproval={(stepNo) => setApprovedStepNos((current) => (current.includes(stepNo) ? current.filter((item) => item !== stepNo) : [...current, stepNo].sort((a, b) => a - b)))} />
-              <AgentArtifactPanel run={currentRun} query={artifactQuery} onQueryChange={setArtifactQuery} />
+              <AgentArtifactPanel run={currentRun} query={artifactQuery} onQueryChange={setArtifactQuery} onRequestWorldbuildingPersistSelection={handleWorldbuildingPersistSelection} actionDisabled={loading} />
             </div>
             <AgentAuditPanel events={auditEvents} />
             <AgentApprovalDialog canAct={canAct} canRetry={canRetry} loading={loading} status={currentRun?.status} hasCurrentRun={!!currentRun} riskSummary={riskSummary} onCancel={async () => { if (currentRun) await cancel(currentRun.id); }} onRetry={handleRetry} onAct={handleAct} />

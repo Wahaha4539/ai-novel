@@ -9,6 +9,7 @@ import { AgentTimelinePanel } from './AgentTimelinePanel';
 import { AgentArtifactPanel } from './AgentArtifactPanel';
 import { AgentAuditPanel } from './AgentAuditPanel';
 import { AgentResultPanel } from './AgentResultPanel';
+import { AgentObservationPanel } from './AgentObservationPanel';
 import { AgentRunHistoryPanel } from './AgentRunHistoryPanel';
 import { StatusBadge, approvalRiskSummary, latestPlan, latestPlanVersion } from './AgentSharedWidgets';
 
@@ -48,7 +49,7 @@ export function AgentFloatingPanel({
 }: AgentFloatingPanelProps) {
   const {
     currentRun, runHistory, auditEvents, loading, error,
-    actionMessage, createPlan, interpretMessage, act, retry, replan, refresh,
+    actionMessage, createPlan, interpretMessage, act, retry, replan, answerClarification, refresh,
     cancel, listByProject, loadAudit, startNewSession,
   } = agentHook;
 
@@ -80,6 +81,7 @@ export function AgentFloatingPanel({
     if (approvalStepNos.length && approvalStepNos.every((stepNo) => approvedStepNos.includes(stepNo))) return undefined;
     return approvedStepNos.length ? approvedStepNos : undefined;
   }, [approvalStepNos, approvedStepNos]);
+  const pageContext = useMemo(() => ({ currentProjectId: projectId, currentChapterId: selectedChapterId, sourcePage: 'agent_floating_panel' }), [projectId, selectedChapterId]);
 
   // 项目切换时拉取最近 AgentRun
   useEffect(() => {
@@ -121,7 +123,7 @@ export function AgentFloatingPanel({
         await handleAct();
         return;
       }
-      const run = await createPlan(projectId, message, selectedChapterId);
+      const run = await createPlan(projectId, message, pageContext);
       if (run?.id) {
         pushMessage('agent', '已收到新任务，正在生成计划…');
         setActiveTab('detail');
@@ -129,7 +131,7 @@ export function AgentFloatingPanel({
       return;
     }
 
-    const run = await createPlan(projectId, message, selectedChapterId);
+    const run = await createPlan(projectId, message, pageContext);
     if (run) {
       pushMessage('agent', '已收到任务，正在生成计划…');
     }
@@ -142,7 +144,7 @@ export function AgentFloatingPanel({
       await act(run.id, allStepNos.length ? allStepNos : undefined);
       await onRefresh?.();
     }
-  }, [goal, loading, canAct, currentRun, interpretMessage, handleAct, createPlan, projectId, selectedChapterId, agentMode, act, onRefresh, pushMessage]);
+  }, [goal, loading, canAct, currentRun, interpretMessage, handleAct, createPlan, projectId, pageContext, agentMode, act, onRefresh, pushMessage]);
 
   const handleRetry = useCallback(async () => {
     if (!currentRun) return;
@@ -155,6 +157,27 @@ export function AgentFloatingPanel({
     await replan(currentRun.id, goal.trim() || undefined);
     await listByProject(projectId);
   }, [currentRun, replan, goal, listByProject, projectId]);
+
+  const handleClarification = useCallback(async (choice: Parameters<typeof answerClarification>[1]) => {
+    if (!currentRun) return;
+    await answerClarification(currentRun.id, choice);
+    await listByProject(projectId);
+    setActiveTab('detail');
+  }, [answerClarification, currentRun, listByProject, projectId]);
+
+  const handleWorldbuildingPersistSelection = useCallback(async (titles: string[]) => {
+    if (!currentRun || !titles.length) return;
+    // Artifact 勾选只表达“用户选择了哪些标题”，实际 persist_worldbuilding 仍通过重新规划和审批执行。
+    const message = [
+      `用户已在世界观预览中选择要写入的设定条目：${titles.join('、')}。`,
+      `系统上下文 selectedTitles：${JSON.stringify(titles)}`,
+      '请基于当前世界观预览和校验结果重新生成可审批计划；persist_worldbuilding 必须使用这些 selectedTitles，只写入被选择条目，不要绕过 validate_worldbuilding 或审批。',
+    ].join('\n');
+    pushMessage('user', `选择写入世界观设定：${titles.join('、')}`);
+    await replan(currentRun.id, message, { worldbuildingSelection: { selectedTitles: titles } });
+    await listByProject(projectId);
+    setActiveTab('detail');
+  }, [currentRun, listByProject, projectId, pushMessage, replan]);
 
   const handleToggleApproval = useCallback((stepNo: number) => {
     setApprovedStepNos((current) =>
@@ -294,6 +317,8 @@ export function AgentFloatingPanel({
               onCancel={async () => { if (currentRun) await cancel(currentRun.id); }}
               onRetry={handleRetry}
               onAct={handleAct}
+              onAnswerClarification={handleClarification}
+              onRequestWorldbuildingPersistSelection={handleWorldbuildingPersistSelection}
             />
           )}
 
@@ -347,10 +372,13 @@ function DetailTabContent(props: {
   onCancel: () => void | Promise<void>;
   onRetry: () => void | Promise<void>;
   onAct: () => void | Promise<void>;
+  onAnswerClarification: (choice: Parameters<ReturnType<typeof useAgentRun>['answerClarification']>[1]) => void | Promise<void>;
+  onRequestWorldbuildingPersistSelection: (titles: string[]) => void | Promise<void>;
 }) {
   return (
     <div className="space-y-4">
       <AgentPlanPanel run={props.currentRun} plan={props.plan} />
+      <AgentObservationPanel run={props.currentRun} loading={props.loading} onAnswerClarification={props.onAnswerClarification} />
       <AgentTimelinePanel
         steps={props.currentRun?.steps ?? []}
         plan={props.plan}
@@ -369,7 +397,13 @@ function DetailTabContent(props: {
         onRetry={props.onRetry}
         onAct={props.onAct}
       />
-      <AgentArtifactPanel run={props.currentRun} query={props.artifactQuery} onQueryChange={props.onArtifactQueryChange} />
+      <AgentArtifactPanel
+        run={props.currentRun}
+        query={props.artifactQuery}
+        onQueryChange={props.onArtifactQueryChange}
+        onRequestWorldbuildingPersistSelection={props.onRequestWorldbuildingPersistSelection}
+        actionDisabled={props.loading}
+      />
       <AgentAuditPanel events={props.auditEvents} />
       <AgentResultPanel output={props.currentRun?.output} error={props.currentRun?.error} />
     </div>

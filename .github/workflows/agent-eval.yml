@@ -1,0 +1,50 @@
+name: Agent Eval Gate
+
+on:
+  pull_request:
+  push:
+    branches:
+      - main
+
+jobs:
+  agent-eval:
+    name: Planner 与 Replan Eval 门禁
+    runs-on: ubuntu-latest
+    env:
+      RUN_REAL_LLM_SAMPLE: ${{ vars.AGENT_EVAL_REAL_LLM_SAMPLE }}
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: 22
+
+      - name: Enable pnpm
+        run: corepack enable
+
+      - name: Install dependencies
+        run: pnpm install --frozen-lockfile
+
+      - name: Run Agent Eval gate
+        run: pnpm run eval:agent:gate
+
+      # 真实 LLM 抽样只作为漂移观察：复用项目 LLM 配置模块读取 agent_planner 路由/默认 Provider，失败不阻断门禁。
+      - name: Run optional real LLM sample eval
+        if: ${{ env.RUN_REAL_LLM_SAMPLE == 'true' }}
+        continue-on-error: true
+        run: pnpm --dir apps/api run eval:agent:real-sample
+        env:
+          DATABASE_URL: ${{ secrets.DATABASE_URL }}
+
+      # 即使真实 LLM 抽样发现漂移或执行失败，也上传报告/历史文件供 PR 留档排查。
+      - name: Upload real LLM sample eval artifact
+        if: ${{ always() && env.RUN_REAL_LLM_SAMPLE == 'true' }}
+        uses: actions/upload-artifact@v4
+        with:
+          name: agent-eval-real-llm-sample
+          path: |
+            tmp/agent-eval-real-sample-report.json
+            tmp/agent-eval-real-sample-history.json
+          if-no-files-found: ignore

@@ -1,6 +1,7 @@
 import { BadRequestException, Injectable } from '@nestjs/common';
 import { ValidationService } from '../../validation/validation.service';
 import { BaseTool, ToolContext } from '../base-tool';
+import type { ToolManifestV2 } from '../tool-manifest.types';
 
 interface FactValidationInput {
   chapterId?: string;
@@ -20,6 +21,21 @@ export class FactValidationTool implements BaseTool<FactValidationInput, Record<
   riskLevel: 'medium' = 'medium';
   requiresApproval = true;
   sideEffects = ['replace_fact_rule_validation_issues'];
+  manifest: ToolManifestV2 = {
+    name: this.name,
+    displayName: '事实一致性校验',
+    description: '运行确定性事实一致性校验，写入 ValidationIssue 并返回问题摘要。',
+    whenToUse: ['章节生成、润色、自动修复后需要校验事实一致性', '用户要求检查剧情事实是否冲突'],
+    whenNotToUse: ['没有章节目标', '只是规划草稿且不需要写入校验结果'],
+    inputSchema: this.inputSchema,
+    outputSchema: this.outputSchema,
+    parameterHints: { chapterId: { source: 'previous_step', description: '优先使用 runtime.currentChapterId 或前序章节工具输出。' } },
+    allowedModes: this.allowedModes,
+    riskLevel: this.riskLevel,
+    requiresApproval: this.requiresApproval,
+    sideEffects: this.sideEffects,
+    idPolicy: { forbiddenToInvent: ['chapterId'], allowedSources: ['context.session.currentChapterId', 'runtime.currentChapterId', 'resolve_chapter.output.chapterId', 'write_chapter.output.chapterId', 'polish_chapter.output.chapterId'] },
+  };
 
   constructor(private readonly validation: ValidationService) {}
 

@@ -14,11 +14,19 @@ export interface AgentPlanStep {
 }
 
 export interface AgentPlanPayload {
+  schemaVersion?: number;
+  understanding?: string;
+  userGoal?: string;
+  confidence?: number;
   summary?: string;
   assumptions?: string[];
+  missingInfo?: Array<{ field?: string; reason?: string; canResolveByTool?: boolean; resolverTool?: string }>;
+  requiredContext?: Array<{ name?: string; reason?: string; source?: string }>;
   risks?: string[];
   steps?: AgentPlanStep[];
   requiredApprovals?: Array<{ approvalType?: string; target?: { stepNos?: number[]; tools?: string[] } }>;
+  riskReview?: { riskLevel?: 'low' | 'medium' | 'high'; reasons?: string[]; requiresApproval?: boolean; approvalMessage?: string };
+  userVisiblePlan?: { summary?: string; bullets?: string[]; hiddenTechnicalSteps?: boolean };
 }
 
 export interface AgentRunStepRecord {
@@ -42,6 +50,51 @@ export interface AgentRunArtifact {
   title?: string;
   content?: unknown;
   createdAt?: string;
+}
+
+export interface AgentObservationPayload {
+  stepId?: string;
+  stepNo: number;
+  tool: string;
+  mode: 'plan' | 'act';
+  args?: unknown;
+  error: {
+    code?: string;
+    message?: string;
+    missing?: string[];
+    candidates?: unknown[];
+    retryable?: boolean;
+  };
+  previousOutputs?: Record<string, unknown>;
+}
+
+export interface ReplanClarificationChoice {
+  id?: string;
+  label?: string;
+  payload?: unknown;
+}
+
+export interface ReplanPatchPayload {
+  action?: 'patch_plan' | 'ask_user' | 'fail_with_reason';
+  reason?: string;
+  questionForUser?: string;
+  choices?: ReplanClarificationChoice[];
+  insertStepsBeforeFailedStep?: Array<{ id?: string; name?: string; tool?: string; stepNo?: number }>;
+  replaceFailedStepArgs?: Record<string, unknown>;
+}
+
+export interface AgentObservationArtifactContent {
+  observation?: AgentObservationPayload;
+  replanPatch?: ReplanPatchPayload;
+}
+
+export interface AgentClarificationHistoryEntry {
+  roundNo?: number;
+  question?: string;
+  choices?: ReplanClarificationChoice[];
+  selectedChoice?: ReplanClarificationChoice;
+  message?: string;
+  answeredAt?: string;
 }
 
 export interface AgentAuditEvent {
@@ -118,6 +171,18 @@ async function apiFetch<T>(path: string, init?: RequestInit): Promise<T> {
  * 为创建计划生成前端幂等键。键中包含项目、章节和消息摘要。
  * 具体复用由 useAgentRun 内的 Map 控制，避免每次重试都因 Date.now 生成新键。
  */
+export interface AgentPageContext {
+  currentChapterId?: string;
+  currentChapterTitle?: string;
+  currentChapterIndex?: number;
+  currentDraftId?: string;
+  currentDraftVersion?: number;
+  selectedText?: string;
+  selectedRange?: { start: number; end: number };
+  sourcePage?: string;
+  [key: string]: unknown;
+}
+
 function createClientRequestId(projectId: string, message: string, currentChapterId?: string) {
   const normalizedMessage = message.trim().slice(0, 120);
   const hash = Array.from(normalizedMessage).reduce((acc, char) => (acc * 31 + char.charCodeAt(0)) >>> 0, 0).toString(36);
@@ -163,10 +228,12 @@ export function useAgentRun() {
     return events;
   }, []);
 
-  const createPlan = useCallback(async (projectId: string, message: string, currentChapterId?: string) => {
+  const createPlan = useCallback(async (projectId: string, message: string, pageContextOrChapterId?: string | AgentPageContext) => {
     setLoading(true);
     setError('');
     setActionMessage('正在生成 Agent 执行计划…');
+    const pageContext: AgentPageContext = typeof pageContextOrChapterId === 'string' ? { currentChapterId: pageContextOrChapterId } : (pageContextOrChapterId ?? {});
+    const currentChapterId = pageContext.currentChapterId;
     const fingerprint = createPlanRequestFingerprint(projectId, message, currentChapterId);
     let clientRequestId = createPlanRequestIdsRef.current.get(fingerprint);
     if (!clientRequestId) {
@@ -179,7 +246,7 @@ export function useAgentRun() {
         body: JSON.stringify({
           projectId,
           message,
-          context: currentChapterId ? { currentChapterId } : {},
+          context: { currentProjectId: projectId, sourcePage: 'agent_workspace', ...pageContext },
           clientRequestId,
         }),
       });
@@ -225,14 +292,16 @@ export function useAgentRun() {
     setError('');
     setActionMessage('已确认计划，Agent 正在同步执行…');
     try {
-      const run = await apiFetch<AgentRun>(`/agent-runs/${agentRunId}/act`, {
+      await apiFetch<AgentRun>(`/agent-runs/${agentRunId}/act`, {
         method: 'POST',
         body: JSON.stringify({ approval: true, approvedStepNos, confirmation: { confirmHighRisk: true }, comment: '用户在 Agent Workspace 确认执行' }),
       });
-      setCurrentRun(run);
+      // /act 可能触发 Observation/Replan 并创建新 Plan/Artifact；随后读取完整 Run，确保前端能展示澄清卡片和新计划版本。
+      const fullRun = await apiFetch<AgentRun>(`/agent-runs/${agentRunId}`);
+      setCurrentRun(fullRun);
       await loadAudit(agentRunId);
-      setActionMessage(run.status === 'succeeded' ? 'Agent 执行完成。' : `Agent 当前状态：${run.status}`);
-      return run;
+      setActionMessage(fullRun.status === 'succeeded' ? 'Agent 执行完成。' : `Agent 当前状态：${fullRun.status}`);
+      return fullRun;
     } catch (actError) {
       const messageText = actError instanceof Error ? actError.message : '执行 Agent 失败';
       setError(messageText);
@@ -269,14 +338,16 @@ export function useAgentRun() {
     setError('');
     setActionMessage('正在重试执行，已成功步骤会尽量复用…');
     try {
-      const run = await apiFetch<AgentRun>(`/agent-runs/${agentRunId}/retry`, {
+      await apiFetch<AgentRun>(`/agent-runs/${agentRunId}/retry`, {
         method: 'POST',
         body: JSON.stringify({ approval: true, approvedStepNos, confirmation: { confirmHighRisk: true }, comment: '用户在 Agent Workspace 触发失败重试' }),
       });
-      setCurrentRun(run);
+      // retry 同样可能产生新的 Observation/Replan Artifact，必须刷新完整聚合视图。
+      const fullRun = await apiFetch<AgentRun>(`/agent-runs/${agentRunId}`);
+      setCurrentRun(fullRun);
       await loadAudit(agentRunId);
-      setActionMessage(run.status === 'succeeded' ? 'Agent 重试执行完成。' : `Agent 当前状态：${run.status}`);
-      return run;
+      setActionMessage(fullRun.status === 'succeeded' ? 'Agent 重试执行完成。' : `Agent 当前状态：${fullRun.status}`);
+      return fullRun;
     } catch (retryError) {
       const messageText = retryError instanceof Error ? retryError.message : '重试 Agent 失败';
       setError(messageText);
@@ -287,14 +358,14 @@ export function useAgentRun() {
     }
   }, [loadAudit]);
 
-  const replan = useCallback(async (agentRunId: string, message?: string) => {
+  const replan = useCallback(async (agentRunId: string, message?: string, options?: { worldbuildingSelection?: { selectedTitles: string[] } }) => {
     setLoading(true);
     setError('');
     setActionMessage('正在基于当前任务重新规划…');
     try {
       const run = await apiFetch<AgentRun>(`/agent-runs/${agentRunId}/replan`, {
         method: 'POST',
-        body: JSON.stringify({ message }),
+        body: JSON.stringify({ message, ...options }),
       });
       setCurrentRun(run);
       await loadAudit(agentRunId);
@@ -305,6 +376,30 @@ export function useAgentRun() {
       setError(messageText);
       setActionMessage(messageText);
       throw replanError;
+    } finally {
+      setLoading(false);
+    }
+  }, [loadAudit]);
+
+  const answerClarification = useCallback(async (agentRunId: string, choice: ReplanClarificationChoice) => {
+    const label = choice.label ?? choice.id ?? '未命名候选';
+    setLoading(true);
+    setError('');
+    setActionMessage('已收到你的澄清选择，正在通过专用接口重新规划…');
+    try {
+      const run = await apiFetch<AgentRun>(`/agent-runs/${agentRunId}/clarification-choice`, {
+        method: 'POST',
+        body: JSON.stringify({ choice, message: `用户从澄清卡片选择：${label}` }),
+      });
+      setCurrentRun(run);
+      await loadAudit(agentRunId);
+      setActionMessage('澄清选择已写入上下文，新计划已生成，请重新审批后执行。');
+      return run;
+    } catch (clarificationError) {
+      const messageText = clarificationError instanceof Error ? clarificationError.message : '提交澄清选择失败';
+      setError(messageText);
+      setActionMessage(messageText);
+      throw clarificationError;
     } finally {
       setLoading(false);
     }
@@ -342,5 +437,5 @@ export function useAgentRun() {
     createPlanRequestIdsRef.current.clear();
   }, []);
 
-  return { currentRun, runHistory, auditEvents, loading, error, actionMessage, createPlan, refresh, interpretMessage, act, retry, replan, cancel, listByProject, loadAudit, setCurrentRun, startNewSession };
+  return { currentRun, runHistory, auditEvents, loading, error, actionMessage, createPlan, refresh, interpretMessage, act, retry, replan, answerClarification, cancel, listByProject, loadAudit, setCurrentRun, startNewSession };
 }

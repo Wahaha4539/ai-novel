@@ -1,6 +1,7 @@
 import { Injectable, NotFoundException } from '@nestjs/common';
 import { PrismaService } from '../../../prisma/prisma.service';
 import { BaseTool, ToolContext } from '../base-tool';
+import type { ToolManifestV2 } from '../tool-manifest.types';
 
 interface InspectProjectContextOutput {
   project: { id: string; title: string; genre: string | null; theme: string | null; tone: string | null; synopsis: string | null; outline: string | null };
@@ -28,6 +29,20 @@ export class InspectProjectContextTool implements BaseTool<Record<string, never>
   riskLevel: 'low' = 'low';
   requiresApproval = false;
   sideEffects: string[] = [];
+  manifest: ToolManifestV2 = {
+    name: this.name,
+    displayName: '巡检项目上下文',
+    description: '只读读取项目、卷、章节、角色和世界观摘要，为大纲设计、世界观扩展和导入预览提供全局背景。',
+    whenToUse: ['用户要求拆大纲、扩展世界观或导入项目资料前', '需要了解现有卷、章节、角色和设定边界', 'generate_worldbuilding_preview 或 generate_outline_preview 之前需要项目摘要'],
+    whenNotToUse: ['只需要解析某个章节/角色 ID 时，应使用 resolver', '需要读取当前章节完整草稿时，应使用 collect_chapter_context 或 collect_task_context'],
+    inputSchema: this.inputSchema,
+    outputSchema: this.outputSchema,
+    parameterHints: {},
+    allowedModes: this.allowedModes,
+    riskLevel: this.riskLevel,
+    requiresApproval: this.requiresApproval,
+    sideEffects: this.sideEffects,
+  };
 
   constructor(private readonly prisma: PrismaService) {}
 

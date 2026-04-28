@@ -35,10 +35,19 @@ interface AgentPlanPanelProps {
   plan?: AgentPlanPayload;
 }
 
-/** 计划简报面板：展示 Plan 摘要、假设/风险、版本 diff 指标 */
+/** 从 agent_plan_preview Artifact 合并 V2 字段，弥补 AgentPlan 表只存摘要/步骤的兼容限制。 */
+function enrichPlanFromPreviewArtifact(run: AgentRun | null, plan?: AgentPlanPayload): AgentPlanPayload | undefined {
+  if (!plan) return undefined;
+  const preview = [...(run?.artifacts ?? [])].reverse().find((artifact) => artifact.artifactType === 'agent_plan_preview');
+  const content = preview?.content && typeof preview.content === 'object' ? (preview.content as AgentPlanPayload) : undefined;
+  return content ? { ...plan, ...content, steps: plan.steps ?? content.steps, requiredApprovals: plan.requiredApprovals ?? content.requiredApprovals } : plan;
+}
+
+/** 计划简报面板：展示 Agent 理解、假设、缺失信息、风险和用户可读步骤。 */
 export function AgentPlanPanel({ run, plan }: AgentPlanPanelProps) {
   const plans = [...(run?.plans ?? [])].sort((a, b) => (b.version ?? 0) - (a.version ?? 0));
   const diff = buildPlanVersionDiff(plans);
+  const displayPlan = enrichPlanFromPreviewArtifact(run, plan);
 
   return (
     <section className="agent-panel-section">
@@ -64,9 +73,20 @@ export function AgentPlanPanel({ run, plan }: AgentPlanPanelProps) {
         )}
       </div>
 
-      {plan ? (
+      {displayPlan ? (
         <>
-          <p className="text-sm mb-4" style={{ color: 'var(--text-muted)' }}>{plan.summary}</p>
+          <p className="text-sm mb-4" style={{ color: 'var(--text-muted)' }}>{displayPlan.userVisiblePlan?.summary ?? displayPlan.summary}</p>
+          <div className="mb-4 grid gap-2 md:grid-cols-3">
+            <Metric label="任务类型" value={run?.taskType ?? '未识别'} />
+            <Metric label="置信度" value={typeof displayPlan.confidence === 'number' ? `${Math.round(displayPlan.confidence * 100)}%` : '—'} tone={typeof displayPlan.confidence === 'number' && displayPlan.confidence >= 0.85 ? 'ok' : undefined} />
+            <Metric label="风险等级" value={displayPlan.riskReview?.riskLevel ?? '—'} tone={displayPlan.riskReview?.riskLevel === 'high' ? 'danger' : displayPlan.riskReview?.riskLevel === 'medium' ? 'warn' : 'ok'} />
+          </div>
+          {displayPlan.understanding && (
+            <div className="mb-4 p-3" style={{ borderRadius: '0.75rem', background: 'rgba(6,182,212,0.08)', border: '1px solid rgba(103,232,249,0.22)' }}>
+              <div className="text-xs font-bold mb-2" style={{ color: '#67e8f9' }}>Agent 的理解</div>
+              <div className="text-xs leading-6" style={{ color: 'var(--text-muted)' }}>{displayPlan.understanding}</div>
+            </div>
+          )}
           {/* Plan 版本差异指标 */}
           {diff && (
             <div className="mb-4 grid gap-2 md:grid-cols-3">
@@ -76,9 +96,13 @@ export function AgentPlanPanel({ run, plan }: AgentPlanPanelProps) {
             </div>
           )}
           <div className="grid gap-3 md:grid-cols-2">
-            <ListBlock title="假设" items={plan.assumptions ?? []} />
-            <ListBlock title="风险/规则" items={plan.risks ?? []} />
+            <ListBlock title="假设" items={displayPlan.assumptions ?? []} />
+            <ListBlock title="用户可读步骤" items={displayPlan.userVisiblePlan?.bullets ?? []} />
+            <ListBlock title="缺失信息" items={(displayPlan.missingInfo ?? []).map((item) => `${item.field ?? '未知字段'}：${item.reason ?? ''}${item.resolverTool ? `（可由 ${item.resolverTool} 解析）` : ''}`)} />
+            <ListBlock title="需要的上下文" items={(displayPlan.requiredContext ?? []).map((item) => `${item.name ?? '上下文'}：${item.reason ?? ''}`)} />
+            <ListBlock title="风险/规则" items={displayPlan.riskReview?.reasons?.length ? displayPlan.riskReview.reasons : (displayPlan.risks ?? [])} />
           </div>
+          {displayPlan.riskReview?.approvalMessage && <p className="mt-3 text-xs leading-5" style={{ color: '#fef3c7' }}>{displayPlan.riskReview.approvalMessage}</p>}
         </>
       ) : (
         <EmptyText text="提交任务后，这里会显示 Agent 的理解、假设和风险。" />

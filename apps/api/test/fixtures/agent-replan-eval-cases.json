@@ -1,0 +1,239 @@
+[
+  {
+    "id": "missing_chapter_id_001",
+    "repairKind": "resolver_patch",
+    "userGoal": "帮我写第十二章，压迫感强一点。",
+    "context": { "session": { "currentProjectId": "project_1", "currentChapterId": "chapter_11" } },
+    "currentPlanSteps": [
+      { "stepNo": 1, "id": "write", "name": "写正文", "tool": "write_chapter", "mode": "act", "requiresApproval": true, "args": { "instruction": "压迫感强一点" } }
+    ],
+    "failedObservation": {
+      "stepId": "write",
+      "stepNo": 1,
+      "tool": "write_chapter",
+      "mode": "act",
+      "args": { "instruction": "压迫感强一点" },
+      "error": { "code": "MISSING_REQUIRED_ARGUMENT", "message": "write_chapter.input.chapterId 是必填字段", "missing": ["chapterId"], "retryable": true },
+      "previousOutputs": {}
+    },
+    "expected": { "action": "patch_plan", "insertTool": "resolve_chapter", "replaceArg": "chapterId", "reasonIncludes": ["chapterId", "解析"] }
+  },
+  {
+    "id": "natural_language_chapter_id_002",
+    "repairKind": "resolver_patch",
+    "userGoal": "帮我写第十二章。",
+    "context": { "session": { "currentProjectId": "project_1" } },
+    "currentPlanSteps": [
+      { "stepNo": 1, "id": "write", "name": "写正文", "tool": "write_chapter", "mode": "act", "requiresApproval": true, "args": { "chapterId": "第十二章", "instruction": "写正文" } }
+    ],
+    "failedObservation": {
+      "stepId": "write",
+      "stepNo": 1,
+      "tool": "write_chapter",
+      "mode": "act",
+      "args": { "chapterId": "第十二章", "instruction": "写正文" },
+      "error": { "code": "SCHEMA_VALIDATION_FAILED", "message": "chapterId 必须来自上下文或 resolver，不能使用自然语言。", "retryable": true },
+      "previousOutputs": {}
+    },
+    "expected": { "action": "patch_plan", "insertTool": "resolve_chapter", "replaceArg": "chapterId", "reasonIncludes": ["真实 chapterId"] }
+  },
+  {
+    "id": "natural_language_character_id_003",
+    "repairKind": "resolver_patch",
+    "userGoal": "检查男主有没有崩。",
+    "context": { "session": { "currentProjectId": "project_1", "currentChapterId": "chapter_8" } },
+    "currentPlanSteps": [
+      { "stepNo": 1, "id": "check", "name": "检查角色", "tool": "character_consistency_check", "mode": "act", "requiresApproval": false, "args": { "characterId": "男主" } }
+    ],
+    "failedObservation": {
+      "stepId": "check",
+      "stepNo": 1,
+      "tool": "character_consistency_check",
+      "mode": "act",
+      "args": { "characterId": "男主" },
+      "error": { "code": "SCHEMA_VALIDATION_FAILED", "message": "characterId 必须来自上下文或 resolver，不能使用自然语言。", "retryable": true },
+      "previousOutputs": {}
+    },
+    "expected": { "action": "patch_plan", "insertTool": "resolve_character", "replaceArg": "characterId", "reasonIncludes": ["characterId", "角色"] }
+  },
+  {
+    "id": "ambiguous_entity_004",
+    "repairKind": "clarification",
+    "userGoal": "帮我检查小林的人设。",
+    "context": { "session": { "currentProjectId": "project_1" } },
+    "currentPlanSteps": [
+      { "stepNo": 1, "id": "resolve", "name": "解析角色", "tool": "resolve_character", "mode": "act", "requiresApproval": false, "args": { "characterRef": "小林" } }
+    ],
+    "failedObservation": {
+      "stepId": "resolve",
+      "stepNo": 1,
+      "tool": "resolve_character",
+      "mode": "act",
+      "args": { "characterRef": "小林" },
+      "error": {
+        "code": "AMBIGUOUS_ENTITY",
+        "message": "角色引用存在多个候选。",
+        "retryable": true,
+        "candidates": [{ "id": "char_1", "name": "林烬" }, { "id": "char_2", "name": "林岚" }]
+      },
+      "previousOutputs": {}
+    },
+    "expected": { "action": "ask_user", "choiceCount": 2, "reasonIncludes": ["多个", "候选"] }
+  },
+  {
+    "id": "non_retryable_policy_005",
+    "repairKind": "approval_boundary",
+    "userGoal": "直接覆盖所有记忆。",
+    "context": { "session": { "currentProjectId": "project_1" } },
+    "currentPlanSteps": [
+      { "stepNo": 1, "id": "memory", "name": "重建记忆", "tool": "rebuild_memory", "mode": "act", "requiresApproval": true, "args": {} }
+    ],
+    "failedObservation": {
+      "stepId": "memory",
+      "stepNo": 1,
+      "tool": "rebuild_memory",
+      "mode": "act",
+      "args": {},
+      "error": { "code": "POLICY_BLOCKED", "message": "高风险写入被策略阻止。", "retryable": false },
+      "previousOutputs": {}
+    },
+    "expected": { "action": "fail_with_reason", "reasonIncludes": ["不可安全自动修复"] }
+  },
+  {
+    "id": "auto_patch_total_limit_006",
+    "repairKind": "loop_guard",
+    "userGoal": "帮我写第十二章。",
+    "context": { "session": { "currentProjectId": "project_1" } },
+    "replanStats": { "previousAutoPatchCount": 2, "sameStepErrorPatchCount": 0 },
+    "currentPlanSteps": [
+      { "stepNo": 1, "id": "write", "name": "写正文", "tool": "write_chapter", "mode": "act", "requiresApproval": true, "args": {} }
+    ],
+    "failedObservation": {
+      "stepId": "write",
+      "stepNo": 1,
+      "tool": "write_chapter",
+      "mode": "act",
+      "args": {},
+      "error": { "code": "MISSING_REQUIRED_ARGUMENT", "message": "缺少 chapterId。", "missing": ["chapterId"], "retryable": true },
+      "previousOutputs": {}
+    },
+    "expected": { "action": "fail_with_reason", "reasonIncludes": ["2 次上限"] }
+  },
+  {
+    "id": "same_step_loop_guard_007",
+    "repairKind": "loop_guard",
+    "userGoal": "帮我写第十二章。",
+    "context": { "session": { "currentProjectId": "project_1" } },
+    "replanStats": { "previousAutoPatchCount": 1, "sameStepErrorPatchCount": 1 },
+    "currentPlanSteps": [
+      { "stepNo": 1, "id": "write", "name": "写正文", "tool": "write_chapter", "mode": "act", "requiresApproval": true, "args": {} }
+    ],
+    "failedObservation": {
+      "stepId": "write",
+      "stepNo": 1,
+      "tool": "write_chapter",
+      "mode": "act",
+      "args": {},
+      "error": { "code": "MISSING_REQUIRED_ARGUMENT", "message": "缺少 chapterId。", "missing": ["chapterId"], "retryable": true },
+      "previousOutputs": {}
+    },
+    "expected": { "action": "fail_with_reason", "reasonIncludes": ["同一步骤", "1 次"] }
+  },
+  {
+    "id": "schema_number_coercion_008",
+    "repairKind": "schema_type_coercion",
+    "userGoal": "帮我写第十二章，3500 字。",
+    "context": { "session": { "currentProjectId": "project_1", "currentChapterId": "chapter_11" } },
+    "currentPlanSteps": [
+      { "stepNo": 1, "id": "write", "name": "写正文", "tool": "write_chapter", "mode": "act", "requiresApproval": true, "args": { "chapterId": "{{context.session.currentChapterId}}", "targetWordCount": "3500", "instruction": "写第十二章" } }
+    ],
+    "failedObservation": {
+      "stepId": "write",
+      "stepNo": 1,
+      "tool": "write_chapter",
+      "mode": "act",
+      "args": { "chapterId": "{{context.session.currentChapterId}}", "targetWordCount": "3500", "instruction": "写第十二章" },
+      "error": { "code": "SCHEMA_VALIDATION_FAILED", "message": "targetWordCount 必须是 number。", "retryable": true },
+      "previousOutputs": {}
+    },
+    "expected": { "action": "patch_plan", "replaceArgs": { "targetWordCount": 3500 }, "reasonIncludes": ["类型转换"] }
+  },
+  {
+    "id": "future_step_reference_009",
+    "repairKind": "previous_step_reference",
+    "userGoal": "检查男主有没有崩。",
+    "context": { "session": { "currentProjectId": "project_1", "currentChapterId": "chapter_8" } },
+    "currentPlanSteps": [
+      { "stepNo": 1, "id": "collect_context", "name": "收集上下文", "tool": "collect_task_context", "mode": "act", "requiresApproval": false, "args": { "taskType": "character_consistency_check" } },
+      { "stepNo": 2, "id": "check", "name": "检查角色", "tool": "character_consistency_check", "mode": "act", "requiresApproval": false, "args": { "context": "{{steps.3.output}}", "characterId": "{{steps.resolve_character.output.characterId}}" } }
+    ],
+    "failedObservation": {
+      "stepId": "check",
+      "stepNo": 2,
+      "tool": "character_consistency_check",
+      "mode": "act",
+      "args": { "context": "{{steps.3.output}}", "characterId": "{{steps.resolve_character.output.characterId}}" },
+      "error": { "code": "SCHEMA_VALIDATION_FAILED", "message": "引用了非前序步骤 3。", "retryable": true },
+      "previousOutputs": { "1": { "diagnostics": { "retrievalDimensions": ["characters"] } } }
+    },
+    "expected": { "action": "patch_plan", "replaceArgs": { "context": "{{steps.collect_context.output}}" }, "reasonIncludes": ["前序"] }
+  },
+  {
+    "id": "resolver_low_confidence_010",
+    "repairKind": "clarification",
+    "userGoal": "帮我改一下他和师姐对峙那章。",
+    "context": { "session": { "currentProjectId": "project_1" } },
+    "currentPlanSteps": [
+      { "stepNo": 1, "id": "resolve", "name": "解析章节", "tool": "resolve_chapter", "mode": "act", "requiresApproval": false, "args": { "chapterRef": "他和师姐对峙那章" } }
+    ],
+    "failedObservation": {
+      "stepId": "resolve",
+      "stepNo": 1,
+      "tool": "resolve_chapter",
+      "mode": "act",
+      "args": { "chapterRef": "他和师姐对峙那章" },
+      "error": { "code": "VALIDATION_FAILED", "message": "resolver 低置信度，不能自动选择。", "retryable": true, "candidates": [{ "id": "chapter_7", "title": "雨夜对峙" }, { "id": "chapter_9", "title": "山门问剑" }] },
+      "previousOutputs": {}
+    },
+    "expected": { "action": "ask_user", "choiceCount": 2, "reasonIncludes": ["低置信度"] }
+  },
+  {
+    "id": "tool_output_missing_field_011",
+    "repairKind": "tool_output_missing_field",
+    "userGoal": "检查小林的人设。",
+    "context": { "session": { "currentProjectId": "project_1" } },
+    "currentPlanSteps": [
+      { "stepNo": 1, "id": "resolve_character", "name": "解析角色", "tool": "resolve_character", "mode": "act", "requiresApproval": false, "args": { "characterRef": "小林" } },
+      { "stepNo": 2, "id": "check", "name": "检查角色", "tool": "character_consistency_check", "mode": "act", "requiresApproval": false, "args": { "characterId": "{{steps.resolve_character.output.characterId}}" } }
+    ],
+    "failedObservation": {
+      "stepId": "check",
+      "stepNo": 2,
+      "tool": "character_consistency_check",
+      "mode": "act",
+      "args": { "characterId": "{{steps.resolve_character.output.characterId}}" },
+      "error": { "code": "MISSING_REQUIRED_ARGUMENT", "message": "前序 resolver 输出缺少 characterId。", "missing": ["characterId"], "retryable": true },
+      "previousOutputs": { "1": { "needsUserChoice": true, "candidates": [{ "id": "char_1", "name": "林烬" }, { "id": "char_2", "name": "林岚" }] } }
+    },
+    "expected": { "action": "ask_user", "choiceCount": 2, "reasonIncludes": ["缺少 characterId", "候选"] }
+  },
+  {
+    "id": "validation_failed_minimal_repair_012",
+    "repairKind": "validation_failed_minimal",
+    "userGoal": "这一章太平了，改紧张点，别改结局。",
+    "context": { "session": { "currentProjectId": "project_1", "currentChapterId": "chapter_12", "currentDraftId": "draft_2" } },
+    "currentPlanSteps": [
+      { "stepNo": 1, "id": "repair", "name": "最小修复", "tool": "auto_repair_chapter", "mode": "act", "requiresApproval": true, "args": { "chapterId": "{{context.session.currentChapterId}}", "draftId": "{{context.session.currentDraftId}}", "maxRounds": 3, "instruction": "大幅重写" } }
+    ],
+    "failedObservation": {
+      "stepId": "repair",
+      "stepNo": 1,
+      "tool": "auto_repair_chapter",
+      "mode": "act",
+      "args": { "chapterId": "{{context.session.currentChapterId}}", "draftId": "{{context.session.currentDraftId}}", "maxRounds": 3, "instruction": "大幅重写" },
+      "error": { "code": "VALIDATION_FAILED", "message": "修复计划超过最小必要范围。", "retryable": true },
+      "previousOutputs": { "validation": { "issues": [{ "severity": "warning", "message": "结局被改动" }] } }
+    },
+    "expected": { "action": "patch_plan", "replaceArgs": { "maxRounds": 1 }, "replaceArgIncludes": { "instruction": ["最小必要修复", "不得新增重大剧情"] }, "reasonIncludes": ["最小必要修复"] }
+  }
+]

@@ -10,6 +10,7 @@
     "db:migrate": "pnpm --filter api exec prisma migrate deploy",
     "db:push": "pnpm --filter api exec prisma db push",
     "db:create": "python scripts/dev/create_database.py",
-    "db:maintenance": "pnpm --dir apps/api run db:maintenance"
+    "db:maintenance": "pnpm --dir apps/api run db:maintenance",
+    "eval:agent:gate": "pnpm --dir apps/api run eval:agent:gate"
   }
 }

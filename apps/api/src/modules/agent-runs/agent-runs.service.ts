@@ -1,7 +1,7 @@
 import { BadRequestException, Injectable, NotFoundException } from '@nestjs/common';
 import { Prisma } from '@prisma/client';
 import { PrismaService } from '../../prisma/prisma.service';
-import { CreateAgentPlanDto, ReplanAgentRunDto } from './dto/create-agent-plan.dto';
+import { CreateAgentPlanDto, ReplanAgentRunDto, SubmitAgentClarificationChoiceDto } from './dto/create-agent-plan.dto';
 import { ExecuteAgentRunDto } from './dto/execute-agent-run.dto';
 import { InterpretAgentMessageDto } from './dto/interpret-agent-message.dto';
 import { AgentMessageIntentService } from './agent-message-intent.service';
@@ -220,7 +220,32 @@ export class AgentRunsService {
     if (!run) throw new NotFoundException(`AgentRun 不存在：${id}`);
     if (run.status === 'acting') throw new BadRequestException('acting 状态不能重新规划，请等待执行结束或取消');
 
+    const selectedTitles = dto.worldbuildingSelection?.selectedTitles;
+    if (selectedTitles !== undefined) {
+      const normalizedTitles = [...new Set(selectedTitles.map((title) => typeof title === 'string' ? title.trim() : '').filter(Boolean))];
+      if (!normalizedTitles.length) throw new BadRequestException('世界观选择写入至少需要 1 个 selectedTitles');
+      await this.runtime.replanWorldbuildingSelection(id, normalizedTitles, dto.message);
+      return this.get(id);
+    }
+
     await this.runtime.replan(id, dto.message);
+    return this.get(id);
+  }
+
+  /**
+   * 前端澄清卡片候选选择专用入口：只把用户显式选择写入上下文并生成新计划，
+   * 不直接执行 Tool，确保状态回到 waiting_approval 后仍需用户审批。
+   */
+  async submitClarificationChoice(id: string, dto: SubmitAgentClarificationChoiceDto) {
+    const run = await this.prisma.agentRun.findUnique({ where: { id } });
+    if (!run) throw new NotFoundException(`AgentRun 不存在：${id}`);
+    if (!['waiting_review', 'failed'].includes(run.status)) throw new BadRequestException(`当前状态 ${run.status} 不能提交澄清选择`);
+
+    const choice = dto.choice ?? {};
+    const hasPayload = choice.payload !== undefined && choice.payload !== null;
+    if (!choice.id?.trim() && !choice.label?.trim() && !hasPayload) throw new BadRequestException('澄清选择至少需要 id、label 或 payload');
+
+    await this.runtime.answerClarificationChoice(id, { id: choice.id?.trim(), label: choice.label?.trim(), payload: choice.payload }, dto.message);
     return this.get(id);
   }
 

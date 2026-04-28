@@ -1,5 +1,6 @@
 'use client';
 
+import { useMemo, useState } from 'react';
 import { AgentRun } from '../../hooks/useAgentRun';
 import { EmptyText, Metric, asArray, asRecord, numberValue, safeJson, textValue } from './AgentSharedWidgets';
 
@@ -32,10 +33,12 @@ interface AgentArtifactPanelProps {
   run: AgentRun | null;
   query: string;
   onQueryChange: (value: string) => void;
+  onRequestWorldbuildingPersistSelection?: (titles: string[]) => void | Promise<void>;
+  actionDisabled?: boolean;
 }
 
 /** 产物预览面板：搜索、去重、按类型渲染业务化摘要 */
-export function AgentArtifactPanel({ run, query, onQueryChange }: AgentArtifactPanelProps) {
+export function AgentArtifactPanel({ run, query, onQueryChange, onRequestWorldbuildingPersistSelection, actionDisabled }: AgentArtifactPanelProps) {
   const artifacts = dedupeArtifacts(run?.artifacts ?? []);
   const filteredArtifacts = filterArtifacts(artifacts, query);
 
@@ -53,7 +56,14 @@ export function AgentArtifactPanel({ run, query, onQueryChange }: AgentArtifactP
       {filteredArtifacts.length ? (
         <div className="space-y-3">
           {filteredArtifacts.map((artifact) => (
-            <ArtifactCard key={artifact.id} artifactType={artifact.artifactType} title={artifact.title} content={artifact.content} />
+            <ArtifactCard
+              key={artifact.id}
+              artifactType={artifact.artifactType}
+              title={artifact.title}
+              content={artifact.content}
+              onRequestWorldbuildingPersistSelection={onRequestWorldbuildingPersistSelection}
+              actionDisabled={actionDisabled}
+            />
           ))}
         </div>
       ) : (
@@ -71,11 +81,13 @@ export function AgentArtifactPanel({ run, query, onQueryChange }: AgentArtifactP
 function typeEmoji(type?: string): string {
   if (!type) return '📦';
   if (type.includes('outline')) return '📑';
+  if (type.includes('plot')) return '🧭';
   if (type.includes('chapter')) return '📝';
   if (type.includes('character')) return '👤';
   if (type.includes('validation') || type.includes('quality')) return '🔍';
   if (type.includes('fact')) return '🧩';
   if (type.includes('memory')) return '🧠';
+  if (type.includes('worldbuilding')) return '🌐';
   if (type.includes('profile') || type.includes('project')) return '📋';
   if (type.includes('lorebook')) return '📚';
   if (type.includes('repair')) return '🔧';
@@ -83,7 +95,19 @@ function typeEmoji(type?: string): string {
   return '📦';
 }
 
-function ArtifactCard({ artifactType, title, content }: { artifactType?: string; title?: string; content?: unknown }) {
+function ArtifactCard({
+  artifactType,
+  title,
+  content,
+  onRequestWorldbuildingPersistSelection,
+  actionDisabled,
+}: {
+  artifactType?: string;
+  title?: string;
+  content?: unknown;
+  onRequestWorldbuildingPersistSelection?: (titles: string[]) => void | Promise<void>;
+  actionDisabled?: boolean;
+}) {
   return (
     <details className="agent-artifact-card">
       <summary className="agent-artifact-card__summary">
@@ -93,7 +117,12 @@ function ArtifactCard({ artifactType, title, content }: { artifactType?: string;
         <span className="agent-artifact-card__arrow" aria-hidden="true">▸</span>
       </summary>
       <div className="agent-artifact-card__body">
-        <TypedArtifactPreview artifactType={artifactType} content={content} />
+        <TypedArtifactPreview
+          artifactType={artifactType}
+          content={content}
+          onRequestWorldbuildingPersistSelection={onRequestWorldbuildingPersistSelection}
+          actionDisabled={actionDisabled}
+        />
         <details className="agent-artifact-card__json-toggle">
           <summary className="cursor-pointer text-xs" style={{ color: 'var(--agent-text-label)' }}>📄 原始 JSON</summary>
           <pre className="agent-artifact-card__json">{safeJson(content)}</pre>
@@ -104,12 +133,27 @@ function ArtifactCard({ artifactType, title, content }: { artifactType?: string;
 }
 
 /** 按 AgentArtifact 类型提供业务化摘要，避免用户只能阅读大段 JSON */
-function TypedArtifactPreview({ artifactType, content }: { artifactType?: string; content?: unknown }) {
+function TypedArtifactPreview({
+  artifactType,
+  content,
+  onRequestWorldbuildingPersistSelection,
+  actionDisabled,
+}: {
+  artifactType?: string;
+  content?: unknown;
+  onRequestWorldbuildingPersistSelection?: (titles: string[]) => void | Promise<void>;
+  actionDisabled?: boolean;
+}) {
   if (artifactType === 'outline_preview') return <OutlinePreviewSummary content={content} />;
-  if (artifactType === 'outline_validation_report' || artifactType === 'import_validation_report' || artifactType === 'fact_validation_report') return <ValidationSummary content={content} />;
+  if (artifactType === 'outline_validation_report' || artifactType === 'import_validation_report' || artifactType === 'fact_validation_report' || artifactType === 'worldbuilding_validation_report') return <ValidationSummary content={content} />;
   if (artifactType === 'project_profile_preview') return <ProjectProfileSummary content={content} />;
   if (artifactType === 'characters_preview') return <ArraySummary content={content} label="角色" primaryKey="name" secondaryKey="roleType" />;
   if (artifactType === 'lorebook_preview') return <ArraySummary content={content} label="设定" primaryKey="title" secondaryKey="entryType" />;
+  if (artifactType === 'worldbuilding_preview') return <WorldbuildingPreviewSummary content={content} onRequestPersistSelection={onRequestWorldbuildingPersistSelection} actionDisabled={actionDisabled} />;
+  if (artifactType === 'worldbuilding_persist_result') return <WorldbuildingPersistSummary content={content} />;
+  if (artifactType === 'character_consistency_report') return <CharacterConsistencySummary content={content} />;
+  if (artifactType === 'plot_consistency_report') return <PlotConsistencySummary content={content} />;
+  if (artifactType === 'task_context_preview') return <TaskContextSummary content={content} />;
   if (artifactType === 'outline_persist_result' || artifactType === 'import_persist_result') return <PersistSummary content={content} />;
   if (artifactType === 'chapter_draft_result') return <ChapterDraftSummary content={content} />;
   if (artifactType === 'chapter_generation_quality_report') return <GenerationQualitySummary content={content} />;
@@ -158,12 +202,44 @@ function ValidationSummary({ content }: { content: unknown }) {
         <Metric label="来源风险" value={asArray(data?.sourceRisks).length} />
       </div>
       <WritePreviewSummary content={data?.writePreview} />
+      <WorldbuildingValidationComparison content={data} />
       <div className="space-y-2">
         {issues.slice(0, 5).map((item, index) => {
           const issue = asRecord(item);
           return <div key={index} className="text-xs leading-5" style={{ color: issue?.severity === 'error' ? '#fb7185' : '#fbbf24' }}>[{textValue(issue?.severity)}] {textValue(issue?.message)}</div>;
         })}
         {!issues.length && <div className="text-xs" style={{ color: 'var(--text-muted)' }}>未发现阻断性问题。</div>}
+      </div>
+    </div>
+  );
+}
+
+/** 世界观校验视图补充条目级对比和 locked facts 说明，避免用户只看到 create/skip 的技术状态。 */
+function WorldbuildingValidationComparison({ content }: { content: unknown }) {
+  const data = asRecord(content);
+  const writePreview = asRecord(data?.writePreview);
+  const entries = asArray(writePreview?.entries);
+  const relatedLockedFacts = asArray(data?.relatedLockedFacts);
+  if (!entries.length && !relatedLockedFacts.length) return null;
+
+  return (
+    <div className="space-y-2" style={{ borderTop: '1px solid var(--border-dim)', paddingTop: '0.75rem' }}>
+      <div className="grid gap-2 md:grid-cols-3">
+        <Metric label="将新增" value={entries.filter((item) => asRecord(item)?.action === 'create').length} tone="ok" />
+        <Metric label="将跳过" value={entries.filter((item) => asRecord(item)?.action === 'skip_duplicate').length} tone={entries.some((item) => asRecord(item)?.action === 'skip_duplicate') ? 'warn' : undefined} />
+        <Metric label="相关 locked facts" value={relatedLockedFacts.length} tone={relatedLockedFacts.length ? 'warn' : 'ok'} />
+      </div>
+      <div className="space-y-1">
+        {entries.slice(0, 8).map((item, index) => {
+          const entry = asRecord(item);
+          const action = textValue(entry?.action, 'unknown');
+          const isSkip = action === 'skip_duplicate';
+          return <div key={index} className="text-xs leading-5" style={{ color: isSkip ? '#fbbf24' : '#86efac' }}>{isSkip ? '跳过' : '新增'}：{textValue(entry?.title, '未命名设定')} · {textValue(entry?.entryType, 'setting')}{isSkip ? ` · 原状态 ${textValue(entry?.existingStatus, 'existing')}` : ''}</div>;
+        })}
+        {relatedLockedFacts.slice(0, 4).map((item, index) => {
+          const fact = asRecord(item);
+          return <div key={`locked-${index}`} className="text-xs leading-5" style={{ color: '#fbbf24' }}>locked fact：{textValue(fact?.title, '未命名')} — {textValue(fact?.excerpt, '暂无摘要')}</div>;
+        })}
       </div>
     </div>
   );
@@ -176,8 +252,9 @@ function WritePreviewSummary({ content }: { content: unknown }) {
   if (!preview || !summary) return null;
   const chapterCreate = numberValue(summary.chapterCreateCount, numberValue(summary.createCount));
   const chapterUpdate = numberValue(summary.chapterUpdateCount, numberValue(summary.updateCount));
-  const chapterSkip = numberValue(summary.chapterSkipCount, numberValue(summary.skipCount));
+  const chapterSkip = numberValue(summary.chapterSkipCount, numberValue(summary.skipCount, numberValue(summary.skipDuplicateCount)));
   const chapters = asArray(preview.chapters);
+  const entries = asArray(preview.entries);
   const volume = asRecord(preview.volume);
   return (
     <div className="space-y-2" style={{ borderTop: '1px solid var(--border-dim)', paddingTop: '0.75rem' }}>
@@ -191,7 +268,261 @@ function WritePreviewSummary({ content }: { content: unknown }) {
           const chapter = asRecord(item);
           return <div key={index} className="text-xs leading-5" style={{ color: chapter?.action === 'skip_existing_content' ? '#fbbf24' : 'var(--text-muted)' }}>第 {numberValue(chapter?.chapterNo, index + 1)} 章：{textValue(chapter?.title, '未命名')} · {textValue(chapter?.action, 'unknown')}</div>;
         })}
+        {entries.slice(0, 6).map((item, index) => {
+          const entry = asRecord(item);
+          return <div key={`entry-${index}`} className="text-xs leading-5" style={{ color: entry?.action === 'skip_duplicate' ? '#fbbf24' : 'var(--text-muted)' }}>设定：{textValue(entry?.title, '未命名')} · {textValue(entry?.action, 'unknown')}</div>;
+        })}
       </div>
+    </div>
+  );
+}
+
+function WorldbuildingPreviewSummary({
+  content,
+  onRequestPersistSelection,
+  actionDisabled,
+}: {
+  content: unknown;
+  onRequestPersistSelection?: (titles: string[]) => void | Promise<void>;
+  actionDisabled?: boolean;
+}) {
+  const data = asRecord(content);
+  const entries = asArray(data?.entries);
+  const risks = asArray(data?.risks);
+  const writePlan = asRecord(data?.writePlan);
+  const selectableEntries = useMemo(() => entries.map((item, index) => {
+    const entry = asRecord(item);
+    return {
+      key: `${textValue(entry?.title, `设定${index + 1}`)}:${index}`,
+      title: textValue(entry?.title, `设定${index + 1}`).trim(),
+      entryType: textValue(entry?.entryType, 'setting'),
+      summary: textValue(entry?.summary ?? entry?.impactAnalysis, '暂无摘要'),
+    };
+  }).filter((entry) => entry.title.length > 0), [entries]);
+  const [selectedTitles, setSelectedTitles] = useState<string[]>(() => selectableEntries.map((entry) => entry.title));
+  const [submitting, setSubmitting] = useState(false);
+  const selectedTitleSet = new Set(selectedTitles);
+  const allSelected = selectableEntries.length > 0 && selectableEntries.every((entry) => selectedTitleSet.has(entry.title));
+
+  /** 勾选状态只传标题，不暴露内部 ID；后端 persist_worldbuilding 会再次校验标题必须来自预览。 */
+  const toggleTitle = (title: string) => {
+    setSelectedTitles((current) => (current.includes(title) ? current.filter((item) => item !== title) : [...current, title]));
+  };
+
+  const handleSubmitSelection = async () => {
+    if (!onRequestPersistSelection || !selectedTitles.length) return;
+    setSubmitting(true);
+    try {
+      await onRequestPersistSelection(selectedTitles);
+    } finally {
+      setSubmitting(false);
+    }
+  };
+
+  return (
+    <div className="space-y-3">
+      <div className="grid gap-2 md:grid-cols-3">
+        <Metric label="候选设定" value={entries.length} />
+        <Metric label="写入模式" value={textValue(writePlan?.mode, 'preview_only')} />
+        <Metric label="写入前审批" value={writePlan?.requiresApprovalBeforePersist === false ? '否' : '是'} tone={writePlan?.requiresApprovalBeforePersist === false ? 'danger' : 'warn'} />
+      </div>
+      <div className="space-y-2">
+        {selectableEntries.slice(0, 8).map((entry) => (
+          <label key={entry.key} className="flex cursor-pointer items-start gap-2 rounded-lg border px-2 py-2 text-xs leading-5" style={{ borderColor: 'var(--border-dim)', color: 'var(--text-muted)', background: selectedTitleSet.has(entry.title) ? 'rgba(20,184,166,0.10)' : 'rgba(15,23,42,0.24)' }}>
+            <input
+              type="checkbox"
+              checked={selectedTitleSet.has(entry.title)}
+              onChange={() => toggleTitle(entry.title)}
+              className="mt-1"
+              aria-label={`选择写入 ${entry.title}`}
+            />
+            <span>
+              <b style={{ color: 'var(--text-main)' }}>{entry.title}</b> · {entry.entryType} — {entry.summary}
+            </span>
+          </label>
+        ))}
+        {!entries.length && <div className="text-xs" style={{ color: 'var(--text-muted)' }}>暂无世界观候选条目。</div>}
+      </div>
+      {selectableEntries.length > 0 && (
+        <div className="space-y-2 rounded-xl border p-3" style={{ borderColor: 'rgba(20,184,166,0.28)', background: 'rgba(20,184,166,0.08)' }}>
+          <div className="flex flex-wrap items-center justify-between gap-2">
+            <div className="text-xs leading-5" style={{ color: 'var(--text-muted)' }}>
+              已选择 {selectedTitles.length}/{selectableEntries.length} 个条目。点击按钮会把标题作为 <code>selectedTitles</code> 写回重新规划，仍需再次审批后才会持久化。
+            </div>
+            <div className="flex gap-2">
+              <button type="button" className="agent-new-session-btn" onClick={() => setSelectedTitles(allSelected ? [] : selectableEntries.map((entry) => entry.title))} disabled={actionDisabled || submitting}>
+                {allSelected ? '清空选择' : '全选'}
+              </button>
+              <button type="button" className="agent-new-session-btn" onClick={handleSubmitSelection} disabled={!onRequestPersistSelection || actionDisabled || submitting || selectedTitles.length === 0} title={onRequestPersistSelection ? '基于当前选择重新规划写入步骤' : '当前入口尚未接入选择写入'}>
+                {submitting ? '提交中…' : '按选择写入'}
+              </button>
+            </div>
+          </div>
+          {!selectedTitles.length && <div className="text-xs" style={{ color: '#fbbf24' }}>请至少选择 1 个条目；如果本次不写入，请不要执行持久化步骤。</div>}
+        </div>
+      )}
+      <div className="space-y-1">{risks.slice(0, 4).map((item, index) => <div key={index} className="text-xs leading-5" style={{ color: '#fbbf24' }}>⚠ {textValue(item)}</div>)}</div>
+    </div>
+  );
+}
+
+function WorldbuildingPersistSummary({ content }: { content: unknown }) {
+  const data = asRecord(content);
+  const createdEntries = asArray(data?.createdEntries);
+  const skippedTitles = asArray(data?.skippedTitles);
+  const skippedUnselectedTitles = asArray(data?.skippedUnselectedTitles);
+  const perEntryAudit = asArray(data?.perEntryAudit);
+  return (
+    <div className="space-y-3">
+      <div className="grid gap-2 md:grid-cols-4">
+        <Metric label="新增设定" value={numberValue(data?.createdCount, createdEntries.length)} tone="ok" />
+        <Metric label="跳过同名" value={numberValue(data?.skippedDuplicateCount, skippedTitles.length)} tone={skippedTitles.length ? 'warn' : undefined} />
+        <Metric label="未选择跳过" value={numberValue(data?.skippedUnselectedCount, skippedUnselectedTitles.length)} tone={skippedUnselectedTitles.length ? 'warn' : undefined} />
+        <Metric label="写入策略" value="只新增不覆盖" tone="ok" />
+      </div>
+      <div className="space-y-1">
+        {createdEntries.slice(0, 5).map((item, index) => {
+          const entry = asRecord(item);
+          return <div key={index} className="text-xs leading-5" style={{ color: '#86efac' }}>＋ {textValue(entry?.title, '未命名设定')} · {textValue(entry?.entryType, 'setting')}</div>;
+        })}
+        {skippedTitles.slice(0, 5).map((item, index) => <div key={`skip-${index}`} className="text-xs leading-5" style={{ color: '#fbbf24' }}>跳过同名：{textValue(item)}</div>)}
+        {skippedUnselectedTitles.slice(0, 5).map((item, index) => <div key={`skip-unselected-${index}`} className="text-xs leading-5" style={{ color: 'var(--text-muted)' }}>未选择跳过：{textValue(item)}</div>)}
+      </div>
+      <div className="space-y-1" style={{ borderTop: '1px solid var(--border-dim)', paddingTop: '0.75rem' }}>
+        {perEntryAudit.slice(0, 8).map((item, index) => {
+          const audit = asRecord(item);
+          const action = textValue(audit?.action, 'unknown');
+          const color = action === 'created' ? '#86efac' : action === 'skipped_duplicate' ? '#fbbf24' : 'var(--text-muted)';
+          return <div key={index} className="text-xs leading-5" style={{ color }}>{textValue(audit?.title, '未命名设定')} · {action} · {textValue(audit?.reason, '暂无原因')}</div>;
+        })}
+        {!perEntryAudit.length && <div className="text-xs" style={{ color: 'var(--text-muted)' }}>暂无条目级审计明细。</div>}
+      </div>
+    </div>
+  );
+}
+
+function CharacterConsistencySummary({ content }: { content: unknown }) {
+  const data = asRecord(content);
+  const character = asRecord(data?.character);
+  const verdict = asRecord(data?.verdict);
+  const deviations = asArray(data?.deviations);
+  const status = textValue(verdict?.status, 'unknown');
+  return (
+    <div className="space-y-3">
+      <div className="grid gap-2 md:grid-cols-3">
+        <Metric label="角色" value={textValue(character?.name ?? character?.id, '未命名角色')} />
+        <Metric label="结论" value={status} tone={status === 'likely_break' ? 'danger' : status === 'minor_drift' ? 'warn' : 'ok'} />
+        <Metric label="偏差数" value={deviations.length} tone={deviations.length ? 'warn' : 'ok'} />
+      </div>
+      <div className="text-xs leading-5" style={{ color: 'var(--text-muted)' }}>{textValue(verdict?.summary, '暂无结论摘要')}</div>
+      <div className="space-y-1">
+        {deviations.slice(0, 5).map((item, index) => {
+          const deviation = asRecord(item);
+          return <div key={index} className="text-xs leading-5" style={{ color: deviation?.severity === 'error' ? '#fb7185' : deviation?.severity === 'warning' ? '#fbbf24' : 'var(--text-muted)' }}>[{textValue(deviation?.dimension, 'general')}] {textValue(deviation?.message, '暂无说明')}</div>;
+        })}
+      </div>
+    </div>
+  );
+}
+
+function PlotConsistencySummary({ content }: { content: unknown }) {
+  const data = asRecord(content);
+  const scope = asRecord(data?.scope);
+  const verdict = asRecord(data?.verdict);
+  const evidence = asRecord(data?.evidence);
+  const deviations = asArray(data?.deviations);
+  const status = textValue(verdict?.status, 'unknown');
+  return (
+    <div className="space-y-3">
+      <div className="grid gap-2 md:grid-cols-4">
+        <Metric label="结论" value={status} tone={status === 'likely_conflict' ? 'danger' : status === 'needs_review' ? 'warn' : 'ok'} />
+        <Metric label="章节" value={numberValue(scope?.chapterCount)} />
+        <Metric label="剧情事件" value={numberValue(scope?.plotEventCount)} />
+        <Metric label="关系边" value={numberValue(scope?.relationshipEdgeCount)} />
+      </div>
+      <div className="text-xs leading-5" style={{ color: 'var(--text-muted)' }}>{textValue(verdict?.summary, '暂无剧情一致性结论')}</div>
+      <div className="grid gap-2 md:grid-cols-2">
+        <Metric label="大纲证据" value={asArray(evidence?.outlineEvidence).length} />
+        <Metric label="事件线证据" value={asArray(evidence?.eventTimeline).length} />
+        <Metric label="伏笔证据" value={asArray(evidence?.foreshadowEvidence).length} />
+        <Metric label="动机证据" value={asArray(evidence?.motivationEvidence).length} />
+      </div>
+      {/* 剧情检查报告优先展示偏差维度和建议，帮助用户快速定位是时间线、伏笔还是动机问题。 */}
+      <div className="space-y-1">
+        {deviations.slice(0, 6).map((item, index) => {
+          const deviation = asRecord(item);
+          return <div key={index} className="text-xs leading-5" style={{ color: deviation?.severity === 'error' ? '#fb7185' : deviation?.severity === 'warning' ? '#fbbf24' : 'var(--text-muted)' }}>[{textValue(deviation?.dimension, 'context')}] {textValue(deviation?.message, '暂无说明')}</div>;
+        })}
+        {!deviations.length && <div className="text-xs" style={{ color: 'var(--text-muted)' }}>暂未发现明显剧情矛盾。</div>}
+      </div>
+    </div>
+  );
+}
+
+function TaskContextSummary({ content }: { content: unknown }) {
+  const data = asRecord(content);
+  const diagnostics = asRecord(data?.diagnostics);
+  const chapters = asArray(data?.chapters);
+  const characters = asArray(data?.characters);
+  const worldFacts = asArray(data?.worldFacts);
+  const memoryChunks = asArray(data?.memoryChunks);
+  const plotEvents = asArray(data?.plotEvents);
+  const relationshipGraph = asArray(data?.relationshipGraph);
+  const constraints = asArray(data?.constraints);
+  const missingContext = asArray(diagnostics?.missingContext);
+  const dimensions = asArray(diagnostics?.retrievalDimensions).map((item) => textValue(item)).filter(Boolean);
+  const fullDraftIncluded = diagnostics?.fullDraftIncluded === true;
+  const chapterRange = textValue(diagnostics?.chapterRange, '');
+  return (
+    <div className="space-y-3">
+      <div className="grid gap-2 md:grid-cols-4">
+        <Metric label="章节" value={chapters.length} />
+        <Metric label="角色" value={characters.length} />
+        <Metric label="世界事实" value={worldFacts.length} />
+        <Metric label="记忆片段" value={memoryChunks.length} />
+        <Metric label="剧情事件" value={plotEvents.length} tone={plotEvents.length ? 'ok' : undefined} />
+        <Metric label="关系边" value={relationshipGraph.length} tone={relationshipGraph.length ? 'ok' : undefined} />
+        <Metric label="完整草稿" value={fullDraftIncluded ? '已召回' : '未召回'} tone={fullDraftIncluded ? 'warn' : 'ok'} />
+        <Metric label="缺失上下文" value={missingContext.length} tone={missingContext.length ? 'warn' : 'ok'} />
+      </div>
+      {/* 将 collect_task_context 的检索维度显式暴露给用户/调试者，便于判断是否真的使用了剧情事件、关系图或完整草稿等 Warm/Cold Context。 */}
+      <div className="flex flex-wrap gap-2">
+        {dimensions.map((dimension, index) => <span key={`${dimension}-${index}`} className="px-2 py-1 text-xs" style={{ borderRadius: '999px', border: '1px solid rgba(20,184,166,0.28)', color: '#5eead4', background: 'rgba(20,184,166,0.08)' }}>{dimension}</span>)}
+        {!dimensions.length && <span className="text-xs" style={{ color: 'var(--text-muted)' }}>暂无检索维度诊断。</span>}
+      </div>
+      <div className="grid gap-2 md:grid-cols-2">
+        {chapterRange && <div className="text-xs leading-5" style={{ color: 'var(--text-muted)' }}>章节范围：{chapterRange}</div>}
+        {missingContext.slice(0, 4).map((item, index) => <div key={`missing-${index}`} className="text-xs leading-5" style={{ color: '#fbbf24' }}>缺失：{textValue(item)}</div>)}
+        {constraints.slice(0, 4).map((item, index) => <div key={`constraint-${index}`} className="text-xs leading-5" style={{ color: 'var(--text-muted)' }}>约束：{textValue(item)}</div>)}
+      </div>
+      <RelationshipGraphSummary graph={relationshipGraph} />
+    </div>
+  );
+}
+
+/** 将关系图边转换成人类可读证据列表，突出关系类型、强度、来源和冲突边。 */
+function RelationshipGraphSummary({ graph }: { graph: unknown[] }) {
+  if (!graph.length) return <div className="rounded-xl border p-3 text-xs" style={{ borderColor: 'var(--border-dim)', color: 'var(--text-muted)' }}>暂无关系图证据；当前上下文没有召回可形成关系边的剧情事件或角色状态。</div>;
+
+  return (
+    <div className="space-y-2 rounded-xl border p-3" style={{ borderColor: 'var(--border-dim)', background: 'rgba(15,23,42,0.20)' }}>
+      <div className="text-xs font-semibold" style={{ color: 'var(--text-main)' }}>关系图证据</div>
+      {graph.slice(0, 8).map((item, index) => {
+        const edge = asRecord(item);
+        const target = textValue(edge?.target, '状态证据');
+        const relationType = textValue(edge?.relationType, 'unknown');
+        const weight = numberValue(edge?.weight);
+        const sources = asArray(edge?.evidenceSources).map((source) => asRecord(source)).map((source) => `${textValue(source?.sourceType, 'source')}${source?.chapterNo ? `@第${numberValue(source.chapterNo)}章` : ''}`).join('、');
+        const timeRange = asRecord(edge?.timeRange);
+        const timeLabel = timeRange?.fromChapterNo ? `第 ${numberValue(timeRange.fromChapterNo)} 章` : '未知时间';
+        const conflict = edge?.conflict === true;
+        return (
+          <div key={index} className="text-xs leading-5" style={{ color: conflict ? '#fbbf24' : 'var(--text-muted)' }}>
+            <b style={{ color: 'var(--text-main)' }}>{textValue(edge?.source, '未知角色')} → {target}</b> · {relationType} · 强度 {weight.toFixed(2)} · {timeLabel} · 来源 {sources || textValue(edge?.sourceType, 'unknown')}
+            <div style={{ color: 'var(--text-dim)' }}>{textValue(edge?.evidence, '暂无证据摘录')}</div>
+          </div>
+        );
+      })}
     </div>
   );
 }

@@ -1,6 +1,7 @@
 import { BadRequestException, Injectable } from '@nestjs/common';
 import { GenerateChapterResult, GenerateChapterService } from '../../generation/generate-chapter.service';
 import { BaseTool, ToolContext } from '../base-tool';
+import type { ToolManifestV2 } from '../tool-manifest.types';
 
 interface WriteChapterInput {
   chapterId?: string;
@@ -43,6 +44,27 @@ export class WriteChapterTool implements BaseTool<WriteChapterInput, GenerateCha
   riskLevel: 'medium' = 'medium';
   requiresApproval = true;
   sideEffects = ['create_chapter_draft', 'update_chapter_status'];
+  manifest: ToolManifestV2 = {
+    name: this.name,
+    displayName: '生成章节正文',
+    description: '根据章节大纲、项目设定、角色状态、前文上下文和用户要求生成章节正文草稿。',
+    whenToUse: ['用户要求写新章节正文', '用户要求根据章节大纲生成正文', '用户要求继续写下一章', '用户要求补写某一章内容'],
+    whenNotToUse: ['用户只是询问创作建议', '用户只是检查设定矛盾', '用户只是要修改已有章节，应优先使用 polish_chapter', '缺少真实 chapterId 且尚未调用 resolve_chapter'],
+    inputSchema: this.inputSchema,
+    outputSchema: this.outputSchema,
+    parameterHints: {
+      chapterId: { source: 'resolver', resolverTool: 'resolve_chapter', description: '从 context.session.currentChapterId 或 resolve_chapter 输出获得；不能把“第十二章”直接当 ID。' },
+      instruction: { source: 'user_message', description: '保留用户需求中的风格、氛围、字数、禁改项和剧情约束。' },
+      wordCount: { source: 'context', description: '用户未指定时可使用 context.project.defaultWordCount。' },
+    },
+    examples: [{ user: '帮我写第十二章，压迫感强一点，3500 字。', plan: [{ tool: 'resolve_chapter', args: { chapterRef: '第十二章' } }, { tool: 'collect_chapter_context', args: { chapterId: '{{steps.resolve_chapter.output.chapterId}}' } }, { tool: 'write_chapter', args: { chapterId: '{{steps.resolve_chapter.output.chapterId}}', instruction: '压迫感强一点', wordCount: 3500 } }] }],
+    failureHints: [{ code: 'MISSING_REQUIRED_ARGUMENT', meaning: '缺少真实 chapterId 或 instruction', suggestedRepair: '先调用 resolve_chapter，或要求用户补充写作目标。' }],
+    allowedModes: this.allowedModes,
+    riskLevel: this.riskLevel,
+    requiresApproval: this.requiresApproval,
+    sideEffects: this.sideEffects,
+    idPolicy: { forbiddenToInvent: ['chapterId'], allowedSources: ['context.session.currentChapterId', 'resolve_chapter.output.chapterId', 'steps.resolve_chapter.output.chapterId', 'runtime.currentChapterId'] },
+  };
 
   constructor(private readonly generateChapter: GenerateChapterService) {}
 

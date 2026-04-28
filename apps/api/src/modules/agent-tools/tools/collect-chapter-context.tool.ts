@@ -1,6 +1,7 @@
 import { BadRequestException, Injectable, NotFoundException } from '@nestjs/common';
 import { PrismaService } from '../../../prisma/prisma.service';
 import { BaseTool, ToolContext } from '../base-tool';
+import type { ToolManifestV2 } from '../tool-manifest.types';
 
 interface CollectChapterContextInput {
   chapterId?: string;
@@ -40,6 +41,21 @@ export class CollectChapterContextTool implements BaseTool<CollectChapterContext
   riskLevel: 'low' = 'low';
   requiresApproval = false;
   sideEffects: string[] = [];
+  manifest: ToolManifestV2 = {
+    name: this.name,
+    displayName: '收集章节上下文',
+    description: '读取章节写作/修改所需的项目、章节、角色、设定、前文草稿摘录和记忆上下文。',
+    whenToUse: ['write_chapter、polish_chapter 前需要上下文预览', '需要审批前展示章节写入影响', '用户要求基于前文继续写或修改当前章'],
+    whenNotToUse: ['任务不涉及章节', '缺少真实 chapterId 且尚未解析章节引用'],
+    inputSchema: this.inputSchema,
+    outputSchema: this.outputSchema,
+    parameterHints: { chapterId: { source: 'resolver', resolverTool: 'resolve_chapter', description: '真实章节 ID，可来自 context.session.currentChapterId 或 resolve_chapter。' } },
+    allowedModes: this.allowedModes,
+    riskLevel: this.riskLevel,
+    requiresApproval: this.requiresApproval,
+    sideEffects: this.sideEffects,
+    idPolicy: { forbiddenToInvent: ['chapterId'], allowedSources: ['context.session.currentChapterId', 'resolve_chapter.output.chapterId', 'steps.resolve_chapter.output.chapterId'] },
+  };
 
   constructor(private readonly prisma: PrismaService) {}
 

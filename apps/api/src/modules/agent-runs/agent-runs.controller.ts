@@ -1,6 +1,6 @@
 import { Body, Controller, Get, Param, Post } from '@nestjs/common';
 import { AgentRunsService } from './agent-runs.service';
-import { CreateAgentPlanDto } from './dto/create-agent-plan.dto';
+import { CreateAgentPlanDto, SubmitAgentClarificationChoiceDto } from './dto/create-agent-plan.dto';
 import { ExecuteAgentRunDto } from './dto/execute-agent-run.dto';
 import { InterpretAgentMessageDto } from './dto/interpret-agent-message.dto';
 
@@ -50,8 +50,13 @@ export class AgentRunsController {
   }
 
   @Post('agent-runs/:id/replan')
-  replan(@Param('id') id: string, @Body() dto: { message?: string }) {
+  replan(@Param('id') id: string, @Body() dto: { message?: string; worldbuildingSelection?: { selectedTitles?: string[] } }) {
     return this.agentRuns.replan(id, dto);
+  }
+
+  @Post('agent-runs/:id/clarification-choice')
+  submitClarificationChoice(@Param('id') id: string, @Body() dto: SubmitAgentClarificationChoiceDto) {
+    return this.agentRuns.submitClarificationChoice(id, dto);
   }
 
   @Post('agent-runs/:id/cancel')

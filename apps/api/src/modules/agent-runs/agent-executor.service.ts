@@ -2,6 +2,8 @@ import { BadRequestException, Injectable } from '@nestjs/common';
 import { PrismaService } from '../../prisma/prisma.service';
 import { ToolJsonSchema, ToolSchemaType } from '../agent-tools/base-tool';
 import { ToolRegistryService } from '../agent-tools/tool-registry.service';
+import { AgentContextV2 } from './agent-context-builder.service';
+import { AgentExecutionObservationError, AgentObservation, AgentObservationErrorCode } from './agent-observation.types';
 import { AgentPolicyService, AgentSecondConfirmationRequiredError } from './agent-policy.service';
 import { AgentPlanStepSpec, AgentStepCondition } from './agent-planner.service';
 import { AgentTraceService } from './agent-trace.service';
@@ -14,6 +16,7 @@ interface AgentExecuteOptions {
   confirmation?: { confirmHighRisk?: boolean; confirmedRiskIds?: string[] };
   previewOnly?: boolean;
   reuseSucceeded?: boolean;
+  agentContext?: AgentContextV2;
 }
 
 export class AgentWaitingReviewError extends Error {
@@ -90,12 +93,13 @@ export class AgentExecutorService {
         throw new AgentWaitingReviewError(`高风险工具 ${tool.name} 需要显式审批步骤 ${step.stepNo}`);
       }
 
-      const resolvedArgs = this.resolveValue(step.args, outputs, runtimeState) as Record<string, unknown>;
+      const resolvedArgs = this.resolveValue(step.args, outputs, runtimeState, options.agentContext, steps, step.stepNo) as Record<string, unknown>;
       await this.trace.startStep(agentRunId, step.stepNo, { stepType: 'tool', name: step.name, toolName: step.tool, mode, planVersion, input: resolvedArgs });
       try {
         const context = { agentRunId, projectId: run.projectId, chapterId: run.chapterId ?? undefined, mode, approved: stepApproved, outputs, policy: { confirmation: options.confirmation } };
         this.policy.assertAllowed(tool, context, plannedTools);
         this.assertSchema(tool.inputSchema, resolvedArgs, `${tool.name}.input`);
+        this.assertIdPolicy(tool, resolvedArgs, step.args, options.agentContext);
         const output = await this.withTimeout(tool.run(resolvedArgs, context), 120_000, `工具 ${tool.name} 执行超时`);
         this.assertSchema(tool.outputSchema, output, `${tool.name}.output`);
         outputs[step.stepNo] = output;
@@ -107,8 +111,9 @@ export class AgentExecutorService {
           await this.trace.reviewStep(agentRunId, step.stepNo, this.formatStepError(step.stepNo, tool.name, mode, error), mode, planVersion);
           throw new AgentWaitingReviewError(error.message);
         }
-        await this.trace.failStep(agentRunId, step.stepNo, this.formatStepError(step.stepNo, tool.name, mode, error), mode, planVersion);
-        throw error;
+        const observation = this.createObservation(step, tool.name, mode, resolvedArgs, outputs, error);
+        await this.trace.failStep(agentRunId, step.stepNo, observation, mode, planVersion);
+        throw new AgentExecutionObservationError(observation);
       }
     }
 
@@ -178,22 +183,98 @@ export class AgentExecutorService {
     };
   }
 
-  private resolveValue(value: unknown, outputs: Record<number, unknown>, runtimeState: RuntimeReferenceState = {}): unknown {
+  /**
+   * 把 Tool/Schema/Policy 异常转换为 AgentObservation，供 Runtime 写入诊断并触发有界 Replan。
+   * 这里只做错误归类和缺参提取，不在 Executor 内直接修改计划，避免绕过审批边界。
+   */
+  private createObservation(step: AgentPlanStepSpec, toolName: string, mode: 'plan' | 'act', args: Record<string, unknown>, outputs: Record<number, unknown>, error: unknown): AgentObservation {
+    const message = error instanceof Error ? error.message : String(error);
+    const code = this.classifyObservationCode(message, error);
+    return {
+      stepId: step.id,
+      stepNo: step.stepNo,
+      tool: toolName,
+      mode,
+      args,
+      error: {
+        code,
+        message,
+        missing: code === 'MISSING_REQUIRED_ARGUMENT' ? this.extractMissingFields(message) : undefined,
+        candidates: this.extractCandidates(error),
+        retryable: this.isRetryableObservation(code),
+      },
+      previousOutputs: { ...outputs },
+    };
+  }
+
+  private classifyObservationCode(message: string, error: unknown): AgentObservationErrorCode {
+    if (/是必填字段/.test(message)) return 'MISSING_REQUIRED_ARGUMENT';
+    if (/Tool Schema|类型不符合|不是允许的字段|格式不符合|不在允许枚举值|长度不能|不能小于|不能大于|必须是整数/.test(message)) return 'SCHEMA_VALIDATION_FAILED';
+    // 自然语言直接进入 *.Id 字段属于可由 resolver 修复的参数问题，不能归为不可重试的策略阻断。
+    // 例如 chapterId='第十二章' 应触发 Replanner 插入 resolve_chapter，而不是裸失败。
+    if (/不能使用自然语言|伪造 ID/.test(message) && /Id/.test(message)) return 'SCHEMA_VALIDATION_FAILED';
+    if (/不存在|未找到|找不到/.test(message)) return 'ENTITY_NOT_FOUND';
+    if (/歧义|多个候选|不确定|AMBIGUOUS/i.test(message)) return 'AMBIGUOUS_ENTITY';
+    if (/需要用户审批|需要显式审批/.test(message)) return 'APPROVAL_REQUIRED';
+    if (/Policy|禁止|不允许|不能使用自然语言|伪造 ID/.test(message)) return 'POLICY_BLOCKED';
+    if (/超时/.test(message)) return 'TOOL_TIMEOUT';
+    return error instanceof BadRequestException ? 'VALIDATION_FAILED' : 'TOOL_INTERNAL_ERROR';
+  }
+
+  private extractMissingFields(message: string): string[] | undefined {
+    const matches = [...message.matchAll(/\.([A-Za-z][\w]*) 是必填字段/g)].map((match) => match[1]);
+    return matches.length ? matches : undefined;
+  }
+
+  private extractCandidates(error: unknown): unknown[] | undefined {
+    if (!error || typeof error !== 'object') return undefined;
+    const record = error as Record<string, unknown>;
+    return Array.isArray(record.candidates) ? record.candidates : undefined;
+  }
+
+  private isRetryableObservation(code: AgentObservationErrorCode): boolean {
+    return ['MISSING_REQUIRED_ARGUMENT', 'SCHEMA_VALIDATION_FAILED', 'ENTITY_NOT_FOUND', 'AMBIGUOUS_ENTITY', 'TOOL_TIMEOUT', 'VALIDATION_FAILED'].includes(code);
+  }
+
+  private resolveValue(value: unknown, outputs: Record<number, unknown>, runtimeState: RuntimeReferenceState = {}, agentContext?: AgentContextV2, steps: AgentPlanStepSpec[] = [], currentStepNo = Number.MAX_SAFE_INTEGER): unknown {
     if (typeof value === 'string') {
       const runtimeMatch = value.match(/^{{runtime\.(currentDraftId|currentChapterId)}}$/);
       if (runtimeMatch) return runtimeState[runtimeMatch[1] as keyof RuntimeReferenceState];
 
+      const contextMatch = value.match(/^{{context\.([\w.]+)}}$/);
+      if (contextMatch) return this.readPath(agentContext, contextMatch[1].split('.'));
+
       // 支持把前序步骤的完整输出对象作为 Tool 参数传递，避免对象被保留为模板字符串后触发 Schema 类型错误。
       const wholeOutputMatch = value.match(/^{{steps\.(\d+)\.output}}$/);
-      if (wholeOutputMatch) return outputs[Number(wholeOutputMatch[1])];
+      if (wholeOutputMatch) {
+        const refStepNo = Number(wholeOutputMatch[1]);
+        if (refStepNo >= currentStepNo) throw new BadRequestException(`步骤 ${currentStepNo} 不能引用当前或未来步骤 ${refStepNo}`);
+        return outputs[refStepNo];
+      }
+
+      const wholeNamedOutputMatch = value.match(/^{{steps\.([A-Za-z][\w-]*)\.output}}$/);
+      if (wholeNamedOutputMatch) {
+        const refStepNo = this.findStepNoById(steps, wholeNamedOutputMatch[1]);
+        if (!refStepNo || refStepNo >= currentStepNo) throw new BadRequestException(`步骤 ${currentStepNo} 不能引用未知、当前或未来步骤 ID：${wholeNamedOutputMatch[1]}`);
+        return outputs[refStepNo];
+      }
 
       const match = value.match(/^{{steps\.(\d+)\.output\.([\w.]+)}}$/);
-      if (!match) return value;
-      return match[2].split('.').reduce<unknown>((current, key) => (current && typeof current === 'object' ? (current as Record<string, unknown>)[key] : undefined), outputs[Number(match[1])]);
+      if (match) {
+        const refStepNo = Number(match[1]);
+        if (refStepNo >= currentStepNo) throw new BadRequestException(`步骤 ${currentStepNo} 不能引用当前或未来步骤 ${refStepNo}`);
+        return this.readPath(outputs[refStepNo], match[2].split('.'));
+      }
+
+      const namedMatch = value.match(/^{{steps\.([A-Za-z][\w-]*)\.output\.([\w.]+)}}$/);
+      if (!namedMatch) return value;
+      const refStepNo = this.findStepNoById(steps, namedMatch[1]);
+      if (!refStepNo || refStepNo >= currentStepNo) throw new BadRequestException(`步骤 ${currentStepNo} 不能引用未知、当前或未来步骤 ID：${namedMatch[1]}`);
+      return this.readPath(outputs[refStepNo], namedMatch[2].split('.'));
     }
-    if (Array.isArray(value)) return value.map((item) => this.resolveValue(item, outputs, runtimeState));
+    if (Array.isArray(value)) return value.map((item) => this.resolveValue(item, outputs, runtimeState, agentContext, steps, currentStepNo));
     if (value && typeof value === 'object') {
-      return Object.fromEntries(Object.entries(value).map(([key, item]) => [key, this.resolveValue(item, outputs, runtimeState)]));
+      return Object.fromEntries(Object.entries(value).map(([key, item]) => [key, this.resolveValue(item, outputs, runtimeState, agentContext, steps, currentStepNo)]));
     }
     return value;
   }
@@ -298,5 +379,64 @@ export class AgentExecutorService {
 
   private formatExpectedType(type: ToolJsonSchema['type']) {
     return Array.isArray(type) ? type.join(' | ') : type ?? 'any';
+  }
+
+  /**
+   * 执行前兜底检查 ID 来源：Resolver 和 context 引用允许通过，明显自然语言或伪造 ID 会被阻断。
+   * 这是对 Planner 约束的运行时加固，避免 LLM 把“第十二章”直接塞进 chapterId。
+   */
+  private assertIdPolicy(tool: { name: string; manifest?: { idPolicy?: { allowedSources: string[] } } }, resolvedArgs: Record<string, unknown>, rawArgs: Record<string, unknown>, agentContext?: AgentContextV2) {
+    const idEntries = this.collectIdEntries(resolvedArgs);
+    for (const entry of idEntries) {
+      if (typeof entry.value !== 'string' || !entry.value.trim()) continue;
+      const rawValue = this.readPath(rawArgs, entry.path);
+      const inheritedRawValue = rawValue ?? this.findNearestTemplateSource(rawArgs, entry.path);
+      if (this.isAllowedIdSource(inheritedRawValue, tool.manifest?.idPolicy?.allowedSources ?? [], agentContext)) continue;
+      if (!this.looksLikeUuid(entry.value)) throw new BadRequestException(`${tool.name}.${entry.path.join('.')} 必须来自上下文或 resolver，不能使用自然语言/伪造 ID：${entry.value}`);
+    }
+  }
+
+  private collectIdEntries(value: unknown, path: string[] = []): Array<{ path: string[]; value: unknown }> {
+    if (!value || typeof value !== 'object' || Array.isArray(value)) return [];
+    return Object.entries(value as Record<string, unknown>).flatMap(([key, child]) => {
+      const childPath = [...path, key];
+      const isIdField = /(^id$|Id$)/.test(key);
+      return [
+        ...(isIdField ? [{ path: childPath, value: child }] : []),
+        ...this.collectIdEntries(child, childPath),
+      ];
+    });
+  }
+
+  private isAllowedIdSource(rawValue: unknown, allowedSources: string[], agentContext?: AgentContextV2) {
+    if (typeof rawValue !== 'string') return false;
+    if (rawValue.startsWith('{{runtime.')) return true;
+    if (rawValue.startsWith('{{steps.')) return true;
+    const contextMatch = rawValue.match(/^{{context\.([\w.]+)}}$/);
+    if (!contextMatch) return false;
+    const source = `context.${contextMatch[1]}`;
+    const value = this.readPath(agentContext, contextMatch[1].split('.'));
+    return value !== undefined && (!allowedSources.length || allowedSources.some((item) => item === source || item.endsWith(contextMatch[1])));
+  }
+
+  /** 当整个对象来自 {{steps.N.output}} 时，其内部 *.Id 字段继承该 resolver/前序步骤来源。 */
+  private findNearestTemplateSource(rawArgs: Record<string, unknown>, path: string[]) {
+    for (let length = path.length - 1; length >= 1; length -= 1) {
+      const candidate = this.readPath(rawArgs, path.slice(0, length));
+      if (typeof candidate === 'string' && candidate.startsWith('{{')) return candidate;
+    }
+    return undefined;
+  }
+
+  private readPath(value: unknown, path: string[]) {
+    return path.reduce<unknown>((current, key) => (current && typeof current === 'object' ? (current as Record<string, unknown>)[key] : undefined), value);
+  }
+
+  private findStepNoById(steps: AgentPlanStepSpec[], stepId: string) {
+    return steps.find((step) => step.id === stepId)?.stepNo;
+  }
+
+  private looksLikeUuid(value: string) {
+    return /^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i.test(value);
   }
 }

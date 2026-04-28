@@ -1,3 +1,5 @@
+import type { ToolManifestV2 } from './tool-manifest.types';
+
 export type AgentMode = 'plan' | 'act';
 export type ToolRiskLevel = 'low' | 'medium' | 'high';
 
@@ -47,6 +49,11 @@ export interface BaseTool<TInput = unknown, TOutput = unknown> {
   riskLevel: ToolRiskLevel;
   requiresApproval: boolean;
   sideEffects: string[];
+
+  /**
+   * LLM 友好的 Tool Manifest V2。字段保持可选，便于现有工具渐进补齐语义说明。
+   */
+  manifest?: ToolManifestV2;
 
   /**
    * 执行受控工具能力。工具只能通过 Runtime 注入的上下文访问运行态数据，
