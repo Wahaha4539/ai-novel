@@ -1,5 +1,6 @@
 import { BadRequestException, Injectable } from '@nestjs/common';
 import { PrismaService } from '../../prisma/prisma.service';
+import { StructuredLogger } from '../../common/logging/structured-logger';
 import { ToolJsonSchema, ToolSchemaType } from '../agent-tools/base-tool';
 import { ToolRegistryService } from '../agent-tools/tool-registry.service';
 import { AgentContextV2 } from './agent-context-builder.service';
@@ -49,6 +50,8 @@ interface RuntimeReferenceState {
 /** 遍历已审批计划并执行 Tool，当前为同步进程内函数调用，不依赖外部 Worker。 */
 @Injectable()
 export class AgentExecutorService {
+  private readonly logger = new StructuredLogger(AgentExecutorService.name);
+
   constructor(
     private readonly prisma: PrismaService,
     private readonly tools: ToolRegistryService,
@@ -70,6 +73,19 @@ export class AgentExecutorService {
     const outputs: Record<number, unknown> = options.reuseSucceeded ? await this.loadReusableOutputs(agentRunId, mode, planVersion, steps) : {};
     const runtimeState = this.deriveRuntimeState(outputs);
     const plannedTools = steps.map((step) => step.tool);
+    const executeStartedAt = Date.now();
+    this.logger.log('agent.executor.started', {
+      agentRunId,
+      mode,
+      planVersion,
+      stepCount: steps.length,
+      plannedTools,
+      approved: Boolean(options.approved),
+      approvedStepNos: options.approvedStepNos,
+      previewOnly: Boolean(options.previewOnly),
+      reuseSucceeded: Boolean(options.reuseSucceeded),
+      reusableStepNos: Object.keys(outputs).map(Number),
+    });
     this.policy.assertPlanExecutable(steps);
 
     for (const step of steps) {
@@ -78,23 +94,33 @@ export class AgentExecutorService {
       if (!tool) throw new BadRequestException(`未注册工具：${step.tool}`);
 
       // Plan 阶段只允许执行无副作用且无需审批的预览步骤，遇到写入类步骤立即停止。
-      if (options.previewOnly && (tool.requiresApproval || tool.sideEffects.length > 0)) break;
+      if (options.previewOnly && (tool.requiresApproval || tool.sideEffects.length > 0)) {
+        this.logger.log('agent.executor.preview_stopped', { agentRunId, mode, planVersion, stepNo: step.stepNo, tool: step.tool, requiresApproval: tool.requiresApproval, sideEffects: tool.sideEffects });
+        break;
+      }
 
-      if (options.reuseSucceeded && outputs[step.stepNo] !== undefined) continue;
+      if (options.reuseSucceeded && outputs[step.stepNo] !== undefined) {
+        this.logger.log('agent.step.reused', { agentRunId, mode, planVersion, stepNo: step.stepNo, tool: step.tool, output: this.summarizeValue(outputs[step.stepNo]) });
+        continue;
+      }
 
       if (!this.shouldRunStep(step.runIf, outputs, runtimeState)) {
         await this.trace.skipStep(agentRunId, step.stepNo, { stepType: 'tool', name: step.name, toolName: step.tool, mode, planVersion, input: { runIf: step.runIf } });
+        this.logger.log('agent.step.skipped', { agentRunId, mode, planVersion, stepNo: step.stepNo, tool: step.tool, runIf: step.runIf, runtimeState });
         continue;
       }
 
       const hasExplicitApprovalScope = Array.isArray(options.approvedStepNos);
       const stepApproved = Boolean(options.approved) && (!hasExplicitApprovalScope || options.approvedStepNos!.includes(step.stepNo));
       if (tool.riskLevel === 'high' && !stepApproved) {
+        this.logger.warn('agent.step.waiting_review.high_risk_approval_missing', { agentRunId, mode, planVersion, stepNo: step.stepNo, tool: tool.name, riskLevel: tool.riskLevel, approvedStepNos: options.approvedStepNos });
         throw new AgentWaitingReviewError(`高风险工具 ${tool.name} 需要显式审批步骤 ${step.stepNo}`);
       }
 
       const resolvedArgs = this.resolveValue(step.args, outputs, runtimeState, options.agentContext, steps, step.stepNo) as Record<string, unknown>;
       await this.trace.startStep(agentRunId, step.stepNo, { stepType: 'tool', name: step.name, toolName: step.tool, mode, planVersion, input: resolvedArgs });
+      const stepStartedAt = Date.now();
+      this.logger.log('agent.step.started', { agentRunId, mode, planVersion, stepNo: step.stepNo, stepName: step.name, tool: step.tool, approved: stepApproved, args: this.summarizeValue(resolvedArgs) });
       try {
         const context = { agentRunId, projectId: run.projectId, chapterId: run.chapterId ?? undefined, mode, approved: stepApproved, outputs, policy: { confirmation: options.confirmation } };
         this.policy.assertAllowed(tool, context, plannedTools);
@@ -105,18 +131,22 @@ export class AgentExecutorService {
         outputs[step.stepNo] = output;
         this.updateRuntimeState(runtimeState, output);
         await this.trace.finishStep(agentRunId, step.stepNo, output, mode, planVersion);
+        this.logger.log('agent.step.succeeded', { agentRunId, mode, planVersion, stepNo: step.stepNo, tool: step.tool, elapsedMs: Date.now() - stepStartedAt, output: this.summarizeValue(output), runtimeState });
       } catch (error) {
         if (error instanceof AgentSecondConfirmationRequiredError) {
           // 二次确认缺失是“等待用户复核”的暂停点，不应被记录成业务执行失败。
           await this.trace.reviewStep(agentRunId, step.stepNo, this.formatStepError(step.stepNo, tool.name, mode, error), mode, planVersion);
+          this.logger.warn('agent.step.waiting_review.second_confirmation_required', { agentRunId, mode, planVersion, stepNo: step.stepNo, tool: tool.name, elapsedMs: Date.now() - stepStartedAt, riskIds: error.riskIds });
           throw new AgentWaitingReviewError(error.message);
         }
         const observation = this.createObservation(step, tool.name, mode, resolvedArgs, outputs, error);
         await this.trace.failStep(agentRunId, step.stepNo, observation, mode, planVersion);
+        this.logger.error('agent.step.failed', error, { agentRunId, mode, planVersion, stepNo: step.stepNo, tool: tool.name, elapsedMs: Date.now() - stepStartedAt, observation: this.summarizeValue(observation) });
         throw new AgentExecutionObservationError(observation);
       }
     }
 
+    this.logger.log('agent.executor.completed', { agentRunId, mode, planVersion, elapsedMs: Date.now() - executeStartedAt, outputStepNos: Object.keys(outputs).map(Number) });
     return outputs;
   }
 
@@ -234,6 +264,21 @@ export class AgentExecutorService {
 
   private isRetryableObservation(code: AgentObservationErrorCode): boolean {
     return ['MISSING_REQUIRED_ARGUMENT', 'SCHEMA_VALIDATION_FAILED', 'ENTITY_NOT_FOUND', 'AMBIGUOUS_ENTITY', 'TOOL_TIMEOUT', 'VALIDATION_FAILED'].includes(code);
+  }
+
+  /**
+   * 生成日志安全摘要：输入任意 Tool 参数/输出，返回可 JSON 序列化的原值或截断预览。
+   * 副作用：无；避免章节正文、召回上下文等大对象把本地日志刷爆。
+   */
+  private summarizeValue(value: unknown, maxLength = 2000): unknown {
+    if (value === null || value === undefined || typeof value !== 'object') return value;
+    try {
+      const json = JSON.stringify(value);
+      if (json.length <= maxLength) return value;
+      return { truncated: true, length: json.length, preview: json.slice(0, maxLength) };
+    } catch {
+      return { unserializable: true, valueType: typeof value };
+    }
   }
 
   private resolveValue(value: unknown, outputs: Record<number, unknown>, runtimeState: RuntimeReferenceState = {}, agentContext?: AgentContextV2, steps: AgentPlanStepSpec[] = [], currentStepNo = Number.MAX_SAFE_INTEGER): unknown {

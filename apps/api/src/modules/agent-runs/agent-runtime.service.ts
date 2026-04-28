@@ -1,6 +1,7 @@
 import { Injectable } from '@nestjs/common';
 import { Prisma } from '@prisma/client';
 import { PrismaService } from '../../prisma/prisma.service';
+import { StructuredLogger } from '../../common/logging/structured-logger';
 import { AgentContextBuilderService, AgentContextV2 } from './agent-context-builder.service';
 import { AgentCancelledError, AgentExecutorService, AgentWaitingReviewError } from './agent-executor.service';
 import { AgentExecutionObservationError, AgentObservation, ReplanAttemptStats, ReplanPatch } from './agent-observation.types';
@@ -17,6 +18,8 @@ type AgentArtifactDraft = {
 /** 编排 AgentRun 状态机：Plan 阶段生成预览，Act 阶段执行已审批工具。 */
 @Injectable()
 export class AgentRuntimeService {
+  private readonly logger = new StructuredLogger(AgentRuntimeService.name);
+
   constructor(
     private readonly prisma: PrismaService,
     private readonly planner: AgentPlannerService,
@@ -30,11 +33,15 @@ export class AgentRuntimeService {
     const run = await this.prisma.agentRun.findUnique({ where: { id: agentRunId } });
     if (!run) throw new Error(`AgentRun 不存在：${agentRunId}`);
 
+    const startedAt = Date.now();
+    this.logger.log('agent.runtime.plan.started', { agentRunId, projectId: run.projectId, chapterId: run.chapterId, goalLength: run.goal.length });
     try {
       const context = await this.contextBuilder.buildForPlan(run);
       const contextDigest = this.contextBuilder.createDigest(context);
       await this.persistContextSnapshot(agentRunId, run.input, context, contextDigest);
+      this.logger.log('agent.runtime.plan.context_ready', { agentRunId, contextDigest, availableToolCount: context.availableTools.length, hasCurrentChapter: Boolean(context.currentChapter) });
       const plan = await this.planner.createPlan(run.goal, context);
+      this.logger.log('agent.runtime.plan.created', { agentRunId, taskType: plan.taskType, stepCount: plan.steps.length, requiredApprovalCount: plan.requiredApprovals.length, risks: plan.risks });
       await this.trace.recordDecision(agentRunId, { name: '生成 Agent Plan', mode: 'plan', input: { goal: run.goal, contextDigest }, output: { taskType: plan.taskType, stepCount: plan.steps.length, understanding: plan.understanding, plannerDiagnostics: plan.plannerDiagnostics } });
       const savedPlan = await this.prisma.agentPlan.create({
         data: {
@@ -55,6 +62,7 @@ export class AgentRuntimeService {
 
       const previewOutputs = await this.executor.execute(agentRunId, plan.steps, { mode: 'plan', planVersion: savedPlan.version, approved: false, previewOnly: true, agentContext: context });
       const previewArtifacts = this.buildPreviewArtifacts(plan.taskType, previewOutputs);
+      this.logger.log('agent.runtime.plan.preview_completed', { agentRunId, planVersion: savedPlan.version, previewStepNos: Object.keys(previewOutputs).map(Number), previewArtifactCount: previewArtifacts.length });
       if (previewArtifacts.length) {
         await this.prisma.agentArtifact.createMany({
           data: previewArtifacts.map((preview) => ({
@@ -69,9 +77,11 @@ export class AgentRuntimeService {
 
       await this.prisma.agentRun.update({ where: { id: agentRunId }, data: { status: 'waiting_approval', taskType: plan.taskType, output: { planId: savedPlan.id } } });
       const artifacts = await this.prisma.agentArtifact.findMany({ where: { agentRunId }, orderBy: { createdAt: 'asc' } });
+      this.logger.log('agent.runtime.plan.completed', { agentRunId, planVersion: savedPlan.version, elapsedMs: Date.now() - startedAt, artifactCount: artifacts.length });
       return { plan: savedPlan, artifacts: artifacts.length ? artifacts : [artifact] };
     } catch (error) {
       await this.recordPlannerFailure(agentRunId, error);
+      this.logger.error('agent.runtime.plan.failed', error, { agentRunId, elapsedMs: Date.now() - startedAt });
       throw error;
     }
   }
@@ -84,15 +94,19 @@ export class AgentRuntimeService {
     const spec = { steps: latestPlan.steps } as unknown as Pick<AgentPlanSpec, 'steps'>;
     let context: AgentContextV2 | undefined;
 
+    const startedAt = Date.now();
+    this.logger.log('agent.runtime.act.started', { agentRunId, projectId: run.projectId, planVersion: latestPlan.version, taskType: latestPlan.taskType, approvedStepNos, confirmHighRisk: confirmation?.confirmHighRisk, confirmedRiskIds: confirmation?.confirmedRiskIds });
     try {
       // 通过条件更新获取轻量执行租约，避免两个 /act 或 /retry 请求并发执行同一份计划。
       const lease = await this.prisma.agentRun.updateMany({ where: { id: agentRunId, status: { in: ['waiting_approval', 'waiting_review', 'failed'] } }, data: { status: 'acting', mode: 'act', error: null } });
       if (lease.count !== 1) throw new Error('AgentRun 当前状态不允许进入 Act，可能正在执行或已结束');
+      this.logger.log('agent.runtime.act.lease_acquired', { agentRunId, planVersion: latestPlan.version });
       context = await this.loadContextForExecution(run);
       const outputs = await this.executor.execute(agentRunId, spec.steps, { mode: 'act', planVersion: latestPlan.version, approved: true, approvedStepNos, confirmation, reuseSucceeded: true, agentContext: context });
       const currentRun = await this.prisma.agentRun.findUnique({ where: { id: agentRunId } });
       if (currentRun?.status === 'cancelled') return currentRun;
       const artifactDrafts = this.buildExecutionArtifacts(String(latestPlan.taskType), outputs, spec.steps);
+      this.logger.log('agent.runtime.act.executed', { agentRunId, planVersion: latestPlan.version, outputStepNos: Object.keys(outputs).map(Number), artifactDraftCount: artifactDrafts.length });
       if (artifactDrafts.length) {
         await this.prisma.agentArtifact.createMany({
           data: artifactDrafts.map((artifact) => ({
@@ -105,18 +119,23 @@ export class AgentRuntimeService {
         });
       }
       const updated = await this.prisma.agentRun.update({ where: { id: agentRunId }, data: { status: 'succeeded', output: { outputs } as unknown as Prisma.InputJsonValue } });
+      this.logger.log('agent.runtime.act.completed', { agentRunId, planVersion: latestPlan.version, elapsedMs: Date.now() - startedAt, status: updated.status });
       return updated;
     } catch (error) {
       if (error instanceof AgentCancelledError) {
+        this.logger.warn('agent.runtime.act.cancelled', { agentRunId, planVersion: latestPlan.version, elapsedMs: Date.now() - startedAt, message: error.message });
         return this.prisma.agentRun.update({ where: { id: agentRunId }, data: { status: 'cancelled', error: error.message } });
       }
       if (error instanceof AgentWaitingReviewError) {
+        this.logger.warn('agent.runtime.act.waiting_review', { agentRunId, planVersion: latestPlan.version, elapsedMs: Date.now() - startedAt, message: error.message });
         return this.prisma.agentRun.update({ where: { id: agentRunId }, data: { status: 'waiting_review', error: error.message } });
       }
       if (error instanceof AgentExecutionObservationError) {
+        this.logger.warn('agent.runtime.act.observation_created', { agentRunId, planVersion: latestPlan.version, elapsedMs: Date.now() - startedAt, observation: error.observation });
         return this.handleExecutionObservation(agentRunId, run, latestPlan, spec.steps, context ?? await this.loadContextForExecution(run), error);
       }
       await this.prisma.agentRun.updateMany({ where: { id: agentRunId, status: { not: 'cancelled' } }, data: { status: 'failed', error: error instanceof Error ? error.message : String(error) } });
+      this.logger.error('agent.runtime.act.failed', error, { agentRunId, planVersion: latestPlan.version, elapsedMs: Date.now() - startedAt });
       throw error;
     }
   }
@@ -448,14 +467,17 @@ export class AgentRuntimeService {
     return value && typeof value === 'object' && !Array.isArray(value) ? (value as Record<string, unknown>) : {};
   }
 
+  /** 读取非空字符串字段；无副作用，用于把外部 DTO/JSON 安全投影为可选值。 */
   private stringValue(value: unknown): string | undefined {
     return typeof value === 'string' && value.trim() ? value.trim() : undefined;
   }
 
+  /** 读取有限数字字段；无副作用，用于 Observation/Artifact 元数据归一化。 */
   private numberValue(value: unknown): number | undefined {
     return typeof value === 'number' && Number.isFinite(value) ? value : undefined;
   }
 
+  /** 把未知值转换成 Prisma Json 可接受的结构；无法序列化时退化为字符串，不抛错。 */
   private toJsonCompatible(value: unknown): unknown {
     if (value === undefined) return null;
     try {

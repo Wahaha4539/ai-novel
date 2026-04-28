@@ -104,7 +104,7 @@ export class CollectTaskContextTool implements BaseTool<CollectTaskContextInput,
     idPolicy: { forbiddenToInvent: ['projectId', 'chapterId', 'characterId'], allowedSources: ['context.session.currentProjectId', 'context.session.currentChapterId', 'resolve_chapter.output.chapterId', 'resolve_character.output.characterId', 'steps.resolve_chapter.output.chapterId', 'steps.resolve_character.output.characterId'] },
   };
 
-  constructor(private readonly prisma: PrismaService, private readonly relationshipGraphService = new RelationshipGraphService()) {}
+  constructor(private readonly prisma: PrismaService, private readonly relationshipGraphService: RelationshipGraphService = new RelationshipGraphService()) {}
 
   async run(args: CollectTaskContextInput, context: ToolContext): Promise<CollectTaskContextOutput> {
     const projectId = args.projectId ?? context.projectId;
