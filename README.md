@@ -2,6 +2,8 @@
 
 AI Novel 是一个面向长篇小说创作的 Agent-Centric 创作系统。当前版本已经从“前端按钮 + 固定 Worker Pipeline”收敛为 **Web + API 单体同步执行**：用户可以在 Agent 工作台中用自然语言提出创作目标，API 内的 Agent Runtime 会生成计划、等待确认，并在确认后调用受控 Tool 完成章节写作、大纲生成、文案拆解、事实校验、记忆重建等任务。
 
+当前 Agent 智能化改造主线已经落地：系统具备 `AgentContext V2` 上下文注入、LLM 友好 `Tool Manifest V2`、章节/角色 Resolver、ID 来源校验、Observation/Replan 失败修复、Planner/Retrieval/Replan Eval 回归，以及前端可解释的 Plan、澄清、Artifact 和实验摘要展示能力。
+
 > 重点：当前核心功能不再需要启动 Python Worker。`apps/worker` 仅作为历史 pipeline 参考保留。
 
 ## 当前架构
@@ -12,8 +14,9 @@ apps/web
 apps/api
   - REST API
   - AgentRun / Plan / Approval / Step / Artifact
-  - AgentRuntime / Planner / Executor / Policy / Trace
-  - ToolRegistry / SkillRegistry / RuleEngine
+  - AgentRuntime / AgentContextBuilder / Planner / Executor / Replanner / Policy / Trace
+  - ToolRegistry / Tool Manifest V2 / SkillRegistry / RuleEngine
+  - Resolver Tools / Collect Task Context / Observation-Replan
   - Generation / Validation / Memory / Retrieval / LLM / Embedding Services
   ↓
 PostgreSQL(pgvector) / Redis / LLM Provider / Embedding Provider
@@ -25,6 +28,8 @@ PostgreSQL(pgvector) / Redis / LLM Provider / Embedding Provider
 - Agent 调用 Tool 是后端进程内函数调用，不再通过 API 调 Worker。
 - Plan 阶段只生成计划、预览和校验产物，不写正式业务表。
 - Act 阶段必须经过用户确认，并由 Policy / Schema / Approval / Trace 保护写入行为。
+- 内部 ID 不允许由 LLM 编造；`projectId`、`chapterId`、`characterId` 等必须来自上下文、Resolver、前序步骤或用户显式选择。
+- Tool 失败会优先记录结构化 Observation，并由有界 Replanner 尝试最小修复或要求用户澄清，不会绕过审批继续写入。
 - Redis 只保留缓存、锁、上下文暂存等辅助用途，不承担 Agent 任务调度。
 
 ## 目录结构
@@ -227,6 +232,9 @@ pnpm --filter api start:dev
 | `pnpm --dir apps/api build` | 构建 API |
 | `pnpm --dir apps/web build` | 构建 Web |
 | `pnpm --dir apps/api run test:agent` | 运行 Agent 服务轻量测试 |
+| `pnpm --dir apps/api run eval:agent:gate` | 运行 Planner / Retrieval / Replan 确定性评测门禁 |
+| `pnpm --dir apps/api run eval:agent:experimental-evidence` | 生成默认关闭的 LLM 证据归纳实验报告 |
+| `pnpm --dir apps/api run eval:agent:experimental-replan` | 生成默认关闭的 LLM Replanner 只读兜底实验报告 |
 | `pnpm db:maintenance` | 执行数据库维护脚本，如 embedding backfill |
 
 ## 最小自检
@@ -244,6 +252,14 @@ Agent-Centric 后端能力可用轻量测试验证：
 ```powershell
 pnpm --dir apps/api run test:agent
 ```
+
+Agent 智能化回归门禁可验证 Planner、真实 `collect_task_context` 检索维度和 Replanner 修复质量：
+
+```powershell
+pnpm --dir apps/api run eval:agent:gate
+```
+
+当前基线覆盖 12 个 Planner/Retrieval 用例与 12 个 Replan Observation 用例，核心指标包括意图识别、工具链、必填参数、ID 幻觉、Resolver 使用率、审批安全、首轮计划成功率、用户可读清晰度、检索维度覆盖和失败修复准确率。可选 LLM 实验报告不进入主门禁，失败、降级或跳过都不应阻断 PR。
 
 真实数据上的 embedding 回填与召回质量可用开发脚本验证。默认 dry-run，不会改写数据库；确认后再追加 `--apply-backfill`：
 
@@ -268,11 +284,13 @@ python scripts/dev/verify_embedding_retrieval.py --project-id <PROJECT_ID> --que
 Web 侧已提供 Agent 工作台入口，支持：
 
 - 输入自然语言创作目标。
-- 生成结构化 Plan。
-- 展示步骤、风险、预览 Artifact、写入前 Diff 和质量报告。
+- 基于 AgentContext V2 生成结构化 Plan，展示 Agent 理解、假设、缺失信息、所需上下文、风险和用户可读步骤。
+- 通过 Tool Manifest V2 让 Planner 理解工具使用时机、参数来源、审批风险和 ID policy。
+- 自动使用 Resolver 解析“第 12 章”“下一章”“男主”等自然语言引用，避免把自然语言当成内部 ID。
+- 展示步骤、风险、预览 Artifact、写入前 Diff、关系图证据、世界观条目审计和质量报告。
 - 用户确认后执行 Act。
-- 展示执行时间线、审计轨迹和最终报告。
-- 支持取消、失败重试、重新规划、步骤级审批。
+- 展示执行时间线、Observation/Replan 诊断、审计轨迹和最终报告。
+- 支持取消、失败重试、重新规划、澄清候选选择、世界观条目局部选择和步骤级审批。
 
 典型目标示例：
 
@@ -281,7 +299,22 @@ Web 侧已提供 Agent 工作台入口，支持：
 这是我的小说文案，帮我拆成角色、世界观和前三卷大纲。
 帮我把第一卷拆成 30 章，每章要有目标、冲突和钩子。
 帮我检查当前大纲有没有剧情矛盾。
+男主这里是不是人设崩了？
+补充宗门体系，但不要影响已有剧情。
 ```
+
+### Agent 智能化能力
+
+当前 Agent 不再只依赖固定关键词或静态 Pipeline，而是通过“LLM 规划 + Runtime 约束”协作：
+
+- `AgentContextBuilderService`：向 Planner 注入当前项目、章节、草稿、近期章节、角色、世界事实、记忆提示、硬规则和可用工具摘要。
+- `Tool Manifest V2`：为 Tool 提供 `whenToUse`、`whenNotToUse`、`parameterHints`、`failureHints`、`riskLevel`、`requiresApproval`、`sideEffects` 和 `idPolicy`。
+- Resolver 工具：`resolve_chapter` 支持当前章、上一章、下一章、第十二章等引用；`resolve_character` 支持男主、女主、反派、别名和角色名解析。
+- `collect_task_context`：为角色一致性、剧情一致性、世界观扩展等任务收集章节、角色、世界事实、记忆、剧情事件、关系图和完整草稿按需召回。
+- Observation/Replan：缺参、schema 错误、自然语言冒充 ID、歧义实体、低置信度、引用错误等失败会形成结构化 Observation，并由 Replanner 生成最小 patch、澄清问题或安全失败。
+- 前端解释层：Plan 面板展示理解/假设/风险；Observation 面板展示失败观察和澄清卡片；Artifact 面板展示上下文、关系图、角色/剧情一致性报告、世界观 Diff、条目级审计和实验摘要元数据。
+
+默认关闭的实验能力包括 LLM 证据归纳摘要和 LLM Replanner 只读兜底。它们只用于辅助阅读和留档观察，不作为审批、写入或确定性诊断依据。
 
 ### 章节写作主链路
 
@@ -340,6 +373,7 @@ Agent 接口：
 - `POST /api/agent-runs/:id/act`
 - `POST /api/agent-runs/:id/retry`
 - `POST /api/agent-runs/:id/replan`
+- `POST /api/agent-runs/:id/clarification-choice`
 - `POST /api/agent-runs/:id/cancel`
 - `POST /api/agent-runs/:id/approve-step`
 
@@ -408,6 +442,8 @@ next dev -p 3000
 
 - `docs/architecture/agent-centric-design.md`：Agent-Centric 创作系统设计。
 - `docs/architecture/agent-centric-development-plan.md`：Agent-Centric 同步后端开发计划与当前进度。
+- `docs/architecture/ai-novel-agent-intelligence-upgrade.md`：小说 Agent 智能化改造设计文档。
+- `docs/architecture/agent-intelligence-upgrade-development-plan.md`：Agent 智能化改造专项开发计划与进度同步。
 - `docs/prompt-template-guide.md`：Prompt 模板指南。
 - `docs/api/`：API 相关文档。
 - `docs/database/`：数据库相关文档。
