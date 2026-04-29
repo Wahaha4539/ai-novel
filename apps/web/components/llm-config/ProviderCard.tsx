@@ -143,17 +143,31 @@ export function ProviderCard({
 
         {/* Test result inline display */}
         {testResult && (
-          <span
+          <div
             style={{
               marginLeft: 'auto',
               fontSize: '0.7rem',
               color: testResult.success ? '#10b981' : '#ef4444',
+              maxWidth: '48%',
+              textAlign: 'right',
             }}
           >
-            {testResult.success
-              ? `✅ 连通成功 (${testResult.models?.length ?? 0} 模型)`
-              : `❌ ${testResult.error}`}
-          </span>
+            <div>
+              {testResult.success
+                ? `✅ 当前模型简单对话通过`
+                : `❌ ${testResult.error}`}
+            </div>
+            {testResult.chatTests?.length ? (
+              <div style={{ marginTop: '0.25rem', color: 'var(--text-dim)', lineHeight: 1.5, textAlign: 'left' }}>
+                {testResult.chatTests.map((item) => (
+                  <div key={`${provider.id}-${item.model}-${item.appSteps.join('-')}`}>
+                    <div>{item.success ? '✅' : '❌'} {item.model}（{item.appSteps.join(' / ') || '当前模型'}）</div>
+                    <pre style={{ marginTop: '0.2rem', whiteSpace: 'pre-wrap', wordBreak: 'break-word', color: item.success ? '#bbf7d0' : '#fecaca' }}>{item.replyContent ?? item.error ?? '无返回内容'}</pre>
+                  </div>
+                ))}
+              </div>
+            ) : null}
+          </div>
         )}
       </div>
 

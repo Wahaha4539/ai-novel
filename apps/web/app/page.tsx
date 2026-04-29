@@ -18,12 +18,46 @@ import { AgentFloatingOrb } from '../components/agent/AgentFloatingOrb';
 
 type ActiveView = 'editor' | 'outline' | 'lore' | 'projects' | 'volumes' | 'guided' | 'prompts' | 'foreshadow' | 'generate' | 'llm-config';
 
+const WORKSPACE_STATE_STORAGE_KEY = 'ai-novel:workspace-state';
+const ACTIVE_VIEWS: ActiveView[] = ['editor', 'outline', 'lore', 'projects', 'volumes', 'guided', 'prompts', 'foreshadow', 'generate', 'llm-config'];
+
+type WorkspaceState = {
+  activeView: ActiveView;
+  selectedProjectId: string;
+  selectedChapterId: string;
+  selectedVolumeId: string;
+};
+
+/** Read the last workspace route-like state from localStorage so refresh keeps the current editor context. */
+function readWorkspaceState(): Partial<WorkspaceState> {
+  if (typeof window === 'undefined') return {};
+
+  try {
+    const parsed = JSON.parse(window.localStorage.getItem(WORKSPACE_STATE_STORAGE_KEY) ?? '{}') as Partial<WorkspaceState>;
+    return {
+      activeView: ACTIVE_VIEWS.includes(parsed.activeView as ActiveView) ? parsed.activeView : undefined,
+      selectedProjectId: typeof parsed.selectedProjectId === 'string' ? parsed.selectedProjectId : undefined,
+      selectedChapterId: typeof parsed.selectedChapterId === 'string' ? parsed.selectedChapterId : undefined,
+      selectedVolumeId: typeof parsed.selectedVolumeId === 'string' ? parsed.selectedVolumeId : undefined,
+    };
+  } catch {
+    return {};
+  }
+}
+
+/** Persist the workspace selection; this app is a single page, so localStorage acts as lightweight routing state. */
+function writeWorkspaceState(state: WorkspaceState) {
+  if (typeof window === 'undefined') return;
+  window.localStorage.setItem(WORKSPACE_STATE_STORAGE_KEY, JSON.stringify(state));
+}
+
 export default function HomePage() {
   const data = useDashboardData();
   const [activeView, setActiveView] = useState<ActiveView>('projects');
   const [selectedVolumeId, setSelectedVolumeId] = useState('');
   const [autoStartGuided, setAutoStartGuided] = useState(false);
   const [isToastVisible, setIsToastVisible] = useState(false);
+  const [workspaceStateRestored, setWorkspaceStateRestored] = useState(false);
   const loadProjectDataRef = useRef(data.loadProjectData);
 
   const selectedProject = data.projects.find((item) => item.id === data.selectedProjectId) ?? data.dashboard?.project;
@@ -33,6 +67,34 @@ export default function HomePage() {
   useEffect(() => {
     loadProjectDataRef.current = data.loadProjectData;
   }, [data.loadProjectData]);
+
+  useEffect(() => {
+    const state = readWorkspaceState();
+    if (state.selectedProjectId) {
+      data.setSelectedProjectId(state.selectedProjectId);
+      data.setSelectedChapterId(state.selectedChapterId || 'all');
+    }
+    if (state.selectedVolumeId) {
+      setSelectedVolumeId(state.selectedVolumeId);
+    }
+    if (state.activeView) {
+      setActiveView(state.activeView);
+    }
+    setWorkspaceStateRestored(true);
+    // 只在首次挂载时恢复；后续导航由下面的持久化 effect 接管，避免来回覆盖用户操作。
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
+
+  useEffect(() => {
+    if (!workspaceStateRestored) return;
+
+    writeWorkspaceState({
+      activeView,
+      selectedProjectId: data.selectedProjectId,
+      selectedChapterId: data.selectedChapterId,
+      selectedVolumeId,
+    });
+  }, [activeView, data.selectedChapterId, data.selectedProjectId, selectedVolumeId, workspaceStateRestored]);
 
   useEffect(() => {
     if (activeView !== 'foreshadow' || !data.selectedProjectId) return;
@@ -135,6 +197,15 @@ export default function HomePage() {
   const hasProject = !!data.selectedProjectId;
   const showInspector = hasProject && activeView === 'editor';
 
+  if (!workspaceStateRestored) {
+    return (
+      <main className="flex h-full w-full items-center justify-center" style={{ background: 'var(--bg-deep)', color: 'var(--text-dim)' }}>
+        {/* 刷新页面时先恢复本地工作区状态，避免短暂渲染项目首页造成“跳回首页”的错觉。 */}
+        正在恢复上次编辑位置…
+      </main>
+    );
+  }
+
   return (
     <main className="flex h-full w-full">
 
@@ -198,7 +269,17 @@ export default function HomePage() {
             volumes={data.volumes}
             chapters={chapters}
             onComplete={async (chapterIds?: string[]) => {
-              await data.loadProjectData(data.selectedProjectId, data.selectedChapterId);
+              const generatedChapterId = chapterIds?.[0];
+              const nextChapterId = generatedChapterId ?? data.selectedChapterId;
+
+              // 批量生成完成后立即进入最新生成章节，避免用户停在生成页看不到正文。
+              if (generatedChapterId) {
+                data.setSelectedChapterId(generatedChapterId);
+                setSelectedVolumeId('');
+                setActiveView('editor');
+              }
+
+              await data.loadProjectData(data.selectedProjectId, nextChapterId);
             }}
           />
 
@@ -208,6 +289,7 @@ export default function HomePage() {
             selectedChapterId={data.selectedChapterId}
             chapters={chapters}
             draftRefreshKey={data.draftRefreshKey}
+            onChapterGenerated={(chapterId) => data.loadProjectData(data.selectedProjectId, chapterId)}
             onRunAutoMaintenance={data.runAutoMaintenance}
             onMarkChapterComplete={data.markChapterComplete}
           />

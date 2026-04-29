@@ -1,4 +1,4 @@
-import { BadRequestException, Injectable } from '@nestjs/common';
+import { BadRequestException, Injectable, NotFoundException } from '@nestjs/common';
 import { PrismaService } from '../../prisma/prisma.service';
 import { StructuredLogger } from '../../common/logging/structured-logger';
 import { ToolJsonSchema, ToolSchemaType } from '../agent-tools/base-tool';
@@ -126,7 +126,9 @@ export class AgentExecutorService {
         this.policy.assertAllowed(tool, context, plannedTools);
         this.assertSchema(tool.inputSchema, resolvedArgs, `${tool.name}.input`);
         this.assertIdPolicy(tool, resolvedArgs, step.args, options.agentContext);
-        const output = await this.withTimeout(tool.run(resolvedArgs, context), 120_000, `工具 ${tool.name} 执行超时`);
+        // 长文生成/润色的底层 LLM 超时可达 180s，允许 Tool 声明更合理的外层执行超时。
+        const toolTimeoutMs = tool.executionTimeoutMs ?? 120_000;
+        const output = await this.withTimeout(tool.run(resolvedArgs, context), toolTimeoutMs, `工具 ${tool.name} 执行超时`);
         this.assertSchema(tool.outputSchema, output, `${tool.name}.output`);
         outputs[step.stepNo] = output;
         this.updateRuntimeState(runtimeState, output);
@@ -243,7 +245,8 @@ export class AgentExecutorService {
     // 自然语言直接进入 *.Id 字段属于可由 resolver 修复的参数问题，不能归为不可重试的策略阻断。
     // 例如 chapterId='第十二章' 应触发 Replanner 插入 resolve_chapter，而不是裸失败。
     if (/不能使用自然语言|伪造 ID/.test(message) && /Id/.test(message)) return 'SCHEMA_VALIDATION_FAILED';
-    if (/不存在|未找到|找不到/.test(message)) return 'ENTITY_NOT_FOUND';
+    // 业务对象缺失（例如“章节没有可润色草稿”）不是内部异常，应进入 Observation/Replan 诊断。
+    if (error instanceof NotFoundException || /不存在|未找到|找不到|没有可.*草稿|暂无可.*草稿|请先生成正文/.test(message)) return 'ENTITY_NOT_FOUND';
     if (/歧义|多个候选|不确定|AMBIGUOUS/i.test(message)) return 'AMBIGUOUS_ENTITY';
     if (/需要用户审批|需要显式审批/.test(message)) return 'APPROVAL_REQUIRED';
     if (/Policy|禁止|不允许|不能使用自然语言|伪造 ID/.test(message)) return 'POLICY_BLOCKED';

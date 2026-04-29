@@ -126,7 +126,7 @@ export class GenerateChapterService {
         { role: 'system', content: prompt.system },
         { role: 'user', content: prompt.user },
       ],
-      { appStep: 'generate', maxTokens: Math.min(10_000, Math.max(1800, Math.ceil(targetWordCount * 1.8))), timeoutMs: 180_000, retries: 1, temperature: 0.45 },
+      { appStep: 'generate', maxTokens: Math.min(10_000, Math.max(1800, Math.ceil(targetWordCount * 1.8))), timeoutMs: 450_000, retries: 1, temperature: 0.45 },
     );
     const content = this.stripWrapperTags(llmResult.text);
     if (!content) throw new BadRequestException('write_chapter 生成正文为空');

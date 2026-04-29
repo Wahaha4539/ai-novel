@@ -19,13 +19,15 @@ interface Props {
   selectedChapterId: string;
   chapters: ChapterSummary[];
   draftRefreshKey?: number;
+  /** Refresh parent dashboard data after a chapter draft is generated so status badges update immediately. */
+  onChapterGenerated?: (chapterId: string) => void | Promise<void>;
   /** Run chapter-scoped AI review/maintenance without changing the chapter completion status. */
   onRunAutoMaintenance?: (chapterIds?: string[]) => void | Promise<void>;
   /** Mark the current chapter as complete; this only updates chapter metadata for the sidebar status dot. */
   onMarkChapterComplete?: (chapterId: string) => void | Promise<void>;
 }
 
-export function EditorPanel({ selectedProject, selectedChapterId, chapters, draftRefreshKey = 0, onRunAutoMaintenance, onMarkChapterComplete }: Props) {
+export function EditorPanel({ selectedProject, selectedChapterId, chapters, draftRefreshKey = 0, onChapterGenerated, onRunAutoMaintenance, onMarkChapterComplete }: Props) {
   const isGlobal = selectedChapterId === 'all';
   const chapter = chapters.find((c) => c.id === selectedChapterId);
   const gen = useChapterGeneration();
@@ -77,8 +79,12 @@ export function EditorPanel({ selectedProject, selectedChapterId, chapters, draf
   const handleGenerate = useCallback(async () => {
     if (isGlobal || !selectedChapterId || gen.state === 'polling' || gen.state === 'generating') return;
     if (!selectedProject?.id) return;
-    await gen.generateSingle(selectedProject.id, selectedChapterId);
-  }, [isGlobal, selectedProject?.id, selectedChapterId, gen]);
+    const draft = await gen.generateSingle(selectedProject.id, selectedChapterId);
+    if (draft) {
+      // 生成结果会先写入编辑器本地正文；随后刷新父级 dashboard，让侧栏状态和右侧事实面板同步更新。
+      await onChapterGenerated?.(selectedChapterId);
+    }
+  }, [isGlobal, onChapterGenerated, selectedProject?.id, selectedChapterId, gen]);
 
   /** Trigger AI review/maintenance chain for the current detail page. */
   const handleRunAiReview = useCallback(async () => {

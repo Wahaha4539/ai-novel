@@ -19,8 +19,14 @@ export interface LlmProvider {
 /** Connectivity test result */
 export interface ConnectivityResult {
   success: boolean;
-  models?: string[];
   error?: string;
+  chatTests?: Array<{
+    model: string;
+    appSteps: string[];
+    success: boolean;
+    replyContent?: string;
+    error?: string;
+  }>;
 }
 
 /** Step routing entry */

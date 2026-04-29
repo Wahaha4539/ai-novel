@@ -77,11 +77,10 @@ export class FactExtractorService {
         tx.foreshadowTrack.deleteMany({ where: { projectId, chapterId, sourceDraftId: draft.id, metadata: { path: ['generatedBy'], equals: 'agent_fact_extractor' } } }),
       ]);
 
-      const createdEvents = [];
-      for (const event of events) {
-        createdEvents.push(
-          await tx.storyEvent.create({
-            data: {
+      // 批量写入可显著缩短 interactive transaction 时间，避免 Prisma 默认事务超时后 tx 被关闭。
+      const createdEvents = events.length
+        ? await tx.storyEvent.createMany({
+            data: events.map((event) => ({
               projectId,
               chapterId,
               chapterNo: chapter.chapterNo,
@@ -93,16 +92,13 @@ export class FactExtractorService {
               timelineSeq: event.timelineSeq ?? chapter.timelineSeq ?? chapter.chapterNo,
               status: 'detected',
               metadata: { generatedBy: 'agent_fact_extractor', summary } as Prisma.InputJsonValue,
-            },
-          }),
-        );
-      }
+            })),
+          })
+        : { count: 0 };
 
-      const createdStates = [];
-      for (const state of characterStates) {
-        createdStates.push(
-          await tx.characterStateSnapshot.create({
-            data: {
+      const createdStates = characterStates.length
+        ? await tx.characterStateSnapshot.createMany({
+            data: characterStates.map((state) => ({
               projectId,
               chapterId,
               chapterNo: chapter.chapterNo,
@@ -113,16 +109,13 @@ export class FactExtractorService {
               summary: state.summary,
               status: 'auto',
               metadata: { generatedBy: 'agent_fact_extractor' } as Prisma.InputJsonValue,
-            },
-          }),
-        );
-      }
+            })),
+          })
+        : { count: 0 };
 
-      const createdForeshadows = [];
-      for (const item of foreshadows) {
-        createdForeshadows.push(
-          await tx.foreshadowTrack.create({
-            data: {
+      const createdForeshadows = foreshadows.length
+        ? await tx.foreshadowTrack.createMany({
+            data: foreshadows.map((item) => ({
               projectId,
               chapterId,
               chapterNo: chapter.chapterNo,
@@ -135,13 +128,12 @@ export class FactExtractorService {
               firstSeenChapterNo: chapter.chapterNo,
               lastSeenChapterNo: chapter.chapterNo,
               metadata: { generatedBy: 'agent_fact_extractor' } as Prisma.InputJsonValue,
-            },
-          }),
-        );
-      }
+            })),
+          })
+        : { count: 0 };
 
       return { createdEvents, createdStates, createdForeshadows };
-    });
+    }, { timeout: 30_000, maxWait: 10_000 });
 
     // 与旧 Worker rebuild/generate 链路保持一致：事实抽取后同步生成 MemoryChunk。
     // 其中角色状态和伏笔会进入 pending_review，供后续 review_memory 自动采纳或拒绝。
@@ -160,9 +152,9 @@ export class FactExtractorService {
       chapterId,
       draftId: draft.id,
       summary,
-      createdEvents: created.createdEvents.length,
-      createdCharacterStates: created.createdStates.length,
-      createdForeshadows: created.createdForeshadows.length,
+      createdEvents: created.createdEvents.count,
+      createdCharacterStates: created.createdStates.count,
+      createdForeshadows: created.createdForeshadows.count,
       createdMemoryChunks: memory.createdCount,
       pendingReviewMemoryChunks,
       events,

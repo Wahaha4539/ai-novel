@@ -1,4 +1,5 @@
 import assert from 'node:assert/strict';
+import { NotFoundException } from '@nestjs/common';
 import { BaseTool } from '../agent-tools/base-tool';
 import { ToolRegistryService } from '../agent-tools/tool-registry.service';
 import { RuleEngineService } from '../agent-rules/rule-engine.service';
@@ -1282,6 +1283,40 @@ test('Executor 将自然语言 chapterId 的 ID Policy 失败包装为可修复 
   const observation = failed[0] as { args: Record<string, unknown>; error: { code: string; retryable: boolean } };
   assert.equal(observation.args.chapterId, '第十二章');
   assert.equal(observation.error.code, 'SCHEMA_VALIDATION_FAILED');
+  assert.equal(observation.error.retryable, true);
+});
+
+test('Executor 将润色缺少草稿识别为业务对象缺失而非内部错误', async () => {
+  const failed: unknown[] = [];
+  const prisma = {
+    agentRun: {
+      async findUnique(args: { select?: { status?: boolean } }) {
+        return args.select?.status ? { status: 'acting' } : { id: 'run1', projectId: 'p1', chapterId: null, status: 'acting' };
+      },
+    },
+  };
+  const tools = {
+    get: () => createTool({
+      name: 'polish_chapter',
+      requiresApproval: false,
+      riskLevel: 'low',
+      sideEffects: [],
+      async run() {
+        throw new NotFoundException('章节 11111111-1111-4111-8111-111111111111 没有可润色草稿，请先生成正文。');
+      },
+    }),
+  };
+  const policy = { assertPlanExecutable() {}, assertAllowed() {} };
+  const trace = { startStep() {}, finishStep() {}, failStep(_runId: string, _stepNo: number, error: unknown) { failed.push(error); } };
+  const executor = new AgentExecutorService(prisma as never, tools as never, policy as never, trace as never);
+
+  await assert.rejects(
+    () => executor.execute('run1', [{ stepNo: 1, id: 'polish', name: '润色', tool: 'polish_chapter', mode: 'act', requiresApproval: false, args: { chapterId: '11111111-1111-4111-8111-111111111111' } }], { mode: 'act', approved: true }),
+    AgentExecutionObservationError,
+  );
+
+  const observation = failed[0] as { error: { code: string; retryable: boolean } };
+  assert.equal(observation.error.code, 'ENTITY_NOT_FOUND');
   assert.equal(observation.error.retryable, true);
 });
 

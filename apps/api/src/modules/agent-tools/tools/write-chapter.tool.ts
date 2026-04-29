@@ -44,6 +44,8 @@ export class WriteChapterTool implements BaseTool<WriteChapterInput, GenerateCha
   riskLevel: 'medium' = 'medium';
   requiresApproval = true;
   sideEffects = ['create_chapter_draft', 'update_chapter_status'];
+  /** 章节长文生成在慢模型上可能超过 4 分钟，外层 Tool 按用户配置放宽到 500s。 */
+  executionTimeoutMs = 500_000;
   manifest: ToolManifestV2 = {
     name: this.name,
     displayName: '生成章节正文',

@@ -77,6 +77,7 @@ export function useLlmProviders() {
   const [error, setError] = useState('');
   /** Per-provider connectivity test state */
   const [testingId, setTestingId] = useState<string | null>(null);
+  const [testedProviderId, setTestedProviderId] = useState<string | null>(null);
   const [testResult, setTestResult] = useState<ConnectivityResult | null>(null);
 
   // ── Load providers + routings ──
@@ -128,6 +129,7 @@ export function useLlmProviders() {
 
   const testConnectivity = useCallback(async (id: string) => {
     setTestingId(id);
+    setTestedProviderId(id);
     setTestResult(null);
     try {
       const result = await apiFetch<ConnectivityResult>(`/llm-providers/${id}/test`, {
@@ -168,6 +170,7 @@ export function useLlmProviders() {
     loading,
     error,
     testingId,
+    testedProviderId,
     testResult,
     reload,
     createProvider,

@@ -111,12 +111,17 @@ export class LlmGatewayService {
     const choices = payload.choices as Array<Record<string, unknown>> | undefined;
     const message = choices?.[0]?.message as Record<string, unknown> | undefined;
     const content = message?.content;
-    if (typeof content === 'string') return content;
-    if (!Array.isArray(content)) return '';
+    if (typeof content === 'string' && content.trim()) return content;
+    if (Array.isArray(content)) {
+      const parts = content
+        .filter((item: Record<string, unknown>) => typeof item.text === 'string')
+        .map((item: Record<string, unknown>) => item.text as string)
+        .join('');
+      if (parts.trim()) return parts;
+    }
 
-    return content
-      .filter((item: Record<string, unknown>) => typeof item.text === 'string')
-      .map((item: Record<string, unknown>) => item.text as string)
-      .join('');
+    // 兼容 MiMo 等 OpenAI-compatible 服务：可读文本可能被放在 reasoning_content，content 为空字符串。
+    const reasoningContent = message?.reasoning_content ?? message?.reasoningContent;
+    return typeof reasoningContent === 'string' ? reasoningContent : '';
   }
 }

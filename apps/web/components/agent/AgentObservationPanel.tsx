@@ -27,6 +27,9 @@ export function AgentObservationPanel({ run, loading = false, onAnswerClarificat
   const action = replanPatch?.action;
   const tone = action === 'patch_plan' ? 'ok' : action === 'ask_user' ? 'warn' : 'danger';
   const heading = action === 'patch_plan' ? '已根据失败观察自动修复计划' : action === 'ask_user' ? '需要你补充选择' : '执行失败诊断';
+  const originalErrorMessage = observation?.error.message?.trim();
+  const fallbackReason = replanPatch?.reason?.trim();
+  const shouldShowOriginalError = Boolean(originalErrorMessage && originalErrorMessage !== fallbackReason);
 
   return (
     <section className="agent-panel-section" style={{ borderColor: borderColor(tone), background: panelBackground(tone) }}>
@@ -37,7 +40,13 @@ export function AgentObservationPanel({ run, loading = false, onAnswerClarificat
 
       <div className="mb-3 p-3" style={{ borderRadius: '0.75rem', background: 'rgba(0,0,0,0.18)', border: `1px solid ${borderColor(tone)}` }}>
         <div className="text-xs font-bold mb-2" style={{ color: badgeColor(tone) }}>{heading}</div>
-        <p className="text-xs leading-6" style={{ color: 'var(--text-muted)' }}>{replanPatch?.reason ?? observation?.error.message ?? 'Agent 已记录一次结构化执行观察。'}</p>
+        <p className="text-xs leading-6" style={{ color: 'var(--text-muted)' }}>{fallbackReason ?? originalErrorMessage ?? 'Agent 已记录一次结构化执行观察。'}</p>
+        {shouldShowOriginalError && (
+          <div className="mt-3 rounded-lg border p-3" style={{ borderColor: 'rgba(248,113,113,0.35)', background: 'rgba(127,29,29,0.16)' }}>
+            <div className="mb-1 text-[10px] font-bold" style={{ color: '#fecaca', letterSpacing: '0.06em', textTransform: 'uppercase' }}>原始失败原因</div>
+            <pre className="max-h-40 overflow-auto whitespace-pre-wrap break-words text-xs" style={{ color: '#fee2e2' }}>{originalErrorMessage}</pre>
+          </div>
+        )}
       </div>
 
       {observation && (
@@ -61,7 +70,10 @@ export function AgentObservationPanel({ run, loading = false, onAnswerClarificat
       <ClarificationHistory run={run} />
 
       {action === 'fail_with_reason' && (
-        <pre className="mt-3 max-h-56 overflow-auto whitespace-pre-wrap text-xs" style={{ color: 'var(--text-dim)' }}>{safeJson({ observation, replanPatch })}</pre>
+        <details className="mt-3" open>
+          <summary className="cursor-pointer text-xs font-bold" style={{ color: 'var(--agent-text-accent)' }}>展开完整诊断 JSON</summary>
+          <pre className="mt-2 max-h-56 overflow-auto whitespace-pre-wrap text-xs" style={{ color: 'var(--text-dim)' }}>{safeJson({ observation, replanPatch })}</pre>
+        </details>
       )}
     </section>
   );

@@ -136,29 +136,51 @@ export class LlmProvidersService implements OnModuleInit {
     return { deleted: true };
   }
 
-  /** Test connectivity by calling the provider's /v1/models endpoint */
-  async testConnectivity(id: string): Promise<{ success: boolean; models?: string[]; error?: string }> {
+  /** Test the provider's current default model with one minimal chat request and expose the raw reply for UI diagnosis. */
+  async testConnectivity(id: string): Promise<{ success: boolean; error?: string; chatTests?: Array<{ model: string; appSteps: string[]; success: boolean; replyContent?: string; error?: string }> }> {
     const provider = this.cache.providers.find((item) => item.id === id);
     if (!provider) throw new NotFoundException(`Provider 不存在: ${id}`);
 
-    const url = `${provider.baseUrl.replace(/\/+$/, '')}/models`;
-    try {
-      const response = await fetch(url, {
-        headers: { Authorization: `Bearer ${provider.apiKey}` },
-        signal: AbortSignal.timeout(15_000),
-      });
+    const chatTest = await this.testChatCompletion(provider, provider.defaultModel, ['当前模型']);
+    if (!chatTest.success) return { success: false, chatTests: [chatTest], error: `简单对话测试失败：model=${chatTest.model}；${chatTest.error}` };
+    return { success: true, chatTests: [chatTest] };
+  }
 
+  /** 发送一句极短的 chat/completions 请求，验证模型名、Key 和接口兼容性都能真实工作。 */
+  private async testChatCompletion(provider: CachedLlmProvider, model: string, appSteps: string[]): Promise<{ model: string; appSteps: string[]; success: boolean; replyContent?: string; error?: string }> {
+    try {
+      const response = await fetch(`${provider.baseUrl.replace(/\/+$/, '')}/chat/completions`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${provider.apiKey}` },
+        body: JSON.stringify({ model, messages: [{ role: 'user', content: '测试连通性，请只回复 OK。' }], temperature: 0, max_tokens: 16 }),
+        signal: AbortSignal.timeout(30_000),
+      });
       if (!response.ok) {
         const detail = await response.text();
-        return { success: false, error: `${response.status}: ${detail.slice(0, 300)}` };
+        return { model, appSteps, success: false, error: `${response.status}: ${detail.slice(0, 500)}` };
       }
-
-      const payload = (await response.json()) as { data?: Array<{ id: string }> };
-      const models = (payload.data ?? []).map((m) => m.id).slice(0, 20);
-      return { success: true, models };
+      const payload = await response.json() as Record<string, unknown>;
+      const reply = this.extractChatReply(payload).trim();
+      return { model, appSteps, success: Boolean(reply), replyContent: reply, ...(reply ? {} : { error: 'chat/completions 返回内容为空' }) };
     } catch (err) {
-      return { success: false, error: err instanceof Error ? err.message : '连接失败' };
+      return { model, appSteps, success: false, error: err instanceof Error ? err.message : 'chat/completions 请求失败' };
     }
+  }
+
+  /** 兼容 OpenAI 文本、content parts 和 MiMo reasoning_content，只用于连通性测试取一小段预览。 */
+  private extractChatReply(payload: Record<string, unknown>): string {
+    const choices = payload.choices as Array<Record<string, unknown>> | undefined;
+    const message = choices?.[0]?.message as Record<string, unknown> | undefined;
+    const content = message?.content;
+    if (typeof content === 'string' && content.trim()) return content;
+    if (Array.isArray(content)) {
+      const parts = content.filter((item: Record<string, unknown>) => typeof item.text === 'string').map((item: Record<string, unknown>) => item.text as string).join('');
+      if (parts.trim()) return parts;
+    }
+
+    // MiMo 小写模型会出现 content 为空、reasoning_content 有返回文本的情况，测试页需要把它展示出来。
+    const reasoningContent = message?.reasoning_content ?? message?.reasoningContent;
+    return typeof reasoningContent === 'string' ? reasoningContent : '';
   }
 
   // ── Routing CRUD ──────────────────────────────────────

@@ -1,5 +1,6 @@
 import { Injectable } from '@nestjs/common';
 import { Prisma } from '@prisma/client';
+import { randomUUID } from 'crypto';
 import { PrismaService } from '../../prisma/prisma.service';
 import { EmbeddingGatewayService } from '../llm/embedding-gateway.service';
 
@@ -106,40 +107,36 @@ export class MemoryWriterService {
     chunks: MemoryWriterChunkInput[];
   }): Promise<MemoryWriterResult> {
     const embedding = await this.attachEmbeddings(input.chunks);
+    const createdRows = input.chunks.map((chunk, index) => ({
+      id: randomUUID(),
+      projectId: input.projectId,
+      sourceType: 'chapter',
+      sourceId: input.chapterId,
+      memoryType: chunk.memoryType,
+      content: chunk.content,
+      summary: chunk.summary,
+      embedding: embedding.vectors[index] ? (embedding.vectors[index] as Prisma.InputJsonValue) : undefined,
+      tags: (chunk.tags ?? []) as Prisma.InputJsonValue,
+      sourceTrace: (chunk.sourceTrace ?? {}) as Prisma.InputJsonValue,
+      metadata: this.compactJson({ ...(chunk.metadata ?? {}), generatedBy: input.generatedBy, embeddingModel: embedding.model }) as Prisma.InputJsonValue,
+      importanceScore: chunk.importanceScore ?? 60,
+      freshnessScore: chunk.freshnessScore ?? 80,
+      recencyScore: chunk.recencyScore ?? 80,
+      status: chunk.status ?? 'auto',
+    }));
 
     const result = await this.prisma.$transaction(async (tx) => {
       const deleted = await tx.memoryChunk.deleteMany({
         where: { projectId: input.projectId, sourceType: 'chapter', sourceId: input.chapterId, metadata: { path: ['generatedBy'], equals: input.generatedBy } },
       });
 
-      const created = [];
-      for (const [index, chunk] of input.chunks.entries()) {
-        created.push(
-          await tx.memoryChunk.create({
-            data: {
-              projectId: input.projectId,
-              sourceType: 'chapter',
-              sourceId: input.chapterId,
-              memoryType: chunk.memoryType,
-              content: chunk.content,
-              summary: chunk.summary,
-              embedding: embedding.vectors[index] ? (embedding.vectors[index] as Prisma.InputJsonValue) : undefined,
-              tags: (chunk.tags ?? []) as Prisma.InputJsonValue,
-              sourceTrace: (chunk.sourceTrace ?? {}) as Prisma.InputJsonValue,
-              metadata: this.compactJson({ ...(chunk.metadata ?? {}), generatedBy: input.generatedBy, embeddingModel: embedding.model }) as Prisma.InputJsonValue,
-              importanceScore: chunk.importanceScore ?? 60,
-              freshnessScore: chunk.freshnessScore ?? 80,
-              recencyScore: chunk.recencyScore ?? 80,
-              status: chunk.status ?? 'auto',
-            },
-          }),
-        );
-      }
+      // 批量写入缩短 interactive transaction 时间，避免 Prisma 默认事务超时导致 tx 被关闭。
+      const created = createdRows.length ? await tx.memoryChunk.createMany({ data: createdRows }) : { count: 0 };
 
       return { deletedCount: deleted.count, created };
-    });
+    }, { timeout: 30_000, maxWait: 10_000 });
 
-    for (const [index, chunk] of result.created.entries()) {
+    for (const [index, chunk] of createdRows.entries()) {
       const vector = embedding.vectors[index];
       if (!vector?.length) continue;
       // Unsupported("vector") 暂不能由 Prisma Client 直接写入，创建后用 SQL 同步正式 pgvector 检索列。
@@ -148,9 +145,9 @@ export class MemoryWriterService {
 
     return {
       deletedCount: result.deletedCount,
-      createdCount: result.created.length,
+      createdCount: result.created.count,
       embeddingAttachedCount: embedding.vectors.filter(Boolean).length,
-      chunks: result.created.map((chunk) => ({ id: chunk.id, memoryType: chunk.memoryType, summary: chunk.summary ?? chunk.content.slice(0, 160), status: chunk.status })),
+      chunks: createdRows.map((chunk) => ({ id: chunk.id, memoryType: chunk.memoryType, summary: chunk.summary ?? chunk.content.slice(0, 160), status: chunk.status })),
     };
   }
 

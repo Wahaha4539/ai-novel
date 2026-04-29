@@ -57,7 +57,7 @@ export class PolishChapterService {
         { role: 'system', content: dbTemplate?.systemPrompt || FALLBACK_POLISH_SYSTEM_PROMPT },
         { role: 'user', content: this.buildUserPrompt(chapter, characters, originalText, instruction) },
       ],
-      { appStep: 'polish', maxTokens: Math.min(9000, Math.max(1800, Math.ceil(originalText.length * 1.4))), timeoutMs: 180_000, retries: 1, temperature: 0.35 },
+      { appStep: 'polish', maxTokens: Math.min(9000, Math.max(1800, Math.ceil(originalText.length * 1.4))), timeoutMs: 450_000, retries: 1, temperature: 0.35 },
     );
 
     const polishedText = this.stripWrapperTags(result.text).trim();

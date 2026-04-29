@@ -49,6 +49,8 @@ export interface BaseTool<TInput = unknown, TOutput = unknown> {
   riskLevel: ToolRiskLevel;
   requiresApproval: boolean;
   sideEffects: string[];
+  /** Optional wall-clock timeout for slow tools such as long-form chapter generation. Defaults to Executor's standard timeout. */
+  executionTimeoutMs?: number;
 
   /**
    * LLM 友好的 Tool Manifest V2。字段保持可选，便于现有工具渐进补齐语义说明。
