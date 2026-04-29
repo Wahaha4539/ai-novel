@@ -476,6 +476,67 @@ textarea.input, textarea.input-field {
   background: rgba(6, 182, 212, 0.015);
 }
 
+/* ── 章节正文版本切换：草稿 / 润色 ── */
+.draft-version-tabs {
+  width: fit-content;
+  max-width: 100%;
+  display: inline-flex;
+  align-items: stretch;
+  gap: 0;
+  margin: 0 0 1rem 1.25rem;
+  padding: 0.22rem;
+  border: 1px solid var(--border-light);
+  border-radius: 0.95rem;
+  background:
+    linear-gradient(135deg, var(--bg-hover-subtle), transparent 58%),
+    var(--bg-card);
+  box-shadow: 0 10px 30px -24px var(--accent-cyan), inset 0 1px 0 rgba(255,255,255,0.04);
+  overflow: hidden;
+}
+.draft-version-tab {
+  min-width: 6.25rem;
+  display: inline-flex;
+  flex-direction: column;
+  align-items: flex-start;
+  gap: 0.12rem;
+  padding: 0.45rem 0.78rem;
+  border: 0;
+  border-radius: 0.72rem;
+  background: transparent;
+  color: var(--text-muted);
+  font-family: inherit;
+  text-align: left;
+  cursor: pointer;
+  transition: background 0.2s ease, color 0.2s ease, transform 0.16s ease, box-shadow 0.2s ease;
+}
+.draft-version-tab:hover:not(:disabled) {
+  background: var(--bg-hover-subtle);
+  color: var(--text-main);
+  transform: translateY(-1px);
+}
+.draft-version-tab--active {
+  background: var(--accent-cyan-bg);
+  color: var(--accent-cyan);
+  box-shadow: inset 0 0 0 1px color-mix(in srgb, var(--accent-cyan) 28%, transparent);
+}
+.draft-version-tab:disabled {
+  cursor: not-allowed;
+  opacity: 0.45;
+}
+.draft-version-tab__label {
+  font-size: 0.78rem;
+  font-weight: 800;
+  letter-spacing: 0.04em;
+}
+.draft-version-tab__meta {
+  font-size: 0.62rem;
+  color: var(--text-dim);
+  white-space: nowrap;
+}
+.draft-version-tab--active .draft-version-tab__meta {
+  color: color-mix(in srgb, var(--accent-cyan) 68%, var(--text-muted));
+}
+
 /* ── 编辑器右下角浮动操作按钮组 ── */
 .editor-fab-btn {
   display: inline-flex;

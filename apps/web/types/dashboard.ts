@@ -176,6 +176,8 @@ export type ChapterDraft = {
   content: string;
   source: string;
   modelInfo?: Record<string, unknown>;
+  /** Metadata written by the API pipeline, e.g. polish.originalDraftId. */
+  generationContext?: Record<string, unknown>;
   isCurrent: boolean;
   createdAt: string;
 };

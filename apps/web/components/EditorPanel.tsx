@@ -11,8 +11,10 @@
 'use client';
 
 import React, { useEffect, useState, useCallback } from 'react';
-import { ProjectSummary, ChapterSummary } from '../types/dashboard';
+import { ProjectSummary, ChapterSummary, ChapterDraft } from '../types/dashboard';
 import { useChapterGeneration } from '../hooks/useChapterGeneration';
+
+type DraftViewMode = 'draft' | 'polished';
 
 interface Props {
   selectedProject?: ProjectSummary;
@@ -34,6 +36,8 @@ export function EditorPanel({ selectedProject, selectedChapterId, chapters, draf
 
   // Local content state for the editor textarea
   const [content, setContent] = useState('');
+  const [draftVersions, setDraftVersions] = useState<ChapterDraft[]>([]);
+  const [activeViewMode, setActiveViewMode] = useState<DraftViewMode>('draft');
   const [draftLoaded, setDraftLoaded] = useState(false);
   const [isAutoMaintaining, setIsAutoMaintaining] = useState(false);
   const [isMarkingComplete, setIsMarkingComplete] = useState(false);
@@ -45,23 +49,29 @@ export function EditorPanel({ selectedProject, selectedChapterId, chapters, draf
   // Compute word count from current content
   const wordCount = content.replace(/\s/g, '').length;
 
+  const viewPair = buildDraftViewPair(draftVersions);
+
   // Auto-load draft when chapter selection changes. AI validation repair creates a
   // new current draft for the same chapter, so draftRefreshKey forces a reload.
   useEffect(() => {
     if (isGlobal || !selectedChapterId) {
       setContent('');
+      setDraftVersions([]);
+      setActiveViewMode('draft');
       setDraftLoaded(false);
       return;
     }
-    // Load existing draft for this chapter
-    gen.loadDraft(selectedChapterId).then((draft) => {
-      if (draft?.content) {
-        setContent(draft.content);
-        setDraftLoaded(true);
-      } else {
-        setContent('');
-        setDraftLoaded(false);
-      }
+    // Load existing drafts for this chapter. The version list lets us pair an
+    // agent_polish result with its source draft via generationContext.originalDraftId.
+    void gen.loadDraftVersions(selectedChapterId).then((versions) => {
+      const pair = buildDraftViewPair(versions);
+      const initialMode: DraftViewMode = pair.polished ? 'polished' : 'draft';
+      const initialDraft = initialMode === 'polished' ? pair.polished : pair.draft;
+
+      setDraftVersions(versions);
+      setActiveViewMode(initialMode);
+      setContent(initialDraft?.content ?? '');
+      setDraftLoaded(Boolean(initialDraft?.content));
     });
     // Reset generation state when switching chapters
     gen.reset();
@@ -70,10 +80,29 @@ export function EditorPanel({ selectedProject, selectedChapterId, chapters, draf
   // When generation completes, update editor content
   useEffect(() => {
     if (gen.state === 'completed' && gen.currentDraft?.content) {
-      setContent(gen.currentDraft.content);
-      setDraftLoaded(true);
+      void gen.loadDraftVersions(gen.currentDraft.chapterId).then((versions) => {
+        const pair = buildDraftViewPair(versions);
+        const nextMode: DraftViewMode = pair.polished ? 'polished' : 'draft';
+        const nextDraft = nextMode === 'polished' ? pair.polished : pair.draft;
+
+        setDraftVersions(versions);
+        setActiveViewMode(nextMode);
+        setContent(nextDraft?.content ?? gen.currentDraft?.content ?? '');
+        setDraftLoaded(true);
+      });
     }
   }, [gen.state, gen.currentDraft]);
+
+  /** Switch the text area between the original generated draft and polished result. */
+  const handleSwitchViewMode = useCallback((mode: DraftViewMode) => {
+    const pair = buildDraftViewPair(draftVersions);
+    const targetDraft = mode === 'polished' ? pair.polished : pair.draft;
+
+    // A disabled tab should be inert; this also protects keyboard/programmatic clicks.
+    if (!targetDraft) return;
+    setActiveViewMode(mode);
+    setContent(targetDraft.content);
+  }, [draftVersions]);
 
   /** Trigger AI generation for the current chapter */
   const handleGenerate = useCallback(async () => {
@@ -217,6 +246,12 @@ export function EditorPanel({ selectedProject, selectedChapterId, chapters, draf
           <GlobalPlaceholder />
         ) : (
           <div className="animate-fade-in" style={{ maxWidth: '48rem', margin: '0 auto' }}>
+            <DraftVersionTabs
+              activeMode={activeViewMode}
+              draft={viewPair.draft}
+              polished={viewPair.polished}
+              onSwitch={handleSwitchViewMode}
+            />
             <textarea
               className="editor-textarea"
               placeholder="在这里开始撰写属于你的章节故事…… 或点击「AI 生成」自动生成正文。"
@@ -292,6 +327,108 @@ export function EditorPanel({ selectedProject, selectedChapterId, chapters, draf
         </div>
       )}
     </article>
+  );
+}
+
+/**
+ * Resolve the two-version view model for the editor.
+ *
+ * The polish pipeline writes a new current ChapterDraft whose generationContext
+ * stores originalDraftId. That pointer is more reliable than simply taking the
+ * previous version because postprocess/repair flows may also create drafts.
+ */
+function buildDraftViewPair(versions: ChapterDraft[]) {
+  const sorted = [...versions].sort((a, b) => b.versionNo - a.versionNo);
+  const current = sorted.find((item) => item.isCurrent) ?? sorted[0];
+  const latestPolished = sorted.find(isPolishedDraft);
+  const polished = current && isPolishedDraft(current) ? current : latestPolished;
+  const originalDraftId = typeof polished?.generationContext?.originalDraftId === 'string'
+    ? polished.generationContext.originalDraftId
+    : undefined;
+
+  return {
+    draft: originalDraftId
+      ? sorted.find((item) => item.id === originalDraftId) ?? sorted.find((item) => !isPolishedDraft(item)) ?? current
+      : sorted.find((item) => !isPolishedDraft(item)) ?? current,
+    polished,
+  };
+}
+
+/** A draft is considered polished when it was created by the polish pipeline. */
+function isPolishedDraft(draft: ChapterDraft) {
+  return draft.source === 'agent_polish' || draft.generationContext?.type === 'polish';
+}
+
+function countDraftWords(draft?: ChapterDraft) {
+  return draft?.content.replace(/\s/g, '').length ?? 0;
+}
+
+/** Compact tabs shown above the manuscript, matching the user's 草稿 / 润色 sketch. */
+function DraftVersionTabs({
+  activeMode,
+  draft,
+  polished,
+  onSwitch,
+}: {
+  activeMode: DraftViewMode;
+  draft?: ChapterDraft;
+  polished?: ChapterDraft;
+  onSwitch: (mode: DraftViewMode) => void;
+}) {
+  return (
+    <div className="draft-version-tabs" role="tablist" aria-label="章节正文版本">
+      <DraftVersionTab
+        mode="draft"
+        label="草稿"
+        hint="原稿"
+        active={activeMode === 'draft'}
+        draft={draft}
+        onSwitch={onSwitch}
+      />
+      <DraftVersionTab
+        mode="polished"
+        label="润色"
+        hint="AI润色后"
+        active={activeMode === 'polished'}
+        draft={polished}
+        onSwitch={onSwitch}
+      />
+    </div>
+  );
+}
+
+function DraftVersionTab({
+  mode,
+  label,
+  hint,
+  active,
+  draft,
+  onSwitch,
+}: {
+  mode: DraftViewMode;
+  label: string;
+  hint: string;
+  active: boolean;
+  draft?: ChapterDraft;
+  onSwitch: (mode: DraftViewMode) => void;
+}) {
+  const disabled = !draft;
+
+  return (
+    <button
+      type="button"
+      role="tab"
+      aria-selected={active}
+      disabled={disabled}
+      className={`draft-version-tab ${active ? 'draft-version-tab--active' : ''}`}
+      onClick={() => onSwitch(mode)}
+      title={disabled ? `暂无${label}版本` : `${hint} · v${draft.versionNo}`}
+    >
+      <span className="draft-version-tab__label">{label}</span>
+      <span className="draft-version-tab__meta">
+        {draft ? `v${draft.versionNo} · ${countDraftWords(draft).toLocaleString()}字` : '暂无'}
+      </span>
+    </button>
   );
 }
 

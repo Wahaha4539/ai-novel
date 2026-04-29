@@ -138,6 +138,15 @@ async function fetchLatestDraft(chapterId: string): Promise<ChapterDraft | null>
   }
 }
 
+/** Fetch all draft versions so the editor can show original vs polished text. */
+async function fetchDraftVersions(chapterId: string): Promise<ChapterDraft[]> {
+  try {
+    return await apiFetch<ChapterDraft[]>(`/chapters/${chapterId}/drafts/all`);
+  } catch {
+    return [];
+  }
+}
+
 /** 输出带 jobId 和步骤名的调试日志，便于定位批量生成在哪一章/哪一步中断。 */
 function logGenerationStep(step: string, context: GenerationLogContext, extra?: Record<string, unknown>) {
   console.info('[chapter-generation]', {
@@ -320,6 +329,11 @@ export function useChapterGeneration() {
     return draft;
   }, []);
 
+  /** Load all draft versions for comparison UI such as 草稿/润色 switching. */
+  const loadDraftVersions = useCallback(async (chapterId: string) => {
+    return fetchDraftVersions(chapterId);
+  }, []);
+
   /**
    * Polish an existing chapter draft.
    * Calls the polish endpoint and returns the polished text.
@@ -352,5 +366,6 @@ export function useChapterGeneration() {
     cancel,
     reset,
     loadDraft,
+    loadDraftVersions,
   };
 }

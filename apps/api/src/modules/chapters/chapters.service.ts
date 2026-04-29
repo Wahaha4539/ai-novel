@@ -66,6 +66,8 @@ export class ChaptersService {
   /**
    * Return all draft versions for a chapter, ordered newest first.
    * Used by the frontend to show draft history / version switching.
+   * generationContext is intentionally exposed so the editor can link a polished
+   * draft back to the exact source draft that was polished.
    */
   async listDrafts(chapterId: string) {
     return this.prisma.chapterDraft.findMany({
@@ -78,6 +80,7 @@ export class ChaptersService {
         content: true,
         source: true,
         modelInfo: true,
+        generationContext: true,
         isCurrent: true,
         createdAt: true,
       },
