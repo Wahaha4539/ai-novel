@@ -28,6 +28,7 @@ import { ValidateImportedAssetsTool } from './tools/validate-imported-assets.too
 import { ValidateOutlineTool } from './tools/validate-outline.tool';
 import { ValidateWorldbuildingTool } from './tools/validate-worldbuilding.tool';
 import { WriteChapterTool } from './tools/write-chapter.tool';
+import { WriteChapterSeriesTool } from './tools/write-chapter-series.tool';
 
 /**
  * Agent 工具白名单注册表。所有可执行 Tool 都必须在这里注册，
@@ -46,6 +47,7 @@ export class ToolRegistryService implements OnModuleInit {
     private readonly collectChapterContextTool: CollectChapterContextTool,
     private readonly collectTaskContextTool: CollectTaskContextTool,
     private readonly writeChapterTool: WriteChapterTool,
+    private readonly writeChapterSeriesTool: WriteChapterSeriesTool,
     private readonly postProcessChapterTool: PostProcessChapterTool,
     private readonly polishChapterTool: PolishChapterTool,
     private readonly factValidationTool: FactValidationTool,
@@ -75,6 +77,7 @@ export class ToolRegistryService implements OnModuleInit {
     this.register(this.collectChapterContextTool);
     this.register(this.collectTaskContextTool);
     this.register(this.writeChapterTool);
+    this.register(this.writeChapterSeriesTool);
     this.register(this.postProcessChapterTool);
     this.register(this.polishChapterTool);
     this.register(this.factValidationTool);

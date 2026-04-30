@@ -26,6 +26,7 @@ import { ValidateWorldbuildingTool } from '../agent-tools/tools/validate-worldbu
 import { PersistWorldbuildingTool } from '../agent-tools/tools/persist-worldbuilding.tool';
 import { RelationshipGraphService } from '../agent-tools/relationship-graph.service';
 import { FactExtractorService } from '../facts/fact-extractor.service';
+import { WriteChapterSeriesTool } from '../agent-tools/tools/write-chapter-series.tool';
 
 type TestCase = { name: string; run: () => void | Promise<void> };
 
@@ -1124,6 +1125,84 @@ test('Planner 为 write_chapter 强制追加章节质量门禁链路', () => {
   assert.equal(plan.steps[3].args.draftId, '{{runtime.currentDraftId}}');
   assert.deepEqual(plan.steps[6].runIf, { ref: '{{steps.5.output.createdCount}}', operator: 'gt', value: 0 });
   assert.equal(plan.steps[8].args.issues, '{{steps.8.output.issues}}');
+});
+
+test('Planner 支持多章写作任务并保持 write_chapter_series 为单步批量工具', () => {
+  const toolNames = ['write_chapter_series', 'write_chapter', 'polish_chapter', 'fact_validation', 'auto_repair_chapter', 'extract_chapter_facts', 'rebuild_memory', 'review_memory'];
+  const tools = { list: () => toolNames.map((name) => createTool({ name, requiresApproval: true, sideEffects: ['write'] })) } as unknown as ToolRegistryService;
+  const planner = new AgentPlannerService(new SkillRegistryService(), tools, new RuleEngineService(), {} as LlmGatewayService) as unknown as {
+    validateAndNormalizeLlmPlan: (data: unknown, baseline: { taskType: string; summary: string; assumptions: string[]; risks: string[] }) => { taskType: string; steps: Array<{ tool: string; args: Record<string, unknown> }> };
+  };
+
+  const plan = planner.validateAndNormalizeLlmPlan(
+    {
+      taskType: 'multi_chapter_write',
+      summary: '连续写三章',
+      assumptions: [],
+      risks: [],
+      steps: [{ stepNo: 1, name: '连续生成多章', tool: 'write_chapter_series', mode: 'act', requiresApproval: true, args: { startChapterNo: 3, endChapterNo: 5, instruction: '保持剧情连续，压迫感强一点' } }],
+    },
+    { taskType: 'general', summary: 'fallback', assumptions: [], risks: [] },
+  );
+
+  assert.equal(plan.taskType, 'multi_chapter_write');
+  assert.deepEqual(plan.steps.map((step) => step.tool), ['write_chapter_series']);
+  assert.equal(plan.steps[0].args.endChapterNo, 5);
+});
+
+test('WriteChapterSeriesTool 按章节升序连续生成并限制批量数量', async () => {
+  const generatedChapterIds: string[] = [];
+  const pipelineCalls: string[] = [];
+  const prisma = {
+    chapter: {
+      async findMany() {
+        return [
+          { id: 'c3', chapterNo: 3, title: '三' },
+          { id: 'c4', chapterNo: 4, title: '四' },
+        ];
+      },
+    },
+  };
+  const generateChapter = {
+    async run(_projectId: string, chapterId: string) {
+      generatedChapterIds.push(chapterId);
+      return { draftId: `d-${chapterId}`, chapterId, versionNo: 1, actualWordCount: 1200, summary: `summary-${chapterId}` };
+    },
+  };
+  const polish = { async run(args: Record<string, unknown>) { pipelineCalls.push(`polish:${args.chapterId}:${args.draftId}`); return { chapterId: args.chapterId, draftId: `p-${args.chapterId}`, polishedWordCount: 1200 }; } };
+  const validation = { async run(args: Record<string, unknown>) { pipelineCalls.push(`validation:${args.chapterId}`); return { deletedCount: 0, createdCount: 0, factCounts: {}, issues: [] }; } };
+  const repair = { async run(args: Record<string, unknown>) { pipelineCalls.push(`repair:${args.chapterId}:${args.draftId}`); return { chapterId: args.chapterId, draftId: args.draftId, repairedWordCount: 1200 }; } };
+  const facts = { async run(args: Record<string, unknown>) { pipelineCalls.push(`facts:${args.chapterId}:${args.draftId}`); return { chapterId: args.chapterId, draftId: args.draftId, summary: '事实', createdEvents: 1, createdCharacterStates: 0, createdForeshadows: 0, createdMemoryChunks: 1, pendingReviewMemoryChunks: 0 }; } };
+  const memory = { async run(args: Record<string, unknown>) { pipelineCalls.push(`memory:${args.chapterId}:${args.draftId}`); return { createdCount: 1, deletedCount: 0, embeddingAttachedCount: 0, chunks: [] }; } };
+  const review = { async run(args: Record<string, unknown>) { pipelineCalls.push(`review:${args.chapterId}`); return { reviewedCount: 0, confirmedCount: 0, rejectedCount: 0, skippedCount: 0, decisions: [] }; } };
+  const tool = new WriteChapterSeriesTool(prisma as never, generateChapter as never, polish as never, validation as never, repair as never, facts as never, memory as never, review as never);
+
+  const result = await tool.run({ startChapterNo: 3, endChapterNo: 4, instruction: '连续写两章' }, { agentRunId: 'run1', projectId: 'p1', mode: 'act', approved: true, outputs: {}, policy: {} });
+
+  assert.deepEqual(generatedChapterIds, ['c3', 'c4']);
+  assert.deepEqual(pipelineCalls, [
+    'polish:c3:d-c3',
+    'validation:c3',
+    'repair:c3:p-c3',
+    'facts:c3:p-c3',
+    'memory:c3:p-c3',
+    'review:c3',
+    'polish:c4:d-c4',
+    'validation:c4',
+    'repair:c4:p-c4',
+    'facts:c4:p-c4',
+    'memory:c4:p-c4',
+    'review:c4',
+  ]);
+  assert.equal(result.total, 2);
+  assert.equal(result.succeeded, 2);
+  assert.equal(result.failed, 0);
+  assert.deepEqual(result.chapters.map((item) => item.draftId), ['p-c3', 'p-c4']);
+  assert.ok(result.chapters.every((item) => item.pipeline?.facts && item.pipeline.memory && item.pipeline.memoryReview));
+  await assert.rejects(
+    () => tool.run({ startChapterNo: 1, endChapterNo: 6, instruction: '太多章' }, { agentRunId: 'run1', projectId: 'p1', mode: 'act', approved: true, outputs: {}, policy: {} }),
+    /最多允许 5 章/,
+  );
 });
 
 test('Executor 使用运行时最新草稿指针并跳过无问题的二次修复链路', async () => {

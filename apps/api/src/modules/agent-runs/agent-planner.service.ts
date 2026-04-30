@@ -134,6 +134,7 @@ export class AgentPlannerService {
             availableTaskTypes,
             taskTypeGuidance: {
               chapter_write: '写某一章正文、章节内容、目标字数、续写正文。',
+              multi_chapter_write: '连续生成多章正文，例如接下来三章、第 1-5 章、多个指定章节；应优先使用 write_chapter_series，不要展开多个 write_chapter。默认设置 qualityPipeline=full，除非用户明确要求只要草稿。',
               chapter_polish: '润色、修改、改稿、优化文风、去 AI 味。',
               outline_design: '设计大纲、拆卷、拆成/分成多章、章节规划。',
               project_import_preview: '拆解导入文案、生成角色/世界观/项目资料。',
@@ -199,6 +200,7 @@ export class AgentPlannerService {
             'taskType 由 userGoal 语义决定；不要依赖后端关键词分类。',
             'steps[].mode 是后端计划步骤字段，固定填 act；Plan/Act 运行时模式由后端注入，不由 LLM 决定。',
             '引用前序步骤输出时，完整对象用 {{steps.N.output}}，对象字段用 {{steps.N.output.field}}；不要把对象序列化成字符串。',
+            '连续生成多章正文时必须使用 write_chapter_series；不要把多个 write_chapter 展开为多套步骤。',
             '如果无法安全修复，仍必须输出符合 outputContract 的最小安全计划。',
           ].join('\n'),
         },

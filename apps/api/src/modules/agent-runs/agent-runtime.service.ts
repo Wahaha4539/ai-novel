@@ -577,7 +577,8 @@ export class AgentRuntimeService {
       ];
     }
 
-    if (taskType === 'chapter_write') {
+    if (taskType === 'chapter_write' || taskType === 'multi_chapter_write') {
+      const series = this.latestOutputByTools(outputs, steps, ['write_chapter_series']);
       const draft = this.latestOutputByTools(outputs, steps, ['auto_repair_chapter', 'polish_chapter', 'postprocess_chapter', 'write_chapter']);
       const validation = this.latestOutputByTools(outputs, steps, ['fact_validation']);
       const autoRepair = this.latestOutputByTools(outputs, steps, ['auto_repair_chapter']);
@@ -585,6 +586,7 @@ export class AgentRuntimeService {
       const memory = this.latestOutputByTools(outputs, steps, ['rebuild_memory']);
       const memoryReview = this.latestOutputByTools(outputs, steps, ['review_memory']);
       return [
+        ...(series ? [{ artifactType: 'chapter_series_result', title: '多章连续生成结果', content: series }] : []),
         ...(draft ? [{ artifactType: 'chapter_generation_quality_report', title: '生成前、生成后与召回质量报告', content: { preflight: this.readPath(draft, ['preflight']), qualityGate: this.readPath(draft, ['qualityGate']), retrievalDiagnostics: this.readPath(draft, ['retrievalPayload', 'diagnostics']) } }] : []),
         ...(draft ? [{ artifactType: 'chapter_draft_result', title: '章节草稿结果', content: draft }] : []),
         ...(validation ? [{ artifactType: 'fact_validation_report', title: '事实校验报告', content: validation }] : []),
