@@ -154,7 +154,7 @@ export function LlmProviderPanel() {
                 onTest={llm.testConnectivity}
                 onSetDefault={(id) => llm.updateProvider(id, { isDefault: true })}
                 isTesting={llm.testingId === p.id}
-                testResult={llm.testingId === null && llm.testedProviderId === p.id ? llm.testResult : null}
+                testResult={llm.testingId === null && llm.testResult ? llm.testResult : null}
               />
             ))}
           </div>

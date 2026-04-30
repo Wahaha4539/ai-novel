@@ -790,12 +790,11 @@ ${schema}
       }
 
       case 'guided_characters': {
-        // Create Character records
+        // 角色通常一次生成多条，批量插入可减少数据库往返。
         const characters = structuredData.characters as Array<Record<string, unknown>> | undefined;
         if (characters?.length) {
-          for (const char of characters) {
-            await this.prisma.character.create({
-              data: {
+          await this.prisma.character.createMany({
+            data: characters.map((char) => ({
                 projectId,
                 name: asString(char.name) ?? '未命名角色',
                 roleType: asString(char.roleType),
@@ -804,9 +803,8 @@ ${schema}
                 backstory: asString(char.backstory),
                 scope: 'global',
                 source: 'guided',
-              },
-            });
-          }
+            })),
+          });
           written.push(`Character × ${characters.length}`);
         }
         break;
@@ -828,22 +826,20 @@ ${schema}
         // Replace all existing volumes for this project (delete-then-create)
         const volumes = structuredData.volumes as Array<Record<string, unknown>> | undefined;
         if (volumes?.length) {
-          // Delete old volumes first to prevent duplicates
-          await this.prisma.volume.deleteMany({ where: { projectId } });
-
-          for (let i = 0; i < volumes.length; i++) {
-            const vol = volumes[i];
-            await this.prisma.volume.create({
-              data: {
+          // 先删除再批量写入，并放在同一事务里，避免中途失败留下空卷纲。
+          await this.prisma.$transaction([
+            this.prisma.volume.deleteMany({ where: { projectId } }),
+            this.prisma.volume.createMany({
+              data: volumes.map((vol, index) => ({
                 projectId,
-                volumeNo: (vol.volumeNo as number) ?? i + 1,
+                volumeNo: (vol.volumeNo as number | undefined) ?? index + 1,
                 title: asString(vol.title),
                 synopsis: asString(vol.synopsis),
                 objective: asString(vol.objective),
                 status: 'planned',
-              },
-            });
-          }
+              })),
+            }),
+          ]);
           written.push(`Volume × ${volumes.length}`);
         }
         break;
@@ -887,25 +883,24 @@ ${schema}
             chapterNoOffset = maxChapter._max.chapterNo ?? 0;
           }
 
-          for (let i = 0; i < chapters.length; i++) {
-            const ch = chapters[i];
-            const chVolumeNo = ch.volumeNo as number | undefined;
-            const resolvedVolumeId = chVolumeNo ? volumeNoToId.get(chVolumeNo) ?? null : null;
+          await this.prisma.chapter.createMany({
+            data: chapters.map((ch, index) => {
+              const chVolumeNo = ch.volumeNo as number | undefined;
+              const resolvedVolumeId = chVolumeNo ? volumeNoToId.get(chVolumeNo) ?? null : null;
 
-            await this.prisma.chapter.create({
-              data: {
+              return {
                 projectId,
                 volumeId: resolvedVolumeId,
                 // Use offset + sequential index to ensure global uniqueness
-                chapterNo: chapterNoOffset + i + 1,
+                chapterNo: chapterNoOffset + index + 1,
                 title: asString(ch.title),
                 objective: asString(ch.objective),
                 conflict: asString(ch.conflict),
                 outline: asString(ch.outline),
                 status: 'planned',
-              },
-            });
-          }
+              };
+            }),
+          });
           written.push(`Chapter × ${chapters.length}`);
         }
 
@@ -920,9 +915,8 @@ ${schema}
             });
           }
 
-          for (const char of chapterSupportChars) {
-            await this.prisma.character.create({
-              data: {
+          await this.prisma.character.createMany({
+            data: chapterSupportChars.map((char) => ({
                 projectId,
                 name: asString(char.name) ?? '未命名配角',
                 roleType: asString(char.roleType) ?? 'supporting',
@@ -932,9 +926,8 @@ ${schema}
                 // Use volume-specific scope so we can manage per-volume
                 scope: volumeNo ? `volume_${volumeNo}` : 'chapter',
                 source: 'guided_chapter',
-              },
-            });
-          }
+            })),
+          });
           written.push(`Character(supporting) × ${chapterSupportChars.length}`);
         }
         break;
@@ -951,9 +944,8 @@ ${schema}
             where: { projectId, source: 'guided' },
           });
 
-          for (const track of tracks) {
-            await this.prisma.foreshadowTrack.create({
-              data: {
+          await this.prisma.foreshadowTrack.createMany({
+            data: tracks.map((track) => ({
                 projectId,
                 title: asString(track.title) ?? '未命名伏笔',
                 detail: asString(track.detail),
@@ -967,9 +959,8 @@ ${schema}
                   involvedCharacters: asString(track.involvedCharacters),
                   payoff: asString(track.payoff),
                 },
-              },
-            });
-          }
+            })),
+          });
           written.push(`ForeshadowTrack × ${tracks.length}`);
         }
         break;

@@ -232,6 +232,7 @@ model Character {
   project           Project  @relation(fields: [projectId], references: [id], onDelete: Cascade)
 
   @@index([projectId, name])
+  @@index([projectId, source, scope], map: "Character_project_source_scope_idx")
 }
 
 model LorebookEntry {
@@ -297,6 +298,7 @@ model ChapterDraft {
   chapter           Chapter  @relation(fields: [chapterId], references: [id], onDelete: Cascade)
 
   @@unique([chapterId, versionNo])
+  @@index([chapterId, isCurrent, versionNo], map: "ChapterDraft_chapter_current_version_idx")
 }
 
 model MemoryChunk {
@@ -322,6 +324,8 @@ model MemoryChunk {
 
   @@index([projectId, memoryType, status])
   @@index([projectId, sourceType, sourceId])
+  @@index([projectId, status], map: "MemoryChunk_project_status_idx")
+  @@index([projectId, status, importanceScore, recencyScore, updatedAt], map: "MemoryChunk_project_status_rank_idx")
 }
 
 model StoryEvent {
@@ -344,6 +348,7 @@ model StoryEvent {
 
   @@index([projectId, chapterNo])
   @@index([projectId, eventType])
+  @@index([projectId, chapterId, sourceDraftId], map: "StoryEvent_project_chapter_draft_idx")
 }
 
 model CharacterStateSnapshot {
@@ -366,6 +371,7 @@ model CharacterStateSnapshot {
 
   @@index([projectId, characterName, chapterNo])
   @@index([projectId, status])
+  @@index([projectId, chapterId, sourceDraftId], map: "CharacterStateSnapshot_project_chapter_draft_idx")
 }
 
 model ForeshadowTrack {
@@ -389,6 +395,8 @@ model ForeshadowTrack {
 
   @@index([projectId, title])
   @@index([projectId, status])
+  @@index([projectId, source], map: "ForeshadowTrack_project_source_idx")
+  @@index([projectId, chapterId, sourceDraftId], map: "ForeshadowTrack_project_chapter_draft_idx")
 }
 
 
@@ -408,6 +416,9 @@ model ValidationIssue {
   resolvedAt  DateTime?
   project     Project             @relation(fields: [projectId], references: [id], onDelete: Cascade)
   chapter     Chapter?            @relation(fields: [chapterId], references: [id], onDelete: SetNull)
+
+  @@index([projectId, status, createdAt], map: "ValidationIssue_project_status_created_idx")
+  @@index([chapterId, status, createdAt], map: "ValidationIssue_chapter_status_created_idx")
 }
 
 model GenerationJob {
@@ -428,6 +439,9 @@ model GenerationJob {
   createdAt        DateTime  @default(now())
   project          Project   @relation(fields: [projectId], references: [id], onDelete: Cascade)
   chapter          Chapter?  @relation(fields: [chapterId], references: [id], onDelete: SetNull)
+
+  @@index([status, createdAt], map: "GenerationJob_status_created_idx")
+  @@index([projectId, jobType, targetType, targetId, status, createdAt], map: "GenerationJob_active_lookup_idx")
 }
 
 model Volume {
@@ -465,6 +479,7 @@ model PromptTemplate {
 
   @@unique([projectId, stepKey, name])
   @@index([stepKey, isDefault])
+  @@index([projectId, stepKey, isDefault], map: "PromptTemplate_project_step_default_idx")
 }
 
 model GuidedSession {
