@@ -10,6 +10,7 @@ import {
   ValidationIssue,
   RebuildResult,
   ValidationRunResult,
+  ChapterDraft,
 } from '../types/dashboard';
 
 const API_BASE = process.env.NEXT_PUBLIC_API_BASE_URL ?? 'http://127.0.0.1:3001/api';
@@ -40,6 +41,17 @@ type ChapterCompletionResult = {
   actualWordCount?: number | null;
 };
 
+function isPolishedDraft(draft?: ChapterDraft | null) {
+  return draft?.source === 'agent_polish' || draft?.generationContext?.type === 'polish';
+}
+
+class ApiRequestError extends Error {
+  constructor(public readonly status: number, message: string) {
+    super(message);
+    this.name = 'ApiRequestError';
+  }
+}
+
 async function apiFetch<T>(path: string, init?: RequestInit): Promise<T> {
   const response = await fetch(`${API_BASE}${path}`, {
     ...init,
@@ -52,7 +64,7 @@ async function apiFetch<T>(path: string, init?: RequestInit): Promise<T> {
 
   if (!response.ok) {
     const text = await response.text();
-    throw new Error(text || `请求失败: ${response.status}`);
+    throw new ApiRequestError(response.status, text || `请求失败: ${response.status}`);
   }
 
   return (await response.json()) as T;
@@ -129,16 +141,30 @@ export function useDashboardData() {
     setLoading(true);
     setError('');
     try {
-      const [dashboardData, eventData, stateData, foreshadowData, reviewData, acceptedMemoryData, validationData, volumeData] = await Promise.all([
-        apiFetch<DashboardPayload>(`/projects/${projectId}/memory/dashboard${query}`),
-        apiFetch<StoryEventItem[]>(`/projects/${projectId}/story-events${query}`),
-        apiFetch<CharacterStateItem[]>(`/projects/${projectId}/character-state-snapshots${query}`),
-        apiFetch<ForeshadowItem[]>(`/projects/${projectId}/foreshadow-tracks${query}`),
-        apiFetch<ReviewItem[]>(`/projects/${projectId}/memory/reviews${query}`),
-        apiFetch<ReviewItem[]>(`/projects/${projectId}/memory/reviews${acceptedMemoryQuery}`),
-        apiFetch<ValidationIssue[]>(`/projects/${projectId}/validation-issues${query}`),
-        apiFetch<VolumeSummary[]>(`/projects/${projectId}/volumes`),
+      const dashboardData = await apiFetch<DashboardPayload>(`/projects/${projectId}/memory/dashboard${query}`);
+      const optionalFailures: string[] = [];
+
+      // Dashboard 是主数据源；附加面板失败时复用主响应中的数据，避免单个列表接口 503 让整页不可用。
+      const safeFetch = async <T,>(label: string, path: string, fallback: T): Promise<T> => {
+        try {
+          return await apiFetch<T>(path);
+        } catch (error) {
+          if (!(error instanceof ApiRequestError) || error.status !== 503) throw error;
+          optionalFailures.push(label);
+          return fallback;
+        }
+      };
+
+      const [eventData, stateData, foreshadowData, reviewData, acceptedMemoryData, validationData, volumeData] = await Promise.all([
+        safeFetch<StoryEventItem[]>('剧情事件', `/projects/${projectId}/story-events${query}`, dashboardData.storyEvents ?? []),
+        safeFetch<CharacterStateItem[]>('角色状态', `/projects/${projectId}/character-state-snapshots${query}`, dashboardData.characterStateSnapshots ?? []),
+        safeFetch<ForeshadowItem[]>('伏笔轨迹', `/projects/${projectId}/foreshadow-tracks${query}`, dashboardData.foreshadowTracks ?? []),
+        safeFetch<ReviewItem[]>('待审核记忆', `/projects/${projectId}/memory/reviews${query}`, dashboardData.reviewQueue ?? []),
+        safeFetch<ReviewItem[]>('已采纳记忆', `/projects/${projectId}/memory/reviews${acceptedMemoryQuery}`, []),
+        safeFetch<ValidationIssue[]>('校验问题', `/projects/${projectId}/validation-issues${query}`, dashboardData.validationIssues ?? []),
+        safeFetch<VolumeSummary[]>('卷列表', `/projects/${projectId}/volumes`, dashboardData.volumes ?? []),
       ]);
+      const degradedSections = dashboardData.diagnostics?.partialFailures?.map((item) => item.section) ?? [];
 
       setDashboard(dashboardData);
       setStoryEvents(eventData);
@@ -148,6 +174,9 @@ export function useDashboardData() {
       setAcceptedMemories(acceptedMemoryData);
       setValidationIssues(validationData);
       setVolumes(volumeData);
+      if (degradedSections.length || optionalFailures.length) {
+        setActionMessage(`部分面板暂时不可用：${[...degradedSections, ...optionalFailures].join('、')}。其余数据已正常加载。`);
+      }
     } catch (loadError) {
       setError(loadError instanceof Error ? loadError.message : '加载失败');
     } finally {
@@ -349,6 +378,19 @@ export function useDashboardData() {
       body: JSON.stringify({ userInstruction }),
     });
 
+    const loadCurrentDraftVersion = async (chapterId: string) => {
+      const versions = await apiFetch<ChapterDraft[]>(`/chapters/${chapterId}/drafts/all`);
+      return versions.find((item) => item.isCurrent) ?? versions[0] ?? null;
+    };
+
+    const polishChapterIfNeeded = async (chapterId: string, userInstruction: string) => {
+      const currentDraft = await loadCurrentDraftVersion(chapterId);
+      // 生成主链路已经会产出 agent_polish 当前稿；维护链只在当前稿不是润色稿时补跑，
+      // 避免用户点击“AI审核”时把已稳定正文再次润色成 v3/v4。
+      if (isPolishedDraft(currentDraft)) return null;
+      return polishChapter(chapterId, userInstruction);
+    };
+
     const reviewStableMemories = async (chapterId?: string) => apiFetch<AiReviewResolveResult>(`/projects/${selectedProjectId}/memory/reviews/ai-resolve`, {
       method: 'POST',
       body: JSON.stringify({ chapterId }),
@@ -358,7 +400,7 @@ export function useDashboardData() {
     try {
       if (targetChapterIds.length) {
         for (const chapterId of targetChapterIds) {
-          await polishChapter(chapterId, '请在不改变剧情事实、人物关系和章节主线结果的前提下，润色当前章节正文：提升句子流畅度、画面感、节奏和衔接，修正明显语病与重复表达。直接输出润色后的完整章节正文，不要添加说明。');
+          await polishChapterIfNeeded(chapterId, '请在不改变剧情事实、人物关系和章节主线结果的前提下，润色当前章节正文：提升句子流畅度、画面感、节奏和衔接，修正明显语病与重复表达。直接输出润色后的完整章节正文，不要添加说明。');
         }
       }
 

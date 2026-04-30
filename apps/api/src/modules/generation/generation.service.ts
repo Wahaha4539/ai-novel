@@ -13,6 +13,8 @@ import { GenerateChapterService } from './generate-chapter.service';
 import { PolishChapterService } from './polish-chapter.service';
 import { PostProcessChapterService } from './postprocess-chapter.service';
 
+const AUTO_POLISH_INSTRUCTION = '请在不改变剧情事实、人物关系、时间线和章节主线结果的前提下，润色当前章节正文：提升句子流畅度、画面感、节奏和衔接，修正明显语病与重复表达。直接输出润色后的完整章节正文，不要添加说明。';
+
 @Injectable()
 export class GenerationService {
   private readonly logger = new StructuredLogger(GenerationService.name);
@@ -64,14 +66,18 @@ export class GenerationService {
         validateBeforeWrite: dto.validateBeforeWrite,
       });
       const postprocess = await this.postProcessChapterService.run(chapter.projectId, chapterId, draft.draftId);
-      const facts = await this.factExtractorService.extractChapterFacts(chapter.projectId, chapterId, postprocess.draftId);
+      // “完整生成流程”的最终正文应是润色稿；事实抽取、校验和记忆重建都必须基于最终稿，
+      // 否则 UI 会只有草稿版本，右侧事实层也可能记录未润色的中间文本。
+      const polish = await this.polishChapterService.run(chapter.projectId, chapterId, AUTO_POLISH_INSTRUCTION, postprocess.draftId);
+      const finalDraftId = polish.draftId;
+      const facts = await this.factExtractorService.extractChapterFacts(chapter.projectId, chapterId, finalDraftId);
       const validation = dto.validateAfterWrite === false ? { skipped: true } : await this.validationService.runFactRules(chapter.projectId, chapterId);
-      const memory = await this.memoryRebuildService.rebuildChapter(chapter.projectId, chapterId, postprocess.draftId);
+      const memory = await this.memoryRebuildService.rebuildChapter(chapter.projectId, chapterId, finalDraftId);
       const memoryReview = await this.memoryReviewService.reviewPending(chapter.projectId, chapterId);
 
-      const responsePayload = { draft, postprocess, facts, validation, memory, memoryReview };
+      const responsePayload = { draft, postprocess, polish, facts, validation, memory, memoryReview };
       await this.jobsService.markCompleted(job.id, responsePayload, draft.retrievalPayload);
-      this.logger.log('generation.job.completed', { ...logContext, draftId: postprocess.draftId, actualWordCount: postprocess.actualWordCount });
+      this.logger.log('generation.job.completed', { ...logContext, draftId: finalDraftId, originalDraftId: draft.draftId, polishedWordCount: polish.polishedWordCount });
       return this.jobsService.getById(job.id);
     } catch (error) {
       await this.jobsService.markFailed(job.id, error instanceof Error ? error.message : 'unknown_generation_error');

@@ -1,4 +1,5 @@
-import { Injectable, NotFoundException } from '@nestjs/common';
+import { Injectable, Logger, NotFoundException, ServiceUnavailableException } from '@nestjs/common';
+import { Prisma } from '@prisma/client';
 import { NovelCacheService } from '../../common/cache/novel-cache.service';
 import { PrismaService } from '../../prisma/prisma.service';
 import { LlmService } from '../guided/llm.service';
@@ -80,6 +81,12 @@ type MemoryChunkRow = {
   updatedAt: Date;
 };
 
+type DashboardPartialFailure = {
+  section: string;
+  message: string;
+  code?: string;
+};
+
 type PrismaFactsClient = {
   storyEvent: {
     findMany(args: unknown): Promise<StoryEventRow[]>;
@@ -102,6 +109,8 @@ type AiReviewDecision = {
 
 @Injectable()
 export class MemoryService {
+  private readonly logger = new Logger(MemoryService.name);
+
   constructor(
     private readonly prisma: PrismaService,
     private readonly cacheService: NovelCacheService,
@@ -113,6 +122,116 @@ export class MemoryService {
 
   private get prismaFacts(): PrismaFactsClient {
     return this.prisma as unknown as PrismaFactsClient;
+  }
+
+  /**
+   * Detect Prisma errors that mean the database connection itself is unavailable.
+   * Query/schema bugs are intentionally excluded so real defects still surface as failures.
+   */
+  private isPrismaConnectionError(error: unknown) {
+    if (error instanceof Prisma.PrismaClientKnownRequestError && ['P1001', 'P2024'].includes(error.code)) {
+      return true;
+    }
+    if (error instanceof Prisma.PrismaClientInitializationError) {
+      return true;
+    }
+
+    const record = this.asRecord(error);
+    const code = typeof record.code === 'string' ? record.code : undefined;
+    const name = typeof record.name === 'string' ? record.name : undefined;
+    const message = error instanceof Error ? error.message : '';
+
+    return (
+      code === 'P1001' ||
+      code === 'P2024' ||
+      name === 'PrismaClientInitializationError' ||
+      /Can't reach database server|ECONNREFUSED|ETIMEDOUT|ENOTFOUND|Timed out fetching a new connection/i.test(message)
+    );
+  }
+
+  private getPrismaErrorCode(error: unknown) {
+    const code = this.asRecord(error).code;
+    return typeof code === 'string' ? code : undefined;
+  }
+
+  private isDatabaseUnavailableHttpError(error: unknown) {
+    if (!(error instanceof ServiceUnavailableException)) return false;
+    const response = this.asRecord(error.getResponse());
+    return response.code === 'DATABASE_UNAVAILABLE';
+  }
+
+  private getDatabaseFailureCode(error: unknown) {
+    if (error instanceof ServiceUnavailableException) {
+      const response = this.asRecord(error.getResponse());
+      const prismaCode = typeof response.prismaCode === 'string' ? response.prismaCode : undefined;
+      const code = typeof response.code === 'string' ? response.code : undefined;
+      return prismaCode ?? code;
+    }
+    return this.getPrismaErrorCode(error);
+  }
+
+  private getErrorMessage(error: unknown) {
+    if (error instanceof ServiceUnavailableException) {
+      const response = error.getResponse();
+      if (typeof response === 'string') return response;
+      const message = this.asRecord(response).message;
+      if (typeof message === 'string') return message;
+    }
+    return error instanceof Error ? error.message : '未知错误';
+  }
+
+  private toDatabaseUnavailableException(operation: string, error: unknown) {
+    const prismaCode = this.getPrismaErrorCode(error);
+    this.logger.warn(`${operation}失败：${this.getErrorMessage(error)}`);
+
+    return new ServiceUnavailableException({
+      message: `${operation}失败：数据库暂时不可达，请稍后重试。`,
+      code: 'DATABASE_UNAVAILABLE',
+      ...(prismaCode ? { prismaCode } : {}),
+    });
+  }
+
+  /**
+   * Wrap public read endpoints so transient database reachability issues become explicit 503 responses
+   * instead of leaking raw Prisma stack traces through Nest's default 500 handler.
+   */
+  private async runPrismaRead<T>(operation: string, reader: () => Promise<T>): Promise<T> {
+    try {
+      return await reader();
+    } catch (error) {
+      if (this.isPrismaConnectionError(error)) {
+        throw this.toDatabaseUnavailableException(operation, error);
+      }
+      throw error;
+    }
+  }
+
+  /**
+   * Dashboard is composed of independent panels; database hiccups in one panel should not blank the page.
+   * Only known connectivity failures are degraded to fallback data, preserving hard failures for code bugs.
+   */
+  private async resolveDashboardSection<T>(
+    section: string,
+    reader: () => Promise<T>,
+    fallback: T,
+    failures: DashboardPartialFailure[],
+  ): Promise<T> {
+    try {
+      return await reader();
+    } catch (error) {
+      if (!this.isPrismaConnectionError(error) && !this.isDatabaseUnavailableHttpError(error)) {
+        throw error;
+      }
+
+      const code = this.getDatabaseFailureCode(error);
+      failures.push({
+        section,
+        message: '数据库暂时不可达，该分区已降级为空结果。',
+        ...(code ? { code } : {}),
+      });
+      this.logger.warn(`memory.dashboard.${section}.degraded：${this.getErrorMessage(error)}`);
+      return fallback;
+    }
   }
 
   private asRecord(value: unknown) {
@@ -271,7 +390,7 @@ export class MemoryService {
     return this.retrievalService.benchmark(projectId, cases.filter((item) => item.query?.trim()));
   }
 
-  async listStoryEvents(projectId: string, chapterId?: string, query?: string, take = 50) {
+  private findStoryEvents(projectId: string, chapterId?: string, query?: string, take = 50) {
     return this.prismaFacts.storyEvent.findMany({
       where: {
         projectId,
@@ -290,7 +409,12 @@ export class MemoryService {
     });
   }
 
-  async listCharacterStateSnapshots(
+  /** 列出剧情事件；数据库不可达时返回明确 503，避免暴露 Prisma 原始异常。 */
+  async listStoryEvents(projectId: string, chapterId?: string, query?: string, take = 50) {
+    return this.runPrismaRead('读取剧情事件', () => this.findStoryEvents(projectId, chapterId, query, take));
+  }
+
+  private findCharacterStateSnapshots(
     projectId: string,
     chapterId?: string,
     status?: string,
@@ -319,7 +443,21 @@ export class MemoryService {
     });
   }
 
-  async listForeshadowTracks(projectId: string, chapterId?: string, status?: string, query?: string, take = 50) {
+  /** 列出角色状态快照；连接失败时返回 503，便于调用方展示可恢复错误。 */
+  async listCharacterStateSnapshots(
+    projectId: string,
+    chapterId?: string,
+    status?: string,
+    character?: string,
+    query?: string,
+    take = 50,
+  ) {
+    return this.runPrismaRead('读取角色状态快照', () =>
+      this.findCharacterStateSnapshots(projectId, chapterId, status, character, query, take),
+    );
+  }
+
+  private async findForeshadowTracks(projectId: string, chapterId?: string, status?: string, query?: string, take = 50) {
     const tracks = await this.prismaFacts.foreshadowTrack.findMany({
       where: {
         projectId,
@@ -344,7 +482,12 @@ export class MemoryService {
     }));
   }
 
-  async listReviewQueue(projectId: string, status = 'pending_review', memoryType?: string, chapterId?: string, query?: string) {
+  /** 列出伏笔轨迹；连接失败时返回 503，保持独立接口错误语义清晰。 */
+  async listForeshadowTracks(projectId: string, chapterId?: string, status?: string, query?: string, take = 50) {
+    return this.runPrismaRead('读取伏笔轨迹', () => this.findForeshadowTracks(projectId, chapterId, status, query, take));
+  }
+
+  private async findReviewQueue(projectId: string, status = 'pending_review', memoryType?: string, chapterId?: string, query?: string) {
     const items = (await this.prisma.memoryChunk.findMany({
       where: {
         projectId,
@@ -376,41 +519,69 @@ export class MemoryService {
     }));
   }
 
+  /** 列出记忆审核队列；数据库连接异常时以 503 明确表达可恢复的基础设施问题。 */
+  async listReviewQueue(projectId: string, status = 'pending_review', memoryType?: string, chapterId?: string, query?: string) {
+    return this.runPrismaRead('读取记忆审核队列', () => this.findReviewQueue(projectId, status, memoryType, chapterId, query));
+  }
+
+  /**
+   * 汇总记忆 Dashboard。各面板独立降级，防止单个事实层查询连接失败导致整个页面 500。
+   */
   async getDashboard(projectId: string, chapterId?: string) {
-    const project = await this.prisma.project.findUnique({
-      where: { id: projectId },
-      select: {
-        id: true,
-        title: true,
-        genre: true,
-        theme: true,
-        tone: true,
-        status: true,
-      },
-    });
+    const project = await this.runPrismaRead('读取项目概要', () =>
+      this.prisma.project.findUnique({
+        where: { id: projectId },
+        select: {
+          id: true,
+          title: true,
+          genre: true,
+          theme: true,
+          tone: true,
+          status: true,
+        },
+      }),
+    );
 
     if (!project) {
       throw new NotFoundException(`项目不存在：${projectId}`);
     }
 
+    const partialFailures: DashboardPartialFailure[] = [];
     const [chapters, storyEvents, characterStateSnapshots, foreshadowTracks, reviewQueue, validationIssues] =
       await Promise.all([
-        this.prisma.chapter.findMany({
-          where: { projectId },
-          orderBy: { chapterNo: 'asc' },
-        }),
-        this.listStoryEvents(projectId, chapterId, undefined, 30),
-        this.listCharacterStateSnapshots(projectId, chapterId, undefined, undefined, undefined, 30),
-        this.listForeshadowTracks(projectId, chapterId, undefined, undefined, 30),
-        this.listReviewQueue(projectId, 'pending_review', undefined, chapterId),
-        this.prisma.validationIssue.findMany({
-          where: {
-            projectId,
-            ...(chapterId ? { chapterId } : {}),
-          },
-          orderBy: { createdAt: 'desc' },
-          take: 50,
-        }),
+        this.resolveDashboardSection(
+          'chapters',
+          () =>
+            this.prisma.chapter.findMany({
+              where: { projectId },
+              orderBy: { chapterNo: 'asc' },
+            }),
+          [],
+          partialFailures,
+        ),
+        this.resolveDashboardSection('storyEvents', () => this.findStoryEvents(projectId, chapterId, undefined, 30), [], partialFailures),
+        this.resolveDashboardSection(
+          'characterStateSnapshots',
+          () => this.findCharacterStateSnapshots(projectId, chapterId, undefined, undefined, undefined, 30),
+          [],
+          partialFailures,
+        ),
+        this.resolveDashboardSection('foreshadowTracks', () => this.findForeshadowTracks(projectId, chapterId, undefined, undefined, 30), [], partialFailures),
+        this.resolveDashboardSection('reviewQueue', () => this.findReviewQueue(projectId, 'pending_review', undefined, chapterId), [], partialFailures),
+        this.resolveDashboardSection(
+          'validationIssues',
+          () =>
+            this.prisma.validationIssue.findMany({
+              where: {
+                projectId,
+                ...(chapterId ? { chapterId } : {}),
+              },
+              orderBy: { createdAt: 'desc' },
+              take: 50,
+            }),
+          [],
+          partialFailures,
+        ),
       ]);
 
     return {
@@ -425,6 +596,7 @@ export class MemoryService {
       foreshadowTracks,
       reviewQueue,
       validationIssues,
+      ...(partialFailures.length ? { diagnostics: { partialFailures } } : {}),
     };
   }
 

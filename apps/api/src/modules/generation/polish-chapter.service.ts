@@ -66,9 +66,13 @@ export class PolishChapterService {
     const originalWordCount = this.countChineseLikeWords(originalText);
     const polishedWordCount = this.countChineseLikeWords(polishedText);
     const changed = polishedText !== currentDraft.content;
+    const sourceAlreadyPolished = this.isPolishedDraft(currentDraft);
+    const shouldCreatePolishedDraft = changed || !sourceAlreadyPolished;
 
-    const finalDraft = changed
+    const finalDraft = shouldCreatePolishedDraft
       ? await this.prisma.$transaction(async (tx) => {
+          // 即使润色文本与原文一致，也为非润色来源创建 agent_polish 版本，
+          // 这样前端“草稿/润色”视图能明确展示完整流程已执行，而不是误判为没有润色。
           // 润色可能与生成/修复并发触发，版本号必须在事务内读取以保证单调递增。
           const latestInTransaction = await tx.chapterDraft.findFirst({ where: { chapterId }, orderBy: { versionNo: 'desc' } });
           await tx.chapterDraft.updateMany({ where: { chapterId, isCurrent: true }, data: { isCurrent: false } });
@@ -79,7 +83,7 @@ export class PolishChapterService {
               content: polishedText,
               source: 'agent_polish',
               modelInfo: { model: result.model, usage: result.usage, rawPayloadSummary: result.rawPayloadSummary } as Prisma.InputJsonValue,
-              generationContext: { type: 'polish', originalDraftId: currentDraft.id, instruction } as Prisma.InputJsonValue,
+              generationContext: { type: 'polish', originalDraftId: currentDraft.id, instruction, changed } as Prisma.InputJsonValue,
               isCurrent: true,
               createdBy: currentDraft.createdBy,
             },
@@ -89,9 +93,15 @@ export class PolishChapterService {
         })
       : currentDraft;
 
-    if (!changed) await this.prisma.chapter.update({ where: { id: chapterId }, data: { status: 'drafted', actualWordCount: polishedWordCount } });
+    if (!shouldCreatePolishedDraft) await this.prisma.chapter.update({ where: { id: chapterId }, data: { status: 'drafted', actualWordCount: polishedWordCount } });
 
     return { draftId: finalDraft.id, chapterId, originalDraftId: currentDraft.id, originalWordCount, polishedWordCount, changed, summary: polishedText.slice(0, 160) };
+  }
+
+  /** 判断来源草稿是否已经是润色稿，避免重复点击维护流程时制造无意义版本。 */
+  private isPolishedDraft(draft: { source: string; generationContext: Prisma.JsonValue }) {
+    const context = draft.generationContext;
+    return draft.source === 'agent_polish' || (typeof context === 'object' && context !== null && !Array.isArray(context) && context.type === 'polish');
   }
 
   private buildUserPrompt(chapter: { chapterNo: number; title: string | null; objective: string | null; conflict: string | null; outline: string | null }, characters: Array<{ name: string; roleType: string | null; personalityCore: string | null; motivation: string | null; speechStyle: string | null }>, originalText: string, instruction?: string): string {

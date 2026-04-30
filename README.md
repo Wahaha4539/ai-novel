@@ -99,14 +99,18 @@ Copy-Item .env.example .env
 Copy-Item .env.example apps/api/.env
 ```
 
-如果使用仓库默认 Docker 配置，建议至少调整为：
+> [!IMPORTANT]
+> 本 README 只展示不含敏感信息的占位 / 脱敏示例，不记录任何真实数据库地址、密码或 API Key。
+> 实际运行配置以根目录 `.env` 和 `apps/api/.env` 中填写的值为准；排查连接问题时也应优先检查这两份环境文件，而不是下面的示例值。
+
+建议至少补齐以下配置，具体值请按你的本地或远程环境替换：
 
 ```env
 DATABASE_NAME=ai_novel_mvp
-DATABASE_URL=postgresql://postgres:postgres@127.0.0.1:5432/ai_novel_mvp
-POSTGRES_ADMIN_URL=postgresql://postgres:postgres@127.0.0.1:5432/postgres
+DATABASE_URL=postgresql://DB_USER:DB_PASSWORD@DB_HOST:5432/ai_novel_mvp
+POSTGRES_ADMIN_URL=postgresql://DB_USER:DB_PASSWORD@DB_HOST:5432/postgres
 
-REDIS_URL=redis://127.0.0.1:6379/0
+REDIS_URL=redis://REDIS_HOST:6379/0
 CACHE_PROJECT_SNAPSHOT_TTL_SECONDS=300
 CACHE_CHAPTER_CONTEXT_TTL_SECONDS=300
 CACHE_RECALL_RESULT_TTL_SECONDS=120
@@ -558,11 +562,11 @@ pnpm db:create
 
 优先检查：
 
-- Docker PostgreSQL 是否已启动并监听 `5432`。
-- 根目录 `.env` 和 `apps/api/.env` 是否都存在。
-- 两份 `.env` 中的 `DATABASE_URL` 是否一致。
-- 使用 Docker 默认账号时，连接串是否为 `postgresql://postgres:postgres@127.0.0.1:5432/ai_novel_mvp`。
-- `DATABASE_NAME` 指定的业务库是否已通过 `pnpm db:create` 创建。
+- 当前实际生效的根目录 `.env` 和 `apps/api/.env` 是否都存在；README 中的连接串只是不含敏感信息的占位示例。
+- 两份 `.env` 中的 `DATABASE_URL` 是否指向你实际使用的本地或远程 PostgreSQL。
+- `POSTGRES_ADMIN_URL` 是否指向有建库权限的管理库连接，且密码中的 `&`、`^`、`@` 等特殊字符已经 URL encode。
+- 如果连接远程 PostgreSQL，确认当前用户拥有目标数据库的 `CONNECT` 权限、`public` schema 的 `USAGE` 权限，以及迁移所需的建表 / 建索引权限。
+- 如果连接本地 Docker PostgreSQL，再检查容器是否已启动并监听 `5432`，以及 `DATABASE_NAME` 指定的业务库是否已通过 `pnpm db:create` 创建。
 
 ### 8.3 章节生成或 Agent Act 报缺少 LLM 配置
 

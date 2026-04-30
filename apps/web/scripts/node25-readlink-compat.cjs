@@ -10,7 +10,7 @@
  * 兼容策略：
  * 1. 仅在 Windows 且 Node 主版本 >= 25 时启用；
  * 2. 当 readlink 因 EISDIR 失败时，再用 lstat 确认目标是否真的是符号链接；
- * 3. 若目标只是普通文件，则返回 `undefined`，让上游按“不是 symlink”继续处理。
+ * 3. 若目标只是普通文件，则把误报规范化为 EINVAL，让 Next/webpack 按“不是 symlink”继续处理。
  *
  * 该补丁只服务于本地构建入口，不影响业务代码或生产运行逻辑。
  */
@@ -33,6 +33,23 @@ function isRegularFileReadlinkError(error) {
   return Boolean(error && error.code === 'EISDIR');
 }
 
+/**
+ * 将 Node 25 在 Windows 上的 EISDIR 误报转换为生态工具普遍识别的 EINVAL。
+ *
+ * @param {NodeJS.ErrnoException} originalError 原始 readlink 错误。
+ * @param {string | Buffer | URL} path 触发 readlink 的路径。
+ * @returns {NodeJS.ErrnoException} 可被 Next/webpack/@vercel/nft 按“非符号链接”处理的错误。
+ */
+function createNotSymlinkReadlinkError(originalError, path) {
+  const normalizedError = new Error(`EINVAL: invalid argument, readlink '${String(path)}'`);
+  normalizedError.code = 'EINVAL';
+  normalizedError.errno = -4071;
+  normalizedError.syscall = 'readlink';
+  normalizedError.path = path;
+  normalizedError.cause = originalError;
+  return normalizedError;
+}
+
 if (shouldApplyCompat && !global.__AI_NOVEL_NODE25_READLINK_COMPAT__) {
   global.__AI_NOVEL_NODE25_READLINK_COMPAT__ = true;
 
@@ -41,7 +58,7 @@ if (shouldApplyCompat && !global.__AI_NOVEL_NODE25_READLINK_COMPAT__) {
   const originalPromisesReadlink = fsPromises.readlink.bind(fsPromises);
 
   /**
-   * 包装异步 readlink：若普通文件被误报为 EISDIR，则按“非符号链接”处理。
+   * 包装异步 readlink：若普通文件被误报为 EISDIR，则改写为标准 EINVAL。
    *
    * @param {string | Buffer | URL} path 目标路径。
    * @param {BufferEncoding | { encoding?: BufferEncoding | null } | Function | undefined} options 读取选项。
@@ -58,7 +75,7 @@ if (shouldApplyCompat && !global.__AI_NOVEL_NODE25_READLINK_COMPAT__) {
 
       fs.lstat(path, (lstatError, stats) => {
         if (!lstatError && stats && !stats.isSymbolicLink()) {
-          return resolvedCallback(null, undefined);
+          return resolvedCallback(createNotSymlinkReadlinkError(error, path));
         }
 
         return resolvedCallback(error);
@@ -67,11 +84,11 @@ if (shouldApplyCompat && !global.__AI_NOVEL_NODE25_READLINK_COMPAT__) {
   }
 
   /**
-   * 包装同步 readlink：仅在普通文件误报时吞掉异常并返回 undefined。
+   * 包装同步 readlink：仅在普通文件误报时改写异常码，保留失败语义。
    *
    * @param {string | Buffer | URL} path 目标路径。
    * @param {BufferEncoding | { encoding?: BufferEncoding | null } | undefined} options 读取选项。
-   * @returns {string | Buffer | undefined} 解析出的链接目标；普通文件时返回 undefined。
+   * @returns {string | Buffer} 解析出的链接目标。
    */
   function patchedReadlinkSync(path, options) {
     try {
@@ -83,7 +100,7 @@ if (shouldApplyCompat && !global.__AI_NOVEL_NODE25_READLINK_COMPAT__) {
 
       const stats = fs.lstatSync(path);
       if (!stats.isSymbolicLink()) {
-        return undefined;
+        throw createNotSymlinkReadlinkError(error, path);
       }
 
       throw error;
@@ -95,7 +112,7 @@ if (shouldApplyCompat && !global.__AI_NOVEL_NODE25_READLINK_COMPAT__) {
    *
    * @param {string | Buffer | URL} path 目标路径。
    * @param {BufferEncoding | { encoding?: BufferEncoding | null } | undefined} options 读取选项。
-   * @returns {Promise<string | Buffer | undefined>} 链接目标；普通文件时返回 undefined。
+   * @returns {Promise<string | Buffer>} 链接目标。
    */
   async function patchedPromisesReadlink(path, options) {
     try {
@@ -107,7 +124,7 @@ if (shouldApplyCompat && !global.__AI_NOVEL_NODE25_READLINK_COMPAT__) {
 
       const stats = await fsPromises.lstat(path);
       if (!stats.isSymbolicLink()) {
-        return undefined;
+        throw createNotSymlinkReadlinkError(error, path);
       }
 
       throw error;

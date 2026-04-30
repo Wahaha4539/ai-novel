@@ -153,6 +153,10 @@ export type DashboardPayload = {
   foreshadowTracks: ForeshadowItem[];
   reviewQueue: ReviewItem[];
   validationIssues: ValidationIssue[];
+  /** 后端分区降级信息：某些面板查询失败时仍返回其余可用数据。 */
+  diagnostics?: {
+    partialFailures?: Array<{ section: string; message: string; code?: string }>;
+  };
 };
 
 export type RebuildResult = {
