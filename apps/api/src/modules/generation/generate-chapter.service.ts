@@ -1,10 +1,14 @@
 import { BadRequestException, Injectable, NotFoundException } from '@nestjs/common';
 import { Prisma } from '@prisma/client';
+import { StructuredLogger } from '../../common/logging/structured-logger';
 import { PrismaService } from '../../prisma/prisma.service';
 import { LlmGatewayService } from '../llm/llm-gateway.service';
-import { RetrievalService } from '../memory/retrieval.service';
+import { RetrievalBundle, RetrievalBundleWithCacheMeta, RetrievalService } from '../memory/retrieval.service';
+import { RetrievalPlan, RetrievalPlannerDiagnostics } from '../memory/retrieval-plan.types';
 import { ValidationService } from '../validation/validation.service';
+import { ChapterContextPack } from './context-pack.types';
 import { PromptBuilderService } from './prompt-builder.service';
+import { RetrievalPlannerService } from './retrieval-planner.service';
 
 export interface GenerateChapterInput {
   instruction?: string;
@@ -14,6 +18,8 @@ export interface GenerateChapterInput {
   validateBeforeWrite?: boolean;
   agentRunId?: string;
   userId?: string;
+  requestId?: string;
+  jobId?: string;
 }
 
 export interface GenerateChapterPreflightResult {
@@ -63,16 +69,21 @@ export interface GenerateChapterResult {
  */
 @Injectable()
 export class GenerateChapterService {
+  private readonly logger = new StructuredLogger(GenerateChapterService.name);
+
   constructor(
     private readonly prisma: PrismaService,
     private readonly llm: LlmGatewayService,
     private readonly retrieval: RetrievalService,
     private readonly promptBuilder: PromptBuilderService,
+    private readonly retrievalPlanner: RetrievalPlannerService,
     private readonly validation: ValidationService,
   ) {}
 
   /** 同步生成章节正文，并把生成上下文、召回结果和模型信息记录到草稿元数据。 */
   async run(projectId: string, chapterId: string, input: GenerateChapterInput = {}): Promise<GenerateChapterResult> {
+    const runStartedAt = Date.now();
+    const logContext = { requestId: input.requestId, jobId: input.jobId, projectId, chapterId };
     const chapter = await this.prisma.chapter.findFirst({ where: { id: chapterId, projectId }, include: { project: true, volume: true } });
     if (!chapter) throw new NotFoundException(`章节不存在或不属于当前项目：${chapterId}`);
 
@@ -97,14 +108,59 @@ export class GenerateChapterService {
     ]);
 
     const hardFacts = this.buildHardFacts(chapter, characters, styleProfile);
-    const retrievalBundle = await this.retrieval.retrieveBundle(
+    const queryText = input.instruction || chapter.objective;
+    const includeLorebook = input.includeLorebook ?? true;
+    const includeMemory = input.includeMemory ?? true;
+    const retrievalPlanResult = await this.retrievalPlanner.createPlan({
+      project: { id: chapter.project.id, title: chapter.project.title, genre: chapter.project.genre, tone: chapter.project.tone, synopsis: chapter.project.synopsis, outline: chapter.project.outline },
+      volume: chapter.volume ? { volumeNo: chapter.volume.volumeNo, title: chapter.volume.title, objective: chapter.volume.objective, synopsis: chapter.volume.synopsis } : null,
+      chapter: { chapterNo: chapter.chapterNo, title: chapter.title, objective: chapter.objective, conflict: chapter.conflict, outline: chapter.outline, revealPoints: chapter.revealPoints, foreshadowPlan: chapter.foreshadowPlan },
+      characters: characters.map((item) => ({ name: item.name, roleType: item.roleType, personalityCore: item.personalityCore, motivation: item.motivation })),
+      previousChapters,
+      userInstruction: input.instruction,
+      requestId: input.requestId,
+      jobId: input.jobId,
+    });
+    const retrievalStartedAt = Date.now();
+    const retrievalBundle = await this.retrieval.retrieveBundleWithCacheMeta(
       projectId,
-      { queryText: input.instruction || chapter.objective, objective: chapter.objective, conflict: chapter.conflict, characters: characters.map((item) => item.name) },
-      { includeLorebook: input.includeLorebook ?? true, includeMemory: input.includeMemory ?? true },
+      {
+        queryText: this.buildPlannerAwareQueryText(queryText, retrievalPlanResult.plan),
+        objective: chapter.objective,
+        conflict: chapter.conflict,
+        characters: this.mergeCharactersForRetrieval(characters.map((item) => item.name), retrievalPlanResult.plan.entities.characters),
+        chapterId,
+        chapterNo: chapter.chapterNo,
+        requestId: input.requestId,
+        jobId: input.jobId,
+        plannerQueries: {
+          lorebook: retrievalPlanResult.plan.lorebookQueries,
+          memory: retrievalPlanResult.plan.memoryQueries,
+          relationship: retrievalPlanResult.plan.relationshipQueries,
+          foreshadow: retrievalPlanResult.plan.foreshadowQueries,
+        },
+      },
+      { includeLorebook, includeMemory },
     );
+    this.logger.log('generation.retrieval.completed', {
+      ...logContext,
+      stage: 'retrieving_context',
+      queryText: this.truncateForLog(queryText, 500),
+      includeLorebook,
+      includeMemory,
+      lorebookHitCount: retrievalBundle.lorebookHits.length,
+      memoryHitCount: retrievalBundle.memoryHits.length,
+      structuredHitCount: retrievalBundle.structuredHits.length,
+      rankedHitCount: retrievalBundle.rankedHits.length,
+      retrievalPlanner: retrievalPlanResult.diagnostics,
+      retrievalCache: retrievalBundle.cache,
+      diagnostics: retrievalBundle.diagnostics,
+      elapsedMs: Date.now() - retrievalStartedAt,
+    });
     if (retrievalBundle.diagnostics.qualityStatus === 'blocked') {
       throw new BadRequestException(`召回质量不足，已阻断生成：${retrievalBundle.diagnostics.warnings.join('；')}`);
     }
+    const contextPack = this.buildContextPack({ chapter, input, queryText, includeLorebook, includeMemory, retrievalBundle, retrievalPlan: retrievalPlanResult.plan, plannerDiagnostics: retrievalPlanResult.diagnostics });
 
     const prompt = await this.promptBuilder.buildChapterPrompt({
       project: { id: chapter.project.id, title: chapter.project.title, genre: chapter.project.genre, tone: chapter.project.tone, synopsis: chapter.project.synopsis, outline: chapter.project.outline },
@@ -115,12 +171,11 @@ export class GenerateChapterService {
       plannedForeshadows: plannedForeshadows.map((item) => ({ title: item.title, detail: item.detail, status: item.status, firstSeenChapterNo: item.firstSeenChapterNo, lastSeenChapterNo: item.lastSeenChapterNo })),
       previousChapters,
       hardFacts,
-      lorebookHits: retrievalBundle.lorebookHits,
-      memoryHits: retrievalBundle.rankedHits,
-      userInstruction: input.instruction,
+      contextPack,
       targetWordCount,
     });
 
+    const llmStartedAt = Date.now();
     const llmResult = await this.llm.chat(
       [
         { role: 'system', content: prompt.system },
@@ -128,6 +183,7 @@ export class GenerateChapterService {
       ],
       { appStep: 'generate', maxTokens: Math.min(10_000, Math.max(1800, Math.ceil(targetWordCount * 1.8))), timeoutMs: 450_000, retries: 1, temperature: 0.45 },
     );
+    this.logger.log('generation.llm.completed', { ...logContext, stage: 'generating_draft', model: llmResult.model, tokenUsage: llmResult.usage, elapsedMs: Date.now() - llmStartedAt });
     const content = this.stripWrapperTags(llmResult.text);
     if (!content) throw new BadRequestException('write_chapter 生成正文为空');
 
@@ -137,7 +193,7 @@ export class GenerateChapterService {
       throw new BadRequestException(`生成后质量门禁未通过：${qualityGate.blockers.join('；')}`);
     }
     const modelInfo = { model: llmResult.model, usage: llmResult.usage, rawPayloadSummary: llmResult.rawPayloadSummary };
-    const retrievalPayload = { lorebookHits: retrievalBundle.lorebookHits, memoryHits: retrievalBundle.memoryHits, rankedHits: retrievalBundle.rankedHits, diagnostics: retrievalBundle.diagnostics, preflight, qualityGate };
+    const retrievalPayload = { contextPack, retrievalPlan: retrievalPlanResult.plan, plannerDiagnostics: retrievalPlanResult.diagnostics, retrievalCache: retrievalBundle.cache, lorebookHits: retrievalBundle.lorebookHits, memoryHits: retrievalBundle.memoryHits, structuredHits: retrievalBundle.structuredHits, rankedHits: retrievalBundle.rankedHits, diagnostics: retrievalBundle.diagnostics, preflight, qualityGate };
 
     const draft = await this.prisma.$transaction(async (tx) => {
       // 版本号必须在事务内重新读取，避免并发生成同一章节时用到过期 latest 导致版本冲突。
@@ -158,8 +214,61 @@ export class GenerateChapterService {
       await tx.chapter.update({ where: { id: chapterId }, data: { status: 'drafted', actualWordCount } });
       return created;
     });
+    this.logger.log('generation.draft.persisted', { ...logContext, stage: 'draft_persisted', draftId: draft.id, versionNo: draft.versionNo, actualWordCount, model: llmResult.model, tokenUsage: llmResult.usage, elapsedMs: Date.now() - runStartedAt });
 
     return { draftId: draft.id, chapterId, versionNo: draft.versionNo, actualWordCount, summary: content.slice(0, 160), retrievalPayload, preflight, qualityGate, promptDebug: prompt.debug, modelInfo };
+  }
+
+  /**
+   * 将写作上下文显式分层：verifiedContext 可进入 Prompt，userIntent 作为本章要求进入 Prompt，retrievalDiagnostics 只进日志/元数据。
+   * 这样可以防止未来 LLM Retrieval Planner 的未命中查询被误当作既有事实注入正文。
+   */
+  private buildContextPack(input: {
+    chapter: { objective: string | null; conflict: string | null; outline: string | null };
+    input: GenerateChapterInput;
+    queryText?: string | null;
+    includeLorebook: boolean;
+    includeMemory: boolean;
+    retrievalBundle: RetrievalBundle | RetrievalBundleWithCacheMeta;
+    retrievalPlan: RetrievalPlan;
+    plannerDiagnostics: RetrievalPlannerDiagnostics;
+  }): ChapterContextPack {
+    return {
+      schemaVersion: 1,
+      verifiedContext: {
+        lorebookHits: input.retrievalBundle.lorebookHits,
+        memoryHits: input.retrievalBundle.memoryHits,
+        structuredHits: input.retrievalBundle.structuredHits,
+      },
+      userIntent: {
+        instruction: input.input.instruction?.trim() || undefined,
+        chapterObjective: input.chapter.objective,
+        chapterConflict: input.chapter.conflict,
+        chapterOutline: input.chapter.outline,
+      },
+      retrievalDiagnostics: {
+        queryText: input.queryText,
+        includeLorebook: input.includeLorebook,
+        includeMemory: input.includeMemory,
+        diagnostics: input.retrievalBundle.diagnostics,
+        retrievalPlan: input.retrievalPlan as unknown as Record<string, unknown>,
+        plannerDiagnostics: input.plannerDiagnostics as unknown as Record<string, unknown>,
+      },
+    };
+  }
+
+  private buildPlannerAwareQueryText(baseQuery: string | null | undefined, plan: RetrievalPlan): string {
+    const plannerQueries = [
+      ...plan.lorebookQueries,
+      ...plan.memoryQueries,
+      ...plan.relationshipQueries,
+      ...plan.foreshadowQueries,
+    ].map((item) => item.query);
+    return [baseQuery, ...plan.chapterTasks, ...plannerQueries, ...plan.constraints].filter(Boolean).join('\n').slice(0, 4000);
+  }
+
+  private mergeCharactersForRetrieval(projectCharacters: string[], plannedCharacters: string[]): string[] {
+    return [...new Set([...projectCharacters, ...plannedCharacters].filter(Boolean))].slice(0, 30);
   }
 
   /**
@@ -275,5 +384,10 @@ export class GenerateChapterService {
     const cjk = content.match(/[\u4e00-\u9fff]/g)?.length ?? 0;
     const words = content.match(/[A-Za-z0-9]+/g)?.length ?? 0;
     return cjk + words;
+  }
+
+  private truncateForLog(value: string | null | undefined, maxLength: number): string | undefined {
+    if (!value) return undefined;
+    return value.length > maxLength ? `${value.slice(0, maxLength)}...` : value;
   }
 }

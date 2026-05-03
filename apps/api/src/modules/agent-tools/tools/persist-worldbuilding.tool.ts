@@ -1,5 +1,6 @@
 import { BadRequestException, Injectable } from '@nestjs/common';
 import { Prisma } from '@prisma/client';
+import { NovelCacheService } from '../../../common/cache/novel-cache.service';
 import { PrismaService } from '../../../prisma/prisma.service';
 import { BaseTool, ToolContext } from '../base-tool';
 import type { ToolManifestV2 } from '../tool-manifest.types';
@@ -81,7 +82,7 @@ export class PersistWorldbuildingTool implements BaseTool<PersistWorldbuildingIn
     sideEffects: this.sideEffects,
   };
 
-  constructor(private readonly prisma: PrismaService) {}
+  constructor(private readonly prisma: PrismaService, private readonly cacheService: NovelCacheService) {}
 
   /** 审批后追加写入已校验设定；写入前再次读取同名条目，防止审批和执行之间数据变化导致覆盖。 */
   async run(args: PersistWorldbuildingInput, context: ToolContext): Promise<PersistWorldbuildingOutput> {
@@ -91,7 +92,7 @@ export class PersistWorldbuildingTool implements BaseTool<PersistWorldbuildingIn
     const entriesToPersist = selectedTitleSet ? entries.filter((entry) => selectedTitleSet.has(entry.title.trim())) : entries;
     const skippedUnselectedTitles = selectedTitleSet ? entries.filter((entry) => !selectedTitleSet.has(entry.title.trim())).map((entry) => entry.title) : [];
 
-    return this.prisma.$transaction(async (tx) => {
+    const result = await this.prisma.$transaction(async (tx) => {
       const existingEntries = await tx.lorebookEntry.findMany({ where: { projectId: context.projectId }, select: { title: true } });
       const existingTitles = new Set(existingEntries.map((entry) => entry.title));
       const createdEntries: PersistWorldbuildingOutput['createdEntries'] = [];
@@ -142,6 +143,13 @@ export class PersistWorldbuildingTool implements BaseTool<PersistWorldbuildingIn
           : '世界观设定已按审批结果追加写入；同名设定已跳过，未覆盖 locked facts 或已有设定。',
       };
     });
+
+    if (result.createdCount > 0) {
+      // 世界观设定会直接参与 Lorebook 召回；新增后清空项目级召回缓存，避免继续使用旧设定快照。
+      await this.cacheService.deleteProjectRecallResults(context.projectId);
+    }
+
+    return result;
   }
 
   /** 写入前做确定性防线：必须经过校验、必须是预览写入流，且不能含空标题/空内容。 */

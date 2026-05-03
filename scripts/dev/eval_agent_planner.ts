@@ -532,7 +532,7 @@ async function enrichRetrievalEvalOutput(item: EvalCase, output: RetrievalEvalOu
     const validation = await new ValidateWorldbuildingTool(prisma as never).run({ preview, taskContext: output as Record<string, unknown> }, context);
     enriched.worldbuildingValidationReport = validation;
     if (expected.requireWorldbuildingPersistAudit) {
-      enriched.worldbuildingPersistResult = await new PersistWorldbuildingTool(createPersistEvalPrisma() as never).run({ preview, validation, selectedTitles: ['青云宗', '新宗门戒律'] }, { ...context, mode: 'act', approved: true });
+      enriched.worldbuildingPersistResult = await new PersistWorldbuildingTool(createPersistEvalPrisma() as never, createEvalCacheService() as never).run({ preview, validation, selectedTitles: ['青云宗', '新宗门戒律'] }, { ...context, mode: 'act', approved: true });
     }
   }
   return enriched;
@@ -549,6 +549,14 @@ function buildWorldbuildingEvalPreview() {
     assumptions: ['只做 Eval 预览'],
     risks: [],
     writePlan: { mode: 'preview_only' as const, requiresValidation: true, requiresApprovalBeforePersist: true },
+  };
+}
+
+function createEvalCacheService() {
+  return {
+    async deleteProjectRecallResults() {
+      return 0;
+    },
   };
 }
 

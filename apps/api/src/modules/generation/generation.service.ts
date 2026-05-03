@@ -64,6 +64,8 @@ export class GenerationService {
         includeLorebook: dto.includeLorebook,
         includeMemory: dto.includeMemory,
         validateBeforeWrite: dto.validateBeforeWrite,
+        requestId,
+        jobId: job.id,
       });
       const postprocess = await this.postProcessChapterService.run(chapter.projectId, chapterId, draft.draftId);
       // “完整生成流程”的最终正文应是润色稿；事实抽取、校验和记忆重建都必须基于最终稿，

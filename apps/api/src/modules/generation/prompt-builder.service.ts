@@ -1,6 +1,7 @@
 import { BadRequestException, Injectable } from '@nestjs/common';
 import { PrismaService } from '../../prisma/prisma.service';
 import { RetrievalHit } from '../memory/retrieval.service';
+import { ChapterContextPack } from './context-pack.types';
 
 export interface ChapterPromptContext {
   project: { id: string; title: string; genre: string | null; tone: string | null; synopsis: string | null; outline: string | null };
@@ -11,9 +12,7 @@ export interface ChapterPromptContext {
   plannedForeshadows: Array<{ title: string; detail: string | null; status: string; firstSeenChapterNo: number | null; lastSeenChapterNo: number | null }>;
   previousChapters: Array<{ chapterNo: number; title: string | null; content: string }>;
   hardFacts: string[];
-  lorebookHits: RetrievalHit[];
-  memoryHits: RetrievalHit[];
-  userInstruction?: string;
+  contextPack: ChapterContextPack;
   targetWordCount?: number;
 }
 
@@ -49,12 +48,14 @@ export class PromptBuilderService {
       this.buildStyleSection(context),
       this.buildCharacterSection(context),
       this.buildChapterSection(context),
+      this.buildContextLayerNotice(),
       this.buildForeshadowSection(context),
       this.buildFactsSection(context),
+      this.buildUserIntentSection(context),
       this.buildLorebookSection(context),
       this.buildMemorySection(context),
+      this.buildStructuredContextSection(context),
       this.buildPreviousChaptersSection(context),
-      `【附加指令】\n${context.userInstruction || '无'}`,
     ].join('\n\n');
 
     return {
@@ -62,8 +63,11 @@ export class PromptBuilderService {
       user,
       debug: {
         promptSource: 'db',
-        lorebookCount: context.lorebookHits.length,
-        memoryCount: context.memoryHits.length,
+        contextPackVersion: context.contextPack.schemaVersion,
+        lorebookCount: context.contextPack.verifiedContext.lorebookHits.length,
+        memoryCount: context.contextPack.verifiedContext.memoryHits.length,
+        structuredCount: context.contextPack.verifiedContext.structuredHits.length,
+        verifiedContextCount: context.contextPack.verifiedContext.lorebookHits.length + context.contextPack.verifiedContext.memoryHits.length + context.contextPack.verifiedContext.structuredHits.length,
         previousChapterCount: context.previousChapters.length,
         foreshadowCount: context.plannedForeshadows.length,
         hasVolume: Boolean(context.volume),
@@ -99,6 +103,15 @@ export class PromptBuilderService {
     return ['【章节信息】', `章节号：第${chapter.chapterNo}章`, `标题：${chapter.title || '未命名'}`, `目标：${chapter.objective || '无'}`, `冲突：${chapter.conflict || '无'}`, `大纲：${chapter.outline || '无'}`, `目标字数：${data.targetWordCount || chapter.expectedWordCount || 3500}`, chapter.revealPoints ? `揭示点：${chapter.revealPoints}` : '', chapter.foreshadowPlan ? `伏笔计划：${chapter.foreshadowPlan}` : ''].filter(Boolean).join('\n');
   }
 
+  private buildContextLayerNotice(): string {
+    return [
+      '【上下文分层说明】',
+      '- 【硬事实】、【Lorebook 命中】、【记忆召回】、【结构化事实召回】来自数据库或程序确定性上下文，可作为已验证上下文使用。',
+      '- 【本章用户意图/新增候选】只代表当前写作要求或本章新增候选，不等同于既有世界事实。',
+      '- Retrieval Planner 的查询意图、召回诊断和未命中查询默认不进入正文事实区。',
+    ].join('\n');
+  }
+
   private buildForeshadowSection(data: ChapterPromptContext): string {
     if (!data.plannedForeshadows.length) return '【本章伏笔计划】\n- 无特定伏笔要求';
     return ['【本章伏笔计划】', ...data.plannedForeshadows.map((item) => `- ${item.title}：${item.detail || item.status}`)].join('\n');
@@ -108,12 +121,35 @@ export class PromptBuilderService {
     return data.hardFacts.length ? ['【硬事实】', ...data.hardFacts.map((fact) => `- ${fact}`)].join('\n') : '【硬事实】\n- 无';
   }
 
+  private buildUserIntentSection(data: ChapterPromptContext): string {
+    const instruction = data.contextPack.userIntent.instruction?.trim();
+    return [
+      '【本章用户意图/新增候选】',
+      '- 说明：以下内容来自章节计划或用户明确要求，可用于推进本章，但若与已验证上下文冲突，以已验证上下文为准。',
+      `- 用户附加指令：${instruction || '无'}`,
+    ].join('\n');
+  }
+
   private buildLorebookSection(data: ChapterPromptContext): string {
-    return data.lorebookHits.length ? ['【Lorebook 命中】', ...data.lorebookHits.map((hit) => `- ${hit.title}: ${hit.content}`)].join('\n') : '【Lorebook 命中】\n- 无';
+    const hits = data.contextPack.verifiedContext.lorebookHits;
+    return hits.length ? ['【Lorebook 命中】', ...hits.map((hit) => this.formatRetrievalHit(hit))].join('\n') : '【Lorebook 命中】\n- 无';
   }
 
   private buildMemorySection(data: ChapterPromptContext): string {
-    return data.memoryHits.length ? ['【记忆召回】', ...data.memoryHits.map((hit) => `- ${hit.title}: ${hit.content}`)].join('\n') : '【记忆召回】\n- 无';
+    const hits = data.contextPack.verifiedContext.memoryHits;
+    return hits.length ? ['【记忆召回】', ...hits.map((hit) => this.formatRetrievalHit(hit))].join('\n') : '【记忆召回】\n- 无';
+  }
+
+  private buildStructuredContextSection(data: ChapterPromptContext): string {
+    const hits = data.contextPack.verifiedContext.structuredHits;
+    return hits.length ? ['【结构化事实召回】', ...hits.map((hit) => this.formatRetrievalHit(hit))].join('\n') : '【结构化事实召回】\n- 无';
+  }
+
+  private formatRetrievalHit(hit: RetrievalHit): string {
+    const trace = hit.sourceTrace;
+    const chapterPart = typeof trace.chapterNo === 'number' ? `｜chapterNo=${trace.chapterNo}` : '';
+    const sourceTag = `sourceType=${trace.sourceType}｜sourceId=${trace.sourceId}｜projectId=${trace.projectId}${chapterPart}｜score=${hit.score.toFixed(3)}｜method=${hit.searchMethod}`;
+    return [`- [${sourceTag}] ${hit.title}: ${hit.content}`, `  召回原因：${hit.reason}`].join('\n');
   }
 
   private buildPreviousChaptersSection(data: ChapterPromptContext): string {

@@ -1,6 +1,7 @@
 import { Injectable } from '@nestjs/common';
 import { Prisma } from '@prisma/client';
 import { randomUUID } from 'crypto';
+import { NovelCacheService } from '../../common/cache/novel-cache.service';
 import { PrismaService } from '../../prisma/prisma.service';
 import { EmbeddingGatewayService } from '../llm/embedding-gateway.service';
 
@@ -49,6 +50,16 @@ export interface ChapterForeshadowMemoryInput {
   status?: string;
 }
 
+export interface ChapterFirstAppearanceMemoryInput {
+  entityType: 'character' | 'location' | 'item' | 'faction' | 'rule' | 'setting';
+  title: string;
+  detail?: string | null;
+  status?: string;
+  significance?: string;
+  evidence?: string;
+  firstSeenChapterNo?: number | null;
+}
+
 export interface MemoryEmbeddingBackfillResult {
   scannedCount: number;
   updatedCount: number;
@@ -64,7 +75,7 @@ export interface MemoryEmbeddingBackfillResult {
  */
 @Injectable()
 export class MemoryWriterService {
-  constructor(private readonly prisma: PrismaService, private readonly embeddings: EmbeddingGatewayService) {}
+  constructor(private readonly prisma: PrismaService, private readonly embeddings: EmbeddingGatewayService, private readonly cacheService: NovelCacheService) {}
 
   /** 为历史 MemoryChunk 批量补齐 embedding；支持 cursor 续跑和 force 统一重算。 */
   async backfillEmbeddings(projectId: string, options: { chapterId?: string; limit?: number; dryRun?: boolean; cursor?: string; force?: boolean } = {}): Promise<MemoryEmbeddingBackfillResult> {
@@ -143,6 +154,9 @@ export class MemoryWriterService {
       await this.prisma.$executeRawUnsafe('UPDATE "MemoryChunk" SET "embeddingVector" = $2::vector WHERE id = $1::uuid', chunk.id, `[${vector.join(',')}]`);
     }
 
+    // MemoryChunk 是召回缓存的重要输入；写入/替换完成后必须清空项目级召回缓存，避免后续章节读到旧记忆。
+    await this.cacheService.deleteProjectRecallResults(input.projectId);
+
     return {
       deletedCount: result.deletedCount,
       createdCount: result.created.count,
@@ -214,6 +228,22 @@ export class MemoryWriterService {
     }));
   }
 
+  /** 记录本章首次出现实体；重大设定候选进入 pending_review，普通实体可先作为 auto 记忆供后续召回。 */
+  buildFirstAppearanceMemories(projectId: string, chapter: ChapterMemorySource, appearances: ChapterFirstAppearanceMemoryInput[]): MemoryWriterChunkInput[] {
+    return appearances.map((item) => ({
+      memoryType: `first_appearance_${item.entityType}`,
+      content: item.detail || item.evidence || item.title,
+      summary: `${item.title} 首次出现`,
+      tags: ['chapter', 'first_appearance', item.entityType, item.title],
+      status: item.status === 'pending_review' ? 'pending_review' : 'auto',
+      importanceScore: item.status === 'pending_review' ? 80 : 68,
+      freshnessScore: 90,
+      recencyScore: 90,
+      metadata: { entityType: item.entityType, significance: item.significance ?? 'minor', evidence: item.evidence ?? '', firstSeenChapterNo: item.firstSeenChapterNo ?? chapter.chapterNo },
+      sourceTrace: { projectId, chapterId: chapter.id, chapterNo: chapter.chapterNo, kind: 'first_appearance', entityType: item.entityType, title: item.title },
+    }));
+  }
+
   /** 对齐 Worker replace_for_source：将抽取出的事实记忆按 generatedBy 原子替换到 MemoryChunk。 */
   replaceGeneratedChapterFactMemories(input: {
     projectId: string;
@@ -223,12 +253,14 @@ export class MemoryWriterService {
     events?: ChapterEventMemoryInput[];
     characterStates?: ChapterCharacterStateMemoryInput[];
     foreshadows?: ChapterForeshadowMemoryInput[];
+    firstAppearances?: ChapterFirstAppearanceMemoryInput[];
   }): Promise<MemoryWriterResult> {
     const chunks = [
       ...(input.summary ? [this.buildSummaryMemory(input.projectId, input.chapter, input.summary)] : []),
       ...this.buildEventMemories(input.projectId, input.chapter, input.events ?? []),
       ...this.buildCharacterStateMemories(input.projectId, input.chapter, input.characterStates ?? []),
       ...this.buildForeshadowMemories(input.projectId, input.chapter, input.foreshadows ?? []),
+      ...this.buildFirstAppearanceMemories(input.projectId, input.chapter, input.firstAppearances ?? []),
     ];
 
     return this.replaceGeneratedChapterMemories({

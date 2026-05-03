@@ -1,4 +1,4 @@
-import { ConflictException, Injectable, NotFoundException, OnModuleInit } from '@nestjs/common';
+import { ConflictException, Injectable, Logger, NotFoundException, OnModuleInit } from '@nestjs/common';
 import { PrismaService } from '../../prisma/prisma.service';
 import { CreateLlmProviderDto } from './dto/create-llm-provider.dto';
 import { UpdateLlmProviderDto } from './dto/update-llm-provider.dto';
@@ -6,6 +6,15 @@ import { SetRoutingDto } from './dto/set-routing.dto';
 
 /** Allowed app steps for LLM routing — Agent-Centric API 内链路会复用这些步骤做模型路由。 */
 const VALID_APP_STEPS = ['guided', 'agent_planner', 'generate', 'polish', 'summary', 'memory_review', 'embedding', 'fact_extractor.events', 'fact_extractor.states', 'fact_extractor.foreshadows'] as const;
+const CONFIG_CACHE_STARTUP_RETRY_DELAYS_MS = [500, 1000, 2000, 4000, 8000] as const;
+
+function delay(ms: number): Promise<void> {
+  return new Promise((resolve) => setTimeout(resolve, ms));
+}
+
+function getErrorMessage(error: unknown): string {
+  return error instanceof Error ? error.message : String(error);
+}
 
 /**
  * Resolved LLM configuration ready for API calls.
@@ -54,12 +63,13 @@ type LlmConfigCache = {
 export class LlmProvidersService implements OnModuleInit {
   /** Process-local LLM config snapshot; loaded once at API startup and refreshed only after admin writes. */
   private cache: LlmConfigCache = { providers: [], routings: [] };
+  private readonly logger = new Logger(LlmProvidersService.name);
 
   constructor(private readonly prisma: PrismaService) {}
 
   /** Load LLM routing/provider config once when Nest finishes bootstrapping this module. */
   async onModuleInit() {
-    await this.reloadConfigCache();
+    await this.reloadConfigCacheWithStartupRetry();
   }
 
   // ── Provider CRUD ─────────────────────────────────────
@@ -347,6 +357,35 @@ export class LlmProvidersService implements OnModuleInit {
       where: { isDefault: true },
       data: { isDefault: false },
     });
+  }
+
+  /**
+   * Loads the startup LLM config snapshot with bounded retry.
+   *
+   * This protects API boot from short PostgreSQL/proxy flaps; runtime admin writes
+   * still call reloadConfigCache directly so real write failures surface immediately.
+   */
+  private async reloadConfigCacheWithStartupRetry(): Promise<void> {
+    const maxAttempts = CONFIG_CACHE_STARTUP_RETRY_DELAYS_MS.length + 1;
+    let lastError: unknown = new Error('加载 LLM Provider 配置失败');
+
+    for (let attempt = 1; attempt <= maxAttempts; attempt += 1) {
+      try {
+        await this.reloadConfigCache();
+        if (attempt > 1) this.logger.log(`LLM Provider 配置加载成功，第 ${attempt}/${maxAttempts} 次尝试。`);
+        return;
+      } catch (error) {
+        lastError = error;
+        if (attempt >= maxAttempts) break;
+
+        const delayMs = CONFIG_CACHE_STARTUP_RETRY_DELAYS_MS[attempt - 1];
+        // 启动阶段的配置缓存依赖远程数据库；P1001 等短暂连通性问题不应直接终止开发服务。
+        this.logger.warn(`LLM Provider 配置加载失败，第 ${attempt}/${maxAttempts} 次：${getErrorMessage(error)}。${delayMs}ms 后重试。`);
+        await delay(delayMs);
+      }
+    }
+
+    throw lastError;
   }
 
   /**

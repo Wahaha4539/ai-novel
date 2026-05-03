@@ -1,4 +1,4 @@
-import 'dotenv/config';
+import './load-env';
 import 'reflect-metadata';
 import { execSync } from 'child_process';
 import { ValidationPipe } from '@nestjs/common';
@@ -33,6 +33,9 @@ function freePort(port: number): void {
 
 async function bootstrap() {
   const logger = new StructuredLogger('Bootstrap');
+  const port = Number(process.env.API_PORT ?? 3001);
+  freePort(port);
+
   const app = await NestFactory.create(AppModule);
   const prisma = app.get(PrismaService);
   app.enableCors();
@@ -46,8 +49,6 @@ async function bootstrap() {
   );
   await prisma.enableShutdownHooks(app);
 
-  const port = Number(process.env.API_PORT ?? 3001);
-  freePort(port);
   await app.listen(port);
   logger.log('api.started', {
     port,

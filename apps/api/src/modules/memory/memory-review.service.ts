@@ -1,4 +1,5 @@
 import { Injectable } from '@nestjs/common';
+import { NovelCacheService } from '../../common/cache/novel-cache.service';
 import { PrismaService } from '../../prisma/prisma.service';
 import { LlmGatewayService } from '../llm/llm-gateway.service';
 
@@ -16,7 +17,7 @@ export interface MemoryReviewResult {
  */
 @Injectable()
 export class MemoryReviewService {
-  constructor(private readonly prisma: PrismaService, private readonly llm: LlmGatewayService) {}
+  constructor(private readonly prisma: PrismaService, private readonly llm: LlmGatewayService, private readonly cacheService: NovelCacheService) {}
 
   async reviewPending(projectId: string, chapterId?: string): Promise<MemoryReviewResult> {
     const queue = await this.prisma.memoryChunk.findMany({
@@ -47,6 +48,10 @@ export class MemoryReviewService {
 
     const confirmedCount = applied.filter((item) => item.action === 'confirm').length;
     const rejectedCount = applied.filter((item) => item.action === 'reject').length;
+    if (applied.length > 0) {
+      // 复核会把 pending_review 推进到 user_confirmed/rejected，直接影响可召回记忆集合，必须清空项目级召回缓存。
+      await this.cacheService.deleteProjectRecallResults(projectId);
+    }
     return { reviewedCount: applied.length, confirmedCount, rejectedCount, skippedCount: queue.length - applied.length, decisions: applied };
   }
 

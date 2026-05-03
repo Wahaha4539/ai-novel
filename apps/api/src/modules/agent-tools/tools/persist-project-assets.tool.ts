@@ -1,5 +1,6 @@
 import { BadRequestException, Injectable } from '@nestjs/common';
 import { Prisma } from '@prisma/client';
+import { NovelCacheService } from '../../../common/cache/novel-cache.service';
 import { PrismaService } from '../../../prisma/prisma.service';
 import { BaseTool, ToolContext } from '../base-tool';
 import { ImportPreviewOutput } from './build-import-preview.tool';
@@ -34,14 +35,14 @@ export class PersistProjectAssetsTool implements BaseTool<PersistProjectAssetsIn
   requiresApproval = true;
   sideEffects = ['update_project_profile', 'create_characters', 'create_lorebook_entries', 'upsert_volumes', 'create_or_update_planned_chapters'];
 
-  constructor(private readonly prisma: PrismaService) {}
+  constructor(private readonly prisma: PrismaService, private readonly cacheService: NovelCacheService) {}
 
   async run(args: PersistProjectAssetsInput, context: ToolContext) {
     if (!args.preview) throw new BadRequestException('persist_project_assets 需要 import preview');
     const preview = args.preview;
     this.assertSafePreview(preview);
 
-    return this.prisma.$transaction(async (tx) => {
+    const result = await this.prisma.$transaction(async (tx) => {
       await tx.project.update({
         where: { id: context.projectId },
         data: {
@@ -109,6 +110,18 @@ export class PersistProjectAssetsTool implements BaseTool<PersistProjectAssetsIn
 
       return { characterCreatedCount, lorebookCreatedCount, lorebookSkippedCount, volumeCount: preview.volumes.length, chapterCreatedCount, chapterUpdatedCount, chapterSkippedCount };
     });
+
+    if (this.hasRetrievalRelevantWrites(result)) {
+      // 导入资料可能新增设定、角色或章节规划，这些都会改变后续召回输入/结果，写入后清空项目级召回缓存。
+      await this.cacheService.deleteProjectRecallResults(context.projectId);
+    }
+
+    return result;
+  }
+
+  /** 判断本次导入是否改变了召回可见资料；只在确有写入时触发项目级召回缓存失效。 */
+  private hasRetrievalRelevantWrites(result: Record<string, unknown>) {
+    return ['characterCreatedCount', 'lorebookCreatedCount', 'volumeCount', 'chapterCreatedCount', 'chapterUpdatedCount'].some((key) => Number(result[key]) > 0);
   }
 
   /** 批量导入写库前的最后防线，避免重复卷号/章节号造成 upsert 或章节覆盖语义不明确。 */

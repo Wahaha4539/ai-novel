@@ -106,20 +106,24 @@ export class WriteChapterSeriesTool implements BaseTool<WriteChapterSeriesInput,
     inputSchema: this.inputSchema,
     outputSchema: this.outputSchema,
     parameterHints: {
-      startChapterNo: { source: 'user_message', description: '范围写作的起始章节号，例如“第 3-5 章”中的 3。' },
-      endChapterNo: { source: 'user_message', description: '范围写作的结束章节号，例如“第 3-5 章”中的 5。' },
+      startChapterNo: { source: 'user_message', description: '范围写作的起始章节号，例如“第 3-5 章”中的 3；也可与 maxChapters 搭配表示“从第 N 章开始连续写几章”。' },
+      endChapterNo: { source: 'user_message', description: '范围写作的结束章节号，例如“第 3-5 章”中的 5；若用户只说“从第 N 章开始写 M 章”，可省略并改用 maxChapters。' },
       chapterNos: { source: 'user_message', description: '非连续章节列表，例如“第 1、3、5 章”。' },
       instruction: { source: 'user_message', description: '保留用户对多章整体的风格、节奏、禁改项、连续性和剧情约束。' },
       wordCount: { source: 'context', description: '用户未指定时可使用 context.project.defaultWordCount。' },
+      maxChapters: { source: 'user_message', description: '最多连续生成的章节数，需与 startChapterNo 搭配使用；上限为 5。' },
       qualityPipeline: { source: 'literal', description: '默认使用 full；只有用户明确要求“只要草稿/跳过后续流程”时才使用 draft_only。' },
     },
-    examples: [{ user: '帮我连续写第 3 到第 5 章，每章 3000 字，压迫感强一点。', plan: [{ tool: 'write_chapter_series', args: { startChapterNo: 3, endChapterNo: 5, instruction: '压迫感强一点，保持三章之间剧情连续', wordCount: 3000, qualityPipeline: 'full' } }] }],
-    failureHints: [{ code: 'VALIDATION_FAILED', meaning: '章节范围缺失、范围过大或章节不存在', suggestedRepair: '要求用户缩小到最多 5 章，并确认要生成的章节编号。' }],
+    examples: [
+      { user: '帮我连续写第 3 到第 5 章，每章 3000 字，压迫感强一点。', plan: [{ tool: 'write_chapter_series', args: { startChapterNo: 3, endChapterNo: 5, instruction: '压迫感强一点，保持三章之间剧情连续', wordCount: 3000, qualityPipeline: 'full' } }] },
+      { user: '从第 460 章开始连续写接下来 5 章。', plan: [{ tool: 'write_chapter_series', args: { startChapterNo: 460, maxChapters: 5, instruction: '连续写接下来 5 章，保持剧情衔接', qualityPipeline: 'full' } }] },
+    ],
+    failureHints: [{ code: 'VALIDATION_FAILED', meaning: '章节范围缺失、范围过大或章节不存在', suggestedRepair: '要求用户缩小到最多 5 章，并确认要生成的章节编号；可使用 chapterNos、startChapterNo/endChapterNo 或 startChapterNo/maxChapters。' }],
     allowedModes: this.allowedModes,
     riskLevel: this.riskLevel,
     requiresApproval: this.requiresApproval,
     sideEffects: this.sideEffects,
-    idPolicy: { forbiddenToInvent: ['chapterId'], allowedSources: ['chapterNo_range_from_user_message', 'chapterNos_from_user_message'] },
+    idPolicy: { forbiddenToInvent: ['chapterId'], allowedSources: ['chapterNo_range_from_user_message', 'chapterNos_from_user_message', 'chapterNo_start_and_max_from_user_message'] },
   };
 
   constructor(
@@ -172,8 +176,8 @@ export class WriteChapterSeriesTool implements BaseTool<WriteChapterSeriesInput,
     const requestedLimit = args.maxChapters ?? MAX_BATCH_CHAPTERS;
     const maxChapters = Math.min(MAX_BATCH_CHAPTERS, requestedLimit);
     const fromList = Array.isArray(args.chapterNos) && args.chapterNos.length ? args.chapterNos : undefined;
-    const rawNos = fromList ?? this.range(args.startChapterNo, args.endChapterNo);
-    if (!rawNos.length) throw new BadRequestException('write_chapter_series 需要 chapterNos 或 startChapterNo/endChapterNo');
+    const rawNos = fromList ?? this.range(args.startChapterNo, args.endChapterNo, args.maxChapters);
+    if (!rawNos.length) throw new BadRequestException('write_chapter_series 需要 chapterNos、startChapterNo/endChapterNo 或 startChapterNo/maxChapters');
 
     const chapterNos = [...new Set(rawNos)].sort((a, b) => a - b);
     if (chapterNos.some((chapterNo) => !Number.isInteger(chapterNo) || chapterNo < 1)) throw new BadRequestException('章节编号必须是正整数');
@@ -181,10 +185,19 @@ export class WriteChapterSeriesTool implements BaseTool<WriteChapterSeriesInput,
     return chapterNos;
   }
 
-  private range(startChapterNo?: number, endChapterNo?: number): number[] {
-    if (!Number.isInteger(startChapterNo) || !Number.isInteger(endChapterNo)) return [];
-    if (startChapterNo! > endChapterNo!) throw new BadRequestException('startChapterNo 不能大于 endChapterNo');
-    return Array.from({ length: endChapterNo! - startChapterNo! + 1 }, (_, index) => startChapterNo! + index);
+  private range(startChapterNo?: number, endChapterNo?: number, maxChapters?: number): number[] {
+    if (!Number.isInteger(startChapterNo)) return [];
+    if (Number.isInteger(endChapterNo)) {
+      if (startChapterNo! > endChapterNo!) throw new BadRequestException('startChapterNo 不能大于 endChapterNo');
+      return Array.from({ length: endChapterNo! - startChapterNo! + 1 }, (_, index) => startChapterNo! + index);
+    }
+
+    // 兼容 Planner 常见的“从第 N 章开始连续写 M 章”参数形态，避免 schema 允许但运行时拒绝。
+    if (Number.isInteger(maxChapters) && maxChapters! > 0) {
+      return Array.from({ length: maxChapters! }, (_, index) => startChapterNo! + index);
+    }
+
+    return [];
   }
 
   private async loadChapters(projectId: string, chapterNos: number[]) {

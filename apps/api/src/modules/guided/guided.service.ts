@@ -1,4 +1,5 @@
 import { Injectable, NotFoundException } from '@nestjs/common';
+import { NovelCacheService } from '../../common/cache/novel-cache.service';
 import { PrismaService } from '../../prisma/prisma.service';
 import { LlmService } from './llm.service';
 import { CreateGuidedSessionDto } from './dto/create-guided-session.dto';
@@ -241,6 +242,7 @@ export class GuidedService {
   constructor(
     private readonly prisma: PrismaService,
     private readonly llm: LlmService,
+    private readonly cacheService: NovelCacheService,
   ) {}
 
   /**
@@ -1012,6 +1014,11 @@ ${schema}
           stepData: { ...existingData, [`${step}_result`]: resultToSave } as object,
         },
       });
+    }
+
+    if (written.length > 0) {
+      // 引导式写入可能新增设定、章节、角色或伏笔，都会改变后续章节召回输入/结果；写入后清空项目级召回缓存。
+      await this.cacheService.deleteProjectRecallResults(projectId);
     }
 
     return { written };

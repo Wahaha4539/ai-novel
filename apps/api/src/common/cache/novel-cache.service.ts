@@ -2,7 +2,7 @@ import { Injectable, OnModuleDestroy } from '@nestjs/common';
 import { RedisClientType, createClient } from 'redis';
 import { StructuredLogger } from '../logging/structured-logger';
 
-type JsonValue = Record<string, unknown> | Array<unknown>;
+type JsonValue = Record<string, unknown> | Array<unknown> | string | number | boolean | null;
 
 const sanitizeRedisUrl = (value: string) => {
   try {
@@ -84,6 +84,21 @@ export class NovelCacheService implements OnModuleDestroy {
     });
   }
 
+  /** 读取章节召回结果缓存；key 由调用方的 querySpec hash 决定，避免用召回结果反推缓存键。 */
+  async getRecallResult<T = unknown>(projectId: string, querySpecHash: string): Promise<T | null> {
+    return this.getJson<T>(this.recallResultKey(projectId, querySpecHash));
+  }
+
+  /** 写入章节召回结果缓存；短 TTL 只用于降低连续重试/重复生成时的召回开销。 */
+  async setRecallResult(projectId: string, querySpecHash: string, result: unknown) {
+    await this.setJson(this.recallResultKey(projectId, querySpecHash), result, this.recallResultTtlSeconds);
+    this.logger.log('cache.recall_result.updated', {
+      projectId,
+      querySpecHash,
+      ttlSeconds: this.recallResultTtlSeconds,
+    });
+  }
+
   private projectSnapshotKey(projectId: string) {
     return `ai_novel:project:${projectId}:snapshot`;
   }
@@ -98,6 +113,10 @@ export class NovelCacheService implements OnModuleDestroy {
 
   private recallResultPattern(projectId: string) {
     return `ai_novel:project:${projectId}:recall:*`;
+  }
+
+  private recallResultKey(projectId: string, querySpecHash: string) {
+    return `ai_novel:project:${projectId}:recall:${querySpecHash}`;
   }
 
   private async getRedisClient() {
@@ -124,7 +143,22 @@ export class NovelCacheService implements OnModuleDestroy {
     return this.redisClient;
   }
 
-  private async setJson(key: string, value: JsonValue | Record<string, unknown>, ttlSeconds: number) {
+  private async getJson<T>(key: string): Promise<T | null> {
+    const redis = await this.getRedisClient();
+    const raw = await redis.get(key);
+    if (!raw) return null;
+
+    try {
+      return JSON.parse(raw) as T;
+    } catch (error) {
+      // 缓存损坏不能影响主链路；删除坏值后由调用方重新计算并回填。
+      await redis.del(key);
+      this.logger.warn('cache.json_parse_failed', { key, error: error instanceof Error ? error.message : String(error) });
+      return null;
+    }
+  }
+
+  private async setJson(key: string, value: JsonValue | Record<string, unknown> | unknown, ttlSeconds: number) {
     const redis = await this.getRedisClient();
     await redis.set(key, JSON.stringify(value), {
       EX: ttlSeconds,

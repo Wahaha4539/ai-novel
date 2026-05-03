@@ -13,11 +13,12 @@ import { GenerationService } from './generation.service';
 import { PolishChapterService } from './polish-chapter.service';
 import { PostProcessChapterService } from './postprocess-chapter.service';
 import { PromptBuilderService } from './prompt-builder.service';
+import { RetrievalPlannerService } from './retrieval-planner.service';
 
 @Module({
   imports: [PrismaModule, ChaptersModule, JobsModule, LlmModule, MemoryModule, FactsModule, ValidationModule],
-  providers: [GenerationService, PostProcessChapterService, PolishChapterService, PromptBuilderService, GenerateChapterService, ChapterAutoRepairService],
-  exports: [PostProcessChapterService, PolishChapterService, PromptBuilderService, GenerateChapterService, ChapterAutoRepairService],
+  providers: [GenerationService, PostProcessChapterService, PolishChapterService, PromptBuilderService, GenerateChapterService, ChapterAutoRepairService, RetrievalPlannerService],
+  exports: [PostProcessChapterService, PolishChapterService, PromptBuilderService, GenerateChapterService, ChapterAutoRepairService, RetrievalPlannerService],
   controllers: [GenerationController],
 })
 export class GenerationModule {}
