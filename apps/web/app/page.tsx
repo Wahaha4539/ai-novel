@@ -207,7 +207,7 @@ export default function HomePage() {
   }
 
   return (
-    <main className="flex h-full w-full">
+    <main className="workspace-shell">
 
       {/* 1. 左侧：工作台导航侧边栏 */}
       <WorkspaceSidebar
@@ -234,7 +234,7 @@ export default function HomePage() {
       />
 
       {/* 2. 主躯干：根据 activeView 切换面板 */}
-      <section className="flex-1" style={{ position: 'relative', overflow: 'hidden' }}>
+      <section className="workspace-main">
         {/* LLM config is global — renders without requiring a project */}
         {activeView === 'llm-config' ? (
           <LlmProviderPanel />

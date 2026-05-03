@@ -131,10 +131,10 @@ export function ProjectManagementPanel({
   };
 
   return (
-    <article className="flex flex-col h-full" style={{ background: 'var(--bg-deep)' }}>
+    <article className="project-management-panel flex flex-col h-full" style={{ background: 'var(--bg-deep)' }}>
       {/* Header */}
       <header
-        className="flex items-center justify-between shrink-0"
+        className="project-management-header flex items-center justify-between shrink-0"
         style={{
           height: '3.5rem',
           background: 'var(--bg-editor-header)',
@@ -144,7 +144,7 @@ export function ProjectManagementPanel({
           zIndex: 10,
         }}
       >
-        <div className="flex items-center gap-3">
+        <div className="project-management-title flex items-center gap-3">
           <h1
             className="text-lg font-bold text-heading"
             style={{ textShadow: '0 2px 10px var(--accent-cyan-glow)' }}
@@ -162,7 +162,7 @@ export function ProjectManagementPanel({
             {projects.length} 个项目
           </span>
         </div>
-        <div className="flex items-center gap-2">
+        <div className="project-management-actions flex items-center gap-2">
           {/* 批量操作入口按钮 */}
           {projects.length > 0 && (
             <button
@@ -262,7 +262,7 @@ export function ProjectManagementPanel({
       )}
 
       {/* Project Grid */}
-      <div className="flex-1 p-5" style={{ overflowY: 'auto' }}>
+      <div className="project-management-content flex-1 p-5" style={{ overflowY: 'auto' }}>
         {projects.length === 0 ? (
           <div
             className="flex flex-col items-center justify-center h-full animate-fade-in"
@@ -306,7 +306,7 @@ export function ProjectManagementPanel({
           </div>
         ) : (
           <div
-            className="animate-fade-in"
+            className="project-grid animate-fade-in"
             style={{
               display: 'grid',
               gridTemplateColumns: 'repeat(auto-fill, minmax(320px, 1fr))',

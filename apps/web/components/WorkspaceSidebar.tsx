@@ -53,7 +53,7 @@ export function WorkspaceSidebar({
   const selectedProject = projects.find((p) => p.id === selectedProjectId);
 
   return (
-    <aside className="flex flex-col shrink-0 h-full" style={{ width: '16rem', borderRight: '1px solid var(--border-light)', background: 'var(--bg-sidebar)', backdropFilter: 'blur(24px)', overflow: 'hidden' }}>
+    <aside className="workspace-sidebar flex flex-col shrink-0 h-full" style={{ background: 'var(--bg-sidebar)', backdropFilter: 'blur(24px)', overflow: 'hidden' }}>
       {/* Project Header — clickable to open project management */}
       <div
         className="p-5"

@@ -44,7 +44,7 @@ export function InspectorPanel(props: Props) {
   const [activeTab, setActiveTab] = useState<'preview' | 'edit'>('preview');
 
   return (
-    <aside className="flex flex-col shrink-0 h-full" style={{ width: '26rem', borderLeft: '1px solid var(--border-light)', background: 'var(--bg-inspector)', backdropFilter: 'blur(32px)', overflow: 'hidden', position: 'relative', zIndex: 10, boxShadow: '-10px 0 30px rgba(0,0,0,0.15)' }}>
+    <aside className="workspace-inspector flex flex-col shrink-0 h-full" style={{ width: '26rem', borderLeft: '1px solid var(--border-light)', background: 'var(--bg-inspector)', backdropFilter: 'blur(32px)', overflow: 'hidden', position: 'relative', zIndex: 10, boxShadow: '-10px 0 30px rgba(0,0,0,0.15)' }}>
       
       {/* Inspector Tabs - Sleek Segmented Control */}
       <div className="shrink-0 flex px-4 pt-4 pb-0" style={{ background: 'var(--bg-overlay)', borderBottom: '1px solid var(--border-dim)' }}>
