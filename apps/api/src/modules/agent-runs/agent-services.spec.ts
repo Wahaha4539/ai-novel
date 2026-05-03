@@ -14,6 +14,7 @@ import { AgentPolicyService, AgentSecondConfirmationRequiredError } from './agen
 import { AgentTraceService } from './agent-trace.service';
 import { AgentRunsService } from './agent-runs.service';
 import { GenerateChapterService } from '../generation/generate-chapter.service';
+import { ChapterAutoRepairService } from '../generation/chapter-auto-repair.service';
 import { ValidateOutlineTool } from '../agent-tools/tools/validate-outline.tool';
 import { ValidateImportedAssetsTool } from '../agent-tools/tools/validate-imported-assets.tool';
 import { PersistOutlineTool } from '../agent-tools/tools/persist-outline.tool';
@@ -172,6 +173,91 @@ test('GenerateChapterService 生成后质量门禁标记重复段落退化', () 
   const result = service.assessGeneratedDraftQuality(repeated, 2200, 3000);
   assert.equal(result.blocked, true);
   assert.match(result.blockers.join('；'), /重复段落/);
+});
+
+test('GenerateChapterService 生成前细纲密度检查标记缺失执行卡字段', () => {
+  const service = new GenerateChapterService({} as never, {} as never, {} as never, {} as never, {} as never, {} as never) as unknown as {
+    assessOutlineDensity: (
+      chapter: { objective: string | null; conflict: string | null; outline: string | null; craftBrief?: unknown },
+      input: { outlineQualityGate?: 'warning' | 'blocker' },
+    ) => { valid: boolean; blockers: string[]; warnings: string[]; missing: string[] };
+  };
+  const result = service.assessOutlineDensity({ objective: null, conflict: null, outline: '主角走到井边。', craftBrief: {} }, { outlineQualityGate: 'warning' });
+  assert.equal(result.valid, true);
+  assert.equal(result.blockers.length, 0);
+  assert.ok(result.warnings.length >= 4);
+  assert.ok(result.missing.includes('objective'));
+  assert.ok(result.missing.includes('action_beats'));
+  assert.ok(result.missing.includes('concrete_clues'));
+  assert.ok(result.missing.includes('irreversible_consequence'));
+});
+
+test('GenerateChapterService 完整 craftBrief 通过细纲密度检查', () => {
+  const service = new GenerateChapterService({} as never, {} as never, {} as never, {} as never, {} as never, {} as never) as unknown as {
+    assessOutlineDensity: (
+      chapter: { objective: string | null; conflict: string | null; outline: string | null; craftBrief?: unknown },
+      input: { outlineQualityGate?: 'warning' | 'blocker' },
+    ) => { valid: boolean; warnings: string[]; missing: string[] };
+  };
+  const result = service.assessOutlineDensity({
+    objective: '确认井边湿红线来自失踪者衣物',
+    conflict: '守井人阻止主角靠近后院',
+    outline: '短纲',
+    craftBrief: {
+      visibleGoal: '确认失踪者最后出现位置',
+      coreConflict: '守井人阻止主角靠近',
+      actionBeats: ['主角绕到井后', '守井人故意打翻灯油', '主角抢在火起前捡走湿红线'],
+      concreteClues: [{ name: '湿红线', sensoryDetail: '冰凉，带井水泥腥味', laterUse: '证明失踪者来过井边' }],
+      irreversibleConsequence: '主角拿走木珠后，井开始叫他的名字',
+    },
+  }, { outlineQualityGate: 'warning' });
+  assert.equal(result.valid, true);
+  assert.equal(result.warnings.length, 0);
+  assert.deepEqual(result.missing, []);
+});
+
+test('GenerateChapterService 生成后执行卡覆盖检查标记漏写关键项', () => {
+  const service = new GenerateChapterService({} as never, {} as never, {} as never, {} as never, {} as never, {} as never) as unknown as {
+    assessGeneratedDraftQuality: (
+      content: string,
+      actualWordCount: number,
+      targetWordCount: number,
+      chapter?: { outline: string | null; craftBrief?: unknown },
+    ) => { blocked: boolean; warnings: string[]; executionCardCoverage?: { missing: { clueNames: string[]; irreversibleConsequence?: string } } };
+  };
+  const content = '主角绕过祠堂后院，和守井人短暂交锋，最后带着一身泥水离开。';
+  const result = service.assessGeneratedDraftQuality(content, 1200, 1600, {
+    outline: null,
+    craftBrief: {
+      concreteClues: [{ name: '湿红线', sensoryDetail: '冰凉，带井水泥腥味', laterUse: '证明失踪者来过井边' }],
+      irreversibleConsequence: '井开始叫他的名字',
+    },
+  });
+  assert.equal(result.blocked, false);
+  assert.match(result.warnings.join('；'), /湿红线/);
+  assert.match(result.warnings.join('；'), /不可逆后果/);
+  assert.deepEqual(result.executionCardCoverage?.missing.clueNames, ['湿红线']);
+  assert.equal(result.executionCardCoverage?.missing.irreversibleConsequence, '井开始叫他的名字');
+});
+
+test('ChapterAutoRepairService 可从草稿上下文提取执行卡覆盖问题', () => {
+  const service = new ChapterAutoRepairService({} as never, {} as never) as unknown as {
+    readDraftExecutionCardCoverage: (generationContext: unknown) => unknown;
+    buildCoverageRepairIssues: (coverage: unknown) => Array<{ severity: string; message: string; suggestion?: string }>;
+  };
+  const coverage = service.readDraftExecutionCardCoverage({
+    qualityGate: {
+      executionCardCoverage: {
+        warnings: ['正文未覆盖执行卡关键物证/线索：湿红线。'],
+        missing: { clueNames: ['湿红线'], irreversibleConsequence: '井开始叫他的名字' },
+      },
+    },
+  });
+  const issues = service.buildCoverageRepairIssues(coverage);
+  assert.ok(issues.length >= 2);
+  assert.ok(issues.every((issue) => issue.severity === 'warning'));
+  assert.match(issues.map((issue) => issue.message).join('；'), /湿红线/);
+  assert.match(issues.map((issue) => issue.message).join('；'), /不可逆后果|井开始叫他的名字/);
 });
 
 test('Executor 在 Run 被取消后停止后续步骤', async () => {

@@ -1,13 +1,14 @@
 import { BadRequestException, Injectable } from '@nestjs/common';
+import { Prisma } from '@prisma/client';
 import { PrismaService } from '../../prisma/prisma.service';
 import { RetrievalHit } from '../memory/retrieval.service';
 import { ChapterContextPack } from './context-pack.types';
 
 export interface ChapterPromptContext {
   project: { id: string; title: string; genre: string | null; tone: string | null; synopsis: string | null; outline: string | null };
-  volume?: { volumeNo: number; title: string | null; objective: string | null; synopsis: string | null } | null;
+  volume?: { volumeNo: number; title: string | null; objective: string | null; synopsis: string | null; narrativePlan?: Prisma.JsonValue | null } | null;
   styleProfile?: { pov?: string | null; tense?: string | null; proseStyle?: string | null; pacing?: string | null } | null;
-  chapter: { chapterNo: number; title: string | null; objective: string | null; conflict: string | null; outline: string | null; revealPoints?: string | null; foreshadowPlan?: string | null; expectedWordCount: number | null };
+  chapter: { chapterNo: number; title: string | null; objective: string | null; conflict: string | null; outline: string | null; craftBrief?: Prisma.JsonValue | null; revealPoints?: string | null; foreshadowPlan?: string | null; expectedWordCount: number | null };
   characters: Array<{ name: string; roleType: string | null; personalityCore: string | null; motivation: string | null; speechStyle: string | null }>;
   plannedForeshadows: Array<{ title: string; detail: string | null; status: string; firstSeenChapterNo: number | null; lastSeenChapterNo: number | null }>;
   previousChapters: Array<{ chapterNo: number; title: string | null; content: string }>;
@@ -48,6 +49,7 @@ export class PromptBuilderService {
       this.buildStyleSection(context),
       this.buildCharacterSection(context),
       this.buildChapterSection(context),
+      this.buildCraftBriefSection(context),
       this.buildContextLayerNotice(),
       this.buildForeshadowSection(context),
       this.buildFactsSection(context),
@@ -72,6 +74,12 @@ export class PromptBuilderService {
         foreshadowCount: context.plannedForeshadows.length,
         hasVolume: Boolean(context.volume),
         hasStyleProfile: Boolean(context.styleProfile),
+        hasCraftBrief: this.hasRecordContent(context.chapter.craftBrief),
+        craftBriefSource: this.hasRecordContent(context.chapter.craftBrief)
+          ? 'chapter.craftBrief'
+          : this.extractExecutionCardMarkdown(context.chapter.outline)
+            ? 'chapter.outline'
+            : 'none',
         targetWordCount: context.targetWordCount ?? context.chapter.expectedWordCount ?? 3500,
       },
     };
@@ -85,7 +93,14 @@ export class PromptBuilderService {
   private buildVolumeSection(data: ChapterPromptContext): string {
     const volume = data.volume;
     if (!volume) return '【所属卷】\n未指定分卷';
-    return ['【所属卷】', `第${volume.volumeNo}卷「${volume.title || '未命名'}」`, volume.objective ? `本卷叙事目标：${volume.objective}` : '', volume.synopsis ? `本卷概要：${volume.synopsis}` : ''].filter(Boolean).join('\n');
+    const narrativePlan = this.formatJsonObject(volume.narrativePlan, 2500);
+    return [
+      '【所属卷】',
+      `第${volume.volumeNo}卷「${volume.title || '未命名'}」`,
+      volume.objective ? `本卷叙事目标：${volume.objective}` : '',
+      volume.synopsis ? `本卷概要：${volume.synopsis}` : '',
+      narrativePlan ? `本卷结构化叙事计划：${narrativePlan}` : '',
+    ].filter(Boolean).join('\n');
   }
 
   private buildStyleSection(data: ChapterPromptContext): string {
@@ -101,6 +116,45 @@ export class PromptBuilderService {
   private buildChapterSection(data: ChapterPromptContext): string {
     const chapter = data.chapter;
     return ['【章节信息】', `章节号：第${chapter.chapterNo}章`, `标题：${chapter.title || '未命名'}`, `目标：${chapter.objective || '无'}`, `冲突：${chapter.conflict || '无'}`, `大纲：${chapter.outline || '无'}`, `目标字数：${data.targetWordCount || chapter.expectedWordCount || 3500}`, chapter.revealPoints ? `揭示点：${chapter.revealPoints}` : '', chapter.foreshadowPlan ? `伏笔计划：${chapter.foreshadowPlan}` : ''].filter(Boolean).join('\n');
+  }
+
+  private buildCraftBriefSection(data: ChapterPromptContext): string {
+    const brief = this.asRecord(data.chapter.craftBrief);
+    if (brief && Object.keys(brief).length > 0) {
+      const clues = this.asRecordArray(brief.concreteClues)
+        .map((item) => {
+          const name = this.text(item.name);
+          const sensoryDetail = this.text(item.sensoryDetail);
+          const laterUse = this.text(item.laterUse);
+          return `- ${name || '未命名线索'}${sensoryDetail ? `：${sensoryDetail}` : ''}${laterUse ? `；后续用途：${laterUse}` : ''}`;
+        });
+      return [
+        '【本章执行卡】',
+        '来源：Chapter.craftBrief（结构化字段）。本区块是正文执行契约，优先级高于普通大纲摘要。',
+        this.text(brief.visibleGoal) ? `表层目标：${this.text(brief.visibleGoal)}` : '',
+        this.text(brief.hiddenEmotion) ? `隐藏情绪：${this.text(brief.hiddenEmotion)}` : '',
+        this.text(brief.coreConflict) ? `核心冲突：${this.text(brief.coreConflict)}` : '',
+        this.text(brief.mainlineTask) ? `主线任务：${this.text(brief.mainlineTask)}` : '',
+        this.stringArray(brief.subplotTasks).length ? `支线任务：${this.stringArray(brief.subplotTasks).join('；')}` : '',
+        this.stringArray(brief.actionBeats).length ? ['行动链：', ...this.stringArray(brief.actionBeats).map((item, index) => `${index + 1}. ${item}`)].join('\n') : '',
+        clues.length ? ['物证/线索：', ...clues].join('\n') : '',
+        this.text(brief.dialogueSubtext) ? `对话潜台词：${this.text(brief.dialogueSubtext)}` : '',
+        this.text(brief.characterShift) ? `人物变化：${this.text(brief.characterShift)}` : '',
+        this.text(brief.irreversibleConsequence) ? `不可逆后果：${this.text(brief.irreversibleConsequence)}` : '',
+        this.stringArray(brief.progressTypes).length ? `推进类型：${this.stringArray(brief.progressTypes).join(' / ')}` : '',
+      ].filter(Boolean).join('\n');
+    }
+
+    const markdownCard = this.extractExecutionCardMarkdown(data.chapter.outline);
+    if (markdownCard) {
+      return [
+        '【本章执行卡】',
+        '来源：Chapter.outline Markdown（旧项目兼容）。本区块是正文执行契约，必须逐项落地。',
+        markdownCard,
+      ].join('\n');
+    }
+
+    return '【本章执行卡】\n- 未提供结构化执行卡；请严格依据章节目标、冲突与大纲写作，并在正文中落下具体行动、线索和后果。';
   }
 
   private buildContextLayerNotice(): string {
@@ -168,5 +222,46 @@ export class PromptBuilderService {
       included += 1;
     }
     return lines.join('\n');
+  }
+
+  private asRecord(value: unknown): Record<string, unknown> | undefined {
+    return value !== null && typeof value === 'object' && !Array.isArray(value)
+      ? value as Record<string, unknown>
+      : undefined;
+  }
+
+  private asRecordArray(value: unknown): Array<Record<string, unknown>> {
+    return Array.isArray(value)
+      ? value.map((item) => this.asRecord(item)).filter((item): item is Record<string, unknown> => Boolean(item))
+      : [];
+  }
+
+  private stringArray(value: unknown): string[] {
+    return Array.isArray(value)
+      ? value.map((item) => (typeof item === 'string' ? item.trim() : '')).filter(Boolean)
+      : [];
+  }
+
+  private text(value: unknown): string | undefined {
+    return typeof value === 'string' && value.trim() ? value.trim() : undefined;
+  }
+
+  private hasRecordContent(value: unknown): boolean {
+    const record = this.asRecord(value);
+    return Boolean(record && Object.keys(record).length > 0);
+  }
+
+  private formatJsonObject(value: unknown, limit: number): string | undefined {
+    const record = this.asRecord(value);
+    if (!record || Object.keys(record).length === 0) return undefined;
+    const text = JSON.stringify(record);
+    return text.length > limit ? `${text.slice(0, limit)}...` : text;
+  }
+
+  private extractExecutionCardMarkdown(outline: string | null | undefined): string | undefined {
+    if (!outline?.includes('本章执行卡')) return undefined;
+    const start = outline.indexOf('本章执行卡');
+    const card = outline.slice(Math.max(0, start - 3)).trim();
+    return card.length > 3500 ? `${card.slice(0, 3500)}...` : card;
   }
 }

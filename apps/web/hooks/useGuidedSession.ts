@@ -151,10 +151,10 @@ export function useGuidedSession(projectId: string) {
 {"outline":"完整的故事总纲大纲(300-500字)"}`,
 
       guided_volume: `根据我们的对话，请输出「卷纲」的结构化 JSON（只输出JSON）：
-{"volumes":[{"volumeNo":1,"title":"卷名","synopsis":"本卷剧情概要","objective":"本卷核心目标"}]}`,
+{"volumes":[{"volumeNo":1,"title":"卷名","synopsis":"Markdown结构：含全书主线阶段/本卷主线/本卷戏剧问题/卷内支线/卷末交接","objective":"本卷核心目标","narrativePlan":{"globalMainlineStage":"全书主线阶段","volumeMainline":"本卷主线","dramaticQuestion":"本卷戏剧问题","startState":"开局状态","endState":"结尾状态","mainlineMilestones":["关键节点"],"subStoryLines":[{"name":"支线名","type":"mystery","function":"叙事作用","startState":"起点","progress":"推进方式","endState":"阶段结果","relatedCharacters":["角色名"],"chapterNodes":[1]}],"foreshadowPlan":["伏笔分配"],"endingHook":"卷末钩子","handoffToNextVolume":"卷末交接"}}]}`,
 
       guided_chapter: `根据我们的对话，请输出「章节细纲」的结构化 JSON（只输出JSON）：
-{"chapters":[{"chapterNo":1,"title":"章节标题","objective":"本章目标","conflict":"核心冲突","outline":"章节大纲"}]}`,
+{"chapters":[{"chapterNo":1,"volumeNo":1,"title":"章节标题","objective":"本章目标","conflict":"核心冲突","outline":"章节大纲","craftBrief":{"visibleGoal":"表层目标","hiddenEmotion":"隐藏情绪","coreConflict":"核心冲突","mainlineTask":"本章主线任务","subplotTasks":["支线任务"],"actionBeats":["行动链节点"],"concreteClues":[{"name":"物证或线索","sensoryDetail":"感官细节","laterUse":"后续用途"}],"dialogueSubtext":"对话潜台词","characterShift":"人物变化","irreversibleConsequence":"不可逆后果","progressTypes":["info"]}}]}`,
 
       guided_foreshadow: `根据我们的对话，请输出「伏笔设计」的结构化 JSON（只输出JSON）：
 {"foreshadowTracks":[{"title":"伏笔标题","detail":"伏笔内容详细描述(50字以上)","scope":"arc/volume/chapter","technique":"道具型/对话型/行为型/环境型/叙事型/象征型/结构型","plantChapter":"埋设时机(如:第1卷第3章)","revealChapter":"揭开时机(如:第3卷第8章)","involvedCharacters":"涉及角色","payoff":"揭开后的影响和情感冲击"}]}`,
@@ -518,8 +518,14 @@ export function useGuidedSession(projectId: string) {
   }, [projectId, currentStepKey, chatMessages, handleStepComplete, buildProjectContext]);
 
   // One-shot AI generation: generate all data for a step without Q&A
-  // Accepts optional targetStepKey and volumeNo to support per-volume chapter generation
-  const generateStepData = useCallback(async (userHint?: string, targetStepKey?: StepKey, volumeNo?: number): Promise<Record<string, unknown> | null> => {
+  // Accepts optional targetStepKey, volumeNo and chapterNo to support per-volume
+  // generation and single-chapter refinement.
+  const generateStepData = useCallback(async (
+    userHint?: string,
+    targetStepKey?: StepKey,
+    volumeNo?: number,
+    chapterNo?: number,
+  ): Promise<Record<string, unknown> | null> => {
     if (!projectId) return null;
     setLoading(true);
     setError('');
@@ -546,6 +552,7 @@ export function useGuidedSession(projectId: string) {
             projectContext: buildProjectContext(),
             chatSummary,
             ...(volumeNo !== undefined && { volumeNo }),
+            ...(chapterNo !== undefined && { chapterNo }),
           }),
         },
       );
@@ -553,11 +560,12 @@ export function useGuidedSession(projectId: string) {
       // Show AI summary in chat
       const stepLabel = GUIDED_STEPS[stepIndex]?.label ?? '';
       const volumeLabel = volumeNo ? ` · 第${volumeNo}卷` : '';
+      const chapterLabel = chapterNo ? ` · 第${chapterNo}章` : '';
       setChatMessages((prev) => [
         ...prev,
         {
           role: 'ai',
-          content: `⚡ **${stepLabel}${volumeLabel} · 一键生成完成**\n\n${response.summary}\n\n可在文档中查看并编辑，确认无误后点击「✅ 保存」按钮。`,
+          content: `⚡ **${stepLabel}${volumeLabel}${chapterLabel} · 一键生成完成**\n\n${response.summary}\n\n可在文档中查看并编辑，确认无误后点击「✅ 保存」按钮。`,
           timestamp: Date.now(),
         },
       ]);
@@ -577,9 +585,10 @@ export function useGuidedSession(projectId: string) {
     structuredData: Record<string, unknown>,
     targetStepKey?: StepKey,
     volumeNo?: number,
+    options?: { silent?: boolean },
   ): Promise<boolean> => {
     if (!projectId) return false;
-    setLoading(true);
+    if (!options?.silent) setLoading(true);
 
     const stepKey = targetStepKey ?? currentStepKey;
     const stepIndex = GUIDED_STEPS.findIndex((s) => s.key === stepKey);
@@ -598,25 +607,27 @@ export function useGuidedSession(projectId: string) {
         },
       );
 
-      const volumeLabel = volumeNo ? ` · 第${volumeNo}卷` : '';
-      setChatMessages((prev) => [
-        ...prev,
-        {
-          role: 'ai',
-          content: `✅ **${stepLabel}${volumeLabel}** 已保存！\n\n已写入：${result.written.join('、')}`,
-          timestamp: Date.now(),
-        },
-      ]);
+      if (!options?.silent) {
+        const volumeLabel = volumeNo ? ` · 第${volumeNo}卷` : '';
+        setChatMessages((prev) => [
+          ...prev,
+          {
+            role: 'ai',
+            content: `✅ **${stepLabel}${volumeLabel}** 已保存！\n\n已写入：${result.written.join('、')}`,
+            timestamp: Date.now(),
+          },
+        ]);
+      }
 
       // Reload session to update completedSteps
-      await loadSession();
+      if (!options?.silent) await loadSession();
 
       return true;
     } catch (confirmError) {
       setError(confirmError instanceof Error ? confirmError.message : '保存失败');
       return false;
     } finally {
-      setLoading(false);
+      if (!options?.silent) setLoading(false);
     }
   }, [projectId, currentStepKey, loadSession]);
 

@@ -1,22 +1,12 @@
 import React, { useState } from 'react';
+import { ChapterCraftBrief, GuidedChapterData, GuidedSupportingCharacterData } from '../../types/guided';
 
 /** Chapter data per volume */
-export interface ChapterData {
-  chapterNo: number;
-  title: string;
-  objective: string;
-  conflict: string;
-  outline: string;
-}
+export type ChapterData = GuidedChapterData;
 
 /** Supporting character generated alongside chapters */
-export interface SupportingCharacterData {
-  name: string;
-  roleType: string;
-  personalityCore: string;
-  motivation: string;
-  firstAppearChapter?: number;
-}
+export type SupportingCharacterData = GuidedSupportingCharacterData;
+type ChapterTextField = 'title' | 'objective' | 'conflict' | 'outline';
 
 /** Volume info read from guided_volume step */
 interface VolumeInfo {
@@ -32,6 +22,8 @@ interface ChapterFieldsProps {
   volumeData: Record<string, unknown>;
   onChange: (field: string, value: string) => void;
   onGenerateForVolume: (volumeNo: number, chapterRange?: [number, number]) => void;
+  onGenerateForChapter: (volumeNo: number, chapterNo: number) => void;
+  onAutoSaveVolume: (volumeNo: number) => void;
   onSaveVolume: (volumeNo: number) => void;
   loading: boolean;
 }
@@ -42,6 +34,36 @@ const emptyChapter = (chapterNo: number): ChapterData => ({
   objective: '',
   conflict: '',
   outline: '',
+});
+
+const emptyCraftBrief = (): ChapterCraftBrief => ({
+  visibleGoal: '',
+  hiddenEmotion: '',
+  coreConflict: '',
+  mainlineTask: '',
+  subplotTasks: [],
+  actionBeats: [],
+  concreteClues: [],
+  dialogueSubtext: '',
+  characterShift: '',
+  irreversibleConsequence: '',
+  progressTypes: [],
+});
+
+const stringListToText = (value?: string[]) => Array.isArray(value) ? value.join('\n') : '';
+
+const textToStringList = (value: string) => value
+  .split(/\n+/)
+  .map((line) => line.trim())
+  .filter(Boolean);
+
+const cluesToText = (value?: ChapterCraftBrief['concreteClues']) => Array.isArray(value)
+  ? value.map((item) => [item.name, item.sensoryDetail, item.laterUse].filter(Boolean).join('；')).join('\n')
+  : '';
+
+const textToClues = (value: string): ChapterCraftBrief['concreteClues'] => textToStringList(value).map((line) => {
+  const [name = '', sensoryDetail = '', laterUse = ''] = line.split(/[；;]/).map((item) => item.trim());
+  return { name: name || line, sensoryDetail, laterUse };
 });
 
 /** Parse volumes from guided_volume step data */
@@ -84,6 +106,8 @@ export function ChapterFields({
   volumeData,
   onChange,
   onGenerateForVolume,
+  onGenerateForChapter,
+  onAutoSaveVolume,
   onSaveVolume,
   loading,
 }: ChapterFieldsProps) {
@@ -100,12 +124,30 @@ export function ChapterFields({
     setCollapsedVolumes((prev) => ({ ...prev, [volumeNo]: !prev[volumeNo] }));
   };
 
-  const updateChapter = (volumeNo: number, chapterIdx: number, key: keyof ChapterData, value: string) => {
+  const updateChapter = (volumeNo: number, chapterIdx: number, key: ChapterTextField, value: string) => {
     const current = { ...volumeChapters };
     const chapters = [...(current[volumeNo] ?? [])];
     chapters[chapterIdx] = { ...chapters[chapterIdx], [key]: value };
     current[volumeNo] = chapters;
     onChange('volumeChapters', JSON.stringify(current));
+    onAutoSaveVolume(volumeNo);
+  };
+
+  const updateChapterCraftBrief = (volumeNo: number, chapterIdx: number, patch: Partial<ChapterCraftBrief>) => {
+    const current = { ...volumeChapters };
+    const chapters = [...(current[volumeNo] ?? [])];
+    const existing = chapters[chapterIdx] ?? emptyChapter(chapterIdx + 1);
+    chapters[chapterIdx] = {
+      ...existing,
+      craftBrief: {
+        ...emptyCraftBrief(),
+        ...(existing.craftBrief ?? {}),
+        ...patch,
+      },
+    };
+    current[volumeNo] = chapters;
+    onChange('volumeChapters', JSON.stringify(current));
+    onAutoSaveVolume(volumeNo);
   };
 
   const addChapter = (volumeNo: number) => {
@@ -163,8 +205,10 @@ export function ChapterFields({
             onChapterRangeChange={(range) => setChapterRanges((prev) => ({ ...prev, [vol.volumeNo]: range }))}
             onToggle={() => toggleVolume(vol.volumeNo)}
             onGenerateForVolume={() => onGenerateForVolume(vol.volumeNo, chapterRanges[vol.volumeNo] ?? [15, 20])}
+            onGenerateForChapter={(chapterNo) => onGenerateForChapter(vol.volumeNo, chapterNo)}
             onSaveVolume={() => onSaveVolume(vol.volumeNo)}
             onUpdateChapter={(idx, key, value) => updateChapter(vol.volumeNo, idx, key, value)}
+            onUpdateCraftBrief={(idx, patch) => updateChapterCraftBrief(vol.volumeNo, idx, patch)}
             onAddChapter={() => addChapter(vol.volumeNo)}
             onRemoveChapter={(idx) => removeChapter(vol.volumeNo, idx)}
           />
@@ -186,8 +230,10 @@ function VolumeChapterPanel({
   onChapterRangeChange,
   onToggle,
   onGenerateForVolume,
+  onGenerateForChapter,
   onSaveVolume,
   onUpdateChapter,
+  onUpdateCraftBrief,
   onAddChapter,
   onRemoveChapter,
 }: {
@@ -201,8 +247,10 @@ function VolumeChapterPanel({
   onChapterRangeChange: (range: [number, number]) => void;
   onToggle: () => void;
   onGenerateForVolume: () => void;
+  onGenerateForChapter: (chapterNo: number) => void;
   onSaveVolume: () => void;
-  onUpdateChapter: (idx: number, key: keyof ChapterData, value: string) => void;
+  onUpdateChapter: (idx: number, key: ChapterTextField, value: string) => void;
+  onUpdateCraftBrief: (idx: number, patch: Partial<ChapterCraftBrief>) => void;
   onAddChapter: () => void;
   onRemoveChapter: (idx: number) => void;
 }) {
@@ -307,7 +355,7 @@ function VolumeChapterPanel({
             disabled={loading}
             style={{ fontSize: '0.7rem', padding: '0.25rem 0.5rem' }}
           >
-            ⚡ 生成本卷
+            ⚡ 生成本卷细纲
           </button>
           {hasChapters && (
             <button
@@ -351,7 +399,7 @@ function VolumeChapterPanel({
                 fontSize: '0.78rem',
               }}
             >
-              暂无章节，点击「⚡ 生成本卷」自动生成
+              暂无章节，点击「⚡ 生成本卷细纲」自动生成章节细纲
             </div>
           ) : (
             <div style={{ display: 'flex', flexDirection: 'column', gap: '0.5rem' }}>
@@ -361,8 +409,11 @@ function VolumeChapterPanel({
                   chapter={ch}
                   index={idx}
                   onUpdate={(key, value) => onUpdateChapter(idx, key, value)}
+                  onUpdateCraftBrief={(patch) => onUpdateCraftBrief(idx, patch)}
+                  onGenerateForChapter={() => onGenerateForChapter(ch.chapterNo)}
                   onRemove={() => onRemoveChapter(idx)}
                   canRemove={chapters.length > 1}
+                  loading={loading}
                 />
               ))}
             </div>
@@ -435,16 +486,24 @@ function ChapterCard({
   chapter,
   index,
   onUpdate,
+  onUpdateCraftBrief,
+  onGenerateForChapter,
   onRemove,
   canRemove,
+  loading,
 }: {
   chapter: ChapterData;
   index: number;
-  onUpdate: (key: keyof ChapterData, value: string) => void;
+  onUpdate: (key: ChapterTextField, value: string) => void;
+  onUpdateCraftBrief: (patch: Partial<ChapterCraftBrief>) => void;
+  onGenerateForChapter: () => void;
   onRemove: () => void;
   canRemove: boolean;
+  loading: boolean;
 }) {
   const [expanded, setExpanded] = useState(false);
+  const craftBrief = chapter.craftBrief;
+  const hasCraftBrief = Boolean(craftBrief && Object.keys(craftBrief).length > 0);
 
   return (
     <div
@@ -501,25 +560,35 @@ function ChapterCard({
             {chapter.title || '未命名章节'}
           </span>
         </div>
-        {canRemove && (
+        <div style={{ display: 'flex', alignItems: 'center', gap: '0.25rem', flexShrink: 0 }}>
           <button
-            onClick={(e) => { e.stopPropagation(); onRemove(); }}
-            style={{
-              background: 'none',
-              border: 'none',
-              color: 'var(--text-dim)',
-              fontSize: '0.65rem',
-              cursor: 'pointer',
-              padding: '0.1rem 0.3rem',
-              borderRadius: '0.2rem',
-              flexShrink: 0,
-            }}
-            onMouseEnter={(e) => { e.currentTarget.style.color = '#ef4444'; }}
-            onMouseLeave={(e) => { e.currentTarget.style.color = 'var(--text-dim)'; }}
+            className="doc-section__btn doc-section__btn--ai"
+            onClick={(e) => { e.stopPropagation(); onGenerateForChapter(); }}
+            disabled={loading}
+            style={{ fontSize: '0.65rem', padding: '0.16rem 0.4rem' }}
           >
-            ✕
+            细化本章
           </button>
-        )}
+          {canRemove && (
+            <button
+              onClick={(e) => { e.stopPropagation(); onRemove(); }}
+              style={{
+                background: 'none',
+                border: 'none',
+                color: 'var(--text-dim)',
+                fontSize: '0.65rem',
+                cursor: 'pointer',
+                padding: '0.1rem 0.3rem',
+                borderRadius: '0.2rem',
+                flexShrink: 0,
+              }}
+              onMouseEnter={(e) => { e.currentTarget.style.color = '#ef4444'; }}
+              onMouseLeave={(e) => { e.currentTarget.style.color = 'var(--text-dim)'; }}
+            >
+              ✕
+            </button>
+          )}
+        </div>
       </div>
 
       {/* Expanded editing fields */}
@@ -562,6 +631,59 @@ function ChapterCard({
             placeholder="章节大纲…"
             style={{ fontSize: '0.78rem', lineHeight: 1.6, resize: 'vertical' }}
           />
+          {hasCraftBrief && (
+            <div
+              style={{
+                borderTop: '1px solid var(--border-light)',
+                paddingTop: '0.35rem',
+                display: 'flex',
+                flexDirection: 'column',
+                gap: '0.3rem',
+              }}
+            >
+              <div style={{ fontSize: '0.7rem', fontWeight: 700, color: ACCENT_COLOR }}>
+                结构化执行卡
+              </div>
+              <input
+                className="input-field"
+                value={craftBrief?.visibleGoal ?? ''}
+                onChange={(e) => onUpdateCraftBrief({ visibleGoal: e.target.value })}
+                placeholder="表层目标…"
+                style={{ fontSize: '0.74rem' }}
+              />
+              <input
+                className="input-field"
+                value={craftBrief?.mainlineTask ?? ''}
+                onChange={(e) => onUpdateCraftBrief({ mainlineTask: e.target.value })}
+                placeholder="主线任务…"
+                style={{ fontSize: '0.74rem' }}
+              />
+              <textarea
+                className="input-field"
+                rows={3}
+                value={stringListToText(craftBrief?.actionBeats)}
+                onChange={(e) => onUpdateCraftBrief({ actionBeats: textToStringList(e.target.value) })}
+                placeholder="行动链，每行一个节点…"
+                style={{ fontSize: '0.74rem', lineHeight: 1.55, resize: 'vertical' }}
+              />
+              <textarea
+                className="input-field"
+                rows={2}
+                value={cluesToText(craftBrief?.concreteClues)}
+                onChange={(e) => onUpdateCraftBrief({ concreteClues: textToClues(e.target.value) })}
+                placeholder="物证/线索，每行一个；可用“名称；感官细节；后续用途”…"
+                style={{ fontSize: '0.74rem', lineHeight: 1.55, resize: 'vertical' }}
+              />
+              <textarea
+                className="input-field"
+                rows={2}
+                value={craftBrief?.irreversibleConsequence ?? ''}
+                onChange={(e) => onUpdateCraftBrief({ irreversibleConsequence: e.target.value })}
+                placeholder="不可逆后果…"
+                style={{ fontSize: '0.74rem', lineHeight: 1.55, resize: 'vertical' }}
+              />
+            </div>
+          )}
         </div>
       )}
     </div>

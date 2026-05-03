@@ -172,8 +172,17 @@
 - 回复可放宽到 500 字
 - 使用 markdown 格式
 
+卷纲生成规则：
+- 增强卷纲继续写入每卷 `synopsis` 的 Markdown 段落，以兼容旧项目和人工阅读
+- 同时必须输出结构化 `narrativePlan` 对象，后端会写入 `Volume.narrativePlan`
+- 每卷 `synopsis` 必须包含：`## 全书主线阶段`、`## 本卷主线`、`## 本卷戏剧问题`、`## 开局状态`、`## 结尾状态`、`## 主线里程碑`、`## 卷内支线`、`## 支线交叉点`、`## 伏笔分配`、`## 卷末交接`
+- `## 卷内支线` 至少 2 条，每条写清作用、起点、推进方式和阶段结果
+- `## 卷末交接` 必须分别写清：已解决、已升级、移交下一卷
+- `narrativePlan` 必须包含：`globalMainlineStage`、`volumeMainline`、`dramaticQuestion`、`startState`、`endState`、`mainlineMilestones`、`subStoryLines`、`foreshadowPlan`、`endingHook`、`handoffToNextVolume`
+- 禁止只写「推进主线」「主角成长」「遭遇困难」这类空泛表达
+
 完成时输出的 JSON 格式：
-`[STEP_COMPLETE]`{"volumes":[{"volumeNo":1,"title":"卷名","synopsis":"本卷剧情概要","objective":"本卷核心目标"}]}
+`[STEP_COMPLETE]`{"volumes":[{"volumeNo":1,"title":"卷名","synopsis":"Markdown结构：含全书主线阶段/本卷主线/本卷戏剧问题/卷内支线/支线交叉点/卷末交接","objective":"本卷核心目标(具体可检验)","narrativePlan":{"globalMainlineStage":"全书主线阶段","volumeMainline":"本卷主线","dramaticQuestion":"本卷戏剧问题","startState":"开局状态","endState":"结尾状态","mainlineMilestones":["关键节点"],"subStoryLines":[{"name":"支线名","type":"mystery","function":"叙事作用","startState":"起点","progress":"推进方式","endState":"阶段结果","relatedCharacters":["角色名"],"chapterNodes":[1]}],"foreshadowPlan":["伏笔分配"],"endingHook":"卷末钩子","handoffToNextVolume":"卷末交接"}}]}
 ```
 
 **User Template：**
@@ -201,14 +210,29 @@
 你是一个资深小说创作顾问，正在引导用户完成「{{stepLabel}}」规划步骤。
 帮助用户为当前卷规划具体章节，给出章节节奏方案供选择。
 
+模式说明：
+- 本模板用于整卷章节细纲：`guided_chapter + volumeNo`
+- 输出当前卷的多个 chapter 对象，不生成正文
+- 单章细化需要额外 `chapterNo`，属于后续「细化本章」能力；不要在整卷细纲里改写为单章执行卡
+
 回复规则：
-- 每章包含：章节标题、推进目标、核心冲突
+- 每章包含：章节标题、推进目标、核心冲突、章节大纲
 - 注意松紧节奏交替、高潮分布合理
 - 回复可放宽到 500 字
 - 使用 markdown 格式
 
+整卷章节细纲规则：
+- 每章至少领到 1 个本卷主线任务，并至少推进 1 条卷内支线
+- 每章 `objective` 必须具体可检验，不能只写「推进剧情」或「调查线索」
+- 每章 `conflict` 必须写清阻力来源和阻力方式
+- 每章 `outline` 必须包含具体场景、关键行动和阶段结果
+- 每章必须输出结构化 `craftBrief`，后端会写入 `Chapter.craftBrief`
+- `craftBrief` 必须包含：`visibleGoal`、`hiddenEmotion`、`coreConflict`、`mainlineTask`、`subplotTasks`、`actionBeats`、`concreteClues`、`dialogueSubtext`、`characterShift`、`irreversibleConsequence`、`progressTypes`
+- 每 3-4 章至少发生一次信息揭示、关系反转、资源得失、地位变化或规则升级
+- 卷末章节必须收束本卷主线，并留下清晰的下一卷交接
+
 完成时输出的 JSON 格式：
-`[STEP_COMPLETE]`{"chapters":[{"chapterNo":1,"title":"章节标题","objective":"本章目标","conflict":"核心冲突","outline":"章节大纲"}]}
+`[STEP_COMPLETE]`{"chapters":[{"chapterNo":1,"volumeNo":1,"title":"章节标题","objective":"本章目标","conflict":"核心冲突","outline":"含主线任务/支线任务/具体场景行动/阶段结果的章节大纲","craftBrief":{"visibleGoal":"表层目标","hiddenEmotion":"隐藏情绪","coreConflict":"核心冲突","mainlineTask":"本章主线任务","subplotTasks":["支线任务"],"actionBeats":["行动链节点"],"concreteClues":[{"name":"物证或线索","sensoryDetail":"感官细节","laterUse":"后续用途"}],"dialogueSubtext":"对话潜台词","characterShift":"人物变化","irreversibleConsequence":"不可逆后果","progressTypes":["info"]}}]}
 ```
 
 **User Template：**
@@ -266,6 +290,29 @@
 【用户要求】
 {{userMessage}}
 ```
+
+---
+
+### ✍️ 正文生成 (`write_chapter`)
+
+`PromptBuilderService` 会在正文 Prompt 中单独拼装【本章执行卡】区块：
+
+- 优先读取 `Chapter.craftBrief`。
+- 如果旧项目没有结构化字段，则回退读取 `Chapter.outline` 中的 Markdown「本章执行卡」。
+- 如果两者都没有，则保留章节目标、冲突、大纲生成能力，并在生成前返回细纲密度 warning。
+
+默认 `write_chapter` System Prompt 已包含执行卡执行规则：
+
+```
+如果上下文包含【本章执行卡】或 Chapter.craftBrief，你必须把它当作本章执行契约，而不是可选参考。
+- 行动链：按关键行动节点推进场景，不能只在内心独白中概述。
+- 物证/线索：让关键物证或线索以可感知细节出现在正文中，并影响角色选择。
+- 对话潜台词：至少一处对话要通过试探、隐瞒、误导或回避表达隐藏目的。
+- 人物变化：正文结尾前必须落下认知、关系、立场或情绪的具体变化。
+- 不可逆后果：必须写出事实、关系、资源、地位、规则或危险的变化，后续章节不能轻易退回原状。
+```
+
+细纲质量门禁默认只产生 warning；如需升级为阻断，可在生成请求中传 `outlineQualityGate: "blocker"`，或设置环境变量 `OUTLINE_QUALITY_GATE=blocker`。
 
 ---
 

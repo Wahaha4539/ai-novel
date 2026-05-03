@@ -266,6 +266,7 @@ model Chapter {
   revealPoints      String?
   foreshadowPlan    String?
   outline           String?
+  craftBrief        Json             @default("{}")
   status            ChapterStatus    @default(planned)
   expectedWordCount Int?
   actualWordCount   Int?
@@ -451,6 +452,7 @@ model Volume {
   title        String?  @db.VarChar(255)
   synopsis     String?
   objective    String?
+  narrativePlan Json    @default("{}")
   chapterCount Int?
   status       String   @default("planned") @db.VarChar(50)
   createdAt    DateTime @default(now())

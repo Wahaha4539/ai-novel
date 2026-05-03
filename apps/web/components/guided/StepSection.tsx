@@ -72,13 +72,15 @@ interface Props {
   onEditField: (stepKey: StepKey, field: string, value: string) => void;
   onGenerate: (stepKey: StepKey) => void;
   onGenerateForVolume?: (volumeNo: number, chapterRange?: [number, number]) => void;
+  onGenerateForChapter?: (volumeNo: number, chapterNo: number) => void;
+  onAutoSaveVolume?: (volumeNo: number) => void;
   onSave: (stepKey: StepKey) => void;
   onSaveVolume?: (volumeNo: number) => void;
   loading: boolean;
 }
 
 export const StepSection = forwardRef<HTMLDivElement, Props>(
-  ({ stepKey, isActive, isCompleted, data, volumeData, onEditField, onGenerate, onGenerateForVolume, onSave, onSaveVolume, loading }, ref) => {
+  ({ stepKey, isActive, isCompleted, data, volumeData, onEditField, onGenerate, onGenerateForVolume, onGenerateForChapter, onAutoSaveVolume, onSave, onSaveVolume, loading }, ref) => {
     const [collapsed, setCollapsed] = useState(false);
     const stepInfo = GUIDED_STEPS.find((s) => s.key === stepKey);
     if (!stepInfo) return null;
@@ -160,6 +162,8 @@ export const StepSection = forwardRef<HTMLDivElement, Props>(
                 volumeData={volumeData ?? {}}
                 onChange={(field, value) => onEditField(stepKey, field, value)}
                 onGenerateForVolume={onGenerateForVolume ?? (() => {})}
+                onGenerateForChapter={onGenerateForChapter ?? (() => {})}
+                onAutoSaveVolume={onAutoSaveVolume ?? (() => {})}
                 onSaveVolume={onSaveVolume ?? (() => {})}
                 loading={loading}
               />

@@ -64,6 +64,7 @@ export class GenerationService {
         includeLorebook: dto.includeLorebook,
         includeMemory: dto.includeMemory,
         validateBeforeWrite: dto.validateBeforeWrite,
+        outlineQualityGate: dto.outlineQualityGate,
         requestId,
         jobId: job.id,
       });

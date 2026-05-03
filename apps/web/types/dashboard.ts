@@ -1,3 +1,5 @@
+import { ChapterCraftBrief } from './guided';
+
 export type ProjectSummary = {
   id: string;
   title: string;
@@ -24,6 +26,7 @@ export type VolumeSummary = {
   title?: string | null;
   synopsis?: string | null;
   objective?: string | null;
+  narrativePlan?: Record<string, unknown> | null;
   chapterCount?: number | null;
   status: string;
   _count?: { chapters: number };
@@ -53,6 +56,10 @@ export type ChapterSummary = {
   volumeId?: string | null;
   chapterNo: number;
   title?: string | null;
+  objective?: string | null;
+  conflict?: string | null;
+  outline?: string | null;
+  craftBrief?: ChapterCraftBrief | Record<string, unknown> | null;
   timelineSeq?: number | null;
   status?: string;
 };
@@ -201,4 +208,3 @@ export type GenerationJob = {
   finishedAt?: string | null;
   createdAt: string;
 };
-

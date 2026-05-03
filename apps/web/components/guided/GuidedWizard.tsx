@@ -16,6 +16,27 @@ function parseVolumeChapters(data: Record<string, unknown>): Record<number, Arra
   return {};
 }
 
+function getNumber(value: unknown): number | undefined {
+  if (typeof value === 'number' && Number.isFinite(value)) return value;
+  if (typeof value === 'string' && value.trim()) {
+    const parsed = Number(value);
+    return Number.isFinite(parsed) ? parsed : undefined;
+  }
+  return undefined;
+}
+
+function formatChapterForHint(ch: Record<string, unknown>, outlineLimit = 500): string {
+  const outline = typeof ch.outline === 'string' ? ch.outline : '';
+  const trimmedOutline = outline.length > outlineLimit ? `${outline.slice(0, outlineLimit)}...` : outline;
+  return [
+    `- 章节号：第 ${getNumber(ch.chapterNo) ?? '未知'} 章`,
+    `- 标题：${typeof ch.title === 'string' ? ch.title : '未命名'}`,
+    `- 目标：${typeof ch.objective === 'string' ? ch.objective : '未填写'}`,
+    `- 冲突：${typeof ch.conflict === 'string' ? ch.conflict : '未填写'}`,
+    `- outline：${trimmedOutline || '未填写'}`,
+  ].join('\n');
+}
+
 interface Props {
   selectedProject?: ProjectSummary;
   selectedProjectId: string;
@@ -50,6 +71,16 @@ export function GuidedWizard({ selectedProject, selectedProjectId, autoStart, on
   // Section refs for scroll-to
   const sectionRefs = useRef<Record<string, HTMLDivElement | null>>({});
   const scrollContainerRef = useRef<HTMLDivElement>(null);
+  const latestStepDataRef = useRef(allStepData);
+  const autoSaveTimersRef = useRef<Record<number, ReturnType<typeof setTimeout>>>({});
+
+  useEffect(() => {
+    latestStepDataRef.current = allStepData;
+  }, [allStepData]);
+
+  useEffect(() => () => {
+    Object.values(autoSaveTimersRef.current).forEach((timer) => clearTimeout(timer));
+  }, []);
 
   // Compute completed steps
   const completedSteps = useMemo(() => {
@@ -103,6 +134,46 @@ export function GuidedWizard({ selectedProject, selectedProjectId, autoStart, on
       [stepKey]: { ...(prev[stepKey] ?? {}), [field]: value },
     }));
   }, []);
+
+  const saveGuidedChapterVolume = useCallback(async (
+    volumeNo: number,
+    rawData: Record<string, unknown>,
+    options?: { silent?: boolean },
+  ) => {
+    const vc = parseVolumeChapters(rawData);
+    const chapters = vc[volumeNo];
+    if (!chapters || chapters.length === 0) return false;
+
+    const volumeSC = (rawData.volumeSupportingCharacters ?? {}) as Record<number, Array<Record<string, unknown>>>;
+    const supportChars = volumeSC[volumeNo];
+    const flatChapters = chapters.map((ch) => ({ ...ch, volumeNo }));
+    const saved = await confirmGeneratedData(
+      {
+        chapters: flatChapters,
+        ...(Array.isArray(supportChars) && supportChars.length > 0 && { supportingCharacters: supportChars }),
+      },
+      'guided_chapter',
+      volumeNo,
+      options,
+    );
+    if (saved && !options?.silent) onDataChanged?.();
+    return saved;
+  }, [confirmGeneratedData, onDataChanged]);
+
+  const scheduleChapterVolumeAutoSave = useCallback((volumeNo: number) => {
+    if (!Number.isFinite(volumeNo)) return;
+    const existingTimer = autoSaveTimersRef.current[volumeNo];
+    if (existingTimer) clearTimeout(existingTimer);
+
+    autoSaveTimersRef.current[volumeNo] = setTimeout(() => {
+      delete autoSaveTimersRef.current[volumeNo];
+      void saveGuidedChapterVolume(
+        volumeNo,
+        latestStepDataRef.current['guided_chapter'] ?? {},
+        { silent: true },
+      );
+    }, 900);
+  }, [saveGuidedChapterVolume]);
 
   // Handle AI generation for a specific step.
   // For guided_chapter: sequentially generates chapters for each volume in order,
@@ -211,6 +282,7 @@ export function GuidedWizard({ selectedProject, selectedProjectId, autoStart, on
                 'guided_chapter',
                 vol.volumeNo,
               );
+              onDataChanged?.();
             }
           }
           // If all retries failed (data is null), skip this volume and continue
@@ -226,7 +298,7 @@ export function GuidedWizard({ selectedProject, selectedProjectId, autoStart, on
     if (data) {
       setAllStepData((prev) => ({ ...prev, [stepKey]: data }));
     }
-  }, [generateStepData, confirmGeneratedData, allStepData]);
+  }, [generateStepData, confirmGeneratedData, allStepData, onDataChanged]);
 
   // Handle AI generation for a specific volume's chapters
   const handleGenerateForVolume = useCallback(async (volumeNo: number, chapterRange?: [number, number]) => {
@@ -257,8 +329,101 @@ export function GuidedWizard({ selectedProject, selectedProjectId, autoStart, on
           volumeSupportingCharacters: existingSC,
         },
       }));
+
+      if (Array.isArray(newChapters) && newChapters.length > 0) {
+        const flatChapters = (newChapters as Array<Record<string, unknown>>)
+          .map((ch) => ({ ...ch, volumeNo }));
+        await confirmGeneratedData(
+          {
+            chapters: flatChapters,
+            ...(Array.isArray(newSupportChars) && { supportingCharacters: newSupportChars }),
+          },
+          'guided_chapter',
+          volumeNo,
+        );
+        onDataChanged?.();
+      }
     }
-  }, [generateStepData, allStepData]);
+  }, [generateStepData, confirmGeneratedData, allStepData, onDataChanged]);
+
+  // Handle AI refinement for one chapter only.
+  const handleGenerateForChapter = useCallback(async (volumeNo: number, chapterNo: number) => {
+    const existingData = allStepData['guided_chapter'] ?? {};
+    const existingVC = parseVolumeChapters(existingData);
+    const currentChapters = [...(existingVC[volumeNo] ?? [])];
+    const targetIndex = currentChapters.findIndex((ch) => getNumber(ch.chapterNo) === chapterNo);
+    const fallbackIndex = targetIndex >= 0 ? targetIndex : chapterNo - 1;
+    const targetChapter = currentChapters[fallbackIndex];
+
+    const neighborSummary = currentChapters
+      .map((ch, idx) => ({ ch, idx }))
+      .filter(({ idx }) => idx !== fallbackIndex && Math.abs(idx - fallbackIndex) <= 3)
+      .map(({ ch }) => formatChapterForHint(ch, 180))
+      .join('\n\n');
+
+    const hint = [
+      `细化第 ${volumeNo} 卷第 ${chapterNo} 章细纲。`,
+      '只返回这 1 个 chapter，不生成正文，不新增/删除/重排本卷章节。',
+      'outline 必须写成 Markdown「## 本章执行卡」，包含表层目标、隐藏情绪、核心冲突、行动链、物证/线索、对话潜台词、人物变化、不可逆后果。',
+      '',
+      '当前章：',
+      targetChapter ? formatChapterForHint(targetChapter) : `第 ${chapterNo} 章当前内容未在前端状态中找到，请保持 chapterNo 不变。`,
+      '',
+      '前后章摘要：',
+      neighborSummary || '未找到前后章摘要。',
+    ].join('\n');
+
+    const data = await generateStepData(
+      hint,
+      'guided_chapter',
+      volumeNo,
+      chapterNo,
+    );
+
+    const returnedChapters = data?.chapters;
+    if (!Array.isArray(returnedChapters) || returnedChapters.length === 0) return;
+
+    if (returnedChapters.length > 1) {
+      setError(`单章细化返回了 ${returnedChapters.length} 个章节，已只使用第一个。`);
+    }
+
+    const returnedChapter = returnedChapters[0] as Record<string, unknown>;
+    if (getNumber(returnedChapter.chapterNo) !== undefined && getNumber(returnedChapter.chapterNo) !== chapterNo) {
+      setError(`单章细化返回的章节号与请求不一致，已按第 ${chapterNo} 章替换。`);
+    }
+    const mergedChapter = {
+      ...(targetChapter ?? {}),
+      ...returnedChapter,
+      volumeNo,
+      chapterNo,
+    };
+
+    setAllStepData((prev) => {
+      const prevChapterData = prev['guided_chapter'] ?? {};
+      const prevVC = parseVolumeChapters(prevChapterData);
+      const nextVC = { ...prevVC };
+      const nextVolumeChapters = [...(nextVC[volumeNo] ?? [])];
+      const replaceIndex = nextVolumeChapters.findIndex((ch) => getNumber(ch.chapterNo) === chapterNo);
+      const indexToReplace = replaceIndex >= 0 ? replaceIndex : chapterNo - 1;
+      nextVolumeChapters[indexToReplace] = mergedChapter;
+      nextVC[volumeNo] = nextVolumeChapters;
+
+      return {
+        ...prev,
+        guided_chapter: {
+          ...prevChapterData,
+          volumeChapters: nextVC,
+        },
+      };
+    });
+
+    await confirmGeneratedData(
+      { saveMode: 'single_chapter', chapters: [mergedChapter] },
+      'guided_chapter',
+      volumeNo,
+    );
+    onDataChanged?.();
+  }, [allStepData, generateStepData, confirmGeneratedData, onDataChanged, setError]);
 
   // Handle save for a specific step
   const handleSave = useCallback(async (stepKey: StepKey) => {
@@ -313,26 +478,8 @@ export function GuidedWizard({ selectedProject, selectedProjectId, autoStart, on
 
   // Handle save for a specific volume's chapters and supporting characters
   const handleSaveVolume = useCallback(async (volumeNo: number) => {
-    const rawData = allStepData['guided_chapter'] ?? {};
-    const vc = parseVolumeChapters(rawData);
-    const chapters = vc[volumeNo];
-    if (!chapters || chapters.length === 0) return;
-
-    // Include supporting characters for this volume if available
-    const volumeSC = (rawData.volumeSupportingCharacters ?? {}) as Record<number, Array<Record<string, unknown>>>;
-    const supportChars = volumeSC[volumeNo];
-
-    const flatChapters = chapters.map((ch) => ({ ...ch, volumeNo }));
-    await confirmGeneratedData(
-      {
-        chapters: flatChapters,
-        ...(Array.isArray(supportChars) && supportChars.length > 0 && { supportingCharacters: supportChars }),
-      },
-      'guided_chapter',
-      volumeNo,
-    );
-    onDataChanged?.();
-  }, [allStepData, confirmGeneratedData, onDataChanged]);
+    await saveGuidedChapterVolume(volumeNo, allStepData['guided_chapter'] ?? {});
+  }, [allStepData, saveGuidedChapterVolume]);
 
   // TOC click — scroll to section
   const handleTocClick = useCallback((stepKey: StepKey) => {
@@ -491,6 +638,8 @@ export function GuidedWizard({ selectedProject, selectedProjectId, autoStart, on
                 onEditField={handleEditField}
                 onGenerate={handleGenerate}
                 onGenerateForVolume={handleGenerateForVolume}
+                onGenerateForChapter={handleGenerateForChapter}
+                onAutoSaveVolume={scheduleChapterVolumeAutoSave}
                 onSave={handleSave}
                 onSaveVolume={handleSaveVolume}
                 loading={loading || batchGenerating}

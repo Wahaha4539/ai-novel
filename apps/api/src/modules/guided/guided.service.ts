@@ -1,4 +1,5 @@
 import { Injectable, NotFoundException } from '@nestjs/common';
+import { Prisma } from '@prisma/client';
 import { NovelCacheService } from '../../common/cache/novel-cache.service';
 import { PrismaService } from '../../prisma/prisma.service';
 import { LlmService } from './llm.service';
@@ -160,12 +161,31 @@ ${INTERACTION_STYLE}
 - 不能只写「主角遇到了困难并克服了它」——要写清楚是什么困难、怎么尝试、付出什么代价
 - objective 要具体到可以检验的标准（如「揭示反派的真实身份」而非「推进主线」）
 
+### 7. Phase 3 数据承载规则
+- 必须把增强卷纲写入每卷 synopsis 的 Markdown 段落，保留人工可读和旧项目兼容
+- 同时必须输出 narrativePlan 结构化对象，后端会写入 Volume.narrativePlan
+- 每卷 synopsis 必须包含：「## 全书主线阶段」「## 本卷主线」「## 本卷戏剧问题」「## 开局状态」「## 结尾状态」「## 主线里程碑」「## 卷内支线」「## 支线交叉点」「## 伏笔分配」「## 卷末交接」
+- 「## 卷内支线」至少 2 条，每条写清作用、起点、推进方式和阶段结果
+- 「## 卷末交接」必须分别写清：已解决、已升级、移交下一卷
+- narrativePlan 必须包含 globalMainlineStage、volumeMainline、dramaticQuestion、startState、endState、mainlineMilestones、subStoryLines、foreshadowPlan、endingHook、handoffToNextVolume，并与 synopsis 信息一致
+
 ${INTERACTION_STYLE}
 完成时输出的 JSON 格式：
-\`[STEP_COMPLETE]\`{"volumes":[{"volumeNo":1,"title":"卷名","synopsis":"本卷剧情概要(100字以上)","objective":"本卷核心目标(具体可检验)"}]}`,
+\`[STEP_COMPLETE]\`{"volumes":[{"volumeNo":1,"title":"卷名","synopsis":"Markdown结构：含全书主线阶段/本卷主线/本卷戏剧问题/卷内支线/支线交叉点/卷末交接","objective":"本卷核心目标(具体可检验)","narrativePlan":{"globalMainlineStage":"全书主线阶段","volumeMainline":"本卷主线","dramaticQuestion":"本卷戏剧问题","startState":"开局状态","endState":"结尾状态","mainlineMilestones":["关键节点"],"subStoryLines":[{"name":"支线名","type":"mystery","function":"叙事作用","startState":"起点","progress":"推进方式","endState":"阶段结果","relatedCharacters":["角色名"],"chapterNodes":[1]}],"foreshadowPlan":["伏笔分配"],"endingHook":"卷末钩子","handoffToNextVolume":"卷末交接"}}]}`,
 
   guided_chapter: `你是一个资深小说创作顾问。你正在引导用户完成「章节细纲」规划步骤。
 帮助用户为当前卷规划具体章节和本卷新登场的配角。可以给出章节节奏方案供选择。
+
+## 整卷章节细纲规则（严格遵守）
+- 这是整卷章节细纲，不是正文，也不是单章细化执行卡
+- 每章至少领到 1 个本卷主线任务，并至少推进 1 条卷内支线
+- 每章 objective 必须具体可检验，不能只写「推进剧情」或「调查线索」
+- 每章 conflict 必须写清阻力来源和阻力方式
+- 每章 outline 必须包含具体场景、关键行动和阶段结果
+- 每章必须输出 craftBrief 结构化对象，后端会写入 Chapter.craftBrief
+- craftBrief 必须包含 visibleGoal、hiddenEmotion、coreConflict、mainlineTask、subplotTasks、actionBeats、concreteClues、dialogueSubtext、characterShift、irreversibleConsequence、progressTypes
+- 每 3-4 章至少发生一次信息揭示、关系反转、资源得失、地位变化或规则升级
+- 卷末章节必须收束本卷主线，并留下清晰的下一卷交接
 
 ## 配角设计规则（与核心角色同等严格）
 ### 起名
@@ -184,7 +204,7 @@ ${INTERACTION_STYLE}
 
 ${INTERACTION_STYLE}
 完成时输出的 JSON 格式：
-\`[STEP_COMPLETE]\`{"chapters":[{"chapterNo":1,"title":"章节标题","objective":"本章目标","conflict":"核心冲突","outline":"章节大纲"}],"supportingCharacters":[{"name":"角色名","roleType":"supporting","personalityCore":"性格核心(含内在矛盾)","motivation":"具体动机","firstAppearChapter":1}]}`,
+\`[STEP_COMPLETE]\`{"chapters":[{"chapterNo":1,"volumeNo":1,"title":"章节标题","objective":"本章目标","conflict":"核心冲突","outline":"含主线任务/支线任务/具体场景行动/阶段结果的章节大纲","craftBrief":{"visibleGoal":"表层目标","hiddenEmotion":"隐藏情绪","coreConflict":"核心冲突","mainlineTask":"本章主线任务","subplotTasks":["支线任务"],"actionBeats":["行动链节点"],"concreteClues":[{"name":"物证或线索","sensoryDetail":"感官细节","laterUse":"后续用途"}],"dialogueSubtext":"对话潜台词","characterShift":"人物变化","irreversibleConsequence":"不可逆后果","progressTypes":["info"]}}],"supportingCharacters":[{"name":"角色名","roleType":"supporting","personalityCore":"性格核心(含内在矛盾)","motivation":"具体动机","firstAppearChapter":1}]}`,
 
   guided_foreshadow: `你是一个资深小说创作顾问，精通叙事悬念构建与伏笔编排。你正在引导用户完成「伏笔设计」规划步骤。
 
@@ -427,18 +447,174 @@ export class GuidedService {
     return decisions.join('\n');
   }
 
+  private async buildSingleChapterContext(
+    projectId: string,
+    volumeNo: number,
+    chapterNo: number,
+  ): Promise<{
+    volumeContext: string;
+    currentChapterContext: string;
+    neighborChapterContext: string;
+    chapterPositionContext: string;
+  }> {
+    let volumeContext = '';
+    let volumeId: string | undefined;
+    let chapters: Array<Record<string, unknown>> = [];
+
+    try {
+      const session = await this.prisma.guidedSession.findUnique({ where: { projectId } });
+      const stepData = (session?.stepData as Record<string, unknown>) ?? {};
+      const volumeResult = stepData['guided_volume_result'] as Record<string, unknown> | undefined;
+      const volumes = (volumeResult?.volumes ?? []) as Array<Record<string, unknown>>;
+      const targetVol = volumes.find((v) => asNumber(v.volumeNo) === volumeNo);
+
+      if (targetVol) {
+        volumeContext = [
+          `- 卷号：第 ${volumeNo} 卷`,
+          `- 卷名：${asString(targetVol.title) ?? '未命名'}`,
+          `- 本卷核心目标：${asString(targetVol.objective) ?? '未填写'}`,
+          `- 本卷剧情/结构：${asString(targetVol.synopsis) ?? '未填写'}`,
+        ].join('\n');
+      }
+
+      const chapterResult = stepData['guided_chapter_result'] as Record<string, unknown> | undefined;
+      const savedChapters = (chapterResult?.chapters ?? []) as Array<Record<string, unknown>>;
+      chapters = savedChapters.filter((ch) => asNumber(ch.volumeNo) === volumeNo);
+    } catch { /* non-critical */ }
+
+    if (!volumeContext) {
+      const volume = await this.prisma.volume.findFirst({
+        where: { projectId, volumeNo },
+        select: { id: true, title: true, objective: true, synopsis: true },
+      });
+      if (volume) {
+        volumeId = volume.id;
+        volumeContext = [
+          `- 卷号：第 ${volumeNo} 卷`,
+          `- 卷名：${volume.title ?? '未命名'}`,
+          `- 本卷核心目标：${volume.objective ?? '未填写'}`,
+          `- 本卷剧情/结构：${volume.synopsis ?? '未填写'}`,
+        ].join('\n');
+      }
+    }
+
+    if (chapters.length === 0) {
+      if (!volumeId) {
+        const volume = await this.prisma.volume.findFirst({
+          where: { projectId, volumeNo },
+          select: { id: true },
+        });
+        volumeId = volume?.id;
+      }
+
+      if (volumeId) {
+        chapters = await this.prisma.chapter.findMany({
+          where: { projectId, volumeId },
+          orderBy: { chapterNo: 'asc' },
+          select: {
+            chapterNo: true,
+            title: true,
+            objective: true,
+            conflict: true,
+            outline: true,
+            craftBrief: true,
+          },
+        });
+      }
+    }
+
+    chapters = [...chapters].sort((a, b) => (asNumber(a.chapterNo) ?? 0) - (asNumber(b.chapterNo) ?? 0));
+    let targetIndex = chapters.findIndex((ch) => asNumber(ch.chapterNo) === chapterNo);
+    if (targetIndex < 0 && chapterNo > 0 && chapterNo <= chapters.length) {
+      targetIndex = chapterNo - 1;
+    }
+
+    const currentChapter = targetIndex >= 0 ? chapters[targetIndex] : undefined;
+    const currentChapterContext = currentChapter
+      ? formatChapterContext(currentChapter)
+      : `- 目标章节：第 ${chapterNo} 章\n- 当前章节未在已保存细纲中找到，请基于用户提示细化，但仍只返回第 ${chapterNo} 章。`;
+
+    const neighborChapterContext = chapters.length > 0 && targetIndex >= 0
+      ? chapters
+          .map((ch, idx) => ({ ch, idx }))
+          .filter(({ idx }) => idx !== targetIndex && Math.abs(idx - targetIndex) <= 3)
+          .map(({ ch }) => formatChapterContext(ch, 180))
+          .join('\n\n')
+      : '未找到同卷前后章摘要；请避免新增、删除或重排任何章节。';
+
+    const chapterPositionContext = chapters.length > 0 && targetIndex >= 0
+      ? `本章位于第 ${targetIndex + 1}/${chapters.length} 章。请根据其卷内位置判断节奏功能：开局负责钩子与入局，中段负责推进/反转/代价，卷末负责收束与交接。`
+      : `本章为第 ${chapterNo} 章。未能确定卷内总章数，请保持原章节序列不变。`;
+
+    return {
+      volumeContext: volumeContext || `- 卷号：第 ${volumeNo} 卷\n- 当前卷信息未找到，请严格依据项目上下文与用户提示。`,
+      currentChapterContext,
+      neighborChapterContext,
+      chapterPositionContext,
+    };
+  }
+
+  private normalizeSingleChapterResult(
+    structuredData: Record<string, unknown>,
+    volumeNo: number,
+    chapterNo: number,
+  ): { structuredData: Record<string, unknown>; warnings: string[] } {
+    const warnings: string[] = [];
+    const chapters = Array.isArray(structuredData.chapters)
+      ? structuredData.chapters as Array<Record<string, unknown>>
+      : [];
+
+    if (chapters.length === 0) {
+      warnings.push('模型未返回 chapters 数组，已生成空章节兜底对象');
+    }
+    if (chapters.length > 1) {
+      warnings.push(`模型返回了 ${chapters.length} 个 chapter，已按单章细化要求截断为 1 个`);
+    }
+
+    const firstChapter = chapters[0] ?? {};
+    const normalizedChapter: Record<string, unknown> = {
+      ...firstChapter,
+      volumeNo,
+      chapterNo,
+      outline: ensureExecutionCardOutline(firstChapter),
+      craftBrief: normalizeChapterCraftBrief(firstChapter),
+    };
+
+    if (asNumber(firstChapter.chapterNo) !== undefined && asNumber(firstChapter.chapterNo) !== chapterNo) {
+      warnings.push(`模型返回的 chapterNo=${firstChapter.chapterNo} 与请求不一致，已改为 ${chapterNo}`);
+    }
+    if (asNumber(firstChapter.volumeNo) !== undefined && asNumber(firstChapter.volumeNo) !== volumeNo) {
+      warnings.push(`模型返回的 volumeNo=${firstChapter.volumeNo} 与请求不一致，已改为 ${volumeNo}`);
+    }
+
+    return {
+      structuredData: {
+        ...structuredData,
+        chapters: [normalizedChapter],
+        ...(warnings.length > 0 && { warnings }),
+      },
+      warnings,
+    };
+  }
+
   /** One-shot generation: generate all structured data for a step without Q&A */
   async generateStepData(
     projectId: string,
     dto: GenerateStepDto,
   ): Promise<{ structuredData: Record<string, unknown>; summary: string }> {
+    const isSingleChapterRefinement = dto.currentStep === 'guided_chapter'
+      && dto.volumeNo !== undefined
+      && dto.chapterNo !== undefined;
+
+    const singleChapterSchema = '{"chapters":[{"chapterNo":1,"volumeNo":1,"title":"章节标题（保留原核心意图）","objective":"本章目标（具体可检验）","conflict":"核心冲突（写清阻力来源和方式）","outline":"Markdown，必须以 ## 本章执行卡 开头，并包含表层目标/隐藏情绪/核心冲突/行动链/物证/线索/对话潜台词/人物变化/不可逆后果","craftBrief":{"visibleGoal":"表层目标","hiddenEmotion":"隐藏情绪","coreConflict":"核心冲突","mainlineTask":"本章主线任务","subplotTasks":["支线任务"],"actionBeats":["行动链节点"],"concreteClues":[{"name":"物证或线索","sensoryDetail":"感官细节","laterUse":"后续用途"}],"dialogueSubtext":"对话潜台词","characterShift":"人物变化","irreversibleConsequence":"不可逆后果","progressTypes":["info"]}}]}';
+
     const stepJsonSchemas: Record<string, string> = {
       guided_setup: '{"genre":"小说类型","theme":"核心主题","tone":"故事基调","logline":"一句话概述","synopsis":"故事简介"}',
       guided_style: '{"pov":"人称视角","tense":"时态","proseStyle":"文风描述","pacing":"节奏描述"}',
       guided_characters: '{"characters":[{"name":"角色名","roleType":"protagonist/antagonist/supporting/competitor","personalityCore":"性格核心","motivation":"核心动机","backstory":"背景故事"}]}',
       guided_outline: '{"outline":"完整的故事总纲大纲"}',
-      guided_volume: '{"volumes":[{"volumeNo":1,"title":"有文学性的卷名","synopsis":"本卷剧情概要(100字以上，含核心事件/转折/情感变化)","objective":"本卷核心目标(具体可检验)"}]}',
-      guided_chapter: '{"chapters":[{"chapterNo":1,"volumeNo":1,"title":"章节标题","objective":"本章目标","conflict":"核心冲突","outline":"章节大纲"}],"supportingCharacters":[{"name":"角色名","roleType":"supporting","personalityCore":"性格核心(含内在矛盾)","motivation":"具体动机","firstAppearChapter":1}]}',
+      guided_volume: '{"volumes":[{"volumeNo":1,"title":"有文学性的卷名","synopsis":"Markdown结构，必须含## 全书主线阶段/## 本卷主线/## 本卷戏剧问题/## 卷内支线/## 支线交叉点/## 卷末交接等段落","objective":"本卷核心目标(具体可检验)","narrativePlan":{"globalMainlineStage":"全书主线阶段","volumeMainline":"本卷主线","dramaticQuestion":"本卷戏剧问题","startState":"开局状态","endState":"结尾状态","mainlineMilestones":["关键节点"],"subStoryLines":[{"name":"支线名","type":"mystery","function":"叙事作用","startState":"起点","progress":"推进方式","endState":"阶段结果","relatedCharacters":["角色名"],"chapterNodes":[1]}],"foreshadowPlan":["伏笔分配"],"endingHook":"卷末钩子","handoffToNextVolume":"卷末交接"}}]}',
+      guided_chapter: '{"chapters":[{"chapterNo":1,"volumeNo":1,"title":"章节标题","objective":"本章目标","conflict":"核心冲突","outline":"章节大纲，必须含主线任务、支线任务、具体场景行动、阶段结果","craftBrief":{"visibleGoal":"表层目标","hiddenEmotion":"隐藏情绪","coreConflict":"核心冲突","mainlineTask":"本章主线任务","subplotTasks":["支线任务"],"actionBeats":["行动链节点"],"concreteClues":[{"name":"物证或线索","sensoryDetail":"感官细节","laterUse":"后续用途"}],"dialogueSubtext":"对话潜台词","characterShift":"人物变化","irreversibleConsequence":"不可逆后果","progressTypes":["info"]}}],"supportingCharacters":[{"name":"角色名","roleType":"supporting","personalityCore":"性格核心(含内在矛盾)","motivation":"具体动机","firstAppearChapter":1}]}',
       guided_foreshadow: '{"foreshadowTracks":[{"title":"伏笔标题","detail":"伏笔内容详细描述","scope":"arc/volume/chapter","technique":"伏笔手法类型","plantChapter":"埋设时机","revealChapter":"揭开时机","involvedCharacters":"涉及角色","payoff":"揭开后的影响"}]}',
     };
 
@@ -494,7 +670,22 @@ export class GuidedService {
 
 ### 质量标准
 - 每卷 synopsis 不少于 100 字，包含核心事件、关键转折、情感变化
-- objective 要具体可检验（如「揭示反派的真实身份」而非「推进主线」）`,
+- objective 要具体可检验（如「揭示反派的真实身份」而非「推进主线」）
+
+### synopsis Markdown 承载格式（必须写入 Volume.synopsis）
+每个 volume 的 synopsis 必须使用以下段落组织，不能只写普通剧情摘要：
+- 「## 全书主线阶段」：本卷推进全书核心问题的哪一步
+- 「## 本卷主线」：本卷独立要解决的阶段性问题
+- 「## 本卷戏剧问题」：读者读这一卷时最想知道的悬念
+- 「## 开局状态」/「## 结尾状态」：结尾必须产生事实、关系、资源、地位、规则或危险的不可逆变化
+- 「## 主线里程碑」：5-8 个必须发生的关键节点
+- 「## 卷内支线」：2-4 条，逐条写清作用、起点、推进方式和阶段结果
+- 「## 支线交叉点」：至少 1 个物证、事件或对话同时推进两条线
+- 「## 伏笔分配」：本卷埋设、推进、回收哪些伏笔
+- 「## 卷末交接」：分别写清已解决、已升级、移交下一卷
+
+### 结构化字段（必须写入 Volume.narrativePlan）
+每个 volume 除 synopsis Markdown 外，还必须输出 narrativePlan 对象，字段包含 globalMainlineStage、volumeMainline、dramaticQuestion、startState、endState、mainlineMilestones、subStoryLines、foreshadowPlan、endingHook、handoffToNextVolume。narrativePlan 与 synopsis 信息必须一致。`,
       guided_chapter: `请为指定卷规划 8-15 个章节，每章有明确的推进目标和核心冲突。
 同时为本卷设计 2-4 个新登场的配角（不要重复核心角色步骤中已有的角色）。
 
@@ -513,6 +704,15 @@ export class GuidedService {
 ### 信息与伏笔分配
 - 每 3-4 章揭示一个重要信息或推进一条伏笔线
 - 关键信息不要集中在最后几章
+
+### 主线与支线分配
+- 每章必须至少领到 1 个本卷主线任务，写进 objective 或 outline
+- 每章必须至少推进 1 条卷内支线，写清支线名称和本章推进结果
+- 每章 objective 必须具体可检验，不能只写「调查线索」「推进主线」
+- 每章 conflict 必须写清阻力来源和阻力方式，例如谁阻止、用什么手段、主角付出什么代价
+- 每章 outline 必须包含具体场景、关键行动和阶段结果，不能只写一句剧情摘要
+- 每 3-4 章至少发生一次信息揭示、关系反转、资源得失、地位变化或规则升级
+- 卷末章节必须收束本卷主线，并留下下一卷交接
 
 ### 配角设计规则（与核心角色同等严格）
 #### 起名
@@ -537,7 +737,9 @@ export class GuidedService {
 
 ### 质量标准
 - outline 至少 50 字，要包含具体的场景、行为和结果
-- objective 要具体可检验（如「读者了解了 X 的真实身份」而非「推进剧情」）`,
+- objective 要具体可检验（如「读者了解了 X 的真实身份」而非「推进剧情」）
+- 每个 chapter 必须输出 craftBrief 对象，包含 visibleGoal、hiddenEmotion、coreConflict、mainlineTask、subplotTasks、actionBeats、concreteClues、dialogueSubtext、characterShift、irreversibleConsequence、progressTypes
+- 不生成正文，不写单章执行卡；这里生成的是整卷章节细纲`,
       guided_foreshadow: `请根据已完成的卷纲和章节细纲，设计一套完整的伏笔体系。
 伏笔数量公式：主线 2-3 条 + 每卷 1-2 条卷级伏笔 + 适量章节级伏笔。
 具体数量会在下方「伏笔数量约束」中指定，必须严格遵守。
@@ -573,7 +775,7 @@ export class GuidedService {
 - 禁止埋设后从不揭开的断头伏笔`,
     };
 
-    const schema = stepJsonSchemas[dto.currentStep];
+    const schema = isSingleChapterRefinement ? singleChapterSchema : stepJsonSchemas[dto.currentStep];
     const label = GUIDED_STEPS_LABELS[dto.currentStep] ?? dto.currentStep;
     const instruction = stepSpecificInstructions[dto.currentStep] ?? '';
 
@@ -640,29 +842,59 @@ ${schema}
       }
     }
 
-    // For guided_chapter with volumeNo, inject volume-specific context
-    if (dto.currentStep === 'guided_chapter' && dto.volumeNo) {
-      // Look up volume info from the session's saved volume data
-      let volumeContext = '';
-      try {
-        const session = await this.prisma.guidedSession.findUnique({ where: { projectId } });
-        const stepData = (session?.stepData as Record<string, unknown>) ?? {};
-        const volumeResult = stepData['guided_volume_result'] as Record<string, unknown> | undefined;
-        const volumes = (volumeResult?.volumes ?? []) as Array<Record<string, unknown>>;
-        const targetVol = volumes.find((v) => (v.volumeNo as number) === dto.volumeNo);
-        if (targetVol) {
-          volumeContext = `\n- 卷名：${targetVol.title}\n- 本卷核心目标：${targetVol.objective}\n- 本卷剧情概要：${targetVol.synopsis}`;
+    // For guided_chapter with volumeNo, inject volume-specific context.
+    // Adding chapterNo switches this endpoint into single-chapter refinement mode.
+    if (dto.currentStep === 'guided_chapter' && dto.volumeNo !== undefined) {
+      if (isSingleChapterRefinement) {
+        const singleChapterContext = await this.buildSingleChapterContext(
+          projectId,
+          dto.volumeNo,
+          dto.chapterNo as number,
+        );
+
+        systemPrompt += `\n\n## ⚠️ 当前生成目标（最高优先级：单章细化模式）
+这是 \`guided_chapter + volumeNo + chapterNo\` 的单章细化，不是整卷章节生成。
+仅细化 **第 ${dto.volumeNo} 卷第 ${dto.chapterNo} 章**，不生成正文，不新增章节，不删除章节，不重排整卷章节。
+你必须只返回 chapters 数组中的 **1** 个 chapter 对象；对象的 volumeNo 必须是 ${dto.volumeNo}，chapterNo 必须是 ${dto.chapterNo}。
+保留当前章节标题、目标和冲突的核心意图，除非它们明显空泛；可以把它们改得更具体、更可执行。
+outline 必须写成 Markdown，并且必须以 \`## 本章执行卡\` 开头，至少包含这些小节或标签：表层目标、隐藏情绪、核心冲突、行动链、物证/线索、对话潜台词、人物变化、不可逆后果。
+craftBrief 必须输出同一执行卡的结构化版本，字段与 Markdown 内容一致，供正文生成直接读取。
+如果前文或模板要求生成整卷章节，请忽略该要求，以本节单章细化规则为准。
+
+## 当前卷信息
+${singleChapterContext.volumeContext}
+
+## 当前章已有细纲
+${singleChapterContext.currentChapterContext}
+
+## 同卷前后章摘要（用于保持节奏与连续性，不得改写这些章节）
+${singleChapterContext.neighborChapterContext}
+
+## 本章卷内位置与节奏功能
+${singleChapterContext.chapterPositionContext}`;
+      } else {
+        // Look up volume info from the session's saved volume data
+        let volumeContext = '';
+        try {
+          const session = await this.prisma.guidedSession.findUnique({ where: { projectId } });
+          const stepData = (session?.stepData as Record<string, unknown>) ?? {};
+          const volumeResult = stepData['guided_volume_result'] as Record<string, unknown> | undefined;
+          const volumes = (volumeResult?.volumes ?? []) as Array<Record<string, unknown>>;
+          const targetVol = volumes.find((v) => asNumber(v.volumeNo) === dto.volumeNo);
+          if (targetVol) {
+            volumeContext = `\n- 卷名：${targetVol.title}\n- 本卷核心目标：${targetVol.objective}\n- 本卷剧情概要：${targetVol.synopsis}`;
+          }
+        } catch { /* non-critical */ }
+
+        // Extract chapter count range from userHint (e.g. "生成 8-15 章")
+        let chapterRangeStr = '8-15';
+        const rangeMatch = dto.userHint?.match(/(\d+)\s*-\s*(\d+)\s*章/);
+        if (rangeMatch) {
+          chapterRangeStr = `${rangeMatch[1]}-${rangeMatch[2]}`;
         }
-      } catch { /* non-critical */ }
 
-      // Extract chapter count range from userHint (e.g. "生成 8-15 章")
-      let chapterRangeStr = '8-15';
-      const rangeMatch = dto.userHint?.match(/(\d+)\s*-\s*(\d+)\s*章/);
-      if (rangeMatch) {
-        chapterRangeStr = `${rangeMatch[1]}-${rangeMatch[2]}`;
+        systemPrompt += `\n\n## ⚠️ 当前生成目标（最高优先级）\n仅为 **第 ${dto.volumeNo} 卷** 生成章节细纲。${volumeContext}\n\n所有生成的 chapter 对象中 volumeNo 字段必须为 ${dto.volumeNo}。请为本卷规划 **${chapterRangeStr}** 个章节（不多不少）。`;
       }
-
-      systemPrompt += `\n\n## ⚠️ 当前生成目标（最高优先级）\n仅为 **第 ${dto.volumeNo} 卷** 生成章节细纲。${volumeContext}\n\n所有生成的 chapter 对象中 volumeNo 字段必须为 ${dto.volumeNo}。请为本卷规划 **${chapterRangeStr}** 个章节（不多不少）。`;
     }
 
     // For guided_foreshadow, compute dynamic foreshadow count based on volume count
@@ -726,13 +958,27 @@ ${schema}
       throw new Error('AI 未返回有效的 JSON 数据');
     }
 
-    const structuredData = JSON.parse(jsonStr) as Record<string, unknown>;
+    let structuredData = JSON.parse(jsonStr) as Record<string, unknown>;
+    const warnings: string[] = [];
+
+    if (isSingleChapterRefinement) {
+      const normalized = this.normalizeSingleChapterResult(
+        structuredData,
+        dto.volumeNo as number,
+        dto.chapterNo as number,
+      );
+      structuredData = normalized.structuredData;
+      warnings.push(...normalized.warnings);
+    }
 
     // Extract the summary text (everything before the JSON)
     const summaryEnd = reply.indexOf('```json') >= 0
       ? reply.indexOf('```json')
       : reply.indexOf('{');
-    const summary = reply.slice(0, summaryEnd).trim() || `已生成「${label}」数据`;
+    let summary = reply.slice(0, summaryEnd).trim() || `已生成「${label}」数据`;
+    if (warnings.length > 0) {
+      summary += `\n\n注意：${warnings.join('；')}`;
+    }
 
     return { structuredData, summary };
   }
@@ -838,6 +1084,7 @@ ${schema}
                 title: asString(vol.title),
                 synopsis: asString(vol.synopsis),
                 objective: asString(vol.objective),
+                narrativePlan: normalizeVolumeNarrativePlan(vol),
                 status: 'planned',
               })),
             }),
@@ -850,7 +1097,7 @@ ${schema}
       case 'guided_chapter': {
         // Create Chapter records, linked to volumes by volumeNo.
         // chapterNo must be globally unique per project (@@unique([projectId, chapterNo])),
-        // so we compute an offset from existing chapters in other volumes.
+        // so per-volume saves update existing rows in place to avoid renumbering chapters.
         const chapters = structuredData.chapters as Array<Record<string, unknown>> | undefined;
         if (chapters?.length) {
           // Pre-fetch all volumes for this project to map volumeNo → volumeId
@@ -860,49 +1107,101 @@ ${schema}
           });
           const volumeNoToId = new Map(existingVolumes.map((v) => [v.volumeNo, v.id]));
 
-          // Delete old chapters before creating new ones to prevent duplicates
           if (volumeNo) {
-            // Per-volume save: only delete chapters for the target volume
+            // Per-volume save: preserve existing chapterNo values instead of deleting and re-creating
+            // the whole volume. This keeps single-chapter refinement from moving other chapters.
             const targetVolumeId = volumeNoToId.get(volumeNo);
             if (targetVolumeId) {
-              await this.prisma.chapter.deleteMany({
+              const existingChapters = await this.prisma.chapter.findMany({
                 where: { projectId, volumeId: targetVolumeId },
+                orderBy: { chapterNo: 'asc' },
               });
+
+              const maxChapter = await this.prisma.chapter.aggregate({
+                where: { projectId },
+                _max: { chapterNo: true },
+              });
+              let nextChapterNo = (maxChapter._max.chapterNo ?? 0) + 1;
+
+              const operations: Prisma.PrismaPromise<unknown>[] = [];
+              const isSingleChapterSave = structuredData.saveMode === 'single_chapter' && chapters.length === 1;
+              const singleChapterNo = isSingleChapterSave ? asNumber(chapters[0].chapterNo) : undefined;
+
+              chapters.forEach((ch, index) => {
+                const existing = singleChapterNo !== undefined
+                  ? existingChapters.find((item) => item.chapterNo === singleChapterNo)
+                  : existingChapters[index];
+                const data = {
+                  volumeId: targetVolumeId,
+                  title: asString(ch.title),
+                  objective: asString(ch.objective),
+                  conflict: asString(ch.conflict),
+                  outline: asString(ch.outline),
+                  craftBrief: normalizeChapterCraftBrief(ch),
+                  status: 'planned' as const,
+                };
+
+                if (existing) {
+                  if (hasChapterFieldChange(existing, data)) {
+                    operations.push(this.prisma.chapter.update({
+                      where: { id: existing.id },
+                      data,
+                    }));
+                  }
+                  return;
+                }
+
+                operations.push(this.prisma.chapter.create({
+                  data: {
+                    projectId,
+                    volumeId: targetVolumeId,
+                    chapterNo: singleChapterNo !== undefined && singleChapterNo >= nextChapterNo ? singleChapterNo : nextChapterNo++,
+                    title: data.title,
+                    objective: data.objective,
+                    conflict: data.conflict,
+                    outline: data.outline,
+                    craftBrief: data.craftBrief,
+                    status: 'planned',
+                  },
+                }));
+              });
+
+              if (singleChapterNo === undefined) {
+                const extraChapterIds = existingChapters.slice(chapters.length).map((ch) => ch.id);
+                if (extraChapterIds.length > 0) {
+                  operations.push(this.prisma.chapter.deleteMany({
+                    where: { projectId, id: { in: extraChapterIds } },
+                  }));
+                }
+              }
+
+              if (operations.length > 0) {
+                await this.prisma.$transaction(operations);
+              }
             }
           } else {
-            // Full save: delete all chapters for this project
+            // Full save: replace all chapters for this project and create globally sequential numbers.
             await this.prisma.chapter.deleteMany({ where: { projectId } });
-          }
 
-          // Compute chapterNo offset: find the max chapterNo among remaining chapters
-          // so new chapters get globally unique numbers (e.g., vol1 has ch1-16, vol2 starts at ch17)
-          let chapterNoOffset = 0;
-          if (volumeNo) {
-            const maxChapter = await this.prisma.chapter.aggregate({
-              where: { projectId },
-              _max: { chapterNo: true },
+            await this.prisma.chapter.createMany({
+              data: chapters.map((ch, index) => {
+                const chVolumeNo = asNumber(ch.volumeNo);
+                const resolvedVolumeId = chVolumeNo ? volumeNoToId.get(chVolumeNo) ?? null : null;
+
+                return {
+                  projectId,
+                  volumeId: resolvedVolumeId,
+                  chapterNo: index + 1,
+                  title: asString(ch.title),
+                  objective: asString(ch.objective),
+                  conflict: asString(ch.conflict),
+                  outline: asString(ch.outline),
+                  craftBrief: normalizeChapterCraftBrief(ch),
+                  status: 'planned',
+                };
+              }),
             });
-            chapterNoOffset = maxChapter._max.chapterNo ?? 0;
           }
-
-          await this.prisma.chapter.createMany({
-            data: chapters.map((ch, index) => {
-              const chVolumeNo = ch.volumeNo as number | undefined;
-              const resolvedVolumeId = chVolumeNo ? volumeNoToId.get(chVolumeNo) ?? null : null;
-
-              return {
-                projectId,
-                volumeId: resolvedVolumeId,
-                // Use offset + sequential index to ensure global uniqueness
-                chapterNo: chapterNoOffset + index + 1,
-                title: asString(ch.title),
-                objective: asString(ch.objective),
-                conflict: asString(ch.conflict),
-                outline: asString(ch.outline),
-                status: 'planned',
-              };
-            }),
-          });
           written.push(`Chapter × ${chapters.length}`);
         }
 
@@ -985,21 +1284,39 @@ ${schema}
       if (step === 'guided_chapter' && volumeNo) {
         const existingResult = (existingData['guided_chapter_result'] ?? {}) as Record<string, unknown>;
 
-        // Merge chapters: remove old chapters for this volumeNo, append new ones
+        // Merge chapters: full-volume saves replace that volume; single-chapter saves replace only that chapter.
         const existingChapters = (existingResult.chapters ?? []) as Array<Record<string, unknown>>;
         const newChapters = (structuredData.chapters ?? []) as Array<Record<string, unknown>>;
-        const mergedChapters = [
-          ...existingChapters.filter((ch) => (ch.volumeNo as number) !== volumeNo),
-          ...newChapters,
-        ];
+        const isSingleChapterSave = structuredData.saveMode === 'single_chapter' && newChapters.length === 1;
+        const singleChapterNo = isSingleChapterSave ? asNumber(newChapters[0].chapterNo) : undefined;
+        let mergedChapters: Array<Record<string, unknown>>;
+
+        if (singleChapterNo !== undefined) {
+          let replaced = false;
+          mergedChapters = existingChapters.map((ch) => {
+            if (asNumber(ch.volumeNo) === volumeNo && asNumber(ch.chapterNo) === singleChapterNo) {
+              replaced = true;
+              return { ...newChapters[0], volumeNo, chapterNo: singleChapterNo };
+            }
+            return ch;
+          });
+
+          if (!replaced) {
+            mergedChapters.push({ ...newChapters[0], volumeNo, chapterNo: singleChapterNo });
+          }
+        } else {
+          mergedChapters = [
+            ...existingChapters.filter((ch) => asNumber(ch.volumeNo) !== volumeNo),
+            ...newChapters,
+          ];
+        }
 
         // Merge supporting characters: keyed by volumeNo to prevent cross-volume overwrites
         const existingSupportChars = (existingResult.volumeSupportingCharacters ?? {}) as Record<string, unknown>;
-        const newSupportChars = (structuredData.supportingCharacters ?? []) as Array<Record<string, unknown>>;
-        const mergedSupportChars = {
-          ...existingSupportChars,
-          [volumeNo]: newSupportChars,
-        };
+        const newSupportChars = structuredData.supportingCharacters as Array<Record<string, unknown>> | undefined;
+        const mergedSupportChars = Array.isArray(newSupportChars)
+          ? { ...existingSupportChars, [volumeNo]: newSupportChars }
+          : existingSupportChars;
 
         resultToSave = {
           ...existingResult,
@@ -1028,6 +1345,164 @@ ${schema}
 /** Safely extract a string value, returning undefined for non-strings */
 function asString(val: unknown): string | undefined {
   return typeof val === 'string' && val.trim() ? val.trim() : undefined;
+}
+
+/** Safely extract a numeric value from JSON-ish AI/session data */
+function asNumber(val: unknown): number | undefined {
+  if (typeof val === 'number' && Number.isFinite(val)) return val;
+  if (typeof val === 'string' && val.trim()) {
+    const parsed = Number(val);
+    return Number.isFinite(parsed) ? parsed : undefined;
+  }
+  return undefined;
+}
+
+function asRecord(val: unknown): Record<string, unknown> | undefined {
+  return val !== null && typeof val === 'object' && !Array.isArray(val)
+    ? val as Record<string, unknown>
+    : undefined;
+}
+
+function asInputJsonObject(val: unknown): Prisma.InputJsonValue {
+  const record = asRecord(val);
+  if (!record) return {};
+  return JSON.parse(JSON.stringify(record)) as Prisma.InputJsonValue;
+}
+
+function normalizeVolumeNarrativePlan(volume: Record<string, unknown>): Prisma.InputJsonValue {
+  return asInputJsonObject(volume.narrativePlan);
+}
+
+function normalizeChapterCraftBrief(chapter: Record<string, unknown>): Prisma.InputJsonValue {
+  const existing = asRecord(chapter.craftBrief);
+  if (existing && Object.keys(existing).length > 0) return asInputJsonObject(existing);
+
+  const outline = asString(chapter.outline) ?? '';
+  const fallback: Record<string, unknown> = {};
+  const visibleGoal = asString(chapter.objective) ?? extractExecutionCardSection(outline, '表层目标');
+  const coreConflict = asString(chapter.conflict) ?? extractExecutionCardSection(outline, '核心冲突');
+  const irreversibleConsequence = extractExecutionCardSection(outline, '不可逆后果');
+  const dialogueSubtext = extractExecutionCardSection(outline, '对话潜台词');
+  const characterShift = extractExecutionCardSection(outline, '人物变化');
+  const actionBeats = extractExecutionCardList(outline, '行动链');
+  const clueLines = extractExecutionCardList(outline, '物证/线索');
+
+  if (visibleGoal) fallback.visibleGoal = visibleGoal;
+  if (coreConflict) fallback.coreConflict = coreConflict;
+  if (irreversibleConsequence) fallback.irreversibleConsequence = irreversibleConsequence;
+  if (dialogueSubtext) fallback.dialogueSubtext = dialogueSubtext;
+  if (characterShift) fallback.characterShift = characterShift;
+  if (actionBeats.length > 0) fallback.actionBeats = actionBeats;
+  if (clueLines.length > 0) {
+    fallback.concreteClues = clueLines.map((line) => ({
+      name: line.replace(/^名称[:：]\s*/, '').split(/[；;，,]/)[0]?.trim() || line,
+      sensoryDetail: line,
+      laterUse: '',
+    }));
+  }
+
+  return asInputJsonObject(fallback);
+}
+
+function extractExecutionCardSection(outline: string, label: string): string | undefined {
+  if (!outline.includes(label)) return undefined;
+  const labels = ['表层目标', '隐藏情绪', '核心冲突', '行动链', '物证/线索', '物证', '线索', '对话潜台词', '人物变化', '不可逆后果'];
+  const escapedLabel = label.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+  const otherLabels = labels
+    .filter((item) => item !== label)
+    .map((item) => item.replace(/[.*+?^${}()|[\]\\]/g, '\\$&'))
+    .join('|');
+  const match = outline.match(new RegExp(`${escapedLabel}\\s*[:：]?\\s*([\\s\\S]*?)(?=\\n\\s*(?:${otherLabels})\\s*[:：]|$)`, 'i'));
+  return match?.[1]?.trim().replace(/^\s*[-\d.、]+\s*/gm, '').trim() || undefined;
+}
+
+function extractExecutionCardList(outline: string, label: string): string[] {
+  const section = extractExecutionCardSection(outline, label);
+  if (!section) return [];
+  return section
+    .split(/\n+/)
+    .map((line) => line.replace(/^\s*(?:[-*]|\d+[.、])\s*/, '').trim())
+    .filter(Boolean);
+}
+
+function formatChapterContext(ch: Record<string, unknown>, outlineLimit = 500): string {
+  const outline = asString(ch.outline) ?? '未填写';
+  const trimmedOutline = outline.length > outlineLimit
+    ? `${outline.slice(0, outlineLimit)}…`
+    : outline;
+  const craftBrief = asRecord(ch.craftBrief);
+
+  return [
+    `- 章节号：第 ${asNumber(ch.chapterNo) ?? '未知'} 章`,
+    `- 标题：${asString(ch.title) ?? '未命名'}`,
+    `- 目标：${asString(ch.objective) ?? '未填写'}`,
+    `- 冲突：${asString(ch.conflict) ?? '未填写'}`,
+    `- outline：${trimmedOutline}`,
+    craftBrief && Object.keys(craftBrief).length > 0 ? `- craftBrief：${JSON.stringify(craftBrief).slice(0, 800)}` : '',
+  ].filter(Boolean).join('\n');
+}
+
+function ensureExecutionCardOutline(chapter: Record<string, unknown>): string {
+  const outline = asString(chapter.outline) ?? '';
+  const requiredMarkers = ['本章执行卡', '行动链', '物证', '潜台词', '不可逆后果'];
+
+  if (requiredMarkers.every((marker) => outline.includes(marker))) {
+    return outline;
+  }
+
+  const objective = asString(chapter.objective) ?? '围绕当前章节目标推进一个可检验的行动结果。';
+  const conflict = asString(chapter.conflict) ?? '让阻力来源、阻力方式和主角代价在场景中具体发生。';
+  const originalOutline = outline || '保留原章节核心意图，扩展为可执行场景链。';
+
+  return `## 本章执行卡
+
+表层目标：${objective}
+
+隐藏情绪：补足主角在本章不愿明说但会影响选择的情绪压力。
+
+核心冲突：${conflict}
+
+行动链：
+1. ${originalOutline}
+2. 让主角采取一个具体行动，并遭遇可见阻力。
+3. 让行动产生阶段结果，为下一章留下事实、关系、资源、规则或危险变化。
+
+物证/线索：
+- 名称：补足可被看见、触碰或听见的具体线索；写清感官细节与后续用途。
+
+对话潜台词：
+让角色通过试探、隐瞒、威胁、安抚或误导推进冲突，不用解释性对白替代行动。
+
+人物变化：写清本章结束时角色认知、关系、立场或情绪的具体变化。
+
+不可逆后果：
+写清本章造成的事实、关系、资源、地位、规则或危险变化，保证后续章节不能轻易退回原状。`;
+}
+
+function hasChapterFieldChange(
+  existing: {
+    title: string | null;
+    objective: string | null;
+    conflict: string | null;
+    outline: string | null;
+    craftBrief?: Prisma.JsonValue;
+    status: string;
+  },
+  next: {
+    title?: string;
+    objective?: string;
+    conflict?: string;
+    outline?: string;
+    craftBrief?: Prisma.InputJsonValue;
+    status: string;
+  },
+): boolean {
+  return (next.title !== undefined && existing.title !== next.title)
+    || (next.objective !== undefined && existing.objective !== next.objective)
+    || (next.conflict !== undefined && existing.conflict !== next.conflict)
+    || (next.outline !== undefined && existing.outline !== next.outline)
+    || (next.craftBrief !== undefined && JSON.stringify(existing.craftBrief ?? {}) !== JSON.stringify(next.craftBrief ?? {}))
+    || existing.status !== next.status;
 }
 
 /** Truncate a string to fit a VarChar column, appending '…' if needed */

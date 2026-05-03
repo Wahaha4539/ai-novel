@@ -25,7 +25,7 @@ export class ChapterAutoRepairService {
   constructor(private readonly prisma: PrismaService, private readonly llm: LlmGatewayService) {}
 
   /** 最多一轮自动修复，避免 Agent 在校验/改写之间无限循环消耗。 */
-  async run(projectId: string, chapterId: string, options: { draftId?: string; issues?: unknown[]; instruction?: string; userId?: string; maxRounds?: number } = {}): Promise<ChapterAutoRepairResult> {
+  async run(projectId: string, chapterId: string, options: { draftId?: string; issues?: unknown[]; executionCardCoverage?: unknown; instruction?: string; userId?: string; maxRounds?: number } = {}): Promise<ChapterAutoRepairResult> {
     const maxRounds = Math.min(1, Math.max(0, options.maxRounds ?? 1));
     const chapter = await this.prisma.chapter.findFirst({ where: { id: chapterId, projectId } });
     if (!chapter) throw new NotFoundException(`章节不存在或不属于当前项目：${chapterId}`);
@@ -37,7 +37,11 @@ export class ChapterAutoRepairService {
     if (!draft) throw new NotFoundException(`章节 ${chapterId} 暂无可修复草稿`);
 
     const providedIssues = this.normalizeIssues(options.issues ?? []);
-    const issues = providedIssues.length ? providedIssues : await this.loadOpenIssues(projectId, chapterId);
+    const coverageIssues = this.buildCoverageRepairIssues(options.executionCardCoverage)
+      .concat(this.buildCoverageRepairIssues(this.readDraftExecutionCardCoverage(draft.generationContext)));
+    const issues = providedIssues.length
+      ? [...providedIssues, ...coverageIssues]
+      : [...await this.loadOpenIssues(projectId, chapterId), ...coverageIssues];
     const repairableIssues = issues.filter((issue) => ['error', 'warning'].includes(issue.severity)).slice(0, 5);
     const originalWordCount = this.countChineseLikeWords(draft.content.trim());
     if (!repairableIssues.length) return { skipped: true, reason: 'no_repairable_issues', draftId: draft.id, chapterId, originalDraftId: draft.id, originalWordCount, repairedWordCount: originalWordCount, repairedIssueCount: 0, maxRounds, summary: draft.content.trim().slice(0, 160) };
@@ -91,6 +95,55 @@ export class ChapterAutoRepairService {
       .filter((item): item is Record<string, unknown> => Boolean(item))
       .map((item) => ({ severity: String(item.severity ?? 'info'), message: String(item.message ?? ''), suggestion: typeof item.suggestion === 'string' ? item.suggestion : undefined }))
       .filter((item) => item.message);
+  }
+
+  private readDraftExecutionCardCoverage(generationContext: unknown): unknown {
+    const context = this.asRecord(generationContext);
+    const qualityGate = this.asRecord(context?.qualityGate);
+    return qualityGate?.executionCardCoverage;
+  }
+
+  private buildCoverageRepairIssues(value: unknown): Array<{ severity: string; message: string; suggestion?: string }> {
+    const coverage = this.asRecord(value);
+    if (!coverage) return [];
+    const missing = this.asRecord(coverage.missing);
+    const warnings = Array.isArray(coverage.warnings)
+      ? coverage.warnings.filter((item): item is string => typeof item === 'string' && item.trim().length > 0)
+      : [];
+    const missingClues = Array.isArray(missing?.clueNames)
+      ? missing.clueNames.filter((item): item is string => typeof item === 'string' && item.trim().length > 0)
+      : [];
+    const missingConsequence = typeof missing?.irreversibleConsequence === 'string'
+      ? missing.irreversibleConsequence.trim()
+      : '';
+
+    const issues = warnings.map((message) => ({
+      severity: 'warning',
+      message: `执行卡覆盖检查：${message}`,
+      suggestion: '在保留原剧情的前提下，补写缺失的物证、行动节点或不可逆后果。',
+    }));
+    if (missingClues.length > 0) {
+      issues.push({
+        severity: 'warning',
+        message: `执行卡覆盖检查：正文缺少关键物证/线索 ${missingClues.join('、')}。`,
+        suggestion: '把这些物证/线索写成可感知细节，并让它们影响角色选择。',
+      });
+    }
+    if (missingConsequence) {
+      issues.push({
+        severity: 'warning',
+        message: `执行卡覆盖检查：正文缺少不可逆后果「${missingConsequence}」。`,
+        suggestion: '在章节结尾前补足事实、关系、资源、地位、规则或危险的不可逆变化。',
+      });
+    }
+
+    return issues;
+  }
+
+  private asRecord(value: unknown): Record<string, unknown> | undefined {
+    return value !== null && typeof value === 'object' && !Array.isArray(value)
+      ? value as Record<string, unknown>
+      : undefined;
   }
 
   private buildRepairPrompt(chapter: { chapterNo: number; title: string | null; objective: string | null; conflict: string | null; outline: string | null }, originalText: string, issues: Array<{ severity: string; message: string; suggestion?: string }>, instruction?: string): string {

@@ -23,5 +23,9 @@ export class GenerateStepDto {
   @IsOptional()
   @IsInt()
   volumeNo?: number;
-}
 
+  /** Target chapter number for single-chapter refinement (guided_chapter step) */
+  @IsOptional()
+  @IsInt()
+  chapterNo?: number;
+}

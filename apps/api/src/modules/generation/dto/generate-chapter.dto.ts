@@ -38,6 +38,10 @@ export class GenerateChapterDto {
   validateAfterWrite?: boolean;
 
   @IsOptional()
+  @IsIn(['warning', 'blocker'])
+  outlineQualityGate?: 'warning' | 'blocker';
+
+  @IsOptional()
   @IsBoolean()
   stream?: boolean;
 }
