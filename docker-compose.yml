@@ -1,0 +1,287 @@
+name: ai-novel
+
+services:
+  deps:
+    image: mcr.microsoft.com/devcontainers/javascript-node:1-20-bookworm
+    user: root
+    working_dir: /workspace
+    command: >
+      sh -lc "corepack enable &&
+      pnpm config set store-dir /pnpm/store &&
+      pnpm install --frozen-lockfile"
+    volumes:
+      - .:/workspace
+      - node_modules:/workspace/node_modules
+      - api_node_modules:/workspace/apps/api/node_modules
+      - web_node_modules:/workspace/apps/web/node_modules
+      - shared_types_node_modules:/workspace/packages/shared-types/node_modules
+      - prompt_templates_node_modules:/workspace/packages/prompt-templates/node_modules
+      - pnpm_store:/pnpm/store
+
+  postgres:
+    image: ai-novel-postgres:local
+    pull_policy: build
+    build:
+      context: .
+      dockerfile_inline: |
+        # syntax=docker/dockerfile:1.7
+        FROM postgres:17
+        RUN apt-get update \
+            && apt-get install -y --no-install-recommends postgresql-17-pgvector \
+            && rm -rf /var/lib/apt/lists/*
+    container_name: novel-postgres
+    environment:
+      POSTGRES_USER: ${POSTGRES_USER:-postgres}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-postgres}
+      POSTGRES_DB: ${DATABASE_NAME:-ai_novel_mvp}
+    ports:
+      - "${POSTGRES_PORT:-5432}:5432"
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U $${POSTGRES_USER} -d $${POSTGRES_DB}"]
+      interval: 5s
+      timeout: 5s
+      retries: 20
+
+  redis:
+    image: redis:7-alpine
+    container_name: novel-redis
+    ports:
+      - "${REDIS_PORT:-6379}:6379"
+    volumes:
+      - redis_data:/data
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 5s
+      timeout: 5s
+      retries: 20
+
+  minio:
+    image: quay.io/minio/minio:RELEASE.2024-07-16T23-46-41Z
+    container_name: novel-minio
+    command: server /data --console-address ":9001"
+    environment:
+      MINIO_ROOT_USER: ${MINIO_ACCESS_KEY:-minioadmin}
+      MINIO_ROOT_PASSWORD: ${MINIO_SECRET_KEY:-minioadmin}
+    ports:
+      - "${MINIO_API_PORT:-9000}:9000"
+      - "${MINIO_CONSOLE_PORT:-9001}:9001"
+    volumes:
+      - minio_data:/data
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:9000/minio/health/live"]
+      interval: 10s
+      timeout: 5s
+      retries: 20
+
+  embedding:
+    image: ai-novel-embedding:local
+    pull_policy: build
+    build:
+      context: .
+      dockerfile_inline: |
+        # syntax=docker/dockerfile:1.7
+        FROM mcr.microsoft.com/devcontainers/python:1-3.11-bookworm
+
+        USER root
+
+        ENV PYTHONDONTWRITEBYTECODE=1 \
+            PYTHONUNBUFFERED=1 \
+            PIP_NO_CACHE_DIR=1
+
+        WORKDIR /app
+
+        RUN python -m pip install --upgrade pip \
+            && python -m pip install \
+              fastapi==0.115.0 \
+              pydantic==2.8.2 \
+              "uvicorn[standard]==0.30.1"
+
+        RUN cat > /app/app.py <<'PY'
+        import hashlib
+        import math
+        import os
+        import re
+        from typing import Union
+
+        from fastapi import FastAPI, Header, HTTPException
+        from pydantic import BaseModel
+
+
+        DIMENSION = int(os.getenv("EMBEDDING_DIM", "768"))
+        RESPONSE_MODEL = os.getenv("EMBEDDING_RESPONSE_MODEL", "local-hash-zh-768")
+        API_KEY = os.getenv("EMBEDDING_API_KEY", "")
+
+        app = FastAPI(title="AI Novel Embedding Server")
+
+
+        class EmbeddingRequest(BaseModel):
+            input: Union[str, list[str]]
+            model: str = RESPONSE_MODEL
+
+
+        def require_auth(authorization: str | None) -> None:
+            if not API_KEY:
+                return
+            if authorization != f"Bearer {API_KEY}":
+                raise HTTPException(status_code=401, detail="Invalid embedding API key")
+
+
+        @app.get("/health")
+        def health() -> dict[str, str | int]:
+            return {"status": "ok", "model": RESPONSE_MODEL, "dimension": DIMENSION}
+
+
+        def tokenize(text: str) -> list[str]:
+            tokens = re.findall(r"[\u4e00-\u9fff]|[a-zA-Z0-9_]+", text.lower())
+            return tokens or [text]
+
+
+        def embed_text(text: str) -> list[float]:
+            vector = [0.0] * DIMENSION
+            for token in tokenize(text):
+                digest = hashlib.blake2b(token.encode("utf-8"), digest_size=16).digest()
+                first = int.from_bytes(digest[0:4], "little") % DIMENSION
+                second = int.from_bytes(digest[5:9], "little") % DIMENSION
+                sign = 1.0 if digest[4] % 2 == 0 else -1.0
+                weight = 1.0 + min(len(token), 8) / 16.0
+                vector[first] += sign * weight
+                vector[second] += sign * 0.5
+
+            norm = math.sqrt(sum(value * value for value in vector))
+            if norm == 0:
+                return vector
+            return [value / norm for value in vector]
+
+
+        @app.post("/v1/embeddings")
+        def create_embedding(req: EmbeddingRequest, authorization: str | None = Header(default=None)) -> dict:
+            require_auth(authorization)
+            texts = [req.input] if isinstance(req.input, str) else req.input
+            vectors = [embed_text(text) for text in texts]
+            return {
+                "object": "list",
+                "model": req.model or RESPONSE_MODEL,
+                "data": [
+                    {"object": "embedding", "embedding": vector, "index": index}
+                    for index, vector in enumerate(vectors)
+                ],
+                "usage": {
+                    "prompt_tokens": 0,
+                    "total_tokens": 0,
+                },
+            }
+        PY
+
+        EXPOSE 18319
+
+        CMD ["uvicorn", "app:app", "--host", "0.0.0.0", "--port", "18319"]
+    container_name: novel-embedding
+    environment:
+      EMBEDDING_DIM: ${EMBEDDING_DIM:-768}
+      EMBEDDING_RESPONSE_MODEL: ${EMBEDDING_MODEL:-local-hash-zh-768}
+      EMBEDDING_API_KEY: ${EMBEDDING_API_KEY:-}
+    ports:
+      - "${EMBEDDING_PORT:-18319}:18319"
+    volumes:
+      - embedding_models:/models
+    healthcheck:
+      test:
+        [
+          "CMD",
+          "python",
+          "-c",
+          "import urllib.request; urllib.request.urlopen('http://127.0.0.1:18319/health', timeout=5).read()",
+        ]
+      interval: 10s
+      timeout: 5s
+      retries: 60
+      start_period: 60s
+
+  api:
+    image: mcr.microsoft.com/devcontainers/javascript-node:1-20-bookworm
+    user: root
+    container_name: novel-api
+    working_dir: /workspace
+    command: >
+      sh -lc "corepack enable &&
+      pnpm config set store-dir /pnpm/store &&
+      pnpm db:generate &&
+      pnpm db:migrate &&
+      pnpm --filter api start:dev"
+    env_file:
+      - path: .env
+        required: false
+    environment:
+      API_PORT: ${API_PORT:-3001}
+      DATABASE_NAME: ${DATABASE_NAME:-ai_novel_mvp}
+      DATABASE_URL: postgresql://${POSTGRES_USER:-postgres}:${POSTGRES_PASSWORD:-postgres}@postgres:5432/${DATABASE_NAME:-ai_novel_mvp}
+      POSTGRES_ADMIN_URL: postgresql://${POSTGRES_USER:-postgres}:${POSTGRES_PASSWORD:-postgres}@postgres:5432/postgres
+      REDIS_URL: redis://redis:6379/0
+      MINIO_ENDPOINT: minio:9000
+      MINIO_ACCESS_KEY: ${MINIO_ACCESS_KEY:-minioadmin}
+      MINIO_SECRET_KEY: ${MINIO_SECRET_KEY:-minioadmin}
+      EMBEDDING_BASE_URL: http://embedding:18319/v1
+      EMBEDDING_API_KEY: ${EMBEDDING_API_KEY:-}
+      EMBEDDING_MODEL: ${EMBEDDING_MODEL:-bge-base-zh}
+    ports:
+      - "${API_PORT:-3001}:${API_PORT:-3001}"
+    volumes:
+      - .:/workspace
+      - node_modules:/workspace/node_modules
+      - api_node_modules:/workspace/apps/api/node_modules
+      - web_node_modules:/workspace/apps/web/node_modules
+      - shared_types_node_modules:/workspace/packages/shared-types/node_modules
+      - prompt_templates_node_modules:/workspace/packages/prompt-templates/node_modules
+      - pnpm_store:/pnpm/store
+    depends_on:
+      deps:
+        condition: service_completed_successfully
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+      embedding:
+        condition: service_healthy
+
+  web:
+    image: mcr.microsoft.com/devcontainers/javascript-node:1-20-bookworm
+    user: root
+    container_name: novel-web
+    working_dir: /workspace
+    command: >
+      sh -lc "corepack enable &&
+      pnpm config set store-dir /pnpm/store &&
+      pnpm --dir apps/web exec next dev -p 3000 -H 0.0.0.0"
+    environment:
+      NEXT_PUBLIC_API_BASE_URL: ${NEXT_PUBLIC_API_BASE_URL:-http://127.0.0.1:${API_PORT:-3001}/api}
+    ports:
+      - "${WEB_PORT:-3000}:3000"
+    volumes:
+      - .:/workspace
+      - node_modules:/workspace/node_modules
+      - api_node_modules:/workspace/apps/api/node_modules
+      - web_node_modules:/workspace/apps/web/node_modules
+      - shared_types_node_modules:/workspace/packages/shared-types/node_modules
+      - prompt_templates_node_modules:/workspace/packages/prompt-templates/node_modules
+      - web_next:/workspace/apps/web/.next
+      - pnpm_store:/pnpm/store
+    depends_on:
+      deps:
+        condition: service_completed_successfully
+      api:
+        condition: service_started
+
+volumes:
+  node_modules:
+  api_node_modules:
+  web_node_modules:
+  shared_types_node_modules:
+  prompt_templates_node_modules:
+  pnpm_store:
+  web_next:
+  postgres_data:
+  redis_data:
+  minio_data:
+  embedding_models:

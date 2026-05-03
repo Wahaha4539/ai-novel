@@ -3,9 +3,8 @@ import * as dotenv from 'dotenv';
 import { Prisma, PrismaClient } from '@prisma/client';
 import { WRITE_CHAPTER_SYSTEM_PROMPT, WRITE_CHAPTER_USER_TEMPLATE } from './seed-prompts/write-chapter';
 
-// 同时加载仓库根目录与 apps/api 下的 .env，方便从根目录或 api 包目录运行脚本。
+// 加载仓库根目录 .env，保持单一配置来源。
 dotenv.config({ path: path.resolve(__dirname, '../../../.env') });
-dotenv.config({ path: path.resolve(__dirname, '../.env') });
 
 const prisma = new PrismaClient();
 

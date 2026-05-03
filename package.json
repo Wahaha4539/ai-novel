@@ -6,9 +6,9 @@
     "dev:web": "pnpm --filter web dev",
     "dev:api": "pnpm --filter api start:dev",
     "dev": "pnpm --parallel --filter web --filter api run dev",
-    "db:generate": "pnpm --filter api exec prisma generate",
-    "db:migrate": "pnpm --filter api exec prisma migrate deploy",
-    "db:push": "pnpm --filter api exec prisma db push",
+    "db:generate": "pnpm exec prisma generate --schema apps/api/prisma/schema.prisma",
+    "db:migrate": "pnpm exec prisma migrate deploy --schema apps/api/prisma/schema.prisma",
+    "db:push": "pnpm exec prisma db push --schema apps/api/prisma/schema.prisma",
     "db:create": "python scripts/dev/create_database.py",
     "db:maintenance": "pnpm --dir apps/api run db:maintenance",
     "eval:agent:gate": "pnpm --dir apps/api run eval:agent:gate"

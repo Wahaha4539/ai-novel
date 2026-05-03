@@ -14,10 +14,10 @@ ai-novel/
 │  ├─ web/        # Next.js 前端：创作工作台、Agent 悬浮入口、项目/卷章/设定管理
 │  ├─ api/        # NestJS API：业务接口、Agent Runtime、Prisma、LLM/Embedding 网关
 │  └─ worker/     # 历史 Python pipeline 参考，当前无需启动
+├─ docker-compose.yml # 本地全量开发编排：Web、API、PostgreSQL、Redis、MinIO、Embedding
 ├─ packages/
 │  ├─ shared-types/
 │  └─ prompt-templates/
-├─ infra/docker/  # PostgreSQL(pgvector)、Redis、MinIO 本地依赖编排
 ├─ scripts/dev/   # 数据库创建、Agent Eval、Embedding 检索验证等开发脚本
 └─ docs/          # 架构、API、数据库、Prompt 文档
 ```
@@ -69,7 +69,7 @@ python -m pip install "psycopg[binary]" python-dotenv
 本地基础设施由 Docker Compose 管理：
 
 ```powershell
-docker compose -f infra/docker/docker-compose.yml up -d
+docker compose up -d postgres redis minio embedding
 ```
 
 默认服务如下：
@@ -81,27 +81,25 @@ docker compose -f infra/docker/docker-compose.yml up -d
 | MinIO API | `127.0.0.1:9000` | `novel-minio` | 预留对象存储。 |
 | MinIO Console | `http://127.0.0.1:9001` | `novel-minio` | MinIO 管理后台。 |
 
-Docker Compose 中 PostgreSQL 默认创建库名为 `novel_system`；应用实际使用的业务库由 `.env` 中的 `DATABASE_NAME` / `DATABASE_URL` 决定，通常为 `ai_novel_mvp`，需要通过后续建库脚本创建。
+Docker Compose 中 PostgreSQL 默认创建库名由 `.env` 中的 `DATABASE_NAME` 决定，通常为 `ai_novel_mvp`。如果业务库不存在，可通过后续建库脚本创建。
 
 ### 2.3 环境变量
 
-项目主要读取两份环境文件：
+项目统一读取根目录 `.env`：
 
 | 文件 | 使用者 | 说明 |
 | --- | --- | --- |
-| `.env` | 根目录脚本 | `db:create`、开发脚本等读取。 |
-| `apps/api/.env` | NestJS API / Prisma | API 运行、Prisma 迁移、LLM/Embedding 网关读取。 |
+| `.env` | 根目录脚本、NestJS API、Prisma、Docker Compose | API 运行、Prisma 迁移、LLM/Embedding 网关、`db:create`、开发脚本等读取。 |
 
 复制模板：
 
 ```powershell
 Copy-Item .env.example .env
-Copy-Item .env.example apps/api/.env
 ```
 
 > [!IMPORTANT]
 > 本 README 只展示不含敏感信息的占位 / 脱敏示例，不记录任何真实数据库地址、密码或 API Key。
-> 实际运行配置以根目录 `.env` 和 `apps/api/.env` 中填写的值为准；排查连接问题时也应优先检查这两份环境文件，而不是下面的示例值。
+> 实际运行配置以根目录 `.env` 中填写的值为准；排查连接问题时也应优先检查这份环境文件，而不是下面的示例值。
 
 建议至少补齐以下配置，具体值请按你的本地或远程环境替换：
 
@@ -148,7 +146,7 @@ NEXT_PUBLIC_API_BASE_URL=http://127.0.0.1:3001/api
 
 ### 2.4 Embedding 服务是一个独立启动程序
 
-Embedding 服务不是 `pnpm dev` 启动出来的，也不在当前 Docker Compose 里。它通常是你本机或局域网中单独运行的 BGE / text-embedding 模型服务，只要兼容 OpenAI `/v1/embeddings` 接口即可。
+Embedding 服务不是 `pnpm dev` 启动出来的。根目录 Docker Compose 已提供一个本地轻量 Embedding 服务；如果你有独立运行的 BGE / text-embedding 模型服务，也可以在 `.env` 中把 `EMBEDDING_BASE_URL` 指向它，只要兼容 OpenAI `/v1/embeddings` 接口即可。
 
 仓库历史文档中记录的启动方式是：创建一个独立的 Python 脚本 `/opt/embedding_server.py`，再用 systemd 启动 `embedding.service`。核心启动脚本如下：
 
@@ -248,7 +246,7 @@ curl.exe http://127.0.0.1:18319/v1/embeddings `
   -d '{"model":"bge-base-zh","input":["测试文本"]}'
 ```
 
-如果你的 Embedding 程序运行在其他端口或机器上，只需要同步修改 `.env` 与 `apps/api/.env` 中的 `EMBEDDING_BASE_URL`。如果服务启用了鉴权，再填写 `EMBEDDING_API_KEY`；本地 BGE 服务通常可以留空。
+如果你的 Embedding 程序运行在其他端口或机器上，只需要修改 `.env` 中的 `EMBEDDING_BASE_URL`。如果服务启用了鉴权，再填写 `EMBEDDING_API_KEY`；本地 BGE 服务通常可以留空。
 
 ### 2.5 数据库建表脚本在哪里
 
@@ -328,7 +326,45 @@ pnpm dev
 | Web / Next.js | `apps/web/package.json` | `http://127.0.0.1:3000` |
 | API / NestJS | `apps/api/package.json` | `http://127.0.0.1:3001/api` |
 
-### 4.2 分开启动
+### 4.2 Docker Compose 全量开发启动
+
+如果希望 Web、API、PostgreSQL、Redis、MinIO、Embedding 都由根目录 `docker-compose.yml` 编排，从仓库根目录运行：
+
+```powershell
+docker compose up
+```
+
+后台运行并查看 Web / API 日志：
+
+```powershell
+docker compose up -d
+docker compose logs -f api web
+```
+
+根目录代码会挂载到容器内 `/workspace`。修改 `apps/api/src`、`apps/web` 等业务代码时，通常不需要重新 build；API 使用 Nest watch，Web 使用 Next dev，会按开发模式热更新。
+
+修改依赖文件，例如 `package.json` 或 `pnpm-lock.yaml` 后，重新安装依赖并启动服务：
+
+```powershell
+docker compose up deps
+docker compose up -d api web
+```
+
+修改 `docker-compose.yml`、内联 Dockerfile 或镜像构建相关内容后，重新构建启动：
+
+```powershell
+docker compose up --build -d
+```
+
+停止服务：
+
+```powershell
+docker compose down
+```
+
+不要随意执行 `docker compose down -v`；它会删除 PostgreSQL、Redis、MinIO 等数据卷。
+
+### 4.3 分开启动
 
 也可以用两个终端分别启动：
 
@@ -344,16 +380,16 @@ pnpm --filter web dev
 pnpm --filter api start:dev
 ```
 
-### 4.3 端口与配置速查
+### 4.4 端口与配置速查
 
 | 端口 | 服务 | 配置来源 | 是否默认必用 |
 | --- | --- | --- | --- |
 | `3000` | Web | `apps/web/package.json` 中 `next dev -p 3000` 固定指定 | 是 |
 | `3001` | API | `API_PORT`，未配置时 `apps/api/src/main.ts` 默认 `3001` | 是 |
-| `5432` | PostgreSQL(pgvector) | `infra/docker/docker-compose.yml` | 是 |
-| `6379` | Redis | `infra/docker/docker-compose.yml` | 是 |
-| `9000` | MinIO API | `infra/docker/docker-compose.yml` | 否，当前预留 |
-| `9001` | MinIO Console | `infra/docker/docker-compose.yml` | 否，当前预留 |
+| `5432` | PostgreSQL(pgvector) | 根目录 `docker-compose.yml` / `POSTGRES_PORT` | 是 |
+| `6379` | Redis | 根目录 `docker-compose.yml` / `REDIS_PORT` | 是 |
+| `9000` | MinIO API | 根目录 `docker-compose.yml` / `MINIO_API_PORT` | 否，当前预留 |
+| `9001` | MinIO Console | 根目录 `docker-compose.yml` / `MINIO_CONSOLE_PORT` | 否，当前预留 |
 | `8318` | LLM 示例端口 | `.env.example` 示例 | 按你的模型服务实际端口填写 |
 | `18319` | Embedding 示例端口 | `.env.example` 示例 | 可选，按你的服务实际端口填写 |
 
@@ -364,7 +400,7 @@ pnpm --filter api start:dev
 - Windows 开发模式下，API 启动逻辑会尝试释放占用 `API_PORT` 的旧进程，避免 watch 重启后端口残留。
 - Embedding 是独立程序；如果需要语义召回和向量写入，请在启动 API 前确认 `EMBEDDING_BASE_URL` 对应服务已经可访问。
 
-### 4.4 Worker 是否需要启动
+### 4.5 Worker 是否需要启动
 
 不需要。当前章节生成、润色、事实抽取、校验、记忆重建、MemoryWriter、Embedding/pgvector 召回和 Agent 执行都在 `apps/api` 内完成。
 
@@ -431,7 +467,7 @@ http://127.0.0.1:3000
 4. 点击测试连接。
 5. 按需配置 `guided`、`generate`、`polish` 等路由。
 
-如果没有在页面配置 Provider，后端会尝试使用 `apps/api/.env` 中的 `LLM_BASE_URL`、`LLM_API_KEY`、`LLM_MODEL` 作为兜底配置。
+如果没有在页面配置 Provider，后端会尝试使用 `.env` 中的 `LLM_BASE_URL`、`LLM_API_KEY`、`LLM_MODEL` 作为兜底配置。
 
 ### 6.3 创建项目
 
@@ -525,7 +561,13 @@ Agent 执行约束：
 
 | 命令 | 说明 |
 | --- | --- |
-| `docker compose -f infra/docker/docker-compose.yml up -d` | 启动 PostgreSQL、Redis、MinIO。 |
+| `docker compose up -d postgres redis minio embedding` | 只启动 PostgreSQL、Redis、MinIO、Embedding 等依赖服务。 |
+| `docker compose up` | 使用根目录 Compose 前台启动全量开发环境。 |
+| `docker compose up -d` | 使用根目录 Compose 后台启动全量开发环境。 |
+| `docker compose logs -f api web` | 查看容器化 Web / API 开发日志。 |
+| `docker compose up deps` | 依赖文件变化后，重新安装容器内 Node 依赖。 |
+| `docker compose up --build -d` | Compose 镜像或构建配置变化后重新构建启动。 |
+| `docker compose down` | 停止根目录 Compose 服务，保留数据卷。 |
 | `pnpm install` | 安装 monorepo Node 依赖。 |
 | `pnpm db:create` | 按 `.env` 创建业务数据库。 |
 | `pnpm db:generate` | 生成 Prisma Client。 |
@@ -562,8 +604,8 @@ pnpm db:create
 
 优先检查：
 
-- 当前实际生效的根目录 `.env` 和 `apps/api/.env` 是否都存在；README 中的连接串只是不含敏感信息的占位示例。
-- 两份 `.env` 中的 `DATABASE_URL` 是否指向你实际使用的本地或远程 PostgreSQL。
+- 当前实际生效的根目录 `.env` 是否存在；README 中的连接串只是不含敏感信息的占位示例。
+- `.env` 中的 `DATABASE_URL` 是否指向你实际使用的本地或远程 PostgreSQL。
 - `POSTGRES_ADMIN_URL` 是否指向有建库权限的管理库连接，且密码中的 `&`、`^`、`@` 等特殊字符已经 URL encode。
 - 如果连接远程 PostgreSQL，确认当前用户拥有目标数据库的 `CONNECT` 权限、`public` schema 的 `USAGE` 权限，以及迁移所需的建表 / 建索引权限。
 - 如果连接本地 Docker PostgreSQL，再检查容器是否已启动并监听 `5432`，以及 `DATABASE_NAME` 指定的业务库是否已通过 `pnpm db:create` 创建。
@@ -573,7 +615,7 @@ pnpm db:create
 这是预期保护。请至少完成一种配置方式：
 
 1. 在 Web 的 **LLM 配置** 页面创建 Provider；或
-2. 在 `apps/api/.env` 中配置：
+2. 在 `.env` 中配置：
 
 ```env
 LLM_BASE_URL=http://YOUR_LLM_HOST:8318/v1
