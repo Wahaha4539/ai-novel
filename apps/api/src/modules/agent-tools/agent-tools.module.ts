@@ -26,6 +26,7 @@ import { PersistWorldbuildingTool } from './tools/persist-worldbuilding.tool';
 import { PlotConsistencyCheckTool } from './tools/plot-consistency-check.tool';
 import { PolishChapterTool } from './tools/polish-chapter.tool';
 import { PostProcessChapterTool } from './tools/postprocess-chapter.tool';
+import { ReadSourceDocumentTool } from './tools/read-source-document.tool';
 import { ReportResultTool } from './tools/report-result.tool';
 import { RebuildMemoryTool } from './tools/rebuild-memory.tool';
 import { ReviewMemoryTool } from './tools/review-memory.tool';
@@ -42,7 +43,7 @@ import { RelationshipGraphService } from './relationship-graph.service';
 
 @Module({
   imports: [PrismaModule, LlmModule, GenerationModule, ValidationModule, MemoryModule, FactsModule, GuidedModule],
-  providers: [ToolRegistryService, RelationshipGraphService, EchoReportTool, ResolveChapterTool, ResolveCharacterTool, CharacterConsistencyCheckTool, PlotConsistencyCheckTool, CollectChapterContextTool, CollectTaskContextTool, WriteChapterTool, WriteChapterSeriesTool, PostProcessChapterTool, PolishChapterTool, FactValidationTool, AutoRepairChapterTool, ExtractChapterFactsTool, RebuildMemoryTool, ReviewMemoryTool, InspectProjectContextTool, GenerateGuidedStepPreviewTool, ValidateGuidedStepPreviewTool, PersistGuidedStepResultTool, GenerateOutlinePreviewTool, GenerateWorldbuildingPreviewTool, ValidateOutlineTool, ValidateWorldbuildingTool, PersistWorldbuildingTool, PersistOutlineTool, AnalyzeSourceTextTool, BuildImportPreviewTool, ValidateImportedAssetsTool, PersistProjectAssetsTool, ReportResultTool],
+  providers: [ToolRegistryService, RelationshipGraphService, EchoReportTool, ResolveChapterTool, ResolveCharacterTool, CharacterConsistencyCheckTool, PlotConsistencyCheckTool, CollectChapterContextTool, CollectTaskContextTool, WriteChapterTool, WriteChapterSeriesTool, PostProcessChapterTool, PolishChapterTool, FactValidationTool, AutoRepairChapterTool, ExtractChapterFactsTool, RebuildMemoryTool, ReviewMemoryTool, InspectProjectContextTool, GenerateGuidedStepPreviewTool, ValidateGuidedStepPreviewTool, PersistGuidedStepResultTool, GenerateOutlinePreviewTool, GenerateWorldbuildingPreviewTool, ValidateOutlineTool, ValidateWorldbuildingTool, PersistWorldbuildingTool, PersistOutlineTool, ReadSourceDocumentTool, AnalyzeSourceTextTool, BuildImportPreviewTool, ValidateImportedAssetsTool, PersistProjectAssetsTool, ReportResultTool],
   exports: [ToolRegistryService],
 })
 export class AgentToolsModule {}

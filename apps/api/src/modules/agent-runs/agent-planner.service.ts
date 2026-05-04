@@ -118,7 +118,7 @@ export class AgentPlannerService {
           '注意：outputContract.steps[].mode 是后端计划步骤字段，固定填 act；它不代表当前 UI 的 Plan/Act 开关。',
           'Plan 阶段不写正式业务表；运行时会用 mode=plan 只执行无副作用预览步骤，所有真实副作用必须等用户切到 Act 并审批后才允许。',
           '你需要根据 Available Tools 的 whenToUse/whenNotToUse/parameterHints/idPolicy 自主编排步骤和 args。',
-          '可引用上下文：{{context.session.currentProjectId}}、{{context.session.currentChapterId}}、{{context.project.defaultWordCount}}、{{context.session.guided.currentStep}}、{{context.session.guided.currentStepData}}。',
+          '可引用上下文：{{context.session.currentProjectId}}、{{context.session.currentChapterId}}、{{context.project.defaultWordCount}}、{{context.attachments.0}}、{{context.attachments.0.url}}、{{context.session.guided.currentStep}}、{{context.session.guided.currentStepData}}。',
           '如果 agentContext.session.guided.currentStep 存在，说明用户正在创作引导页；当前步骤问答优先选择 guided_step_consultation，当前步骤生成优先选择 guided_step_generate，确认保存/写入优先选择 guided_step_finalize，不要误判成普通章节正文写作。',
           '可引用前序步骤：{{steps.N.output.field}} 或 {{steps.step_id.output.field}}；不要引用当前或未来步骤。',
           '章节写作或修改必须保留用户给出的风格、氛围、字数、禁改项和剧情约束，例如“别改结局”。',
@@ -378,6 +378,7 @@ export class AgentPlannerService {
       if (match && Number(match[1]) >= currentStepNo) throw new Error(`LLM Plan 第 ${currentStepNo} 步引用了非前序步骤 ${match[1]}`);
       const namedMatch = value.match(/^{{steps\.([A-Za-z][\w-]*)\.output(?:\.[\w.]+)?}}$/);
       if (namedMatch && !previousStepIds.has(namedMatch[1])) throw new Error(`LLM Plan 第 ${currentStepNo} 步引用了非前序步骤 ID：${namedMatch[1]}`);
+      if (!match && !namedMatch && /^{{[^{}]+}}$/.test(value)) throw new Error(`LLM Plan 第 ${currentStepNo} 步使用了未知模板引用：${value}`);
       return;
     }
     if (Array.isArray(value)) {

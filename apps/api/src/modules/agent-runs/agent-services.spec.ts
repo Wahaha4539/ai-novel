@@ -25,6 +25,7 @@ import { PlotConsistencyCheckTool } from '../agent-tools/tools/plot-consistency-
 import { GenerateGuidedStepPreviewTool } from '../agent-tools/tools/generate-guided-step-preview.tool';
 import { ValidateGuidedStepPreviewTool } from '../agent-tools/tools/validate-guided-step-preview.tool';
 import { PersistGuidedStepResultTool } from '../agent-tools/tools/persist-guided-step-result.tool';
+import { BuildImportPreviewTool } from '../agent-tools/tools/build-import-preview.tool';
 import { GenerateWorldbuildingPreviewTool } from '../agent-tools/tools/generate-worldbuilding-preview.tool';
 import { ValidateWorldbuildingTool } from '../agent-tools/tools/validate-worldbuilding.tool';
 import { PersistWorldbuildingTool } from '../agent-tools/tools/persist-worldbuilding.tool';
@@ -1363,6 +1364,35 @@ test('PersistOutlineTool 阻止重复章节编号写入', async () => {
   );
 });
 
+test('BuildImportPreviewTool normalizes non-string risks', async () => {
+  let receivedOptions: Record<string, unknown> | undefined;
+  const llm = {
+    async chatJson(_messages: unknown, options: Record<string, unknown>) {
+      receivedOptions = options;
+      return {
+        data: {
+          projectProfile: { title: '导入项目' },
+          characters: [],
+          lorebookEntries: [],
+          volumes: [],
+          chapters: [],
+          risks: [{ code: 'schema', message: '需要复核' }, 42, '  保留  ', null],
+        },
+        result: { model: 'mock' },
+      };
+    },
+  };
+  const tool = new BuildImportPreviewTool(llm as never);
+  const output = await tool.run(
+    { analysis: { sourceText: '正文', length: 2, paragraphs: ['正文'], keywords: ['正文'] } },
+    { agentRunId: 'run1', projectId: 'p1', mode: 'plan', approved: false, outputs: {}, policy: {} },
+  );
+
+  assert.deepEqual(output.risks, ['{"code":"schema","message":"需要复核"}', '42', '保留']);
+  assert.equal(tool.executionTimeoutMs, 500_000);
+  assert.equal(receivedOptions?.timeoutMs, 450_000);
+});
+
 test('Planner 归一化 LLM Plan 时强制使用 act mode', () => {
   const tools = { list: () => [createTool({ name: 'echo_report', requiresApproval: false, sideEffects: [] })] } as unknown as ToolRegistryService;
   const planner = new AgentPlannerService(new SkillRegistryService(), tools, new RuleEngineService(), {} as LlmGatewayService) as unknown as {
@@ -1374,6 +1404,27 @@ test('Planner 归一化 LLM Plan 时强制使用 act mode', () => {
   );
 
   assert.equal(plan.steps[0].mode, 'act');
+});
+
+test('Planner rejects unknown exact template references', () => {
+  const tools = { list: () => [createTool({ name: 'analyze_source_text', requiresApproval: false, sideEffects: [] })] } as unknown as ToolRegistryService;
+  const planner = new AgentPlannerService(new SkillRegistryService(), tools, new RuleEngineService(), {} as LlmGatewayService) as unknown as {
+    validateAndNormalizeLlmPlan: (data: unknown, baseline: { taskType: string; summary: string; assumptions: string[]; risks: string[] }) => void;
+  };
+
+  assert.throws(
+    () => planner.validateAndNormalizeLlmPlan(
+      {
+        taskType: 'project_import_preview',
+        summary: '导入预览',
+        assumptions: [],
+        risks: [],
+        steps: [{ stepNo: 1, name: '分析文案', tool: 'analyze_source_text', mode: 'act', requiresApproval: false, args: { sourceText: '{{user.providedSourceText}}' } }],
+      },
+      { taskType: 'general', summary: 'fallback', assumptions: [], risks: [] },
+    ),
+    /未知模板引用/,
+  );
 });
 
 test('Planner 接受 LLM 语义判定的 taskType，不再被后端 baseline 锁死', () => {

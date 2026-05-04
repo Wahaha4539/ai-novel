@@ -21,6 +21,7 @@ import { PersistWorldbuildingTool } from './tools/persist-worldbuilding.tool';
 import { PlotConsistencyCheckTool } from './tools/plot-consistency-check.tool';
 import { PolishChapterTool } from './tools/polish-chapter.tool';
 import { PostProcessChapterTool } from './tools/postprocess-chapter.tool';
+import { ReadSourceDocumentTool } from './tools/read-source-document.tool';
 import { ReportResultTool } from './tools/report-result.tool';
 import { RebuildMemoryTool } from './tools/rebuild-memory.tool';
 import { ReviewMemoryTool } from './tools/review-memory.tool';
@@ -68,6 +69,7 @@ export class ToolRegistryService implements OnModuleInit {
     private readonly validateWorldbuildingTool: ValidateWorldbuildingTool,
     private readonly persistWorldbuildingTool: PersistWorldbuildingTool,
     private readonly persistOutlineTool: PersistOutlineTool,
+    private readonly readSourceDocumentTool: ReadSourceDocumentTool,
     private readonly analyzeSourceTextTool: AnalyzeSourceTextTool,
     private readonly buildImportPreviewTool: BuildImportPreviewTool,
     private readonly validateImportedAssetsTool: ValidateImportedAssetsTool,
@@ -101,6 +103,7 @@ export class ToolRegistryService implements OnModuleInit {
     this.register(this.validateWorldbuildingTool);
     this.register(this.persistWorldbuildingTool);
     this.register(this.persistOutlineTool);
+    this.register(this.readSourceDocumentTool);
     this.register(this.analyzeSourceTextTool);
     this.register(this.buildImportPreviewTool);
     this.register(this.validateImportedAssetsTool);

@@ -35,6 +35,7 @@ export class BuildImportPreviewTool implements BaseTool<BuildImportPreviewInput,
   riskLevel: 'low' = 'low';
   requiresApproval = false;
   sideEffects: string[] = [];
+  executionTimeoutMs = 500_000;
 
   constructor(private readonly llm: LlmGatewayService) {}
 
@@ -46,7 +47,7 @@ export class BuildImportPreviewTool implements BaseTool<BuildImportPreviewInput,
         { role: 'system', content: '你是小说项目导入 Agent。只输出 JSON，字段包含 projectProfile、characters、lorebookEntries、volumes、chapters、risks。不要 Markdown。' },
         { role: 'user', content: `用户要求：${args.instruction ?? ''}\n关键词：${analysis?.keywords?.join(', ') ?? ''}\n原始文案：\n${sourceText.slice(0, 24000)}` },
       ],
-      { appStep: 'planner', maxTokens: 8000, timeoutMs: 120_000, retries: 1 },
+      { appStep: 'planner', maxTokens: 8000, timeoutMs: 450_000, retries: 1 },
     );
     return this.normalize(data, sourceText);
   }
@@ -58,8 +59,23 @@ export class BuildImportPreviewTool implements BaseTool<BuildImportPreviewInput,
       lorebookEntries: (data.lorebookEntries ?? []).slice(0, 50).filter((item) => item.title && item.content),
       volumes: (data.volumes ?? []).slice(0, 12).map((item, index) => ({ ...item, volumeNo: Number(item.volumeNo) || index + 1, title: item.title || `第 ${index + 1} 卷` })),
       chapters: (data.chapters ?? []).slice(0, 200).map((item, index) => ({ ...item, chapterNo: Number(item.chapterNo) || index + 1, title: item.title || `第 ${index + 1} 章`, expectedWordCount: item.expectedWordCount ?? 2500 })),
-      risks: data.risks ?? [],
+      risks: this.stringArray(data.risks),
     };
+  }
+
+  private stringArray(value: unknown): string[] {
+    const items = Array.isArray(value) ? value : value === undefined || value === null ? [] : [value];
+    return items
+      .map((item) => this.text(item, ''))
+      .map((item) => item.trim())
+      .filter(Boolean);
+  }
+
+  private text(value: unknown, fallback: string): string {
+    if (typeof value === 'string') return value;
+    if (typeof value === 'number' || typeof value === 'boolean') return String(value);
+    if (value && typeof value === 'object') return JSON.stringify(value);
+    return fallback;
   }
 
 }

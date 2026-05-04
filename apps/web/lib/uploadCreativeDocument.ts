@@ -4,7 +4,9 @@ import {
   AgentCreativeDocumentExtension,
 } from '../types/agent-attachment';
 
-export const CREATIVE_DOCUMENT_UPLOAD_ENDPOINT = 'https://tmpfile.link/api/upload';
+const API_BASE = process.env.NEXT_PUBLIC_API_BASE_URL ?? 'http://127.0.0.1:3001/api';
+
+export const CREATIVE_DOCUMENT_UPLOAD_ENDPOINT = `${API_BASE}/uploads/creative-document`;
 export const CREATIVE_DOCUMENT_MAX_UPLOAD_SIZE_BYTES = 20 * 1024 * 1024;
 export const CREATIVE_DOCUMENT_ACCEPT = [
   '.md',
@@ -66,6 +68,8 @@ function readNumber(source: JsonRecord, paths: string[][]) {
 function extractUploadUrl(payload: JsonRecord) {
   return readString(payload, [
     ['data', 'url'],
+    ['data', 'downloadLinkEncoded'],
+    ['data', 'downloadLink'],
     ['data', 'downloadUrl'],
     ['data', 'download_url'],
     ['data', 'link'],
@@ -73,6 +77,8 @@ function extractUploadUrl(payload: JsonRecord) {
     ['data', 'file_url'],
     ['data', 'file', 'url'],
     ['url'],
+    ['downloadLinkEncoded'],
+    ['downloadLink'],
     ['downloadUrl'],
     ['download_url'],
     ['link'],
@@ -130,22 +136,11 @@ function normalizeTmpfileResponse(file: File, payload: JsonRecord, extension: Ag
     throw new Error('创意文档上传失败：临时文件服务返回的下载链接不是 HTTPS。');
   }
 
-  const fileName = readString(payload, [
-    ['data', 'fileName'],
-    ['data', 'filename'],
-    ['data', 'name'],
-    ['data', 'originalName'],
-    ['fileName'],
-    ['filename'],
-    ['name'],
-    ['originalName'],
-  ]) ?? file.name;
-
   return {
     id: readString(payload, [['data', 'id'], ['id']]) ?? createAttachmentId(),
     kind: 'creative_document',
     provider: 'tmpfile.link',
-    fileName,
+    fileName: file.name,
     extension,
     mimeType: readString(payload, [
       ['data', 'mimeType'],
@@ -190,4 +185,3 @@ export async function uploadCreativeDocument(file: File): Promise<AgentCreativeD
   const payload = await readUploadPayload(response);
   return normalizeTmpfileResponse(file, payload, extension);
 }
-

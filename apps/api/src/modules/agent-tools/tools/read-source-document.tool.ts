@@ -1,5 +1,6 @@
 import { BadRequestException, Injectable } from '@nestjs/common';
 import { BaseTool, ToolContext } from '../base-tool';
+import type { ToolManifestV2 } from '../tool-manifest.types';
 
 type SourceDocumentExtension = 'md' | 'txt' | 'docx' | 'pdf';
 
@@ -84,6 +85,35 @@ export class ReadSourceDocumentTool implements BaseTool<ReadSourceDocumentInput,
   riskLevel: 'low' = 'low';
   requiresApproval = false;
   sideEffects: string[] = [];
+  manifest: ToolManifestV2 = {
+    name: this.name,
+    displayName: '读取创意文档',
+    description: '从 creative_document 附件 URL 读取 .md/.txt 正文，供导入预览链路继续分析。',
+    whenToUse: ['用户上传 creative_document 附件，并要求拆解/导入/生成项目设定、角色、世界观、大纲或卷纲。'],
+    whenNotToUse: ['用户已经在消息中直接粘贴了完整正文，且不需要读取附件。'],
+    inputSchema: this.inputSchema,
+    outputSchema: this.outputSchema,
+    parameterHints: {
+      attachment: { source: 'context', description: '优先传入上下文中的第一个创意文档附件对象。', examples: ['{{context.attachments.0}}'] },
+      url: { source: 'context', description: '没有传 attachment 时，可使用附件 URL。', examples: ['{{context.attachments.0.url}}'] },
+      fileName: { source: 'context', description: '附件文件名，用于识别扩展名和标题。', examples: ['{{context.attachments.0.fileName}}'] },
+      extension: { source: 'context', description: '附件扩展名，仅支持 md/txt/docx/pdf；P0 只解析 md/txt。', examples: ['{{context.attachments.0.extension}}'] },
+    },
+    examples: [
+      {
+        user: '根据上传的创意文档生成项目设定、角色和卷纲。',
+        context: { attachments: [{ kind: 'creative_document', fileName: 'idea.md', extension: 'md', url: 'https://tmpfile.link/example.md' }] },
+        plan: [
+          { tool: 'read_source_document', args: { attachment: '{{context.attachments.0}}' } },
+          { tool: 'analyze_source_text', args: { sourceText: '{{steps.read_source_document.output.sourceText}}' } },
+        ],
+      },
+    ],
+    allowedModes: this.allowedModes,
+    riskLevel: this.riskLevel,
+    requiresApproval: this.requiresApproval,
+    sideEffects: this.sideEffects,
+  };
 
   async run(args: ReadSourceDocumentInput, _context: ToolContext): Promise<ReadSourceDocumentOutput> {
     const normalized = this.normalizeInput(args);
@@ -172,4 +202,3 @@ export class ReadSourceDocumentTool implements BaseTool<ReadSourceDocumentInput,
     return fileName?.replace(/\.[^.]+$/, '').trim() || undefined;
   }
 }
-
