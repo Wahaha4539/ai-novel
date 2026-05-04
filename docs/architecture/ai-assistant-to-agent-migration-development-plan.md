@@ -269,7 +269,7 @@
 
 ### AAM-P3-001 新增 validate_guided_step_preview Tool
 
-- 状态：`[ ]`
+- 状态：`[x]`
 - 模块：API
 - 文件：新增 `apps/api/src/modules/agent-tools/tools/validate-guided-step-preview.tool.ts`
 - 任务：检查 guided step 预览是否可写入，并生成写入前 diff。
@@ -279,6 +279,11 @@
   - 能识别缺字段、重复卷号、重复章节号、角色缺名称等问题。
   - 无写库副作用。
 - 验证：`pnpm --filter api test:agent`
+- 完成记录：
+  - 完成内容：新增只读 `validate_guided_step_preview` Tool，支持全部 guided step 结构化预览校验，输出 `valid/issueCount/issues/writePreview`；覆盖基础设定、风格、角色、大纲、卷纲、章节细纲和伏笔设计的缺字段检查，并识别重复卷号、重复章节号、角色/配角缺名称等写入风险；写入前 diff 只读取现有角色、卷、章节和伏笔状态，不产生业务写库副作用。
+  - 修改文件：`apps/api/src/modules/agent-tools/tools/validate-guided-step-preview.tool.ts`、`apps/api/src/modules/agent-runs/agent-services.spec.ts`、`docs/architecture/ai-assistant-to-agent-migration-development-plan.md`
+  - 测试命令：`pnpm --filter api test:agent`
+  - 测试结果：通过
 
 ### AAM-P3-002 新增 persist_guided_step_result Tool
 

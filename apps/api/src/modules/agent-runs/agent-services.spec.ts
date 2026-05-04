@@ -23,6 +23,7 @@ import { CollectTaskContextTool } from '../agent-tools/tools/collect-task-contex
 import { CharacterConsistencyCheckTool } from '../agent-tools/tools/character-consistency-check.tool';
 import { PlotConsistencyCheckTool } from '../agent-tools/tools/plot-consistency-check.tool';
 import { GenerateGuidedStepPreviewTool } from '../agent-tools/tools/generate-guided-step-preview.tool';
+import { ValidateGuidedStepPreviewTool } from '../agent-tools/tools/validate-guided-step-preview.tool';
 import { GenerateWorldbuildingPreviewTool } from '../agent-tools/tools/generate-worldbuilding-preview.tool';
 import { ValidateWorldbuildingTool } from '../agent-tools/tools/validate-worldbuilding.tool';
 import { PersistWorldbuildingTool } from '../agent-tools/tools/persist-worldbuilding.tool';
@@ -1056,6 +1057,82 @@ test('GenerateGuidedStepPreviewTool 对未知步骤显式拒绝', async () => {
     () => tool.run({ stepKey: 'guided_unknown' }, { agentRunId: 'run1', projectId: 'p1', mode: 'plan', approved: false, outputs: {}, policy: {} }),
     /未知创作引导步骤/,
   );
+});
+
+test('ValidateGuidedStepPreviewTool 标记缺字段、重复编号并保持只读', async () => {
+  const reads: string[] = [];
+  const prisma = {
+    character: {
+      async findMany() {
+        reads.push('character.findMany');
+        return [{ name: '许知微' }];
+      },
+    },
+    volume: {
+      async findMany() {
+        reads.push('volume.findMany');
+        return [{ id: 'v1', volumeNo: 1, title: '旧第一卷' }];
+      },
+    },
+    chapter: {
+      async findMany() {
+        reads.push('chapter.findMany');
+        return [{ chapterNo: 2, status: 'drafted', title: '旧第二章' }];
+      },
+    },
+    foreshadowTrack: {
+      async findMany() {
+        reads.push('foreshadowTrack.findMany');
+        return [];
+      },
+    },
+  };
+  const tool = new ValidateGuidedStepPreviewTool(prisma as never);
+  const context = { agentRunId: 'run1', projectId: 'p1', mode: 'plan' as const, approved: false, outputs: {}, policy: {} };
+
+  const characters = await tool.run(
+    { stepKey: 'guided_characters', structuredData: { characters: [{ name: '', roleType: 'protagonist' }, { name: '许知微' }, { name: '许知微' }] } },
+    context,
+  );
+  const volumes = await tool.run(
+    { stepKey: 'guided_volume', structuredData: { volumes: [{ volumeNo: 1, title: '新第一卷' }, { volumeNo: 1, title: '重复第一卷' }] } },
+    context,
+  );
+  const chapters = await tool.run(
+    { stepKey: 'guided_chapter', volumeNo: 1, structuredData: { chapters: [{ chapterNo: 2, volumeNo: 1, title: '二' }, { chapterNo: 2, volumeNo: 1, title: '二-重复' }] } },
+    context,
+  );
+
+  assert.equal(characters.valid, false);
+  assert.match(characters.issues.map((issue) => issue.message).join('；'), /缺少 name/);
+  assert.match(characters.issues.map((issue) => issue.message).join('；'), /重复角色名/);
+  assert.equal((characters.writePreview.summary as Record<string, number>).existingNameCount, 2);
+  assert.equal(volumes.valid, false);
+  assert.match(volumes.issues.map((issue) => issue.message).join('；'), /重复卷号/);
+  assert.equal((volumes.writePreview.summary as Record<string, number>).duplicateCount, 2);
+  assert.equal(chapters.valid, false);
+  assert.match(chapters.issues.map((issue) => issue.message).join('；'), /重复章节号/);
+  assert.equal((chapters.writePreview.summary as Record<string, number>).duplicateCount, 2);
+  assert.deepEqual(tool.sideEffects, []);
+  assert.equal(tool.requiresApproval, false);
+  assert.deepEqual(reads, ['character.findMany', 'volume.findMany', 'volume.findMany', 'chapter.findMany']);
+});
+
+test('ValidateGuidedStepPreviewTool 为有效基础设定生成写入前 diff', async () => {
+  const tool = new ValidateGuidedStepPreviewTool({} as never);
+  const result = await tool.run(
+    {
+      stepKey: 'guided_setup',
+      structuredData: { genre: '悬疑', theme: '记忆与真相', tone: '冷静克制', logline: '档案员追查不存在的死亡记录。', synopsis: '旧档案牵出城市记忆篡改。' },
+    },
+    { agentRunId: 'run1', projectId: 'p1', mode: 'plan', approved: false, outputs: {}, policy: {} },
+  );
+
+  assert.equal(result.valid, true);
+  assert.equal(result.issueCount, 0);
+  assert.equal(result.writePreview.action, 'update_project_profile');
+  assert.equal((result.writePreview.summary as Record<string, number>).updateFieldCount, 5);
+  assert.ok(tool.manifest.examples?.[0].plan.some((step) => step.tool === 'validate_guided_step_preview'));
 });
 
 test('GenerateWorldbuildingPreviewTool 归一化 LLM 预览并声明后续校验链路', async () => {
