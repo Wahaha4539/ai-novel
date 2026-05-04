@@ -126,7 +126,7 @@
 
 ### AAM-P1-003 右侧 AI 助手面板显示 Agent 状态
 
-- 状态：`[ ]`
+- 状态：`[x]`
 - 模块：Web
 - 文件：`apps/web/components/guided/AiChatPanel.tsx`
 - 任务：让右侧面板能显示 Agent loading、计划生成、失败和结果摘要。
@@ -136,6 +136,11 @@
   - 失败时显示用户可读错误。
   - 不暴露内部 Tool 参数作为主信息。
 - 验证：`pnpm --filter web build`
+- 完成记录：
+  - 完成内容：新增 guided Agent 面板状态，AI 助手切到 Agent 后可展示计划生成中、计划已生成、失败和摘要；聊天回复移除 Run ID 主信息，仅提示到 Agent 工作台查看计划和审批。
+  - 修改文件：`apps/web/hooks/useGuidedSession.ts`、`apps/web/components/guided/AiChatPanel.tsx`、`apps/web/components/guided/GuidedWizard.tsx`、`docs/architecture/ai-assistant-to-agent-migration-development-plan.md`
+  - 测试命令：`pnpm --filter web build`
+  - 测试结果：通过
 
 ### AAM-P1-004 新增 guided AgentRun 历史入口
 

@@ -38,6 +38,13 @@ export type ChatMessage = {
 
 export type GuidedAiBackend = 'guided' | 'agent';
 
+export type GuidedAgentPanelStatus = {
+  state: 'idle' | 'planning' | 'waiting_approval' | 'failed';
+  title?: string;
+  summary?: string;
+  taskType?: string;
+};
+
 export interface UseGuidedSessionOptions {
   aiBackend?: GuidedAiBackend;
 }
@@ -75,6 +82,7 @@ export function useGuidedSession(projectId: string, options?: UseGuidedSessionOp
   const [chatMessages, setChatMessages] = useState<ChatMessage[]>([]);
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState('');
+  const [agentStatus, setAgentStatus] = useState<GuidedAgentPanelStatus>({ state: 'idle' });
 
   const aiBackend = options?.aiBackend ?? DEFAULT_GUIDED_AI_BACKEND;
   const currentStepKey = GUIDED_STEPS[currentStepIndex]?.key ?? 'guided_setup';
@@ -537,6 +545,11 @@ export function useGuidedSession(projectId: string, options?: UseGuidedSessionOp
 
   const sendGuidedChat = useCallback(async (payload: GuidedChatPayload): Promise<{ reply: string }> => {
     if (aiBackend === 'agent') {
+      setAgentStatus({
+        state: 'planning',
+        title: '正在生成 Agent 计划/预览',
+        summary: 'Agent 正在结合当前引导步骤和项目上下文生成只读咨询计划。',
+      });
       const agentGoal = [
         payload.userMessage,
         '系统意图：这是创作引导页右侧 AI 助手的当前步骤问答，请按 guided_step_consultation 生成只读咨询计划，不要写入业务表。',
@@ -551,16 +564,23 @@ export function useGuidedSession(projectId: string, options?: UseGuidedSessionOp
         }),
       });
       const summary = response.plan?.summary?.trim();
-      const taskType = response.plan?.taskType ? `（${response.plan.taskType}）` : '';
+      const taskType = response.plan?.taskType;
+      setAgentStatus({
+        state: 'waiting_approval',
+        title: 'Agent 计划已生成',
+        summary: summary || '可在右下角 Agent 工作台查看计划、预览和后续审批。',
+        taskType,
+      });
       return {
         reply: [
-          `已创建 Agent 当前步骤咨询计划${taskType}。`,
+          `已创建 Agent 当前步骤咨询计划${taskType ? `（${taskType}）` : ''}。`,
           summary ? `\n\n${summary}` : '',
-          response.agentRunId ? `\n\n可在右下角 Agent 工作台查看计划与后续审批，Run ID：${response.agentRunId}` : '',
+          response.agentRunId ? '\n\n可在右下角 Agent 工作台查看计划与后续审批。' : '',
         ].filter(Boolean).join(''),
       };
     }
 
+    setAgentStatus({ state: 'idle' });
     return apiFetch<{ reply: string }>(
       `/projects/${projectId}/guided-session/chat`,
       {
@@ -600,6 +620,13 @@ export function useGuidedSession(projectId: string, options?: UseGuidedSessionOp
       };
       setChatMessages((prev) => [...prev, aiMsg]);
     } catch (sendError) {
+      if (aiBackend === 'agent') {
+        setAgentStatus({
+          state: 'failed',
+          title: 'Agent 计划生成失败',
+          summary: sendError instanceof Error ? sendError.message : '未知错误，请稍后重试。',
+        });
+      }
       const aiMsg: ChatMessage = {
         role: 'ai',
         content: `⚠️ AI 响应失败：${sendError instanceof Error ? sendError.message : '未知错误'}。请重试。`,
@@ -740,6 +767,7 @@ export function useGuidedSession(projectId: string, options?: UseGuidedSessionOp
     loading,
     error,
     setError,
+    agentStatus,
     startSession,
     saveStepProgress,
     finalizeCurrentStep,

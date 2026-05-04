@@ -58,6 +58,7 @@ export function GuidedWizard({ selectedProject, selectedProjectId, autoStart, on
     loading,
     error,
     setError,
+    agentStatus,
     startSession,
     sendMessage,
     generateStepData,
@@ -704,6 +705,7 @@ export function GuidedWizard({ selectedProject, selectedProjectId, autoStart, on
           isOpen={aiDrawerOpen}
           onClose={() => setAiDrawerOpen(false)}
           currentStepLabel={currentStepLabel}
+          agentStatus={agentStatus}
         />
 
         {/* AI Drawer toggle button (visible when closed) */}

@@ -1,5 +1,5 @@
 import React, { useState, useRef, useEffect } from 'react';
-import { ChatMessage } from '../../hooks/useGuidedSession';
+import { ChatMessage, GuidedAgentPanelStatus } from '../../hooks/useGuidedSession';
 
 interface Props {
   messages: ChatMessage[];
@@ -8,11 +8,13 @@ interface Props {
   isOpen: boolean;
   onClose: () => void;
   currentStepLabel?: string;
+  agentStatus?: GuidedAgentPanelStatus;
 }
 
-export function AiChatPanel({ messages, onSend, loading, isOpen, onClose, currentStepLabel }: Props) {
+export function AiChatPanel({ messages, onSend, loading, isOpen, onClose, currentStepLabel, agentStatus }: Props) {
   const [input, setInput] = useState('');
   const scrollRef = useRef<HTMLDivElement>(null);
+  const visibleAgentStatus = agentStatus && agentStatus.state !== 'idle' ? agentStatus : undefined;
 
   // Auto-scroll to bottom
   useEffect(() => {
@@ -88,6 +90,30 @@ export function AiChatPanel({ messages, onSend, loading, isOpen, onClose, curren
           </div>
         )}
 
+        {visibleAgentStatus && (
+          <div
+            className="animate-fade-in"
+            style={{
+              padding: '0.6rem 0.75rem',
+              borderRadius: '0.6rem',
+              border: visibleAgentStatus.state === 'failed' ? '1px solid rgba(244,63,94,0.35)' : '1px solid rgba(14,165,233,0.28)',
+              background: visibleAgentStatus.state === 'failed' ? 'var(--status-err-bg)' : 'rgba(14,165,233,0.08)',
+              color: visibleAgentStatus.state === 'failed' ? '#fecdd3' : 'var(--text-main)',
+              fontSize: '0.72rem',
+              lineHeight: 1.6,
+            }}
+          >
+            <div style={{ fontWeight: 700, color: visibleAgentStatus.state === 'failed' ? '#fb7185' : 'var(--accent-cyan)', marginBottom: '0.2rem' }}>
+              {visibleAgentStatus.title}
+            </div>
+            {visibleAgentStatus.summary && (
+              <div style={{ color: 'var(--text-muted)' }}>
+                {visibleAgentStatus.summary}
+              </div>
+            )}
+          </div>
+        )}
+
         {messages.map((msg, idx) => (
           <div
             key={idx}
@@ -146,7 +172,9 @@ export function AiChatPanel({ messages, onSend, loading, isOpen, onClose, curren
                 fontSize: '0.78rem',
               }}
             >
-              <span className="animate-pulse-glow">AI 正在思考…</span>
+              <span className="animate-pulse-glow">
+                {agentStatus?.state === 'planning' ? 'Agent 正在生成计划/预览…' : 'AI 正在思考…'}
+              </span>
             </div>
           </div>
         )}
