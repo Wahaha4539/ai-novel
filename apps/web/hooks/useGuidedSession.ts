@@ -537,11 +537,15 @@ export function useGuidedSession(projectId: string, options?: UseGuidedSessionOp
 
   const sendGuidedChat = useCallback(async (payload: GuidedChatPayload): Promise<{ reply: string }> => {
     if (aiBackend === 'agent') {
+      const agentGoal = [
+        payload.userMessage,
+        '系统意图：这是创作引导页右侧 AI 助手的当前步骤问答，请按 guided_step_consultation 生成只读咨询计划，不要写入业务表。',
+      ].join('\n\n');
       const response = await apiFetch<AgentPlanResponse>('/agent-runs/plan', {
         method: 'POST',
         body: JSON.stringify({
           projectId,
-          message: payload.userMessage,
+          message: agentGoal,
           context: buildGuidedAgentContext(),
           clientRequestId: createGuidedAgentRequestId(projectId, payload.currentStep, payload.userMessage),
         }),

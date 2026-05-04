@@ -108,7 +108,7 @@
 
 ### AAM-P1-002 AI 助手问答接入 Agent consultation
 
-- 状态：`[ ]`
+- 状态：`[x]`
 - 模块：Web/API
 - 文件：`apps/web/hooks/useGuidedSession.ts`、`apps/api/src/modules/agent-runs/agent-planner.service.ts`
 - 任务：当用户在 AI 助手中提问当前步骤时，创建 `guided_step_consultation` AgentRun。
@@ -118,6 +118,11 @@
   - Agent 返回当前步骤建议 Artifact 或聊天回复。
   - AgentRun 历史可追踪该问答。
 - 验证：`pnpm --filter api test:agent`、`pnpm --filter web build`
+- 完成记录：
+  - 完成内容：创作引导页默认将 AI 助手问答切换到 Agent 后端，`sendGuidedChat` 创建 `/agent-runs/plan` 时注入 `guided_step_consultation` 只读意图；仍可通过 `NEXT_PUBLIC_GUIDED_AI_BACKEND=guided` 回退旧 guided chat。
+  - 修改文件：`apps/web/hooks/useGuidedSession.ts`、`apps/web/components/guided/GuidedWizard.tsx`、`docs/architecture/ai-assistant-to-agent-migration-development-plan.md`
+  - 测试命令：`pnpm --filter api test:agent`、`pnpm --filter web build`
+  - 测试结果：通过
 
 ### AAM-P1-003 右侧 AI 助手面板显示 Agent 状态
 

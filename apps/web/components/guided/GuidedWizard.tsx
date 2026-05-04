@@ -1,10 +1,13 @@
 import React, { useState, useCallback, useEffect, useRef, useMemo } from 'react';
 import { ProjectSummary } from '../../types/dashboard';
-import { useGuidedSession, GUIDED_STEPS, StepKey } from '../../hooks/useGuidedSession';
+import { type GuidedAiBackend, useGuidedSession, GUIDED_STEPS, StepKey } from '../../hooks/useGuidedSession';
 import { AgentPageContext } from '../../hooks/useAgentRun';
 import { DocumentTOC } from './DocumentTOC';
 import { StepSection } from './StepSection';
 import { AiChatPanel } from './AiChatPanel';
+
+const GUIDED_ASSISTANT_BACKEND: GuidedAiBackend =
+  process.env.NEXT_PUBLIC_GUIDED_AI_BACKEND === 'guided' ? 'guided' : 'agent';
 
 /** Parse volumeChapters from chapter step data */
 function parseVolumeChapters(data: Record<string, unknown>): Record<number, Array<Record<string, unknown>>> {
@@ -60,7 +63,7 @@ export function GuidedWizard({ selectedProject, selectedProjectId, autoStart, on
     generateStepData,
     confirmGeneratedData,
     getStepResultData,
-  } = useGuidedSession(selectedProjectId);
+  } = useGuidedSession(selectedProjectId, { aiBackend: GUIDED_ASSISTANT_BACKEND });
 
   // Per-step editable data — keyed by stepKey
   const [allStepData, setAllStepData] = useState<Record<string, Record<string, unknown>>>({});
