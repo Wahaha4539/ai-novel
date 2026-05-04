@@ -215,7 +215,7 @@
 
 ### AAM-P2-004 AI 生成按钮改走 Agent Plan
 
-- 状态：`[ ]`
+- 状态：`[x]`
 - 模块：Web
 - 文件：`apps/web/hooks/useGuidedSession.ts`、相关 guided step 组件
 - 任务：将当前 `generateStepData` 调用替换或可切换为 Agent `guided_step_generate` Plan。
@@ -225,6 +225,11 @@
   - Plan 阶段返回结构化预览。
   - 预览不自动写入业务表。
 - 验证：`pnpm --filter web build`
+- 完成记录：
+  - 完成内容：`generateStepData` 在 Agent 后端且步骤已支持时创建 `guided_step_generate` AgentRun，携带 guided context、用户提示、聊天摘要、卷号和章节号；从 Agent Plan 的预览 Artifact 或 plan-mode step 输出读取 `guided_step_preview.structuredData` 并回填文档编辑区，明确不自动写入业务表。暂未扩展的步骤保留旧 `guided-session/generate-step` 兼容路径，等待 AAM-P2-006。
+  - 修改文件：`apps/web/hooks/useGuidedSession.ts`、`docs/architecture/ai-assistant-to-agent-migration-development-plan.md`
+  - 测试命令：`pnpm --filter web build`
+  - 测试结果：通过
 
 ### AAM-P2-005 Agent Artifact 展示 guided step preview
 

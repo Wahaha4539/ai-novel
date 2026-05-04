@@ -63,10 +63,82 @@ type AgentPlanResponse = {
     taskType?: string;
     summary?: string;
   } | null;
+  artifacts?: AgentArtifactResponse[];
+  steps?: AgentStepResponse[];
 };
+
+type AgentArtifactResponse = {
+  artifactType?: string;
+  title?: string | null;
+  content?: unknown;
+};
+
+type AgentStepResponse = {
+  tool?: string | null;
+  toolName?: string | null;
+  mode?: string | null;
+  status?: string | null;
+  output?: unknown;
+};
+
+type AgentRunDetailResponse = AgentPlanResponse & {
+  id?: string;
+  artifacts?: AgentArtifactResponse[];
+  steps?: AgentStepResponse[];
+  plans?: Array<{ taskType?: string; summary?: string; plan?: { taskType?: string; summary?: string } }>;
+};
+
+type GuidedStepPreviewResponse = {
+  stepKey?: string;
+  structuredData: Record<string, unknown>;
+  summary?: string;
+  warnings?: string[];
+};
+
+const AGENT_GUIDED_GENERATE_STEPS = new Set<StepKey>(['guided_setup', 'guided_style']);
 
 const DEFAULT_GUIDED_AI_BACKEND: GuidedAiBackend =
   process.env.NEXT_PUBLIC_GUIDED_AI_BACKEND === 'agent' ? 'agent' : 'guided';
+
+function asRecord(value: unknown): Record<string, unknown> {
+  return value && typeof value === 'object' && !Array.isArray(value) ? value as Record<string, unknown> : {};
+}
+
+function extractGuidedStepPreview(value: unknown): GuidedStepPreviewResponse | null {
+  const record = asRecord(value);
+  const structuredData = record.structuredData;
+  if (structuredData && typeof structuredData === 'object' && !Array.isArray(structuredData)) {
+    return {
+      stepKey: typeof record.stepKey === 'string' ? record.stepKey : undefined,
+      structuredData: structuredData as Record<string, unknown>,
+      summary: typeof record.summary === 'string' ? record.summary : undefined,
+      warnings: Array.isArray(record.warnings) ? record.warnings.filter((item): item is string => typeof item === 'string') : undefined,
+    };
+  }
+
+  const nestedOutput = record.output;
+  if (nestedOutput) return extractGuidedStepPreview(nestedOutput);
+
+  const nestedContent = record.content;
+  if (nestedContent) return extractGuidedStepPreview(nestedContent);
+
+  return null;
+}
+
+function findGuidedStepPreview(response?: AgentRunDetailResponse | AgentPlanResponse | null): GuidedStepPreviewResponse | null {
+  if (!response) return null;
+
+  const artifactPreview = response.artifacts
+    ?.find((artifact) => artifact.artifactType === 'guided_step_preview')
+    ?.content;
+  const fromArtifact = extractGuidedStepPreview(artifactPreview);
+  if (fromArtifact) return fromArtifact;
+
+  const fromStep = response.steps
+    ?.find((step) => step.status === 'succeeded' && step.mode === 'plan' && (step.toolName === 'generate_guided_step_preview' || step.tool === 'generate_guided_step_preview'))
+    ?.output;
+  return extractGuidedStepPreview(fromStep);
+}
 
 function createGuidedAgentRequestId(projectId: string, stepKey: string, message: string) {
   const normalizedMessage = message.trim().slice(0, 120);
@@ -495,12 +567,15 @@ export function useGuidedSession(projectId: string, options?: UseGuidedSessionOp
 
   // Build project context summary from accumulated step data
   // Build project context from steps BEFORE the current one (not current or future)
-  const buildProjectContext = useCallback((): string | undefined => {
+  const buildProjectContext = useCallback((targetStepKey?: StepKey): string | undefined => {
     const stepData = (session?.stepData as Record<string, unknown>) ?? {};
+    const effectiveStepIndex = targetStepKey
+      ? GUIDED_STEPS.findIndex((step) => step.key === targetStepKey)
+      : currentStepIndex;
 
     // Determine which step keys come before the current step
     const priorStepKeys = new Set(
-      GUIDED_STEPS.slice(0, currentStepIndex).map((s) => s.key),
+      GUIDED_STEPS.slice(0, Math.max(0, effectiveStepIndex)).map((s) => s.key),
     );
 
     const contextParts = Object.entries(stepData)
@@ -517,22 +592,23 @@ export function useGuidedSession(projectId: string, options?: UseGuidedSessionOp
     return contextParts || undefined;
   }, [session, currentStepIndex]);
 
-  const buildGuidedAgentContext = useCallback(() => {
+  const buildGuidedAgentContext = useCallback((targetStepKey?: StepKey) => {
     const stepData = (session?.stepData as Record<string, unknown>) ?? {};
+    const effectiveStepKey = targetStepKey ?? currentStepKey;
     const completedSteps = GUIDED_STEPS
       .filter((step) => {
         const result = stepData[`${step.key}_result`];
         return Boolean(result && typeof result === 'object' && !Array.isArray(result) && Object.keys(result as Record<string, unknown>).length > 0);
       })
       .map((step) => step.key);
-    const currentStepLabel = GUIDED_STEPS[currentStepIndex]?.label;
-    const currentStepData = stepData[`${currentStepKey}_result`];
+    const currentStepLabel = GUIDED_STEPS.find((step) => step.key === effectiveStepKey)?.label;
+    const currentStepData = stepData[`${effectiveStepKey}_result`];
 
     return {
       currentProjectId: projectId,
       sourcePage: 'guided_wizard',
       guided: {
-        currentStep: currentStepKey,
+        currentStep: effectiveStepKey,
         currentStepLabel,
         currentStepData: currentStepData && typeof currentStepData === 'object' && !Array.isArray(currentStepData)
           ? currentStepData as Record<string, unknown>
@@ -541,7 +617,7 @@ export function useGuidedSession(projectId: string, options?: UseGuidedSessionOp
         documentDraft: stepData,
       },
     };
-  }, [currentStepIndex, currentStepKey, projectId, session]);
+  }, [currentStepKey, projectId, session]);
 
   const sendGuidedChat = useCallback(async (payload: GuidedChatPayload): Promise<{ reply: string }> => {
     if (aiBackend === 'agent') {
@@ -653,6 +729,8 @@ export function useGuidedSession(projectId: string, options?: UseGuidedSessionOp
 
     const stepKey = targetStepKey ?? currentStepKey;
     const stepIndex = GUIDED_STEPS.findIndex((s) => s.key === stepKey);
+    const stepLabel = GUIDED_STEPS[stepIndex]?.label ?? '';
+    const shouldUseAgentGenerate = aiBackend === 'agent' && AGENT_GUIDED_GENERATE_STEPS.has(stepKey);
 
     try {
       // Build a summary of the current step's conversation so the AI
@@ -663,6 +741,65 @@ export function useGuidedSession(projectId: string, options?: UseGuidedSessionOp
             .join('\n')
         : undefined;
 
+      if (shouldUseAgentGenerate) {
+        const volumeLabel = volumeNo ? ` · 第${volumeNo}卷` : '';
+        const chapterLabel = chapterNo ? ` · 第${chapterNo}章` : '';
+        setAgentStatus({
+          state: 'planning',
+          title: '正在生成 Agent 步骤预览',
+          summary: `Agent 正在为「${stepLabel}${volumeLabel}${chapterLabel}」创建只读结构化预览。`,
+          taskType: 'guided_step_generate',
+        });
+
+        const agentGoal = [
+          `请为创作引导「${stepLabel}」生成结构化预览。`,
+          userHint ? `用户提示：${userHint}` : '',
+          chatSummary ? `当前对话摘要：\n${chatSummary}` : '',
+          volumeNo ? `卷号：${volumeNo}` : '',
+          chapterNo ? `章节号：${chapterNo}` : '',
+          '系统意图：这是创作引导页的 AI 生成按钮，请使用 guided_step_generate taskType，在 Plan 阶段调用 generate_guided_step_preview 生成 guided_step_preview 预览；不要写入业务表。',
+        ].filter(Boolean).join('\n\n');
+
+        const planResponse = await apiFetch<AgentPlanResponse>('/agent-runs/plan', {
+          method: 'POST',
+          body: JSON.stringify({
+            projectId,
+            message: agentGoal,
+            context: buildGuidedAgentContext(stepKey),
+            clientRequestId: createGuidedAgentRequestId(projectId, stepKey, agentGoal),
+          }),
+        });
+        const agentRunId = planResponse.agentRunId;
+        const runDetail = agentRunId
+          ? await apiFetch<AgentRunDetailResponse>(`/agent-runs/${agentRunId}`)
+          : null;
+        const preview = findGuidedStepPreview(planResponse) ?? findGuidedStepPreview(runDetail);
+        if (!preview) {
+          throw new Error('Agent 已创建计划，但没有返回 guided_step_preview 结构化预览。请到 Agent 工作台查看计划详情后重试。');
+        }
+
+        const planSummary = planResponse.plan?.summary
+          ?? runDetail?.plans?.[0]?.plan?.summary
+          ?? runDetail?.plans?.[0]?.summary;
+        const summary = preview.summary ?? planSummary ?? 'Agent 已生成结构化步骤预览。';
+        setAgentStatus({
+          state: 'waiting_approval',
+          title: 'Agent 预览已生成',
+          summary,
+          taskType: planResponse.plan?.taskType ?? runDetail?.plans?.[0]?.taskType ?? 'guided_step_generate',
+        });
+        setChatMessages((prev) => [
+          ...prev,
+          {
+            role: 'ai',
+            content: `⚡ **${stepLabel}${volumeLabel}${chapterLabel} · Agent 预览已生成**\n\n${summary}\n\n可在文档中查看并编辑；当前只是 Plan 预览，尚未写入业务表。`,
+            timestamp: Date.now(),
+          },
+        ]);
+
+        return preview.structuredData;
+      }
+
       const response = await apiFetch<{ structuredData: Record<string, unknown>; summary: string }>(
         `/projects/${projectId}/guided-session/generate-step`,
         {
@@ -670,7 +807,7 @@ export function useGuidedSession(projectId: string, options?: UseGuidedSessionOp
           body: JSON.stringify({
             currentStep: stepKey,
             userHint,
-            projectContext: buildProjectContext(),
+            projectContext: buildProjectContext(stepKey),
             chatSummary,
             ...(volumeNo !== undefined && { volumeNo }),
             ...(chapterNo !== undefined && { chapterNo }),
@@ -679,7 +816,6 @@ export function useGuidedSession(projectId: string, options?: UseGuidedSessionOp
       );
 
       // Show AI summary in chat
-      const stepLabel = GUIDED_STEPS[stepIndex]?.label ?? '';
       const volumeLabel = volumeNo ? ` · 第${volumeNo}卷` : '';
       const chapterLabel = chapterNo ? ` · 第${chapterNo}章` : '';
       setChatMessages((prev) => [
@@ -693,12 +829,20 @@ export function useGuidedSession(projectId: string, options?: UseGuidedSessionOp
 
       return response.structuredData;
     } catch (genError) {
+      if (shouldUseAgentGenerate) {
+        setAgentStatus({
+          state: 'failed',
+          title: 'Agent 预览生成失败',
+          summary: genError instanceof Error ? genError.message : '未知错误，请稍后重试。',
+          taskType: 'guided_step_generate',
+        });
+      }
       setError(genError instanceof Error ? genError.message : 'AI 生成失败');
       return null;
     } finally {
       setLoading(false);
     }
-  }, [projectId, currentStepKey, chatMessages, buildProjectContext]);
+  }, [projectId, currentStepKey, chatMessages, aiBackend, buildProjectContext, buildGuidedAgentContext]);
 
   // Confirm and persist generated/edited data directly (skip AI extraction)
   // Accepts optional targetStepKey and volumeNo to support document-editing mode
