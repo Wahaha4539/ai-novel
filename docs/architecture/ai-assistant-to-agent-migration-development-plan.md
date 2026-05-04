@@ -163,7 +163,7 @@
 
 ### AAM-P2-001 抽取 guided step schema
 
-- 状态：`[ ]`
+- 状态：`[x]`
 - 模块：API
 - 文件：`apps/api/src/modules/guided/guided.service.ts` 或新增 `apps/api/src/modules/guided/guided-step-schemas.ts`
 - 任务：把 `guided_setup/guided_style/guided_characters/guided_outline/guided_volume/guided_chapter/guided_foreshadow` 的输出 schema 抽成可复用定义。
@@ -172,6 +172,11 @@
   - GuidedService 和 Agent Tool 可共享 schema。
   - 不改变当前 guided 生成结果格式。
 - 验证：`pnpm --filter api build`
+- 完成记录：
+  - 完成内容：新增 guided step schema 共享定义，抽出全部 guided step 输出 schema 和单章细化 schema；`GuidedService.generateStepData` 改为读取共享 schema，保持原生成提示与输出格式不变。
+  - 修改文件：`apps/api/src/modules/guided/guided-step-schemas.ts`、`apps/api/src/modules/guided/guided.service.ts`、`docs/architecture/ai-assistant-to-agent-migration-development-plan.md`
+  - 测试命令：`pnpm --filter api build`
+  - 测试结果：通过
 
 ### AAM-P2-002 新增 generate_guided_step_preview Tool
 
