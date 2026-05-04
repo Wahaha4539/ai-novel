@@ -83,6 +83,8 @@ type AgentStepResponse = {
 
 type AgentRunDetailResponse = AgentPlanResponse & {
   id?: string;
+  status?: string;
+  output?: unknown;
   artifacts?: AgentArtifactResponse[];
   steps?: AgentStepResponse[];
   plans?: Array<{ taskType?: string; summary?: string; plan?: { taskType?: string; summary?: string } }>;
@@ -93,6 +95,11 @@ type GuidedStepPreviewResponse = {
   structuredData: Record<string, unknown>;
   summary?: string;
   warnings?: string[];
+};
+
+type PersistGuidedStepResultResponse = {
+  stepKey?: string;
+  written?: string[];
 };
 
 const AGENT_GUIDED_GENERATE_STEPS = new Set<StepKey>(['guided_setup', 'guided_style']);
@@ -138,6 +145,43 @@ function findGuidedStepPreview(response?: AgentRunDetailResponse | AgentPlanResp
     ?.find((step) => step.status === 'succeeded' && step.mode === 'plan' && (step.toolName === 'generate_guided_step_preview' || step.tool === 'generate_guided_step_preview'))
     ?.output;
   return extractGuidedStepPreview(fromStep);
+}
+
+function extractPersistGuidedStepResult(value: unknown): PersistGuidedStepResultResponse | null {
+  const record = asRecord(value);
+  const written = record.written;
+  if (Array.isArray(written)) {
+    return {
+      stepKey: typeof record.stepKey === 'string' ? record.stepKey : undefined,
+      written: written.filter((item): item is string => typeof item === 'string'),
+    };
+  }
+
+  const nestedOutput = record.output;
+  if (nestedOutput) return extractPersistGuidedStepResult(nestedOutput);
+
+  const nestedContent = record.content;
+  if (nestedContent) return extractPersistGuidedStepResult(nestedContent);
+
+  return null;
+}
+
+function findPersistGuidedStepResult(response?: AgentRunDetailResponse | null): PersistGuidedStepResultResponse | null {
+  if (!response) return null;
+
+  const fromStep = response.steps
+    ?.find((step) => step.status === 'succeeded' && (step.toolName === 'persist_guided_step_result' || step.tool === 'persist_guided_step_result'))
+    ?.output;
+  const stepResult = extractPersistGuidedStepResult(fromStep);
+  if (stepResult) return stepResult;
+
+  const outputs = asRecord(asRecord(response.output).outputs);
+  for (const value of Object.values(outputs)) {
+    const outputResult = extractPersistGuidedStepResult(value);
+    if (outputResult) return outputResult;
+  }
+
+  return null;
 }
 
 function createGuidedAgentRequestId(projectId: string, stepKey: string, message: string) {
@@ -860,28 +904,90 @@ export function useGuidedSession(projectId: string, options?: UseGuidedSessionOp
     const stepLabel = GUIDED_STEPS[stepIndex]?.label ?? '';
 
     try {
-      const result = await apiFetch<{ written: string[] }>(
-        `/projects/${projectId}/guided-session/finalize-step`,
-        {
-          method: 'POST',
-          body: JSON.stringify({
-            currentStep: stepKey,
-            structuredData,
-            ...(volumeNo !== undefined && { volumeNo }),
-          }),
-        },
-      );
+      const volumeLabel = volumeNo ? ` · 第${volumeNo}卷` : '';
+      if (!options?.silent) {
+        setAgentStatus({
+          state: 'planning',
+          title: '正在创建 Agent 保存计划',
+          summary: `Agent 正在为「${stepLabel}${volumeLabel}」准备校验和审批后写入。`,
+          taskType: 'guided_step_finalize',
+        });
+      }
+
+      const baseContext = buildGuidedAgentContext(stepKey);
+      const documentDraft = asRecord(baseContext.guided.documentDraft);
+      const agentGoal = [
+        `请保存创作引导「${stepLabel}」的结构化结果。`,
+        volumeNo ? `目标卷号：${volumeNo}` : '',
+        '系统意图：这是创作引导页用户点击确认保存后的写入流程，必须使用 guided_step_finalize taskType。',
+        '计划必须先调用 validate_guided_step_preview，再在 Act 阶段调用 persist_guided_step_result；persist_guided_step_result 需要用户审批且只能在 Act 阶段执行。',
+        `工具参数要求：stepKey 必须是 "${stepKey}"；structuredData 必须引用 "{{context.session.guided.currentStepData}}"，不要改写或重新生成；validation 必须引用 validate 步骤输出。`,
+        volumeNo !== undefined ? `两个工具都必须携带 volumeNo: ${volumeNo}。` : '如果没有目标卷号，不要臆造 volumeNo。',
+        '不要调用旧 guided-session/finalize-step；不要重新生成预览；不要写入计划外数据。',
+      ].filter(Boolean).join('\n\n');
+
+      const planResponse = await apiFetch<AgentPlanResponse>('/agent-runs/plan', {
+        method: 'POST',
+        body: JSON.stringify({
+          projectId,
+          message: agentGoal,
+          context: {
+            ...baseContext,
+            guided: {
+              ...baseContext.guided,
+              currentStep: stepKey,
+              currentStepLabel: stepLabel,
+              currentStepData: structuredData,
+              documentDraft: { ...documentDraft, [`${stepKey}_result`]: structuredData },
+            },
+          },
+          clientRequestId: createGuidedAgentRequestId(projectId, stepKey, agentGoal),
+        }),
+      });
+      const agentRunId = planResponse.agentRunId;
+      if (!agentRunId) throw new Error('Agent 保存计划已创建，但响应中缺少 AgentRun ID。');
 
       if (!options?.silent) {
-        const volumeLabel = volumeNo ? ` · 第${volumeNo}卷` : '';
+        setAgentStatus({
+          state: 'planning',
+          title: 'Agent 正在执行保存',
+          summary: '用户已确认保存，Agent 正在执行校验和审批后写入。',
+          taskType: planResponse.plan?.taskType ?? 'guided_step_finalize',
+        });
+      }
+
+      const actResponse = await apiFetch<AgentRunDetailResponse>(`/agent-runs/${agentRunId}/act`, {
+        method: 'POST',
+        body: JSON.stringify({
+          approval: true,
+          confirmation: { confirmHighRisk: true },
+          comment: '用户在创作引导页确认保存结构化步骤数据',
+        }),
+      });
+      const runDetail = await apiFetch<AgentRunDetailResponse>(`/agent-runs/${agentRunId}`);
+      const finalRun = runDetail ?? actResponse;
+      if (finalRun.status && finalRun.status !== 'succeeded') {
+        throw new Error(`Agent 保存未完成，当前状态：${finalRun.status}`);
+      }
+
+      const persistResult = findPersistGuidedStepResult(finalRun) ?? findPersistGuidedStepResult(actResponse);
+      const written = persistResult?.written ?? [];
+
+      if (!options?.silent) {
         setChatMessages((prev) => [
           ...prev,
           {
             role: 'ai',
-            content: `✅ **${stepLabel}${volumeLabel}** 已保存！\n\n已写入：${result.written.join('、')}`,
+            content: `✅ **${stepLabel}${volumeLabel}** 已通过 Agent 保存！\n\n已写入：${written.length ? written.join('、') : 'Agent 已完成审批后写入'}`,
             timestamp: Date.now(),
           },
         ]);
+        setAgentStatus({
+          state: 'waiting_approval',
+          title: 'Agent 保存已完成',
+          summary: planResponse.plan?.summary ?? '校验和审批后写入已执行完成，可在 Agent 工作台查看完整记录。',
+          taskType: planResponse.plan?.taskType ?? 'guided_step_finalize',
+        });
       }
 
       // Reload session to update completedSteps
@@ -894,7 +1000,7 @@ export function useGuidedSession(projectId: string, options?: UseGuidedSessionOp
     } finally {
       if (!options?.silent) setLoading(false);
     }
-  }, [projectId, currentStepKey, loadSession]);
+  }, [projectId, currentStepKey, buildGuidedAgentContext, loadSession]);
 
   // Auto-load session on mount
   useEffect(() => {

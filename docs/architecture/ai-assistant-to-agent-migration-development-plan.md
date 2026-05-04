@@ -324,7 +324,7 @@
 
 ### AAM-P3-004 confirmGeneratedData 改走 Agent Act
 
-- 状态：`[ ]`
+- 状态：`[x]`
 - 模块：Web
 - 文件：`apps/web/hooks/useGuidedSession.ts`
 - 任务：将确认保存动作改为审批并执行对应 AgentRun，而不是直接调用 `guided-session/finalize-step`。
@@ -334,6 +334,11 @@
   - 用户确认后执行 Agent Act。
   - 成功后刷新 guided session/project 数据。
 - 验证：`pnpm --filter web build`
+- 完成记录：
+  - 完成内容：将 `confirmGeneratedData` 保存流程改为创建 `guided_step_finalize` AgentRun，并在用户点击保存后自动提交 `/agent-runs/:id/act` 审批执行；Agent 计划要求先执行 `validate_guided_step_preview`，再在 Act 阶段执行 `persist_guided_step_result`，结构化数据通过 `context.session.guided.currentStepData` 传入，避免重新生成或直接调用旧 `finalize-step`。保存成功后展示 Agent 写入结果并刷新 guided session。
+  - 修改文件：`apps/web/hooks/useGuidedSession.ts`、`docs/architecture/ai-assistant-to-agent-migration-development-plan.md`
+  - 测试命令：`pnpm --filter web build`
+  - 测试结果：通过
 
 ### AAM-P3-005 标记旧 finalize-step 为兼容路径
 
