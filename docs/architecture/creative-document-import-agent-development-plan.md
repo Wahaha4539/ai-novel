@@ -185,7 +185,7 @@
 
 ### CDI-P0-010 新增 read_source_document Tool
 
-- 状态：`[ ]`
+- 状态：`[x]`
 - 模块：API
 - 文件：新增 `apps/api/src/modules/agent-tools/tools/read-source-document.tool.ts`
 - 任务：实现只读工具，从附件 URL 下载 `.md/.txt` 并提取正文。
@@ -198,6 +198,11 @@
   - 正文超过 80,000 字符时截断并返回 `truncated=true`。
   - 输出 `sourceText/length/excerpt/sourceUrl/diagnostics`。
 - 验证：`pnpm --filter api build`
+- 完成记录：
+  - 完成内容：新增只读低风险 `read_source_document` Tool，支持从 creative_document 附件或显式 URL 读取 HTTPS `.md/.txt` 正文，拒绝非 HTTPS URL 和非白名单扩展；P0 明确拒绝尚未实现解析的 `.docx/.pdf`，正文超过 80,000 字符时截断并返回 `truncated=true`、摘录、原始长度和解析诊断。
+  - 修改文件：`apps/api/src/modules/agent-tools/tools/read-source-document.tool.ts`、`docs/architecture/creative-document-import-agent-development-plan.md`
+  - 测试命令：`pnpm --filter api build`
+  - 测试结果：通过
 
 ### CDI-P0-011 注册 read_source_document Tool
 
