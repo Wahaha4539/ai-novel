@@ -457,6 +457,7 @@ export class AgentRuntimeService {
       session: context.session,
       project: context.project,
       currentChapter: context.currentChapter,
+      attachments: context.attachments,
       constraints: context.constraints,
       // Tool Manifest 已在 Plan Artifact 中保存；快照只保留名称，避免 Run.input 过大。
       availableTools: context.availableTools.map((tool) => ({ name: tool.name, riskLevel: tool.riskLevel, requiresApproval: tool.requiresApproval })),

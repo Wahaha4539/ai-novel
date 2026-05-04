@@ -167,7 +167,7 @@
 
 ### CDI-P0-009 AgentContextV2 注入附件摘要
 
-- 状态：`[ ]`
+- 状态：`[x]`
 - 模块：API
 - 文件：`apps/api/src/modules/agent-runs/agent-context-builder.service.ts`
 - 任务：从 `AgentRun.input.attachments` 读取已归一化附件，写入 `AgentContextV2.attachments`。
@@ -177,6 +177,11 @@
   - `compactContextSnapshot` 保留附件摘要。
   - 不在 Context 构造阶段下载文件。
 - 验证：`pnpm --filter api build`
+- 完成记录：
+  - 完成内容：新增 `AgentContextV2.attachments` 顶层附件摘要，从 `AgentRun.input.attachments` 投影创意文档的 id、文件名、扩展名、MIME、大小、URL 和 provider；Runtime 的 compact context snapshot 保留附件摘要，Context 构造阶段不下载文件正文。
+  - 修改文件：`apps/api/src/modules/agent-runs/agent-context-builder.service.ts`、`apps/api/src/modules/agent-runs/agent-runtime.service.ts`、`docs/architecture/creative-document-import-agent-development-plan.md`
+  - 测试命令：`pnpm --filter api build`
+  - 测试结果：通过
 
 ### CDI-P0-010 新增 read_source_document Tool
 

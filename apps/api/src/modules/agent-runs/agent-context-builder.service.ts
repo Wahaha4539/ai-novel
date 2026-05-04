@@ -13,6 +13,17 @@ export interface GuidedAgentContext {
   documentDraft?: Record<string, unknown>;
 }
 
+export interface AgentContextAttachment {
+  id: string;
+  kind: 'creative_document';
+  fileName: string;
+  extension: string;
+  mimeType?: string;
+  size?: number;
+  url: string;
+  provider?: string;
+}
+
 export interface AgentContextV2 {
   schemaVersion: 2;
   userMessage: string;
@@ -68,6 +79,7 @@ export interface AgentContextV2 {
   knownCharacters: Array<{ id: string; name: string; aliases: string[]; role?: string | null; currentState?: string | null; relationshipHints?: string[] }>;
   worldFacts: Array<{ id: string; type: 'setting' | 'rule' | 'location' | 'faction' | 'timeline' | 'foreshadowing'; title: string; content: string; locked?: boolean }>;
   memoryHints: Array<{ id: string; type: string; content: string; relevance: number; source?: string }>;
+  attachments: AgentContextAttachment[];
   constraints: { hardRules: string[]; styleRules: string[]; approvalRules: string[]; idPolicy: string[] };
   availableTools: ToolManifestForPlanner[];
 }
@@ -89,6 +101,7 @@ export class AgentContextBuilderService {
     const sessionHints = this.asRecord(input.context);
     const currentChapterId = this.stringValue(sessionHints.currentChapterId) ?? run.chapterId ?? undefined;
     const clarification = this.clarificationValue(input);
+    const attachments = this.attachmentSummaries(input.attachments);
 
     const [project, currentChapter, recentChapters, knownCharacters, worldFacts, memoryHints] = await Promise.all([
       this.prisma.project.findUnique({ where: { id: run.projectId } }),
@@ -143,6 +156,7 @@ export class AgentContextBuilderService {
       knownCharacters,
       worldFacts,
       memoryHints,
+      attachments,
       constraints: {
         hardRules: this.rules.listHardRules(),
         styleRules: project?.tone ? [`项目默认语气/风格：${project.tone}`] : [],
@@ -235,6 +249,30 @@ export class AgentContextBuilderService {
   private nonEmptyRecord(value: unknown): Record<string, unknown> | undefined {
     const record = this.asRecord(value);
     return Object.keys(record).length ? record : undefined;
+  }
+
+  private attachmentSummaries(value: unknown): AgentContextAttachment[] {
+    if (!Array.isArray(value)) return [];
+    return value.flatMap((item) => {
+      const record = this.asRecord(item);
+      if (this.stringValue(record.kind) !== 'creative_document') return [];
+      const id = this.stringValue(record.id);
+      const fileName = this.stringValue(record.fileName);
+      const extension = this.stringValue(record.extension);
+      const url = this.stringValue(record.url);
+      if (!id || !fileName || !extension || !url) return [];
+
+      return [{
+        id,
+        kind: 'creative_document' as const,
+        fileName,
+        extension,
+        mimeType: this.stringValue(record.mimeType),
+        size: this.numberValue(record.size),
+        url,
+        provider: this.stringValue(record.provider),
+      }];
+    });
   }
 
   /**
