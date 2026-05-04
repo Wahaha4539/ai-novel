@@ -2,8 +2,9 @@
 
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { useAgentRun } from '../../hooks/useAgentRun';
+import { getCreativeDocumentExtension, uploadCreativeDocument } from '../../lib/uploadCreativeDocument';
 import { AgentApprovalDialog } from './AgentApprovalDialog';
-import { AgentInputBox, ChatMessage } from './AgentInputBox';
+import { AgentInputBox, type ChatMessage, type CreativeDocumentAttachmentItem } from './AgentInputBox';
 import { AgentPlanPanel } from './AgentPlanPanel';
 import { AgentTimelinePanel } from './AgentTimelinePanel';
 import { AgentArtifactPanel } from './AgentArtifactPanel';
@@ -30,7 +31,9 @@ export function AgentWorkspace({ projectId, selectedChapterId, onRefresh }: Agen
   const [artifactQuery, setArtifactQuery] = useState('');
   /** 聊天消息历史 */
   const [chatHistory, setChatHistory] = useState<ChatMessage[]>([]);
+  const [creativeDocumentAttachments, setCreativeDocumentAttachments] = useState<CreativeDocumentAttachmentItem[]>([]);
   const msgIdCounter = useRef(0);
+  const attachmentIdCounter = useRef(0);
   const plan = latestPlan(currentRun);
   const activePlanVersion = latestPlanVersion(currentRun);
   const approvalStepNos = useMemo(() => plan?.requiredApprovals?.flatMap((item) => item.target?.stepNos ?? []) ?? [], [plan]);
@@ -38,6 +41,11 @@ export function AgentWorkspace({ projectId, selectedChapterId, onRefresh }: Agen
   const canRetry = !!currentRun && currentRun.status === 'failed';
   const canReplan = !!currentRun && currentRun.status !== 'acting' && currentRun.status !== 'running';
   const riskSummary = useMemo(() => approvalRiskSummary(plan, approvedStepNos), [plan, approvedStepNos]);
+  const uploadedCreativeDocumentAttachments = useMemo(
+    () => creativeDocumentAttachments.flatMap((item) => (item.status === 'uploaded' && item.attachment ? [item.attachment] : [])),
+    [creativeDocumentAttachments],
+  );
+  const hasUploadingCreativeDocument = creativeDocumentAttachments.some((item) => item.status === 'uploading');
   const approvedScope = useMemo(() => {
     // 全部要求审批的步骤均已勾选时，不传具体范围，让后端按“整份计划已审批”处理。
     // 这样可避免新增后置质量门禁后，旧审批范围导致 retry/act 误判后续 Tool 未审批。
@@ -60,8 +68,15 @@ export function AgentWorkspace({ projectId, selectedChapterId, onRefresh }: Agen
   const handleSubmit = useCallback(async () => {
     const message = goal.trim();
     if (!message || loading) return;
+    if (hasUploadingCreativeDocument) {
+      pushMessage('system', '创意文档仍在上传中，请稍后再发送。');
+      return;
+    }
     // 立即推入用户消息并清空输入框
     pushMessage('user', message);
+    if (uploadedCreativeDocumentAttachments.length) {
+      pushMessage('system', `已导入创意文档：${uploadedCreativeDocumentAttachments.map((item) => item.fileName).join('、')}`);
+    }
     setGoal('');
     // 等待审批时先请求 LLM 判定用户回复意图；只有 LLM 明确判定为确认时才执行写入类工具。
     if (canAct && currentRun) {
@@ -71,13 +86,54 @@ export function AgentWorkspace({ projectId, selectedChapterId, onRefresh }: Agen
         await handleAct();
         return;
       }
-      const run = await createPlan(projectId, message, pageContext);
+      const run = await createPlan(projectId, message, pageContext, uploadedCreativeDocumentAttachments);
       if (run) pushMessage('agent', '已收到新任务，正在生成计划…');
       return;
     }
-    const run = await createPlan(projectId, message, pageContext);
+    const run = await createPlan(projectId, message, pageContext, uploadedCreativeDocumentAttachments);
     if (run) pushMessage('agent', '已收到任务，正在生成计划…');
-  }, [goal, loading, canAct, currentRun, interpretMessage, handleAct, createPlan, projectId, pageContext, pushMessage]);
+  }, [goal, loading, hasUploadingCreativeDocument, uploadedCreativeDocumentAttachments, canAct, currentRun, interpretMessage, handleAct, createPlan, projectId, pageContext, pushMessage]);
+
+  const handleCreativeDocumentSelect = useCallback(async (file: File) => {
+    attachmentIdCounter.current += 1;
+    const localId = `creative-doc-${Date.now().toString(36)}-${attachmentIdCounter.current}`;
+    const draftAttachment: CreativeDocumentAttachmentItem = {
+      id: localId,
+      fileName: file.name,
+      extension: getCreativeDocumentExtension(file.name) ?? undefined,
+      size: file.size,
+      status: 'uploading',
+    };
+    setCreativeDocumentAttachments([draftAttachment]);
+
+    try {
+      const attachment = await uploadCreativeDocument(file);
+      setCreativeDocumentAttachments((current) =>
+        current.map((item) =>
+          item.id === localId
+            ? {
+                ...item,
+                fileName: attachment.fileName,
+                extension: attachment.extension,
+                size: attachment.size,
+                status: 'uploaded',
+                attachment,
+                error: undefined,
+              }
+            : item,
+        ),
+      );
+    } catch (uploadError) {
+      const message = uploadError instanceof Error ? uploadError.message : '创意文档上传失败，请稍后重试。';
+      setCreativeDocumentAttachments((current) =>
+        current.map((item) => (item.id === localId ? { ...item, status: 'failed', error: message } : item)),
+      );
+    }
+  }, []);
+
+  const handleCreativeDocumentRemove = useCallback((id: string) => {
+    setCreativeDocumentAttachments((current) => current.filter((item) => item.id !== id));
+  }, []);
   const handleRetry = useCallback(async () => { if (!currentRun) return; await retry(currentRun.id, approvedScope); await onRefresh?.(); }, [currentRun, retry, approvedScope, onRefresh]);
   const handleReplan = useCallback(async () => { if (!currentRun) return; await replan(currentRun.id, goal.trim() || undefined); await listByProject(projectId); }, [currentRun, replan, goal, listByProject, projectId]);
   const handleClarification = useCallback(async (choice: Parameters<typeof answerClarification>[1]) => {
@@ -106,6 +162,7 @@ export function AgentWorkspace({ projectId, selectedChapterId, onRefresh }: Agen
     setApprovedStepNos([]);
     setArtifactQuery('');
     setChatHistory([]);
+    setCreativeDocumentAttachments([]);
   }, [startNewSession]);
 
   return (
@@ -135,7 +192,7 @@ export function AgentWorkspace({ projectId, selectedChapterId, onRefresh }: Agen
 
         <section className="grid gap-5 xl:grid-cols-[430px_1fr]">
           <div className="space-y-5">
-            <AgentInputBox goal={goal} loading={loading} canReplan={canReplan} hasCurrentRun={!!currentRun} canAct={canAct} plan={plan} currentRunGoal={currentRun?.goal} riskSummary={riskSummary} chatHistory={chatHistory} onGoalChange={setGoal} onSubmit={handleSubmit} onReplan={handleReplan} onRefresh={async () => { if (currentRun) await refresh(currentRun.id); }} />
+            <AgentInputBox goal={goal} loading={loading} canReplan={canReplan} hasCurrentRun={!!currentRun} canAct={canAct} plan={plan} currentRunGoal={currentRun?.goal} riskSummary={riskSummary} chatHistory={chatHistory} creativeDocumentAttachments={creativeDocumentAttachments} onGoalChange={setGoal} onSubmit={handleSubmit} onReplan={handleReplan} onRefresh={async () => { if (currentRun) await refresh(currentRun.id); }} onCreativeDocumentSelect={handleCreativeDocumentSelect} onCreativeDocumentRemove={handleCreativeDocumentRemove} />
             <AgentRunHistoryPanel runs={runHistory} currentRunId={currentRun?.id} loading={loading} onRefresh={async () => { await listByProject(projectId); }} onSelect={async (id) => { await refresh(id); await loadAudit(id); }} />
           </div>
           <div className="space-y-5">

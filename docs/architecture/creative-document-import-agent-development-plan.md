@@ -112,7 +112,7 @@
 
 ### CDI-P0-006 将附件状态接入 AgentWorkspace
 
-- 状态：`[ ]`
+- 状态：`[x]`
 - 模块：Web
 - 文件：`apps/web/components/agent/AgentWorkspace.tsx`
 - 任务：全屏 Agent 工作台复用同一附件能力。
@@ -122,6 +122,11 @@
   - 新会话清空附件。
   - 重新规划不隐式复用已删除附件。
 - 验证：`pnpm --filter web build`
+- 完成记录：
+  - 完成内容：在全屏 Agent 工作台接入与悬浮面板一致的创意文档附件状态，支持选择上传、卡片展示、删除、新会话清空和提交时传递已上传附件；重新规划继续只基于当前 Run，不会隐式复用已删除附件。
+  - 修改文件：`apps/web/components/agent/AgentWorkspace.tsx`、`docs/architecture/creative-document-import-agent-development-plan.md`
+  - 测试命令：`pnpm --filter web build`
+  - 测试结果：通过
 
 ### CDI-P0-007 扩展 useAgentRun.createPlan 支持 attachments
 
