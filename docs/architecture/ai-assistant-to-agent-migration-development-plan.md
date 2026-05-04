@@ -250,7 +250,7 @@
 
 ### AAM-P2-006 扩展 generate_guided_step_preview 到全部步骤
 
-- 状态：`[ ]`
+- 状态：`[x]`
 - 模块：API
 - 文件：`generate-guided-step-preview.tool.ts`
 - 任务：支持 `guided_characters/guided_outline/guided_volume/guided_chapter/guided_foreshadow`。
@@ -259,6 +259,11 @@
   - 每个 stepKey 都有 schema、提示和输出归一化。
   - 缺少前置上下文时返回 warnings 或 missingInfo。
 - 验证：`pnpm --filter api test:agent`
+- 完成记录：
+  - 完成内容：扩展 `generate_guided_step_preview`，支持 `guided_characters/guided_outline/guided_volume/guided_chapter/guided_foreshadow`，统一读取共享 schema；为角色、大纲、卷纲、章节细纲、单章细化和伏笔设计补齐生成指令、摘要归一化和缺上下文 warnings。更新 Agent 服务测试，覆盖全部 guided step、缺上下文 warning 和未知步骤拒绝。
+  - 修改文件：`apps/api/src/modules/agent-tools/tools/generate-guided-step-preview.tool.ts`、`apps/api/src/modules/agent-runs/agent-services.spec.ts`、`docs/architecture/ai-assistant-to-agent-migration-development-plan.md`
+  - 测试命令：`pnpm --filter api test:agent`
+  - 测试结果：通过
 
 ## 5. P3 写入能力迁移
 

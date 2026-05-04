@@ -1,5 +1,10 @@
 import { BadRequestException, Injectable, NotFoundException } from '@nestjs/common';
-import { getGuidedStepJsonSchema } from '../../guided/guided-step-schemas';
+import {
+  GUIDED_SINGLE_CHAPTER_REFINEMENT_SCHEMA,
+  GUIDED_STEP_JSON_SCHEMAS,
+  getGuidedStepJsonSchema,
+  type GuidedStepSchemaKey,
+} from '../../guided/guided-step-schemas';
 import { LlmGatewayService } from '../../llm/llm-gateway.service';
 import { BaseTool, ToolContext } from '../base-tool';
 import type { ToolManifestV2 } from '../tool-manifest.types';
@@ -20,9 +25,16 @@ export interface GuidedStepPreviewOutput {
   warnings: string[];
 }
 
-const SUPPORTED_STEP_INSTRUCTIONS: Record<string, string> = {
+const GUIDED_STEP_KEYS = Object.keys(GUIDED_STEP_JSON_SCHEMAS) as GuidedStepSchemaKey[];
+
+const SUPPORTED_STEP_INSTRUCTIONS: Record<GuidedStepSchemaKey, string> = {
   guided_setup: '生成小说基础设定，字段覆盖 genre/theme/tone/logline/synopsis。',
   guided_style: '根据已有基础设定生成叙事风格，字段覆盖 pov/tense/proseStyle/pacing。',
+  guided_characters: '生成 3-5 个核心角色，至少包含主角、配角/同行者、对手/反派；角色必须有具体动机、内在矛盾和可识别行为。',
+  guided_outline: '根据基础设定、风格和核心角色生成完整故事总纲，包含起承转合、主要冲突线索和情感弧线。',
+  guided_volume: '根据总纲和角色设定拆分卷纲；如用户提示指定卷数，volumes 数组长度必须严格匹配。',
+  guided_chapter: '为指定卷生成章节细纲和本卷配角；每章必须有具体目标、核心冲突、行动链和 craftBrief。若传入 chapterNo，则只细化该单章。',
+  guided_foreshadow: '根据卷纲和章节细纲设计伏笔体系，覆盖主线伏笔、卷级伏笔和章节伏笔，并写清埋设、揭开与 payoff。',
 };
 
 /**
@@ -37,7 +49,7 @@ export class GenerateGuidedStepPreviewTool implements BaseTool<GenerateGuidedSte
     required: ['stepKey'],
     additionalProperties: false,
     properties: {
-      stepKey: { type: 'string' as const, enum: ['guided_setup', 'guided_style'] },
+      stepKey: { type: 'string' as const, enum: GUIDED_STEP_KEYS },
       userHint: { type: 'string' as const },
       projectContext: { type: 'object' as const },
       chatSummary: { type: 'string' as const },
@@ -62,13 +74,13 @@ export class GenerateGuidedStepPreviewTool implements BaseTool<GenerateGuidedSte
   manifest: ToolManifestV2 = {
     name: this.name,
     displayName: '生成创作引导步骤预览',
-    description: '为创作引导页当前步骤生成结构化预览；当前支持基础设定和风格定义，只读且不持久化。',
-    whenToUse: ['用户在创作引导页要求 AI 生成当前步骤草案', 'context.session.guided.currentStep 是 guided_setup 或 guided_style', '需要先生成可审阅 Artifact，再由后续工具校验和写入'],
-    whenNotToUse: ['用户只是提问当前步骤填写建议，应使用 guided_step_consultation', '用户要求直接保存结构化数据，必须先校验并审批后再持久化', '当前步骤是角色、大纲、卷纲、章节或伏笔，等待扩展支持'],
+    description: '为创作引导页当前步骤生成结构化预览，覆盖基础设定、风格、角色、大纲、卷纲、章节细纲和伏笔设计；只读且不持久化。',
+    whenToUse: ['用户在创作引导页要求 AI 生成当前步骤草案', 'context.session.guided.currentStep 是任一 guided_* 步骤', '需要先生成可审阅 Artifact，再由后续工具校验和写入'],
+    whenNotToUse: ['用户只是提问当前步骤填写建议，应使用 guided_step_consultation', '用户要求直接保存结构化数据，必须先校验并审批后再持久化', '用户要求导入长文档并拆解项目资产，应使用 creative_document_import 链路'],
     inputSchema: this.inputSchema,
     outputSchema: this.outputSchema,
     parameterHints: {
-      stepKey: { source: 'context', description: '来自 context.session.guided.currentStep；当前支持 guided_setup/guided_style。' },
+      stepKey: { source: 'context', description: '来自 context.session.guided.currentStep；支持 guided_setup/guided_style/guided_characters/guided_outline/guided_volume/guided_chapter/guided_foreshadow。' },
       userHint: { source: 'user_message', description: '用户对本次生成的偏好或补充要求。' },
       projectContext: { source: 'context', description: '当前项目资料、已完成 guided stepData 或 collect_task_context 输出。' },
       chatSummary: { source: 'context', description: '当前步骤右侧 AI 助手对话摘要，可为空。' },
@@ -98,13 +110,11 @@ export class GenerateGuidedStepPreviewTool implements BaseTool<GenerateGuidedSte
     const stepKey = args.stepKey?.trim();
     if (!stepKey) throw new BadRequestException('缺少 stepKey，无法生成创作引导步骤预览。');
 
-    const schema = getGuidedStepJsonSchema(stepKey);
+    const schema = this.getSchema(stepKey, args);
     if (!schema) throw new NotFoundException(`未知创作引导步骤：${stepKey}`);
 
-    const stepInstruction = SUPPORTED_STEP_INSTRUCTIONS[stepKey];
-    if (!stepInstruction) {
-      throw new BadRequestException(`generate_guided_step_preview 当前暂支持 guided_setup/guided_style，尚未支持 ${stepKey}。`);
-    }
+    const stepInstruction = SUPPORTED_STEP_INSTRUCTIONS[stepKey as GuidedStepSchemaKey];
+    const inputWarnings = this.buildInputWarnings(stepKey as GuidedStepSchemaKey, args);
 
     const { data } = await this.llm.chatJson<Record<string, unknown>>(
       [
@@ -116,6 +126,7 @@ export class GenerateGuidedStepPreviewTool implements BaseTool<GenerateGuidedSte
           role: 'user',
           content: [
             `步骤要求：${stepInstruction}`,
+            inputWarnings.length ? `已知上下文缺口：\n${inputWarnings.map((warning) => `- ${warning}`).join('\n')}` : '',
             `用户提示：${args.userHint ?? ''}`,
             `聊天摘要：${args.chatSummary ?? ''}`,
             `卷号：${args.volumeNo ?? ''}`,
@@ -124,7 +135,7 @@ export class GenerateGuidedStepPreviewTool implements BaseTool<GenerateGuidedSte
           ].join('\n'),
         },
       ],
-      { appStep: 'planner', maxTokens: 2500, timeoutMs: 120_000, retries: 1 },
+      { appStep: 'planner', maxTokens: 8000, timeoutMs: 120_000, retries: 1 },
     );
 
     const normalized = this.normalizeStructuredData(data);
@@ -132,8 +143,40 @@ export class GenerateGuidedStepPreviewTool implements BaseTool<GenerateGuidedSte
       stepKey,
       structuredData: normalized.structuredData,
       summary: this.buildSummary(stepKey, normalized.structuredData),
-      warnings: normalized.warnings,
+      warnings: [...inputWarnings, ...normalized.warnings],
     };
+  }
+
+  private getSchema(stepKey: string, args: GenerateGuidedStepPreviewInput): string | undefined {
+    if (stepKey === 'guided_chapter' && args.volumeNo !== undefined && args.chapterNo !== undefined) {
+      return GUIDED_SINGLE_CHAPTER_REFINEMENT_SCHEMA;
+    }
+    return getGuidedStepJsonSchema(stepKey);
+  }
+
+  private buildInputWarnings(stepKey: GuidedStepSchemaKey, args: GenerateGuidedStepPreviewInput): string[] {
+    const warnings: string[] = [];
+    const projectContext = args.projectContext ?? {};
+    const hasProjectContext = Object.keys(projectContext).length > 0;
+    const hasPriorContext = hasProjectContext || Boolean(args.chatSummary?.trim());
+
+    if (stepKey !== 'guided_setup' && !hasPriorContext) {
+      warnings.push('缺少前置步骤上下文，预览会更多依赖模型补全，写入前需要人工复核。');
+    }
+    if (stepKey === 'guided_volume' && !args.userHint?.match(/\d+\s*卷/)) {
+      warnings.push('未检测到明确卷数要求，模型会自行判断 volumes 数量。');
+    }
+    if (stepKey === 'guided_chapter' && args.volumeNo === undefined) {
+      warnings.push('未指定 volumeNo，模型会生成通用章节细纲，可能无法绑定到具体卷。');
+    }
+    if (stepKey === 'guided_chapter' && args.chapterNo !== undefined && args.volumeNo === undefined) {
+      warnings.push('已指定 chapterNo 但缺少 volumeNo，无法进入单章细化模式。');
+    }
+    if (stepKey === 'guided_foreshadow' && !hasProjectContext) {
+      warnings.push('缺少卷纲或章节细纲上下文，伏笔数量和埋设位置可能需要后续校正。');
+    }
+
+    return warnings;
   }
 
   private normalizeStructuredData(data: unknown): { structuredData: Record<string, unknown>; warnings: string[] } {
@@ -158,6 +201,33 @@ export class GenerateGuidedStepPreviewTool implements BaseTool<GenerateGuidedSte
       return [pov, proseStyle, pacing].filter(Boolean).join(' / ') || '已生成风格定义预览。';
     }
 
+    if (stepKey === 'guided_characters') {
+      const characters = this.array(data.characters).map((item) => this.text((item as Record<string, unknown>)?.name)).filter(Boolean);
+      return characters.length ? `已生成 ${characters.length} 个核心角色：${characters.slice(0, 4).join('、')}` : '已生成核心角色预览。';
+    }
+
+    if (stepKey === 'guided_outline') {
+      const outline = this.text(data.outline);
+      return outline ? `已生成故事总纲：${outline.slice(0, 80)}${outline.length > 80 ? '…' : ''}` : '已生成故事总纲预览。';
+    }
+
+    if (stepKey === 'guided_volume') {
+      const volumes = this.array(data.volumes).map((item) => this.text((item as Record<string, unknown>)?.title)).filter(Boolean);
+      return volumes.length ? `已生成 ${volumes.length} 卷卷纲：${volumes.slice(0, 5).join('、')}` : '已生成卷纲预览。';
+    }
+
+    if (stepKey === 'guided_chapter') {
+      const chapters = this.array(data.chapters);
+      const supportingCharacters = this.array(data.supportingCharacters);
+      const firstTitle = this.text((chapters[0] as Record<string, unknown> | undefined)?.title);
+      return chapters.length ? `已生成 ${chapters.length} 章细纲${firstTitle ? `，首章：${firstTitle}` : ''}${supportingCharacters.length ? `；本卷配角 ${supportingCharacters.length} 个` : ''}` : '已生成章节细纲预览。';
+    }
+
+    if (stepKey === 'guided_foreshadow') {
+      const tracks = this.array(data.foreshadowTracks).map((item) => this.text((item as Record<string, unknown>)?.title)).filter(Boolean);
+      return tracks.length ? `已生成 ${tracks.length} 条伏笔：${tracks.slice(0, 5).join('、')}` : '已生成伏笔设计预览。';
+    }
+
     return '已生成创作引导步骤预览。';
   }
 
@@ -165,5 +235,9 @@ export class GenerateGuidedStepPreviewTool implements BaseTool<GenerateGuidedSte
     if (typeof value === 'string') return value.trim();
     if (typeof value === 'number' || typeof value === 'boolean') return String(value);
     return '';
+  }
+
+  private array(value: unknown): unknown[] {
+    return Array.isArray(value) ? value : [];
   }
 }
