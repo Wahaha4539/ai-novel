@@ -191,7 +191,7 @@ async function hasVectorExtension(): Promise<boolean> {
 
 /**
  * 根据 .env 补齐 LlmProvider 与 LlmRouting。
- * LLM 步骤走 LLM_*；embedding 步骤只走专门的 EMBEDDING_* / BGE 服务，不回落到 LLM。
+ * LLM 步骤走 LLM_*；embedding 只走专门的 EMBEDDING_* / BGE 服务，不写入 LLM 路由。
  */
 async function ensureLlmProvidersAndRoutings(options: ScriptOptions): Promise<boolean> {
   const llmConfig = readProviderConfig({
@@ -204,15 +204,12 @@ async function ensureLlmProvidersAndRoutings(options: ScriptOptions): Promise<bo
     isDefault: true,
   });
 
-  const embeddingConfig = readEmbeddingProviderConfig();
-
   if (options.dryRun) {
-    console.log(`🔎 dry-run provider config: llm=${llmConfig.name}, embedding=${embeddingConfig.name}`);
+    console.log(`🔎 dry-run provider config: llm=${llmConfig.name}`);
     return await verifyRequiredRoutingsExist();
   }
 
   const llmProvider = await upsertProvider(llmConfig);
-  const embeddingProvider = await upsertProvider(embeddingConfig);
 
   for (const appStep of REQUIRED_LLM_STEPS) {
     await prisma.llmRouting.upsert({
@@ -222,30 +219,8 @@ async function ensureLlmProvidersAndRoutings(options: ScriptOptions): Promise<bo
     });
   }
 
-  await prisma.llmRouting.upsert({
-    where: { appStep: 'embedding' },
-    create: { appStep: 'embedding', providerId: embeddingProvider.id, modelOverride: embeddingConfig.defaultModel, paramsOverride: {} },
-    update: { providerId: embeddingProvider.id, modelOverride: embeddingConfig.defaultModel, paramsOverride: {} },
-  });
-
-  console.log(`✅ LLM providers/routings ready (${REQUIRED_LLM_STEPS.length + 1} routes)`);
+  console.log(`✅ LLM providers/routings ready (${REQUIRED_LLM_STEPS.length} routes)`);
   return true;
-}
-
-/**
- * 读取独立 embedding 服务配置，保持与 Worker 的 BGE 服务实现一致。
- * API Key 对本地 BGE OpenAI-Compatible 服务通常不是必需项，但 LlmProvider.apiKey 为 NOT NULL，因此用空串占位。
- */
-function readEmbeddingProviderConfig(): ProviderConfig {
-  return {
-    name: process.env.EMBEDDING_PROVIDER_NAME ?? 'env_embedding_primary',
-    providerType: 'openai_compatible',
-    baseUrl: process.env.EMBEDDING_BASE_URL ?? 'http://localhost:18319/v1',
-    apiKey: process.env.EMBEDDING_API_KEY ?? '',
-    defaultModel: process.env.EMBEDDING_MODEL ?? 'bge-base-zh',
-    extraConfig: parseJsonObject(process.env.EMBEDDING_PROVIDER_EXTRA_CONFIG_JSON, 'embedding.extraConfig'),
-    isDefault: false,
-  };
 }
 
 /** 从环境变量生成 Provider 配置；缺关键字段直接失败，避免写入不可用路由。 */
@@ -311,11 +286,11 @@ async function upsertProvider(config: ProviderConfig) {
 /** dry-run 下校验必须 appStep 是否已有可用路由。 */
 async function verifyRequiredRoutingsExist(): Promise<boolean> {
   const rows = await prisma.llmRouting.findMany({
-    where: { appStep: { in: [...REQUIRED_LLM_STEPS, 'embedding'] } },
+    where: { appStep: { in: REQUIRED_LLM_STEPS } },
     include: { provider: true },
   });
   const routed = new Set(rows.filter((row) => row.provider.isActive).map((row) => row.appStep));
-  const missing = [...REQUIRED_LLM_STEPS, 'embedding'].filter((step) => !routed.has(step));
+  const missing = REQUIRED_LLM_STEPS.filter((step) => !routed.has(step));
   if (missing.length > 0) console.warn(`⚠️  missing active LLM routings: ${missing.join(', ')}`);
   return missing.length === 0;
 }
@@ -440,20 +415,11 @@ async function findMemoryChunksForEmbedding(options: ScriptOptions, take: number
   `);
 }
 
-/** 从 DB 路由优先解析 embedding 配置；缺路由时只回落到专门 EMBEDDING_* / BGE 默认地址。 */
+/** 从专门的 EMBEDDING_* 环境变量解析 embedding 配置。 */
 async function resolveEmbeddingConfig(): Promise<EmbeddingConfig> {
-  const routing = await prisma.llmRouting.findUnique({ where: { appStep: 'embedding' }, include: { provider: true } });
-  if (routing?.provider?.isActive) {
-    return {
-      baseUrl: routing.provider.baseUrl,
-      apiKey: routing.provider.apiKey,
-      model: routing.modelOverride ?? routing.provider.defaultModel,
-    };
-  }
-
   const baseUrl = process.env.EMBEDDING_BASE_URL ?? 'http://localhost:18319/v1';
   const apiKey = process.env.EMBEDDING_API_KEY ?? '';
-  const model = process.env.EMBEDDING_MODEL ?? 'bge-base-zh';
+  const model = process.env.EMBEDDING_MODEL ?? 'local-hash-zh-768';
   return { baseUrl, apiKey, model };
 }
 

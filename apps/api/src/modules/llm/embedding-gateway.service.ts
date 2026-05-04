@@ -1,6 +1,6 @@
 import { Injectable } from '@nestjs/common';
 import { StructuredLogger } from '../../common/logging/structured-logger';
-import { LlmProvidersService, ResolvedLlmConfig } from '../llm-providers/llm-providers.service';
+import type { ResolvedLlmConfig } from '../llm-providers/llm-providers.service';
 import { LlmEmbeddingOptions, LlmEmbeddingResult } from './dto/llm-chat.dto';
 
 /**
@@ -12,9 +12,7 @@ export class EmbeddingGatewayService {
   private readonly logger = new StructuredLogger(EmbeddingGatewayService.name);
   private readonly envBaseUrl = process.env.EMBEDDING_BASE_URL ?? 'http://localhost:18319/v1';
   private readonly envApiKey = process.env.EMBEDDING_API_KEY ?? '';
-  private readonly envModel = process.env.EMBEDDING_MODEL ?? 'bge-base-zh';
-
-  constructor(private readonly llmProviders: LlmProvidersService) {}
+  private readonly envModel = process.env.EMBEDDING_MODEL ?? 'local-hash-zh-768';
 
   /** 批量生成文本向量；调用失败会抛出统一错误，上层不得静默降级到低质量召回。 */
   async embedTexts(texts: string[], options: LlmEmbeddingOptions = {}): Promise<LlmEmbeddingResult> {
@@ -22,7 +20,7 @@ export class EmbeddingGatewayService {
     if (!normalizedTexts.length) return { vectors: [], model: this.envModel, rawPayloadSummary: { skipped: true, reason: 'empty_input' } };
 
     const appStep = options.appStep ?? 'embedding';
-    const config = this.resolveConfig(appStep);
+    const config = this.resolveConfig();
     const retries = options.retries ?? 1;
     let lastError: unknown;
 
@@ -38,13 +36,7 @@ export class EmbeddingGatewayService {
     throw new Error(`Embedding 请求失败：${lastError instanceof Error ? lastError.message : String(lastError)}`);
   }
 
-  private resolveConfig(appStep?: string): ResolvedLlmConfig {
-    try {
-      const routed = this.llmProviders.resolveForStep(appStep);
-      if (routed.source === 'routing') return routed;
-    } catch {
-      // 未配置 DB 路由时继续使用独立 embedding 服务默认配置；不要回退到 LLM。
-    }
+  private resolveConfig(): ResolvedLlmConfig {
     // 与 Worker 对齐：embedding 是独立 BGE OpenAI-Compatible 服务，API Key 可为空。
     return { baseUrl: this.envBaseUrl, apiKey: this.envApiKey, model: this.envModel, params: {}, source: 'env_fallback' };
   }

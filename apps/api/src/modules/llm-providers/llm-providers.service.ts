@@ -5,7 +5,7 @@ import { UpdateLlmProviderDto } from './dto/update-llm-provider.dto';
 import { SetRoutingDto } from './dto/set-routing.dto';
 
 /** Allowed app steps for LLM routing — Agent-Centric API 内链路会复用这些步骤做模型路由。 */
-const VALID_APP_STEPS = ['guided', 'agent_planner', 'generate', 'polish', 'summary', 'memory_review', 'embedding', 'fact_extractor.events', 'fact_extractor.states', 'fact_extractor.foreshadows'] as const;
+const VALID_APP_STEPS = ['guided', 'agent_planner', 'generate', 'polish', 'summary', 'memory_review', 'fact_extractor.events', 'fact_extractor.states', 'fact_extractor.foreshadows'] as const;
 const CONFIG_CACHE_STARTUP_RETRY_DELAYS_MS = [500, 1000, 2000, 4000, 8000] as const;
 
 function delay(ms: number): Promise<void> {
@@ -346,7 +346,7 @@ export class LlmProvidersService implements OnModuleInit {
       updatedAt: provider.updatedAt,
       /** Which app steps are routed to this provider */
       routedSteps: this.cache.routings
-        .filter((routing) => routing.providerId === provider.id)
+        .filter((routing) => routing.providerId === provider.id && VALID_APP_STEPS.includes(routing.appStep as typeof VALID_APP_STEPS[number]))
         .map((routing) => routing.appStep),
     };
   }
