@@ -1,4 +1,4 @@
-import { IsObject, IsOptional, IsString, IsUUID, MinLength } from 'class-validator';
+import { IsArray, IsObject, IsOptional, IsString, IsUUID, MinLength } from 'class-validator';
 
 export interface GuidedAgentPlanContextDto {
   currentStep?: string;
@@ -24,6 +24,22 @@ export interface CreateAgentPlanContextDto {
   [key: string]: unknown;
 }
 
+export type AgentCreativeDocumentExtensionDto = 'md' | 'txt' | 'docx' | 'pdf';
+
+export interface AgentCreativeDocumentAttachmentDto {
+  id: string;
+  kind: 'creative_document';
+  provider: 'tmpfile.link';
+  fileName: string;
+  extension: AgentCreativeDocumentExtensionDto;
+  mimeType?: string;
+  size: number;
+  url: string;
+  uploadedAt?: string;
+  expiresAt?: string;
+  uploadMeta?: Record<string, unknown>;
+}
+
 export class CreateAgentPlanDto {
   @IsUUID()
   projectId!: string;
@@ -37,7 +53,8 @@ export class CreateAgentPlanDto {
   context?: CreateAgentPlanContextDto;
 
   @IsOptional()
-  attachments?: unknown[];
+  @IsArray()
+  attachments?: AgentCreativeDocumentAttachmentDto[];
 
   /**
    * 调用方生成的幂等键；同一项目内重复提交同一个键时复用已有 AgentRun，

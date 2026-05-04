@@ -1,7 +1,7 @@
 import { BadRequestException, Injectable, NotFoundException } from '@nestjs/common';
 import { Prisma } from '@prisma/client';
 import { PrismaService } from '../../prisma/prisma.service';
-import { CreateAgentPlanDto, ReplanAgentRunDto, SubmitAgentClarificationChoiceDto } from './dto/create-agent-plan.dto';
+import { AgentCreativeDocumentAttachmentDto, AgentCreativeDocumentExtensionDto, CreateAgentPlanDto, ReplanAgentRunDto, SubmitAgentClarificationChoiceDto } from './dto/create-agent-plan.dto';
 import { ExecuteAgentRunDto } from './dto/execute-agent-run.dto';
 import { InterpretAgentMessageDto } from './dto/interpret-agent-message.dto';
 import { AgentMessageIntentService } from './agent-message-intent.service';
@@ -10,6 +10,8 @@ import { AgentRuntimeService } from './agent-runtime.service';
 @Injectable()
 export class AgentRunsService {
   constructor(private readonly prisma: PrismaService, private readonly runtime: AgentRuntimeService, private readonly messageIntent: AgentMessageIntentService) {}
+
+  private readonly creativeDocumentExtensions = new Set<AgentCreativeDocumentExtensionDto>(['md', 'txt', 'docx', 'pdf']);
 
   /**
    * 从现有 Run/Plan/Step/Approval/Artifact 表派生审计事件。
@@ -140,6 +142,71 @@ export class AgentRunsService {
     }))].sort((a, b) => a - b);
   }
 
+  private isRecord(value: unknown): value is Record<string, unknown> {
+    return Boolean(value) && typeof value === 'object' && !Array.isArray(value);
+  }
+
+  private requireAttachmentString(record: Record<string, unknown>, key: string, index: number) {
+    const value = record[key];
+    if (typeof value !== 'string' || !value.trim()) throw new BadRequestException(`attachments[${index}].${key} 必须是非空字符串`);
+    return value.trim();
+  }
+
+  private readOptionalAttachmentString(record: Record<string, unknown>, key: string) {
+    const value = record[key];
+    return typeof value === 'string' && value.trim() ? value.trim() : undefined;
+  }
+
+  private normalizeAttachments(value: unknown): AgentCreativeDocumentAttachmentDto[] {
+    if (value === undefined || value === null) return [];
+    if (!Array.isArray(value)) throw new BadRequestException('attachments 必须是数组');
+    return value.map((attachment, index) => this.normalizeCreativeDocumentAttachment(attachment, index));
+  }
+
+  private normalizeCreativeDocumentAttachment(value: unknown, index: number): AgentCreativeDocumentAttachmentDto {
+    if (!this.isRecord(value)) throw new BadRequestException(`attachments[${index}] 必须是对象`);
+
+    const id = this.requireAttachmentString(value, 'id', index);
+    const kind = this.requireAttachmentString(value, 'kind', index);
+    if (kind !== 'creative_document') throw new BadRequestException(`attachments[${index}].kind 只支持 creative_document`);
+
+    const provider = this.requireAttachmentString(value, 'provider', index);
+    if (provider !== 'tmpfile.link') throw new BadRequestException(`attachments[${index}].provider 只支持 tmpfile.link`);
+
+    const fileName = this.requireAttachmentString(value, 'fileName', index);
+    const extension = this.requireAttachmentString(value, 'extension', index).toLowerCase();
+    if (!this.creativeDocumentExtensions.has(extension as AgentCreativeDocumentExtensionDto)) {
+      throw new BadRequestException(`attachments[${index}].extension 只支持 md/txt/docx/pdf`);
+    }
+
+    const size = value.size;
+    if (typeof size !== 'number' || !Number.isFinite(size) || size < 0) throw new BadRequestException(`attachments[${index}].size 必须是非负数字`);
+
+    const url = this.requireAttachmentString(value, 'url', index);
+    try {
+      const parsedUrl = new URL(url);
+      if (parsedUrl.protocol !== 'https:') throw new BadRequestException(`attachments[${index}].url 必须是 https URL`);
+    } catch (error) {
+      if (error instanceof BadRequestException) throw error;
+      throw new BadRequestException(`attachments[${index}].url 必须是合法 URL`);
+    }
+
+    const uploadMeta = this.isRecord(value.uploadMeta) ? value.uploadMeta : undefined;
+    return {
+      id,
+      kind: 'creative_document',
+      provider: 'tmpfile.link',
+      fileName,
+      extension: extension as AgentCreativeDocumentExtensionDto,
+      size,
+      url,
+      ...(this.readOptionalAttachmentString(value, 'mimeType') ? { mimeType: this.readOptionalAttachmentString(value, 'mimeType') } : {}),
+      ...(this.readOptionalAttachmentString(value, 'uploadedAt') ? { uploadedAt: this.readOptionalAttachmentString(value, 'uploadedAt') } : {}),
+      ...(this.readOptionalAttachmentString(value, 'expiresAt') ? { expiresAt: this.readOptionalAttachmentString(value, 'expiresAt') } : {}),
+      ...(uploadMeta ? { uploadMeta } : {}),
+    };
+  }
+
   /** 返回已有 Run 的最新可展示结果，用于前端重试 createPlan 时实现请求级幂等。 */
   private async buildExistingRunResponse(agentRunId: string) {
     const record = await this.get(agentRunId);
@@ -148,6 +215,7 @@ export class AgentRunsService {
   }
 
   async createPlan(dto: CreateAgentPlanDto) {
+    const attachments = this.normalizeAttachments(dto.attachments);
     const clientRequestId = dto.clientRequestId?.trim();
     if (clientRequestId) {
       const existing = await this.prisma.agentRun.findFirst({
@@ -158,9 +226,9 @@ export class AgentRunsService {
     }
 
     // DTO 类实例没有 JSON index signature，显式转为普通对象再写入 Prisma Json 字段。
-    const input = { projectId: dto.projectId, message: dto.message, context: dto.context ?? {}, attachments: dto.attachments ?? [], ...(clientRequestId ? { clientRequestId } : {}) };
+    const input = { projectId: dto.projectId, message: dto.message, context: dto.context ?? {}, attachments, ...(clientRequestId ? { clientRequestId } : {}) };
     const run = await this.prisma.agentRun.create({
-      data: { projectId: dto.projectId, chapterId: dto.context?.currentChapterId, agentType: 'CreativeAgent', status: 'planning', mode: 'plan', goal: dto.message, input: input as Prisma.InputJsonValue },
+      data: { projectId: dto.projectId, chapterId: dto.context?.currentChapterId, agentType: 'CreativeAgent', status: 'planning', mode: 'plan', goal: dto.message, input: input as unknown as Prisma.InputJsonValue },
     });
     const result = await this.runtime.plan(run.id);
     return { agentRunId: run.id, status: 'waiting_approval', ...result };

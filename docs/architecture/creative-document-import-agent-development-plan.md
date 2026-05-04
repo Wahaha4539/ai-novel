@@ -148,7 +148,7 @@
 
 ### CDI-P0-008 定义后端附件 DTO 和归一化函数
 
-- 状态：`[ ]`
+- 状态：`[x]`
 - 模块：API
 - 文件：`apps/api/src/modules/agent-runs/dto/create-agent-plan.dto.ts`、`apps/api/src/modules/agent-runs/agent-runs.service.ts`
 - 任务：将 `attachments?: unknown[]` 收敛为受控结构，校验 `kind/provider/url/extension/fileName/size`。
@@ -159,6 +159,11 @@
   - P0 只接受 provider `tmpfile.link`。
   - 非法附件返回 400，不创建 AgentRun。
 - 验证：`pnpm --filter api build`
+- 完成记录：
+  - 完成内容：新增后端创意文档附件 DTO，`AgentRunsService.createPlan` 在创建 AgentRun 前归一化并校验附件数组；仅接受 `kind='creative_document'`、provider `tmpfile.link`、HTTPS URL、`md/txt/docx/pdf` 扩展名、非空文件名和非负数字 size，非法附件会抛出 400 并阻止创建 AgentRun。
+  - 修改文件：`apps/api/src/modules/agent-runs/dto/create-agent-plan.dto.ts`、`apps/api/src/modules/agent-runs/agent-runs.service.ts`、`docs/architecture/creative-document-import-agent-development-plan.md`
+  - 测试命令：`pnpm --filter api build`
+  - 测试结果：通过
 
 ### CDI-P0-009 AgentContextV2 注入附件摘要
 
