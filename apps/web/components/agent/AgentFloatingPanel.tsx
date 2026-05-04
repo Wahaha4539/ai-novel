@@ -1,7 +1,7 @@
 'use client';
 
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
-import { useAgentRun } from '../../hooks/useAgentRun';
+import { type AgentPageContext, useAgentRun } from '../../hooks/useAgentRun';
 import { AgentInputBox, ChatMessage } from './AgentInputBox';
 import { AgentApprovalDialog } from './AgentApprovalDialog';
 import { AgentPlanPanel } from './AgentPlanPanel';
@@ -19,6 +19,7 @@ type AgentMode = 'plan' | 'act';
 interface AgentFloatingPanelProps {
   projectId: string;
   selectedChapterId?: string;
+  pageContext?: AgentPageContext;
   onRefresh?: () => void | Promise<void>;
   onClose: () => void;
   /** 复用外部已创建的 useAgentRun 实例，避免重复状态 */
@@ -42,6 +43,7 @@ const TABS: { key: PanelTab; label: string }[] = [
 export function AgentFloatingPanel({
   projectId,
   selectedChapterId,
+  pageContext: externalPageContext,
   onRefresh,
   onClose,
   agentHook,
@@ -81,7 +83,15 @@ export function AgentFloatingPanel({
     if (approvalStepNos.length && approvalStepNos.every((stepNo) => approvedStepNos.includes(stepNo))) return undefined;
     return approvedStepNos.length ? approvedStepNos : undefined;
   }, [approvalStepNos, approvedStepNos]);
-  const pageContext = useMemo(() => ({ currentProjectId: projectId, currentChapterId: selectedChapterId, sourcePage: 'agent_floating_panel' }), [projectId, selectedChapterId]);
+  const pageContext = useMemo(
+    () => ({
+      currentProjectId: projectId,
+      currentChapterId: selectedChapterId,
+      sourcePage: 'agent_floating_panel',
+      ...(externalPageContext ?? {}),
+    }),
+    [projectId, selectedChapterId, externalPageContext],
+  );
 
   // 项目切换时拉取最近 AgentRun
   useEffect(() => {

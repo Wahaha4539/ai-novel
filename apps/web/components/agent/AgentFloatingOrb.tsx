@@ -1,12 +1,13 @@
 'use client';
 
 import { useCallback, useEffect, useRef, useState } from 'react';
-import { AgentRunStatus, useAgentRun } from '../../hooks/useAgentRun';
+import { type AgentPageContext, AgentRunStatus, useAgentRun } from '../../hooks/useAgentRun';
 import { AgentFloatingPanel } from './AgentFloatingPanel';
 
 interface AgentFloatingOrbProps {
   projectId: string;
   selectedChapterId?: string;
+  pageContext?: AgentPageContext;
   onRefresh?: () => void | Promise<void>;
 }
 
@@ -41,7 +42,7 @@ const DRAG_THRESHOLD = 5;
  * - 根据 AgentRun 状态展示不同动画反馈
  * - 点击（非拖拽）切换详情面板的展开/收起
  */
-export function AgentFloatingOrb({ projectId, selectedChapterId, onRefresh }: AgentFloatingOrbProps) {
+export function AgentFloatingOrb({ projectId, selectedChapterId, pageContext, onRefresh }: AgentFloatingOrbProps) {
   const agentHook = useAgentRun();
   const [isOpen, setIsOpen] = useState(false);
 
@@ -122,6 +123,7 @@ export function AgentFloatingOrb({ projectId, selectedChapterId, onRefresh }: Ag
         <AgentFloatingPanel
           projectId={projectId}
           selectedChapterId={selectedChapterId}
+          pageContext={pageContext}
           onRefresh={onRefresh}
           onClose={handleClosePanel}
           agentHook={agentHook}

@@ -52,7 +52,7 @@
 
 ### AAM-P0-003 创作引导页创建 Agent Plan 时传 guided context
 
-- 状态：`[ ]`
+- 状态：`[x]`
 - 模块：Web
 - 文件：`apps/web/components/guided/GuidedWizard.tsx`、`apps/web/hooks/useGuidedSession.ts` 或接入 `useAgentRun`
 - 任务：在创作引导页调用 Agent 时传入当前 step、step label、项目 ID 和已有 stepData。
@@ -62,6 +62,11 @@
   - 当前步骤标签能进入 Agent 计划理解。
   - 不影响原有手动编辑和步骤导航。
 - 验证：`pnpm --filter web build`
+- 完成记录：
+  - 完成内容：为 Agent 悬浮入口新增可覆盖的页面上下文，创作引导页在 guided 视图下传入 `sourcePage='guided_wizard'`、当前 step、step label、当前 stepData、completedSteps 和 documentDraft。
+  - 修改文件：`apps/web/components/guided/GuidedWizard.tsx`、`apps/web/components/agent/AgentFloatingOrb.tsx`、`apps/web/components/agent/AgentFloatingPanel.tsx`、`apps/web/app/page.tsx`、`docs/architecture/ai-assistant-to-agent-migration-development-plan.md`
+  - 测试命令：`pnpm --filter web build`
+  - 测试结果：通过
 
 ### AAM-P0-004 Agent Planner 增加 guided 场景识别
 

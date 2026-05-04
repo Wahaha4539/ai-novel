@@ -1,6 +1,7 @@
 import React, { useState, useCallback, useEffect, useRef, useMemo } from 'react';
 import { ProjectSummary } from '../../types/dashboard';
 import { useGuidedSession, GUIDED_STEPS, StepKey } from '../../hooks/useGuidedSession';
+import { AgentPageContext } from '../../hooks/useAgentRun';
 import { DocumentTOC } from './DocumentTOC';
 import { StepSection } from './StepSection';
 import { AiChatPanel } from './AiChatPanel';
@@ -42,9 +43,10 @@ interface Props {
   selectedProjectId: string;
   autoStart?: boolean;
   onDataChanged?: () => void;
+  onAgentContextChange?: (context: AgentPageContext) => void;
 }
 
-export function GuidedWizard({ selectedProject, selectedProjectId, autoStart, onDataChanged }: Props) {
+export function GuidedWizard({ selectedProject, selectedProjectId, autoStart, onDataChanged, onAgentContextChange }: Props) {
   const {
     session,
     currentStepIndex,
@@ -93,6 +95,7 @@ export function GuidedWizard({ selectedProject, selectedProjectId, autoStart, on
     }
     return set;
   }, [getStepResultData, session]); // eslint-disable-line react-hooks/exhaustive-deps
+  const completedStepKeys = useMemo(() => Array.from(completedSteps), [completedSteps]);
 
   // Load persisted step results into allStepData on session load.
   // Transforms flat chapter arrays back into the volumeChapters format
@@ -525,6 +528,22 @@ export function GuidedWizard({ selectedProject, selectedProjectId, autoStart, on
 
   // Get current step label for AI drawer
   const currentStepLabel = GUIDED_STEPS.find((s) => s.key === activeStepKey)?.label;
+
+  const guidedAgentContext = useMemo<AgentPageContext>(() => ({
+    currentProjectId: selectedProjectId,
+    sourcePage: 'guided_wizard',
+    guided: {
+      currentStep: activeStepKey,
+      currentStepLabel,
+      currentStepData: allStepData[activeStepKey] ?? {},
+      completedSteps: completedStepKeys,
+      documentDraft: allStepData,
+    },
+  }), [activeStepKey, allStepData, completedStepKeys, currentStepLabel, selectedProjectId]);
+
+  useEffect(() => {
+    onAgentContextChange?.(guidedAgentContext);
+  }, [guidedAgentContext, onAgentContextChange]);
 
   // No session yet — show start screen
   if (!session) {

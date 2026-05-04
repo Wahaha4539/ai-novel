@@ -15,6 +15,7 @@ import { ForeshadowBoard } from '../components/ForeshadowBoard';
 import { BatchGeneratePanel } from '../components/BatchGeneratePanel';
 import { LlmProviderPanel } from '../components/LlmProviderPanel';
 import { AgentFloatingOrb } from '../components/agent/AgentFloatingOrb';
+import { AgentPageContext } from '../hooks/useAgentRun';
 
 type ActiveView = 'editor' | 'outline' | 'lore' | 'projects' | 'volumes' | 'guided' | 'prompts' | 'foreshadow' | 'generate' | 'llm-config';
 
@@ -56,6 +57,7 @@ export default function HomePage() {
   const [activeView, setActiveView] = useState<ActiveView>('projects');
   const [selectedVolumeId, setSelectedVolumeId] = useState('');
   const [autoStartGuided, setAutoStartGuided] = useState(false);
+  const [guidedAgentContext, setGuidedAgentContext] = useState<AgentPageContext | undefined>();
   const [isToastVisible, setIsToastVisible] = useState(false);
   const [workspaceStateRestored, setWorkspaceStateRestored] = useState(false);
   const loadProjectDataRef = useRef(data.loadProjectData);
@@ -253,7 +255,13 @@ export default function HomePage() {
         ) : activeView === 'volumes' ? (
           <VolumePanel selectedProject={selectedProject} selectedProjectId={data.selectedProjectId} chapters={chapters} />
         ) : activeView === 'guided' ? (
-          <GuidedWizard selectedProject={selectedProject} selectedProjectId={data.selectedProjectId} autoStart={autoStartGuided} onDataChanged={() => data.loadProjectData(data.selectedProjectId, data.selectedChapterId)} />
+          <GuidedWizard
+            selectedProject={selectedProject}
+            selectedProjectId={data.selectedProjectId}
+            autoStart={autoStartGuided}
+            onDataChanged={() => data.loadProjectData(data.selectedProjectId, data.selectedChapterId)}
+            onAgentContextChange={setGuidedAgentContext}
+          />
         ) : activeView === 'prompts' ? (
           <PromptManagerPanel selectedProject={selectedProject} selectedProjectId={data.selectedProjectId} />
         ) : activeView === 'foreshadow' ? (
@@ -342,6 +350,7 @@ export default function HomePage() {
         <AgentFloatingOrb
           projectId={data.selectedProjectId}
           selectedChapterId={data.selectedChapterId !== 'all' ? data.selectedChapterId : undefined}
+          pageContext={activeView === 'guided' ? guidedAgentContext : undefined}
           onRefresh={() => data.loadProjectData(data.selectedProjectId, data.selectedChapterId)}
         />
       )}
