@@ -1,5 +1,13 @@
 import { IsObject, IsOptional, IsString, IsUUID, MinLength } from 'class-validator';
 
+export interface GuidedAgentPlanContextDto {
+  currentStep?: string;
+  currentStepLabel?: string;
+  currentStepData?: Record<string, unknown>;
+  completedSteps?: string[];
+  documentDraft?: Record<string, unknown>;
+}
+
 export interface CreateAgentPlanContextDto {
   currentProjectId?: string;
   currentVolumeId?: string;
@@ -12,6 +20,7 @@ export interface CreateAgentPlanContextDto {
   selectedText?: string;
   selectedRange?: { start: number; end: number };
   sourcePage?: string;
+  guided?: GuidedAgentPlanContextDto;
   [key: string]: unknown;
 }
 

@@ -439,7 +439,7 @@ export class AgentRuntimeService {
   private async persistContextSnapshot(agentRunId: string, input: unknown, context: AgentContextV2, digest: string) {
     const base = this.asRecord(input);
     const contextSnapshot = this.compactContextSnapshot(context);
-    await this.prisma.agentRun.update({ where: { id: agentRunId }, data: { input: { ...base, contextSnapshotDigest: digest, contextSnapshot } as Prisma.InputJsonValue } });
+    await this.prisma.agentRun.update({ where: { id: agentRunId }, data: { input: { ...base, contextSnapshotDigest: digest, contextSnapshot } as unknown as Prisma.InputJsonValue } });
   }
 
   private async loadContextForExecution(run: { id: string; projectId: string; chapterId?: string | null; goal: string; input: unknown }) {

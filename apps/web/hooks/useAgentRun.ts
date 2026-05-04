@@ -171,7 +171,16 @@ async function apiFetch<T>(path: string, init?: RequestInit): Promise<T> {
  * 为创建计划生成前端幂等键。键中包含项目、章节和消息摘要。
  * 具体复用由 useAgentRun 内的 Map 控制，避免每次重试都因 Date.now 生成新键。
  */
+export interface GuidedAgentPageContext {
+  currentStep?: string;
+  currentStepLabel?: string;
+  currentStepData?: Record<string, unknown>;
+  completedSteps?: string[];
+  documentDraft?: Record<string, unknown>;
+}
+
 export interface AgentPageContext {
+  currentProjectId?: string;
   currentChapterId?: string;
   currentChapterTitle?: string;
   currentChapterIndex?: number;
@@ -180,6 +189,7 @@ export interface AgentPageContext {
   selectedText?: string;
   selectedRange?: { start: number; end: number };
   sourcePage?: string;
+  guided?: GuidedAgentPageContext;
   [key: string]: unknown;
 }
 

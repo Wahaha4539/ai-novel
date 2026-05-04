@@ -5,6 +5,14 @@ import { RuleEngineService } from '../agent-rules/rule-engine.service';
 import { ToolManifestForPlanner } from '../agent-tools/tool-manifest.types';
 import { ToolRegistryService } from '../agent-tools/tool-registry.service';
 
+export interface GuidedAgentContext {
+  currentStep?: string;
+  currentStepLabel?: string;
+  currentStepData?: Record<string, unknown>;
+  completedSteps?: string[];
+  documentDraft?: Record<string, unknown>;
+}
+
 export interface AgentContextV2 {
   schemaVersion: 2;
   userMessage: string;
@@ -34,6 +42,7 @@ export interface AgentContextV2 {
       latestChoice?: { id?: string; label?: string; payload?: unknown; message?: string; answeredAt?: string };
       history: Array<{ roundNo?: number; question?: string; selectedChoice?: unknown; answeredAt?: string }>;
     };
+    guided?: GuidedAgentContext;
   };
   project?: {
     id: string;
@@ -112,6 +121,7 @@ export class AgentContextBuilderService {
         selectedRange: this.rangeValue(sessionHints.selectedRange),
         sourcePage: this.stringValue(sessionHints.sourcePage),
         clarification: clarification.history.length || clarification.latestChoice ? clarification : undefined,
+        guided: this.guidedValue(sessionHints.guided),
       },
       project: project
         ? { id: project.id, title: project.title, genre: project.genre, style: project.tone, synopsis: project.synopsis, defaultWordCount: project.targetWordCount, status: project.status }
@@ -206,6 +216,25 @@ export class AgentContextBuilderService {
     const start = this.numberValue(record.start);
     const end = this.numberValue(record.end);
     return start !== undefined && end !== undefined ? { start, end } : undefined;
+  }
+
+  private guidedValue(value: unknown): GuidedAgentContext | undefined {
+    const record = this.asRecord(value);
+    const currentStepData = this.nonEmptyRecord(record.currentStepData);
+    const documentDraft = this.nonEmptyRecord(record.documentDraft);
+    const guided: GuidedAgentContext = {
+      currentStep: this.stringValue(record.currentStep),
+      currentStepLabel: this.stringValue(record.currentStepLabel),
+      ...(currentStepData ? { currentStepData } : {}),
+      completedSteps: this.stringArray(record.completedSteps),
+      ...(documentDraft ? { documentDraft } : {}),
+    };
+    return Object.values(guided).some((item) => Array.isArray(item) ? item.length > 0 : item !== undefined) ? guided : undefined;
+  }
+
+  private nonEmptyRecord(value: unknown): Record<string, unknown> | undefined {
+    const record = this.asRecord(value);
+    return Object.keys(record).length ? record : undefined;
   }
 
   /**

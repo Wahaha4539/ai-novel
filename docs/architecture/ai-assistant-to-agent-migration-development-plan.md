@@ -34,7 +34,7 @@
 
 ### AAM-P0-002 定义 Guided Agent 上下文类型
 
-- 状态：`[ ]`
+- 状态：`[x]`
 - 模块：API/Web
 - 文件：`apps/api/src/modules/agent-runs/agent-context-builder.service.ts`、`apps/web/hooks/useAgentRun.ts`
 - 任务：定义 `guided.currentStep/currentStepLabel/currentStepData/completedSteps/documentDraft` 上下文结构。
@@ -44,6 +44,11 @@
   - 后端 `AgentContextV2.session.guided` 可读取该结构。
   - 旧 Agent 调用不受影响。
 - 验证：`pnpm --filter api build`、`pnpm --filter web build`
+- 完成记录：
+  - 完成内容：新增前端 `GuidedAgentPageContext` 和后端 `GuidedAgentContext`，允许 `createPlan` 传入 `context.guided`，并由 `AgentContextBuilderService` 安全归一化到 `AgentContextV2.session.guided`。
+  - 修改文件：`apps/api/src/modules/agent-runs/agent-context-builder.service.ts`、`apps/api/src/modules/agent-runs/dto/create-agent-plan.dto.ts`、`apps/web/hooks/useAgentRun.ts`、`docs/architecture/ai-assistant-to-agent-migration-development-plan.md`
+  - 测试命令：`pnpm --filter api build`、`pnpm --filter web build`
+  - 测试结果：通过
 
 ### AAM-P0-003 创作引导页创建 Agent Plan 时传 guided context
 
