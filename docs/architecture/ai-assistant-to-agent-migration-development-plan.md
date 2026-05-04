@@ -144,7 +144,7 @@
 
 ### AAM-P1-004 新增 guided AgentRun 历史入口
 
-- 状态：`[ ]`
+- 状态：`[x]`
 - 模块：Web
 - 文件：`apps/web/components/guided/GuidedWizard.tsx` 或 Agent 浮动面板
 - 任务：在创作引导页能查看当前项目相关 AgentRun 历史。
@@ -153,6 +153,11 @@
   - 能查看最近 AI 助手问答/生成记录。
   - 点击历史能打开对应 Agent 详情或 Artifact。
 - 验证：`pnpm --filter web build`
+- 完成记录：
+  - 完成内容：在创作引导页头部新增 `Agent 记录` 入口，筛选当前项目中来源于 guided 的 AgentRun；点击历史记录后展示对应计划摘要和 Artifact 列表。
+  - 修改文件：`apps/web/components/guided/GuidedWizard.tsx`、`docs/architecture/ai-assistant-to-agent-migration-development-plan.md`
+  - 测试命令：`pnpm --filter web build`
+  - 测试结果：通过
 
 ## 4. P2 生成能力迁移
 

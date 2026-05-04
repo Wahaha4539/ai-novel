@@ -1,7 +1,8 @@
 import React, { useState, useCallback, useEffect, useRef, useMemo } from 'react';
 import { ProjectSummary } from '../../types/dashboard';
 import { type GuidedAiBackend, useGuidedSession, GUIDED_STEPS, StepKey } from '../../hooks/useGuidedSession';
-import { AgentPageContext } from '../../hooks/useAgentRun';
+import { type AgentPageContext, type AgentRun, type AgentRunListItem, useAgentRun } from '../../hooks/useAgentRun';
+import { AgentRunHistoryPanel } from '../agent/AgentRunHistoryPanel';
 import { DocumentTOC } from './DocumentTOC';
 import { StepSection } from './StepSection';
 import { AiChatPanel } from './AiChatPanel';
@@ -41,6 +42,25 @@ function formatChapterForHint(ch: Record<string, unknown>, outlineLimit = 500): 
   ].join('\n');
 }
 
+function asRecord(value: unknown): Record<string, unknown> {
+  return value && typeof value === 'object' && !Array.isArray(value) ? value as Record<string, unknown> : {};
+}
+
+function isGuidedAgentRun(run: AgentRunListItem): boolean {
+  const input = asRecord(run.input);
+  const context = asRecord(input.context);
+  const guided = asRecord(context.guided);
+  return run.taskType?.startsWith('guided_step') === true
+    || context.sourcePage === 'guided_wizard'
+    || Object.keys(guided).length > 0;
+}
+
+function latestPlanSummary(run: AgentRun | null): string | undefined {
+  const plan = run?.plans?.[0];
+  const nestedPlan = plan?.plan;
+  return nestedPlan?.summary ?? plan?.summary;
+}
+
 interface Props {
   selectedProject?: ProjectSummary;
   selectedProjectId: string;
@@ -72,6 +92,7 @@ export function GuidedWizard({ selectedProject, selectedProjectId, autoStart, on
   const [activeStepKey, setActiveStepKey] = useState<StepKey>('guided_setup');
   // AI drawer visibility
   const [aiDrawerOpen, setAiDrawerOpen] = useState(true);
+  const [agentHistoryOpen, setAgentHistoryOpen] = useState(false);
   // True while sequentially generating chapters for all volumes
   const [batchGenerating, setBatchGenerating] = useState(false);
   // Section refs for scroll-to
@@ -79,6 +100,14 @@ export function GuidedWizard({ selectedProject, selectedProjectId, autoStart, on
   const scrollContainerRef = useRef<HTMLDivElement>(null);
   const latestStepDataRef = useRef(allStepData);
   const autoSaveTimersRef = useRef<Record<number, ReturnType<typeof setTimeout>>>({});
+  const {
+    currentRun: selectedAgentRun,
+    runHistory: agentRunHistory,
+    loading: agentHistoryLoading,
+    listByProject: listAgentRunsByProject,
+    refresh: refreshAgentRun,
+    loadAudit: loadAgentRunAudit,
+  } = useAgentRun();
 
   useEffect(() => {
     latestStepDataRef.current = allStepData;
@@ -100,6 +129,12 @@ export function GuidedWizard({ selectedProject, selectedProjectId, autoStart, on
     return set;
   }, [getStepResultData, session]); // eslint-disable-line react-hooks/exhaustive-deps
   const completedStepKeys = useMemo(() => Array.from(completedSteps), [completedSteps]);
+  const guidedAgentRuns = useMemo(() => agentRunHistory.filter(isGuidedAgentRun), [agentRunHistory]);
+
+  useEffect(() => {
+    if (!agentHistoryOpen || !selectedProjectId) return;
+    void listAgentRunsByProject(selectedProjectId);
+  }, [agentHistoryOpen, listAgentRunsByProject, selectedProjectId]);
 
   // Load persisted step results into allStepData on session load.
   // Transforms flat chapter arrays back into the volumeChapters format
@@ -604,6 +639,8 @@ export function GuidedWizard({ selectedProject, selectedProjectId, autoStart, on
         projectTitle={selectedProject?.title}
         aiDrawerOpen={aiDrawerOpen}
         onToggleAi={() => setAiDrawerOpen((prev) => !prev)}
+        agentHistoryOpen={agentHistoryOpen}
+        onToggleAgentHistory={() => setAgentHistoryOpen((prev) => !prev)}
       />
 
       {/* Error banner */}
@@ -629,6 +666,19 @@ export function GuidedWizard({ selectedProject, selectedProjectId, autoStart, on
             ✕
           </button>
         </div>
+      )}
+
+      {agentHistoryOpen && (
+        <GuidedAgentHistoryPanel
+          runs={guidedAgentRuns}
+          currentRun={selectedAgentRun}
+          loading={agentHistoryLoading}
+          onRefresh={async () => { await listAgentRunsByProject(selectedProjectId); }}
+          onSelect={async (id) => {
+            await refreshAgentRun(id);
+            await loadAgentRunAudit(id);
+          }}
+        />
       )}
 
       {/* Main content: TOC + Document + AI Drawer */}
@@ -727,11 +777,15 @@ export function GuidedWizard({ selectedProject, selectedProjectId, autoStart, on
 function GuidedHeader({
   projectTitle,
   aiDrawerOpen,
+  agentHistoryOpen,
   onToggleAi,
+  onToggleAgentHistory,
 }: {
   projectTitle?: string;
   aiDrawerOpen?: boolean;
+  agentHistoryOpen?: boolean;
   onToggleAi?: () => void;
+  onToggleAgentHistory?: () => void;
 }) {
   return (
     <header
@@ -798,7 +852,134 @@ function GuidedHeader({
             🤖 AI 助手
           </button>
         )}
+        {onToggleAgentHistory && (
+          <button
+            onClick={onToggleAgentHistory}
+            style={{
+              padding: '0.3rem 0.6rem',
+              borderRadius: '0.4rem',
+              border: '1px solid var(--border-light)',
+              background: agentHistoryOpen ? 'var(--accent-cyan-bg)' : 'var(--bg-hover-subtle)',
+              color: agentHistoryOpen ? 'var(--accent-cyan)' : 'var(--text-dim)',
+              fontSize: '0.72rem',
+              fontWeight: 600,
+              cursor: 'pointer',
+              transition: 'all 0.2s ease',
+            }}
+          >
+            Agent 记录
+          </button>
+        )}
       </div>
     </header>
+  );
+}
+
+function GuidedAgentHistoryPanel({
+  runs,
+  currentRun,
+  loading,
+  onRefresh,
+  onSelect,
+}: {
+  runs: AgentRunListItem[];
+  currentRun: AgentRun | null;
+  loading: boolean;
+  onRefresh: () => void | Promise<void>;
+  onSelect: (id: string) => void | Promise<void>;
+}) {
+  const artifacts = currentRun?.artifacts ?? [];
+  const summary = latestPlanSummary(currentRun);
+
+  return (
+    <section
+      className="animate-slide-top"
+      style={{
+        display: 'grid',
+        gridTemplateColumns: 'minmax(16rem, 22rem) minmax(0, 1fr)',
+        gap: '0.75rem',
+        padding: '0.75rem 1rem',
+        borderBottom: '1px solid var(--border-light)',
+        background: 'color-mix(in srgb, var(--bg-editor-header) 92%, transparent)',
+        maxHeight: '20rem',
+        overflow: 'hidden',
+      }}
+    >
+      <div style={{ minHeight: 0, overflowY: 'auto' }}>
+        <AgentRunHistoryPanel
+          runs={runs}
+          currentRunId={currentRun?.id}
+          loading={loading}
+          onRefresh={onRefresh}
+          onSelect={onSelect}
+        />
+      </div>
+      <div
+        style={{
+          minHeight: 0,
+          overflowY: 'auto',
+          border: '1px solid var(--border-light)',
+          borderRadius: '0.5rem',
+          background: 'var(--bg-card)',
+          padding: '0.85rem',
+        }}
+      >
+        {currentRun ? (
+          <div>
+            <div className="flex items-center justify-between gap-3">
+              <div>
+                <div className="text-xs font-bold" style={{ color: 'var(--text-main)' }}>
+                  {currentRun.taskType ?? 'AgentRun'}
+                </div>
+                <div className="mt-1 text-[11px]" style={{ color: 'var(--text-dim)' }}>
+                  {currentRun.status}
+                </div>
+              </div>
+              <span className="text-[11px]" style={{ color: 'var(--text-dim)' }}>
+                {currentRun.id.slice(0, 8)}
+              </span>
+            </div>
+            <p className="mt-3 text-xs leading-5" style={{ color: 'var(--text-muted)' }}>
+              {summary ?? currentRun.goal}
+            </p>
+            <div className="mt-4">
+              <div className="mb-2 text-[11px] font-bold uppercase" style={{ color: 'var(--accent-cyan)' }}>
+                Artifacts
+              </div>
+              {artifacts.length ? (
+                <div className="space-y-2">
+                  {artifacts.map((artifact) => (
+                    <div
+                      key={artifact.id}
+                      style={{
+                        padding: '0.55rem 0.65rem',
+                        borderRadius: '0.45rem',
+                        border: '1px solid var(--border-dim)',
+                        background: 'var(--bg-deep)',
+                      }}
+                    >
+                      <div className="text-xs font-semibold" style={{ color: 'var(--text-main)' }}>
+                        {artifact.title ?? artifact.artifactType ?? 'Artifact'}
+                      </div>
+                      <div className="mt-1 text-[11px]" style={{ color: 'var(--text-dim)' }}>
+                        {artifact.artifactType ?? 'unknown'}
+                      </div>
+                    </div>
+                  ))}
+                </div>
+              ) : (
+                <div className="text-xs" style={{ color: 'var(--text-dim)' }}>
+                  选择一条历史记录后会显示对应 Artifact。
+                </div>
+              )}
+            </div>
+          </div>
+        ) : (
+          <div className="flex h-full items-center justify-center text-xs" style={{ color: 'var(--text-dim)' }}>
+            选择左侧记录查看计划摘要和 Artifact。
+          </div>
+        )}
+      </div>
+    </section>
   );
 }
