@@ -90,7 +90,7 @@
 
 ### AAM-P1-001 抽象 AI 助手发送接口
 
-- 状态：`[ ]`
+- 状态：`[x]`
 - 模块：Web
 - 文件：`apps/web/hooks/useGuidedSession.ts`
 - 任务：把当前 `sendMessage` 对 `guided-session/chat` 的直接调用抽象成可切换实现。
@@ -100,6 +100,11 @@
   - 可通过配置或参数切换为 Agent createPlan。
   - UI 行为不变。
 - 验证：`pnpm --filter web build`
+- 完成记录：
+  - 完成内容：为 `useGuidedSession` 新增 `GuidedAiBackend` 和 `UseGuidedSessionOptions`，将 `sendMessage` 的发送逻辑抽象为 `sendGuidedChat`；默认继续走旧 guided chat，可通过 hook 参数或 `NEXT_PUBLIC_GUIDED_AI_BACKEND=agent` 切换为 Agent `/agent-runs/plan`。
+  - 修改文件：`apps/web/hooks/useGuidedSession.ts`、`docs/architecture/ai-assistant-to-agent-migration-development-plan.md`
+  - 测试命令：`pnpm --filter web build`
+  - 测试结果：通过
 
 ### AAM-P1-002 AI 助手问答接入 Agent consultation
 

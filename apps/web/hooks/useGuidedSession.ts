@@ -36,13 +36,47 @@ export type ChatMessage = {
   timestamp: number;
 };
 
-export function useGuidedSession(projectId: string) {
+export type GuidedAiBackend = 'guided' | 'agent';
+
+export interface UseGuidedSessionOptions {
+  aiBackend?: GuidedAiBackend;
+}
+
+type GuidedChatPayload = {
+  currentStep: StepKey;
+  userMessage: string;
+  chatHistory: ChatMessage[];
+  projectContext?: string;
+};
+
+type AgentPlanResponse = {
+  agentRunId?: string;
+  status?: string;
+  plan?: {
+    taskType?: string;
+    summary?: string;
+  } | null;
+};
+
+const DEFAULT_GUIDED_AI_BACKEND: GuidedAiBackend =
+  process.env.NEXT_PUBLIC_GUIDED_AI_BACKEND === 'agent' ? 'agent' : 'guided';
+
+function createGuidedAgentRequestId(projectId: string, stepKey: string, message: string) {
+  const normalizedMessage = message.trim().slice(0, 120);
+  const hash = Array.from(normalizedMessage)
+    .reduce((acc, char) => (acc * 31 + char.charCodeAt(0)) >>> 0, 0)
+    .toString(36);
+  return `guided_agent_${projectId}_${stepKey}_${Date.now().toString(36)}_${hash}`;
+}
+
+export function useGuidedSession(projectId: string, options?: UseGuidedSessionOptions) {
   const [session, setSession] = useState<GuidedSession | null>(null);
   const [currentStepIndex, setCurrentStepIndex] = useState(0);
   const [chatMessages, setChatMessages] = useState<ChatMessage[]>([]);
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState('');
 
+  const aiBackend = options?.aiBackend ?? DEFAULT_GUIDED_AI_BACKEND;
   const currentStepKey = GUIDED_STEPS[currentStepIndex]?.key ?? 'guided_setup';
 
   // Load existing session
@@ -475,6 +509,68 @@ export function useGuidedSession(projectId: string) {
     return contextParts || undefined;
   }, [session, currentStepIndex]);
 
+  const buildGuidedAgentContext = useCallback(() => {
+    const stepData = (session?.stepData as Record<string, unknown>) ?? {};
+    const completedSteps = GUIDED_STEPS
+      .filter((step) => {
+        const result = stepData[`${step.key}_result`];
+        return Boolean(result && typeof result === 'object' && !Array.isArray(result) && Object.keys(result as Record<string, unknown>).length > 0);
+      })
+      .map((step) => step.key);
+    const currentStepLabel = GUIDED_STEPS[currentStepIndex]?.label;
+    const currentStepData = stepData[`${currentStepKey}_result`];
+
+    return {
+      currentProjectId: projectId,
+      sourcePage: 'guided_wizard',
+      guided: {
+        currentStep: currentStepKey,
+        currentStepLabel,
+        currentStepData: currentStepData && typeof currentStepData === 'object' && !Array.isArray(currentStepData)
+          ? currentStepData as Record<string, unknown>
+          : {},
+        completedSteps,
+        documentDraft: stepData,
+      },
+    };
+  }, [currentStepIndex, currentStepKey, projectId, session]);
+
+  const sendGuidedChat = useCallback(async (payload: GuidedChatPayload): Promise<{ reply: string }> => {
+    if (aiBackend === 'agent') {
+      const response = await apiFetch<AgentPlanResponse>('/agent-runs/plan', {
+        method: 'POST',
+        body: JSON.stringify({
+          projectId,
+          message: payload.userMessage,
+          context: buildGuidedAgentContext(),
+          clientRequestId: createGuidedAgentRequestId(projectId, payload.currentStep, payload.userMessage),
+        }),
+      });
+      const summary = response.plan?.summary?.trim();
+      const taskType = response.plan?.taskType ? `（${response.plan.taskType}）` : '';
+      return {
+        reply: [
+          `已创建 Agent 当前步骤咨询计划${taskType}。`,
+          summary ? `\n\n${summary}` : '',
+          response.agentRunId ? `\n\n可在右下角 Agent 工作台查看计划与后续审批，Run ID：${response.agentRunId}` : '',
+        ].filter(Boolean).join(''),
+      };
+    }
+
+    return apiFetch<{ reply: string }>(
+      `/projects/${projectId}/guided-session/chat`,
+      {
+        method: 'POST',
+        body: JSON.stringify({
+          currentStep: payload.currentStep,
+          userMessage: payload.userMessage,
+          chatHistory: payload.chatHistory,
+          projectContext: payload.projectContext,
+        }),
+      },
+    );
+  }, [aiBackend, buildGuidedAgentContext, projectId]);
+
   // Add a user message and get real AI response
   const sendMessage = useCallback(async (content: string) => {
     const userMsg: ChatMessage = { role: 'user', content, timestamp: Date.now() };
@@ -482,19 +578,13 @@ export function useGuidedSession(projectId: string) {
     setLoading(true);
 
     try {
-      // Send full chat history — server handles windowing + summarization
-      const response = await apiFetch<{ reply: string }>(
-        `/projects/${projectId}/guided-session/chat`,
-        {
-          method: 'POST',
-          body: JSON.stringify({
-            currentStep: currentStepKey,
-            userMessage: content,
-            chatHistory: chatMessages,
-            projectContext: buildProjectContext(),
-          }),
-        },
-      );
+      // Send full chat history — selected backend handles windowing, planning or summarization.
+      const response = await sendGuidedChat({
+        currentStep: currentStepKey,
+        userMessage: content,
+        chatHistory: chatMessages,
+        projectContext: buildProjectContext(),
+      });
 
       // Check if AI decided to complete this step
       const displayContent = await handleStepComplete(response.reply);
@@ -515,7 +605,7 @@ export function useGuidedSession(projectId: string) {
     } finally {
       setLoading(false);
     }
-  }, [projectId, currentStepKey, chatMessages, handleStepComplete, buildProjectContext]);
+  }, [currentStepKey, chatMessages, handleStepComplete, buildProjectContext, sendGuidedChat]);
 
   // One-shot AI generation: generate all data for a step without Q&A
   // Accepts optional targetStepKey, volumeNo and chapterNo to support per-volume
