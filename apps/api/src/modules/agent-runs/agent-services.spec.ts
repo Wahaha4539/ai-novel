@@ -22,6 +22,7 @@ import { CollectChapterContextTool } from '../agent-tools/tools/collect-chapter-
 import { CollectTaskContextTool } from '../agent-tools/tools/collect-task-context.tool';
 import { CharacterConsistencyCheckTool } from '../agent-tools/tools/character-consistency-check.tool';
 import { PlotConsistencyCheckTool } from '../agent-tools/tools/plot-consistency-check.tool';
+import { GenerateGuidedStepPreviewTool } from '../agent-tools/tools/generate-guided-step-preview.tool';
 import { GenerateWorldbuildingPreviewTool } from '../agent-tools/tools/generate-worldbuilding-preview.tool';
 import { ValidateWorldbuildingTool } from '../agent-tools/tools/validate-worldbuilding.tool';
 import { PersistWorldbuildingTool } from '../agent-tools/tools/persist-worldbuilding.tool';
@@ -982,6 +983,46 @@ test('AgentRuntime 为剧情一致性检查提升上下文和报告 Artifact', (
 
   assert.deepEqual(artifacts.map((item) => item.artifactType), ['task_context_preview', 'plot_consistency_report']);
   assert.equal(artifacts[1].title, '剧情一致性检查报告');
+});
+
+test('GenerateGuidedStepPreviewTool 生成基础设定和风格定义预览且保持只读', async () => {
+  const calls: Array<{ messages: Array<{ role: string; content: string }>; options: Record<string, unknown> }> = [];
+  const responses = [
+    { genre: '悬疑', theme: '记忆与真相', tone: '冷静克制', logline: '档案员追查一份不存在的死亡记录。', synopsis: '档案错位牵出旧案。' },
+    { pov: '第三人称有限视角', tense: '过去时', proseStyle: '冷静、克制、细节驱动', pacing: '缓慢加压' },
+  ];
+  const llm = {
+    async chatJson(messages: Array<{ role: string; content: string }>, options: Record<string, unknown>) {
+      calls.push({ messages, options });
+      return { data: responses.shift() };
+    },
+  };
+  const tool = new GenerateGuidedStepPreviewTool(llm as never);
+  const context = { agentRunId: 'run1', projectId: 'p1', mode: 'plan' as const, approved: false, outputs: {}, policy: {} };
+
+  const setup = await tool.run({ stepKey: 'guided_setup', userHint: '偏悬疑但不要太黑暗', projectContext: { title: '旧档案' } }, context);
+  const style = await tool.run({ stepKey: 'guided_style', chatSummary: '用户确认了冷静基调' }, context);
+
+  assert.equal(setup.stepKey, 'guided_setup');
+  assert.equal(setup.structuredData.genre, '悬疑');
+  assert.match(setup.summary, /悬疑/);
+  assert.equal(style.stepKey, 'guided_style');
+  assert.equal(style.structuredData.pov, '第三人称有限视角');
+  assert.deepEqual(tool.sideEffects, []);
+  assert.equal(tool.requiresApproval, false);
+  assert.equal(tool.riskLevel, 'low');
+  assert.ok(tool.allowedModes.includes('plan'));
+  assert.match(calls[0].messages[0].content, /"genre"/);
+  assert.match(calls[1].messages[0].content, /"pov"/);
+});
+
+test('GenerateGuidedStepPreviewTool 对尚未扩展步骤显式拒绝', async () => {
+  const tool = new GenerateGuidedStepPreviewTool({ async chatJson() { throw new Error('不应调用 LLM'); } } as never);
+
+  await assert.rejects(
+    () => tool.run({ stepKey: 'guided_chapter' }, { agentRunId: 'run1', projectId: 'p1', mode: 'plan', approved: false, outputs: {}, policy: {} }),
+    /暂支持 guided_setup\/guided_style/,
+  );
 });
 
 test('GenerateWorldbuildingPreviewTool 归一化 LLM 预览并声明后续校验链路', async () => {

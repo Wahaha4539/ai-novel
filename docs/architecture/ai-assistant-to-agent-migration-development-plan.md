@@ -180,7 +180,7 @@
 
 ### AAM-P2-002 新增 generate_guided_step_preview Tool
 
-- 状态：`[ ]`
+- 状态：`[x]`
 - 模块：API
 - 文件：新增 `apps/api/src/modules/agent-tools/tools/generate-guided-step-preview.tool.ts`
 - 任务：实现只读 Tool，根据 stepKey、项目上下文、用户提示和聊天摘要生成结构化步骤预览。
@@ -190,6 +190,11 @@
   - 输出 `stepKey/structuredData/summary/warnings`。
   - 无写库副作用。
 - 验证：`pnpm --filter api test:agent`
+- 完成记录：
+  - 完成内容：新增只读 `generate_guided_step_preview` Tool，支持 `guided_setup` 和 `guided_style` 结构化预览生成，输出固定的 `stepKey/structuredData/summary/warnings`；声明低风险、免审批、无副作用，并对尚未扩展步骤显式拒绝。
+  - 修改文件：`apps/api/src/modules/agent-tools/tools/generate-guided-step-preview.tool.ts`、`apps/api/src/modules/agent-runs/agent-services.spec.ts`、`docs/architecture/ai-assistant-to-agent-migration-development-plan.md`
+  - 测试命令：`pnpm --filter api test:agent`
+  - 测试结果：通过
 
 ### AAM-P2-003 注册 generate_guided_step_preview Tool
 
