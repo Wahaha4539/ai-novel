@@ -198,7 +198,7 @@
 
 ### AAM-P2-003 注册 generate_guided_step_preview Tool
 
-- 状态：`[ ]`
+- 状态：`[x]`
 - 模块：API
 - 文件：`apps/api/src/modules/agent-tools/agent-tools.module.ts`、`apps/api/src/modules/agent-tools/tool-registry.service.ts`
 - 任务：加入 provider 和 ToolRegistry。
@@ -207,6 +207,11 @@
   - Planner Available Tools 中能看到 `generate_guided_step_preview`。
   - Manifest 说明每个 guided step 的使用方式。
 - 验证：`pnpm --filter api build`
+- 完成记录：
+  - 完成内容：将 `GenerateGuidedStepPreviewTool` 加入 Agent Tools Nest provider，并注入到 `ToolRegistryService` 白名单注册流程，使 Planner Available Tools 可获取 `generate_guided_step_preview` 的 manifest、参数提示、Artifact 映射和只读风险声明。
+  - 修改文件：`apps/api/src/modules/agent-tools/agent-tools.module.ts`、`apps/api/src/modules/agent-tools/tool-registry.service.ts`、`docs/architecture/ai-assistant-to-agent-migration-development-plan.md`
+  - 测试命令：`pnpm --filter api build`
+  - 测试结果：通过
 
 ### AAM-P2-004 AI 生成按钮改走 Agent Plan
 

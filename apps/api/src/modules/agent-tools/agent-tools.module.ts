@@ -14,6 +14,7 @@ import { EchoReportTool } from './tools/echo-report.tool';
 import { ExtractChapterFactsTool } from './tools/extract-chapter-facts.tool';
 import { FactValidationTool } from './tools/fact-validation.tool';
 import { FactsModule } from '../facts/facts.module';
+import { GenerateGuidedStepPreviewTool } from './tools/generate-guided-step-preview.tool';
 import { GenerateOutlinePreviewTool } from './tools/generate-outline-preview.tool';
 import { GenerateWorldbuildingPreviewTool } from './tools/generate-worldbuilding-preview.tool';
 import { InspectProjectContextTool } from './tools/inspect-project-context.tool';
@@ -38,7 +39,7 @@ import { RelationshipGraphService } from './relationship-graph.service';
 
 @Module({
   imports: [PrismaModule, LlmModule, GenerationModule, ValidationModule, MemoryModule, FactsModule],
-  providers: [ToolRegistryService, RelationshipGraphService, EchoReportTool, ResolveChapterTool, ResolveCharacterTool, CharacterConsistencyCheckTool, PlotConsistencyCheckTool, CollectChapterContextTool, CollectTaskContextTool, WriteChapterTool, WriteChapterSeriesTool, PostProcessChapterTool, PolishChapterTool, FactValidationTool, AutoRepairChapterTool, ExtractChapterFactsTool, RebuildMemoryTool, ReviewMemoryTool, InspectProjectContextTool, GenerateOutlinePreviewTool, GenerateWorldbuildingPreviewTool, ValidateOutlineTool, ValidateWorldbuildingTool, PersistWorldbuildingTool, PersistOutlineTool, AnalyzeSourceTextTool, BuildImportPreviewTool, ValidateImportedAssetsTool, PersistProjectAssetsTool, ReportResultTool],
+  providers: [ToolRegistryService, RelationshipGraphService, EchoReportTool, ResolveChapterTool, ResolveCharacterTool, CharacterConsistencyCheckTool, PlotConsistencyCheckTool, CollectChapterContextTool, CollectTaskContextTool, WriteChapterTool, WriteChapterSeriesTool, PostProcessChapterTool, PolishChapterTool, FactValidationTool, AutoRepairChapterTool, ExtractChapterFactsTool, RebuildMemoryTool, ReviewMemoryTool, InspectProjectContextTool, GenerateGuidedStepPreviewTool, GenerateOutlinePreviewTool, GenerateWorldbuildingPreviewTool, ValidateOutlineTool, ValidateWorldbuildingTool, PersistWorldbuildingTool, PersistOutlineTool, AnalyzeSourceTextTool, BuildImportPreviewTool, ValidateImportedAssetsTool, PersistProjectAssetsTool, ReportResultTool],
   exports: [ToolRegistryService],
 })
 export class AgentToolsModule {}

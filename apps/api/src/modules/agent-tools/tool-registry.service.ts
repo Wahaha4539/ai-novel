@@ -10,6 +10,7 @@ import { CollectTaskContextTool } from './tools/collect-task-context.tool';
 import { EchoReportTool } from './tools/echo-report.tool';
 import { ExtractChapterFactsTool } from './tools/extract-chapter-facts.tool';
 import { FactValidationTool } from './tools/fact-validation.tool';
+import { GenerateGuidedStepPreviewTool } from './tools/generate-guided-step-preview.tool';
 import { GenerateOutlinePreviewTool } from './tools/generate-outline-preview.tool';
 import { GenerateWorldbuildingPreviewTool } from './tools/generate-worldbuilding-preview.tool';
 import { InspectProjectContextTool } from './tools/inspect-project-context.tool';
@@ -56,6 +57,7 @@ export class ToolRegistryService implements OnModuleInit {
     private readonly rebuildMemoryTool: RebuildMemoryTool,
     private readonly reviewMemoryTool: ReviewMemoryTool,
     private readonly inspectProjectContextTool: InspectProjectContextTool,
+    private readonly generateGuidedStepPreviewTool: GenerateGuidedStepPreviewTool,
     private readonly generateOutlinePreviewTool: GenerateOutlinePreviewTool,
     private readonly generateWorldbuildingPreviewTool: GenerateWorldbuildingPreviewTool,
     private readonly validateOutlineTool: ValidateOutlineTool,
@@ -86,6 +88,7 @@ export class ToolRegistryService implements OnModuleInit {
     this.register(this.rebuildMemoryTool);
     this.register(this.reviewMemoryTool);
     this.register(this.inspectProjectContextTool);
+    this.register(this.generateGuidedStepPreviewTool);
     this.register(this.generateOutlinePreviewTool);
     this.register(this.generateWorldbuildingPreviewTool);
     this.register(this.validateOutlineTool);
