@@ -75,7 +75,7 @@
 
 ### CDI-P0-004 渲染附件卡片和删除操作
 
-- 状态：`[ ]`
+- 状态：`[x]`
 - 模块：Web
 - 文件：`apps/web/components/agent/AgentInputBox.tsx`、`apps/web/app/globals.css`
 - 任务：在输入框附近显示附件卡片，包含文件名、类型、大小、上传状态和删除按钮。
@@ -86,6 +86,11 @@
   - 长文件名不会撑破布局。
   - 悬浮面板和全屏工作台内样式都正常。
 - 验证：`pnpm --filter web build`
+- 完成记录：
+  - 完成内容：为 `AgentInputBox` 增加创意文档附件展示 props、删除回调和上传中/上传成功/上传失败三种状态卡片；卡片展示文件名、扩展名、大小、状态和失败原因，长文件名使用省略显示，删除按钮提供可访问标签，样式复用同一组件以覆盖悬浮面板和全屏工作台。
+  - 修改文件：`apps/web/components/agent/AgentInputBox.tsx`、`apps/web/app/globals.css`、`docs/architecture/creative-document-import-agent-development-plan.md`
+  - 测试命令：`pnpm --filter web build`
+  - 测试结果：通过
 
 ### CDI-P0-005 将附件状态接入 AgentFloatingPanel
 

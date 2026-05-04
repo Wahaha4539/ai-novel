@@ -1403,6 +1403,92 @@ textarea.input, textarea.input-field {
   opacity: 0.8;
   transition: color 0.2s ease;
 }
+.agent-chat-attachments {
+  display: grid;
+  gap: 0.45rem;
+  padding: 0.65rem 0.75rem 0;
+}
+.agent-chat-attachment-card {
+  display: flex;
+  min-width: 0;
+  align-items: center;
+  gap: 0.55rem;
+  padding: 0.55rem 0.6rem;
+  border: 1px solid var(--agent-border);
+  border-radius: 8px;
+  background: color-mix(in srgb, var(--agent-glass) 85%, transparent);
+}
+.agent-chat-attachment-card--uploaded {
+  border-color: color-mix(in srgb, var(--agent-accent) 38%, var(--agent-border));
+}
+.agent-chat-attachment-card--failed {
+  border-color: color-mix(in srgb, var(--status-err) 42%, var(--agent-border));
+  background: color-mix(in srgb, var(--status-err-bg) 62%, var(--agent-glass));
+}
+.agent-chat-attachment-card__icon {
+  display: inline-flex;
+  flex: 0 0 auto;
+  width: 1.85rem;
+  height: 1.85rem;
+  align-items: center;
+  justify-content: center;
+  border-radius: 8px;
+  background: var(--agent-glass);
+  border: 1px solid var(--agent-border);
+}
+.agent-chat-attachment-card__body {
+  min-width: 0;
+  flex: 1;
+}
+.agent-chat-attachment-card__name {
+  overflow: hidden;
+  color: var(--text-main);
+  font-size: 0.78rem;
+  font-weight: 800;
+  line-height: 1.35;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.agent-chat-attachment-card__meta {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.4rem;
+  margin-top: 0.16rem;
+  color: var(--agent-text-label);
+  font-size: 0.66rem;
+}
+.agent-chat-attachment-card__error {
+  margin-top: 0.22rem;
+  color: var(--status-err);
+  font-size: 0.68rem;
+  line-height: 1.45;
+}
+.agent-chat-attachment-card__remove {
+  display: inline-flex;
+  flex: 0 0 auto;
+  width: 1.75rem;
+  height: 1.75rem;
+  align-items: center;
+  justify-content: center;
+  border: 1px solid var(--agent-border);
+  border-radius: 999px;
+  background: transparent;
+  color: var(--agent-text-label);
+  cursor: pointer;
+  font: inherit;
+  font-size: 1rem;
+  line-height: 1;
+  transition: background 0.2s ease, border-color 0.2s ease, color 0.2s ease, opacity 0.2s ease;
+}
+.agent-chat-attachment-card__remove:hover:not(:disabled) {
+  border-color: color-mix(in srgb, var(--status-err) 48%, var(--agent-border));
+  background: var(--status-err-bg);
+  color: var(--status-err);
+}
+.agent-chat-attachment-card__remove:disabled {
+  cursor: not-allowed;
+  opacity: 0.45;
+}
 .agent-chat-input {
   width: 100%;
   min-height: 7.5rem;

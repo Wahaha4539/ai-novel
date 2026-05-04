@@ -3,6 +3,7 @@
 import { ChangeEvent, FormEvent, KeyboardEvent, useEffect, useMemo, useRef } from 'react';
 import type { AgentPlanPayload } from '../../hooks/useAgentRun';
 import { CREATIVE_DOCUMENT_ACCEPT } from '../../lib/uploadCreativeDocument';
+import type { AgentCreativeDocumentAttachment, AgentCreativeDocumentExtension } from '../../types/agent-attachment';
 
 /** 输入字符数达到此阈值时显示计数器 */
 const CHAR_COUNT_THRESHOLD = 20;
@@ -20,6 +21,18 @@ export interface ChatMessage {
   timestamp: number;
 }
 
+export type CreativeDocumentAttachmentStatus = 'uploading' | 'uploaded' | 'failed';
+
+export interface CreativeDocumentAttachmentItem {
+  id: string;
+  fileName: string;
+  extension?: AgentCreativeDocumentExtension;
+  size?: number;
+  status: CreativeDocumentAttachmentStatus;
+  error?: string;
+  attachment?: AgentCreativeDocumentAttachment;
+}
+
 interface AgentInputBoxProps {
   goal: string;
   loading: boolean;
@@ -31,11 +44,13 @@ interface AgentInputBoxProps {
   riskSummary?: string[];
   /** 聊天历史记录，按时间正序排列 */
   chatHistory?: ChatMessage[];
+  creativeDocumentAttachments?: CreativeDocumentAttachmentItem[];
   onGoalChange: (value: string) => void;
   onSubmit: () => void | Promise<void>;
   onReplan: () => void | Promise<void>;
   onRefresh: () => void | Promise<void>;
   onCreativeDocumentSelect?: (file: File) => void | Promise<void>;
+  onCreativeDocumentRemove?: (id: string) => void;
 }
 
 /**
@@ -43,7 +58,7 @@ interface AgentInputBoxProps {
  * 输入：受控 goal 文本、当前 Run/Plan 摘要与外部运行状态；输出：通过回调触发计划生成、聊天确认执行、重新规划或刷新；
  * 副作用：提交表单会调用上层 API 流程，具体执行分支由父组件根据消息意图决定。
  */
-export function AgentInputBox({ goal, loading, canReplan, hasCurrentRun, canAct = false, plan, currentRunGoal, riskSummary = [], chatHistory = [], onGoalChange, onSubmit, onReplan, onRefresh, onCreativeDocumentSelect }: AgentInputBoxProps) {
+export function AgentInputBox({ goal, loading, canReplan, hasCurrentRun, canAct = false, plan, currentRunGoal, riskSummary = [], chatHistory = [], creativeDocumentAttachments = [], onGoalChange, onSubmit, onReplan, onRefresh, onCreativeDocumentSelect, onCreativeDocumentRemove }: AgentInputBoxProps) {
   /** 当前输入长度，超过阈值时展示字符计数 */
   const charCount = useMemo(() => goal.length, [goal]);
   const showCounter = charCount >= CHAR_COUNT_THRESHOLD;
@@ -176,6 +191,38 @@ export function AgentInputBox({ goal, loading, canReplan, hasCurrentRun, canAct 
                 </span>
               )}
             </label>
+            {creativeDocumentAttachments.length > 0 && (
+              <div className="agent-chat-attachments" aria-label="已选择的创意文档">
+                {creativeDocumentAttachments.map((attachment) => (
+                  <div key={attachment.id} className={`agent-chat-attachment-card agent-chat-attachment-card--${attachment.status}`}>
+                    <span className="agent-chat-attachment-card__icon" aria-hidden="true">📄</span>
+                    <div className="agent-chat-attachment-card__body">
+                      <div className="agent-chat-attachment-card__name" title={attachment.fileName}>
+                        {attachment.fileName}
+                      </div>
+                      <div className="agent-chat-attachment-card__meta">
+                        <span>{attachment.extension?.toUpperCase() ?? 'DOC'}</span>
+                        <span>{formatFileSize(attachment.size)}</span>
+                        <span>{attachmentStatusLabel(attachment.status)}</span>
+                      </div>
+                      {attachment.status === 'failed' && attachment.error && (
+                        <div className="agent-chat-attachment-card__error">{attachment.error}</div>
+                      )}
+                    </div>
+                    <button
+                      type="button"
+                      className="agent-chat-attachment-card__remove"
+                      onClick={() => onCreativeDocumentRemove?.(attachment.id)}
+                      disabled={!onCreativeDocumentRemove}
+                      aria-label={`删除创意文档：${attachment.fileName}`}
+                      title="删除"
+                    >
+                      ×
+                    </button>
+                  </div>
+                ))}
+              </div>
+            )}
             <textarea
               id="agent-chat-goal"
               value={goal}
@@ -249,6 +296,20 @@ export function AgentInputBox({ goal, loading, canReplan, hasCurrentRun, canAct 
 function formatTime(timestamp: number): string {
   const date = new Date(timestamp);
   return `${date.getHours().toString().padStart(2, '0')}:${date.getMinutes().toString().padStart(2, '0')}`;
+}
+
+function formatFileSize(size?: number) {
+  if (!Number.isFinite(size)) return '大小未知';
+  const value = size ?? 0;
+  if (value < 1024) return `${value} B`;
+  if (value < 1024 * 1024) return `${(value / 1024).toFixed(value < 10 * 1024 ? 1 : 0)} KB`;
+  return `${(value / (1024 * 1024)).toFixed(value < 10 * 1024 * 1024 ? 1 : 0)} MB`;
+}
+
+function attachmentStatusLabel(status: CreativeDocumentAttachmentStatus) {
+  if (status === 'uploading') return '上传中';
+  if (status === 'uploaded') return '上传成功';
+  return '上传失败';
 }
 
 /**
