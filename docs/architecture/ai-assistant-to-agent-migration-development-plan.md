@@ -287,7 +287,7 @@
 
 ### AAM-P3-002 新增 persist_guided_step_result Tool
 
-- 状态：`[ ]`
+- 状态：`[x]`
 - 模块：API
 - 文件：新增 `apps/api/src/modules/agent-tools/tools/persist-guided-step-result.tool.ts`
 - 任务：审批后写入 guided step 结构化结果。
@@ -299,6 +299,11 @@
   - 写入前检查 validation 或执行内部兜底校验。
   - 可复用 `GuidedService.finalizeStep` 的归一化逻辑，但入口必须是 Agent Tool。
 - 验证：`pnpm --filter api test:agent`
+- 完成记录：
+  - 完成内容：新增高风险、需审批、仅 Act 阶段可执行的 `persist_guided_step_result` Tool；写入前强制复用 `validate_guided_step_preview` 做兜底校验，校验失败或未审批时阻止写入；校验通过后复用 `GuidedService.finalizeStep()` 写入项目资料、风格、角色、总纲、卷章和伏笔，并返回写入结果、校验结果和审批信息。
+  - 修改文件：`apps/api/src/modules/agent-tools/tools/persist-guided-step-result.tool.ts`、`apps/api/src/modules/agent-runs/agent-services.spec.ts`、`docs/architecture/ai-assistant-to-agent-migration-development-plan.md`
+  - 测试命令：`pnpm --filter api test:agent`
+  - 测试结果：通过
 
 ### AAM-P3-003 注册 validate/persist guided Tools
 

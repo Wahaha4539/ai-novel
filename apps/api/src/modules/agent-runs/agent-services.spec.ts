@@ -24,6 +24,7 @@ import { CharacterConsistencyCheckTool } from '../agent-tools/tools/character-co
 import { PlotConsistencyCheckTool } from '../agent-tools/tools/plot-consistency-check.tool';
 import { GenerateGuidedStepPreviewTool } from '../agent-tools/tools/generate-guided-step-preview.tool';
 import { ValidateGuidedStepPreviewTool } from '../agent-tools/tools/validate-guided-step-preview.tool';
+import { PersistGuidedStepResultTool } from '../agent-tools/tools/persist-guided-step-result.tool';
 import { GenerateWorldbuildingPreviewTool } from '../agent-tools/tools/generate-worldbuilding-preview.tool';
 import { ValidateWorldbuildingTool } from '../agent-tools/tools/validate-worldbuilding.tool';
 import { PersistWorldbuildingTool } from '../agent-tools/tools/persist-worldbuilding.tool';
@@ -1133,6 +1134,67 @@ test('ValidateGuidedStepPreviewTool 为有效基础设定生成写入前 diff', 
   assert.equal(result.writePreview.action, 'update_project_profile');
   assert.equal((result.writePreview.summary as Record<string, number>).updateFieldCount, 5);
   assert.ok(tool.manifest.examples?.[0].plan.some((step) => step.tool === 'validate_guided_step_preview'));
+});
+
+test('PersistGuidedStepResultTool 审批后复用校验并调用 GuidedService 写入', async () => {
+  let validatedArgs: Record<string, unknown> | undefined;
+  let finalizedArgs: Record<string, unknown> | undefined;
+  const validation = { valid: true, issueCount: 0, issues: [], writePreview: { action: 'update_project_profile' } };
+  const validateTool = {
+    async run(args: Record<string, unknown>) {
+      validatedArgs = args;
+      return validation;
+    },
+  };
+  const guidedService = {
+    async finalizeStep(projectId: string, stepKey: string, structuredData: Record<string, unknown>, volumeNo?: number) {
+      finalizedArgs = { projectId, stepKey, structuredData, volumeNo };
+      return { written: ['Project(genre, theme, tone, logline, synopsis)'] };
+    },
+  };
+  const tool = new PersistGuidedStepResultTool(guidedService as never, validateTool as never);
+  const structuredData = { genre: '悬疑', theme: '记忆与真相', tone: '冷静克制', logline: '旧档案', synopsis: '档案错位牵出旧案。' };
+
+  const result = await tool.run(
+    { stepKey: 'guided_setup', structuredData },
+    { agentRunId: 'run1', projectId: 'p1', mode: 'act', approved: true, outputs: {}, policy: {} },
+  );
+
+  assert.deepEqual(validatedArgs, { stepKey: 'guided_setup', structuredData, volumeNo: undefined });
+  assert.deepEqual(finalizedArgs, { projectId: 'p1', stepKey: 'guided_setup', structuredData, volumeNo: undefined });
+  assert.deepEqual(result.written, ['Project(genre, theme, tone, logline, synopsis)']);
+  assert.equal(result.validation.valid, true);
+  assert.equal(result.writePreview.action, 'update_project_profile');
+  assert.deepEqual(tool.allowedModes, ['act']);
+  assert.equal(tool.requiresApproval, true);
+  assert.equal(tool.riskLevel, 'high');
+});
+
+test('PersistGuidedStepResultTool 阻止未审批或校验失败的写入', async () => {
+  let finalizeCalled = false;
+  const guidedService = {
+    async finalizeStep() {
+      finalizeCalled = true;
+      return { written: [] };
+    },
+  };
+  const validateTool = {
+    async run() {
+      return { valid: false, issueCount: 1, issues: [{ severity: 'error', message: '存在重复章节号：2。' }], writePreview: { action: 'none' } };
+    },
+  };
+  const tool = new PersistGuidedStepResultTool(guidedService as never, validateTool as never);
+  const context = { agentRunId: 'run1', projectId: 'p1', mode: 'act' as const, approved: true, outputs: {}, policy: {} };
+
+  await assert.rejects(
+    () => tool.run({ stepKey: 'guided_chapter', structuredData: { chapters: [{ chapterNo: 2 }, { chapterNo: 2 }] } }, { ...context, approved: false }),
+    /需要用户审批/,
+  );
+  await assert.rejects(
+    () => tool.run({ stepKey: 'guided_chapter', structuredData: { chapters: [{ chapterNo: 2 }, { chapterNo: 2 }] } }, context),
+    /校验未通过/,
+  );
+  assert.equal(finalizeCalled, false);
 });
 
 test('GenerateWorldbuildingPreviewTool 归一化 LLM 预览并声明后续校验链路', async () => {
