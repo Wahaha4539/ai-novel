@@ -14,6 +14,7 @@ import { GenerateGuidedStepPreviewTool } from './tools/generate-guided-step-prev
 import { GenerateOutlinePreviewTool } from './tools/generate-outline-preview.tool';
 import { GenerateWorldbuildingPreviewTool } from './tools/generate-worldbuilding-preview.tool';
 import { InspectProjectContextTool } from './tools/inspect-project-context.tool';
+import { PersistGuidedStepResultTool } from './tools/persist-guided-step-result.tool';
 import { PersistOutlineTool } from './tools/persist-outline.tool';
 import { PersistProjectAssetsTool } from './tools/persist-project-assets.tool';
 import { PersistWorldbuildingTool } from './tools/persist-worldbuilding.tool';
@@ -25,6 +26,7 @@ import { RebuildMemoryTool } from './tools/rebuild-memory.tool';
 import { ReviewMemoryTool } from './tools/review-memory.tool';
 import { ResolveChapterTool } from './tools/resolve-chapter.tool';
 import { ResolveCharacterTool } from './tools/resolve-character.tool';
+import { ValidateGuidedStepPreviewTool } from './tools/validate-guided-step-preview.tool';
 import { ValidateImportedAssetsTool } from './tools/validate-imported-assets.tool';
 import { ValidateOutlineTool } from './tools/validate-outline.tool';
 import { ValidateWorldbuildingTool } from './tools/validate-worldbuilding.tool';
@@ -58,6 +60,8 @@ export class ToolRegistryService implements OnModuleInit {
     private readonly reviewMemoryTool: ReviewMemoryTool,
     private readonly inspectProjectContextTool: InspectProjectContextTool,
     private readonly generateGuidedStepPreviewTool: GenerateGuidedStepPreviewTool,
+    private readonly validateGuidedStepPreviewTool: ValidateGuidedStepPreviewTool,
+    private readonly persistGuidedStepResultTool: PersistGuidedStepResultTool,
     private readonly generateOutlinePreviewTool: GenerateOutlinePreviewTool,
     private readonly generateWorldbuildingPreviewTool: GenerateWorldbuildingPreviewTool,
     private readonly validateOutlineTool: ValidateOutlineTool,
@@ -89,6 +93,8 @@ export class ToolRegistryService implements OnModuleInit {
     this.register(this.reviewMemoryTool);
     this.register(this.inspectProjectContextTool);
     this.register(this.generateGuidedStepPreviewTool);
+    this.register(this.validateGuidedStepPreviewTool);
+    this.register(this.persistGuidedStepResultTool);
     this.register(this.generateOutlinePreviewTool);
     this.register(this.generateWorldbuildingPreviewTool);
     this.register(this.validateOutlineTool);

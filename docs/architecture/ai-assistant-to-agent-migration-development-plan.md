@@ -307,7 +307,7 @@
 
 ### AAM-P3-003 注册 validate/persist guided Tools
 
-- 状态：`[ ]`
+- 状态：`[x]`
 - 模块：API
 - 文件：`agent-tools.module.ts`、`tool-registry.service.ts`
 - 任务：注册 `validate_guided_step_preview` 和 `persist_guided_step_result`。
@@ -316,6 +316,11 @@
   - Planner 能看到校验和持久化工具。
   - `persist_guided_step_result` 在 Plan previewOnly 中不会执行。
 - 验证：`pnpm --filter api build`
+- 完成记录：
+  - 完成内容：将 `ValidateGuidedStepPreviewTool` 和 `PersistGuidedStepResultTool` 加入 Agent Tools Nest provider，并注册进 `ToolRegistryService` 白名单；`AgentToolsModule` 导入 `GuidedModule` 以提供 `GuidedService` 依赖。`persist_guided_step_result` 保持仅 Act、需审批、高风险和有副作用声明，Plan 阶段不会作为可执行预览工具运行。
+  - 修改文件：`apps/api/src/modules/agent-tools/agent-tools.module.ts`、`apps/api/src/modules/agent-tools/tool-registry.service.ts`、`docs/architecture/ai-assistant-to-agent-migration-development-plan.md`
+  - 测试命令：`pnpm --filter api build`
+  - 测试结果：通过
 
 ### AAM-P3-004 confirmGeneratedData 改走 Agent Act
 
