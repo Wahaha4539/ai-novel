@@ -2,7 +2,8 @@
 
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { type AgentPageContext, useAgentRun } from '../../hooks/useAgentRun';
-import { AgentInputBox, ChatMessage } from './AgentInputBox';
+import { getCreativeDocumentExtension, uploadCreativeDocument } from '../../lib/uploadCreativeDocument';
+import { AgentInputBox, type ChatMessage, type CreativeDocumentAttachmentItem } from './AgentInputBox';
 import { AgentApprovalDialog } from './AgentApprovalDialog';
 import { AgentPlanPanel } from './AgentPlanPanel';
 import { AgentTimelinePanel } from './AgentTimelinePanel';
@@ -63,8 +64,10 @@ export function AgentFloatingPanel({
   const [agentMode, setAgentMode] = useState<AgentMode>('plan');
   /** 聊天消息历史 — 记录用户发送的指令和 Agent 的回复 */
   const [chatHistory, setChatHistory] = useState<ChatMessage[]>([]);
+  const [creativeDocumentAttachments, setCreativeDocumentAttachments] = useState<CreativeDocumentAttachmentItem[]>([]);
   /** 自增 ID 计数器，保证消息唯一性 */
   const msgIdCounter = useRef(0);
+  const attachmentIdCounter = useRef(0);
 
   const plan = latestPlan(currentRun);
   const activePlanVersion = latestPlanVersion(currentRun);
@@ -78,6 +81,11 @@ export function AgentFloatingPanel({
   const canRetry = !!currentRun && currentRun.status === 'failed';
   const canReplan = !!currentRun && currentRun.status !== 'acting' && currentRun.status !== 'running';
   const riskSummary = useMemo(() => approvalRiskSummary(plan, approvedStepNos), [plan, approvedStepNos]);
+  const uploadedCreativeDocumentAttachments = useMemo(
+    () => creativeDocumentAttachments.flatMap((item) => (item.status === 'uploaded' && item.attachment ? [item.attachment] : [])),
+    [creativeDocumentAttachments],
+  );
+  const hasUploadingCreativeDocument = creativeDocumentAttachments.some((item) => item.status === 'uploading');
   const approvedScope = useMemo(() => {
     // 全选审批项表示整份计划已审批；不传具体 step 范围，避免新增后置 Tool 后 retry 被旧范围卡住。
     if (approvalStepNos.length && approvalStepNos.every((stepNo) => approvedStepNos.includes(stepNo))) return undefined;
@@ -121,8 +129,15 @@ export function AgentFloatingPanel({
   const handleSubmit = useCallback(async () => {
     const message = goal.trim();
     if (!message || loading) return;
+    if (hasUploadingCreativeDocument) {
+      pushMessage('system', '创意文档仍在上传中，请稍后再发送。');
+      return;
+    }
     // 立即将用户消息推入聊天历史并清空输入框，模拟即时发送效果
     pushMessage('user', message);
+    if (uploadedCreativeDocumentAttachments.length) {
+      pushMessage('system', `已导入创意文档：${uploadedCreativeDocumentAttachments.map((item) => item.fileName).join('、')}`);
+    }
     setGoal('');
     // 等待审批时先请求 LLM 判定用户回复意图；只有 LLM 明确判定为确认时才执行写入类工具。
     if (canAct && currentRun) {
@@ -133,7 +148,7 @@ export function AgentFloatingPanel({
         await handleAct();
         return;
       }
-      const run = await createPlan(projectId, message, pageContext);
+      const run = await createPlan(projectId, message, pageContext, uploadedCreativeDocumentAttachments);
       if (run?.id) {
         pushMessage('agent', '已收到新任务，正在生成计划…');
         setActiveTab('detail');
@@ -141,7 +156,7 @@ export function AgentFloatingPanel({
       return;
     }
 
-    const run = await createPlan(projectId, message, pageContext);
+    const run = await createPlan(projectId, message, pageContext, uploadedCreativeDocumentAttachments);
     if (run) {
       pushMessage('agent', '已收到任务，正在生成计划…');
     }
@@ -154,7 +169,48 @@ export function AgentFloatingPanel({
       await act(run.id, allStepNos.length ? allStepNos : undefined);
       await onRefresh?.();
     }
-  }, [goal, loading, canAct, currentRun, interpretMessage, handleAct, createPlan, projectId, pageContext, agentMode, act, onRefresh, pushMessage]);
+  }, [goal, loading, hasUploadingCreativeDocument, uploadedCreativeDocumentAttachments, canAct, currentRun, interpretMessage, handleAct, createPlan, projectId, pageContext, agentMode, act, onRefresh, pushMessage]);
+
+  const handleCreativeDocumentSelect = useCallback(async (file: File) => {
+    attachmentIdCounter.current += 1;
+    const localId = `creative-doc-${Date.now().toString(36)}-${attachmentIdCounter.current}`;
+    const draftAttachment: CreativeDocumentAttachmentItem = {
+      id: localId,
+      fileName: file.name,
+      extension: getCreativeDocumentExtension(file.name) ?? undefined,
+      size: file.size,
+      status: 'uploading',
+    };
+    setCreativeDocumentAttachments([draftAttachment]);
+
+    try {
+      const attachment = await uploadCreativeDocument(file);
+      setCreativeDocumentAttachments((current) =>
+        current.map((item) =>
+          item.id === localId
+            ? {
+                ...item,
+                fileName: attachment.fileName,
+                extension: attachment.extension,
+                size: attachment.size,
+                status: 'uploaded',
+                attachment,
+                error: undefined,
+              }
+            : item,
+        ),
+      );
+    } catch (uploadError) {
+      const message = uploadError instanceof Error ? uploadError.message : '创意文档上传失败，请稍后重试。';
+      setCreativeDocumentAttachments((current) =>
+        current.map((item) => (item.id === localId ? { ...item, status: 'failed', error: message } : item)),
+      );
+    }
+  }, []);
+
+  const handleCreativeDocumentRemove = useCallback((id: string) => {
+    setCreativeDocumentAttachments((current) => current.filter((item) => item.id !== id));
+  }, []);
 
   const handleRetry = useCallback(async () => {
     if (!currentRun) return;
@@ -205,6 +261,7 @@ export function AgentFloatingPanel({
     setApprovedStepNos([]);
     setArtifactQuery('');
     setChatHistory([]);
+    setCreativeDocumentAttachments([]);
     setActiveTab('task');
   }, [startNewSession]);
 
@@ -303,10 +360,13 @@ export function AgentFloatingPanel({
               currentRunGoal={currentRun?.goal}
               riskSummary={riskSummary}
               chatHistory={chatHistory}
+              creativeDocumentAttachments={creativeDocumentAttachments}
               onGoalChange={setGoal}
               onSubmit={handleSubmit}
               onReplan={handleReplan}
               onRefresh={async () => { if (currentRun) await refresh(currentRun.id); }}
+              onCreativeDocumentSelect={handleCreativeDocumentSelect}
+              onCreativeDocumentRemove={handleCreativeDocumentRemove}
             />
           )}
 
@@ -357,8 +417,11 @@ function TaskTabContent(props: {
   goal: string; loading: boolean; canReplan: boolean; hasCurrentRun: boolean;
   canAct?: boolean; plan?: ReturnType<typeof latestPlan>; currentRunGoal?: string; riskSummary?: string[];
   chatHistory?: ChatMessage[];
+  creativeDocumentAttachments?: CreativeDocumentAttachmentItem[];
   onGoalChange: (v: string) => void; onSubmit: () => void | Promise<void>;
   onReplan: () => void | Promise<void>; onRefresh: () => void | Promise<void>;
+  onCreativeDocumentSelect?: (file: File) => void | Promise<void>;
+  onCreativeDocumentRemove?: (id: string) => void;
 }) {
   return (
     <div className="space-y-4">

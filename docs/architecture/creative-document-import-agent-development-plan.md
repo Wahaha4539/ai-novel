@@ -94,7 +94,7 @@
 
 ### CDI-P0-005 将附件状态接入 AgentFloatingPanel
 
-- 状态：`[ ]`
+- 状态：`[x]`
 - 模块：Web
 - 文件：`apps/web/components/agent/AgentFloatingPanel.tsx`
 - 任务：在悬浮 Agent 面板中维护附件状态，传给 `AgentInputBox`，提交时传给 `createPlan`。
@@ -104,6 +104,11 @@
   - 新会话会清空附件。
   - 提交后聊天历史能提示“已导入创意文档：文件名”。
 - 验证：`pnpm --filter web build`
+- 完成记录：
+  - 完成内容：在悬浮 Agent 面板中维护单份创意文档附件状态，选择文件后调用上传工具并显示上传中/成功/失败卡片；删除和新会话会清空本地附件，提交任务时将已上传附件传给 `createPlan`，并在聊天历史中提示已导入的文件名。
+  - 修改文件：`apps/web/components/agent/AgentFloatingPanel.tsx`、`docs/architecture/creative-document-import-agent-development-plan.md`
+  - 测试命令：`pnpm --filter web build`
+  - 测试结果：通过
 
 ### CDI-P0-006 将附件状态接入 AgentWorkspace
 
