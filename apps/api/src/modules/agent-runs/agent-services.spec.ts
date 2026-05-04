@@ -1188,6 +1188,28 @@ test('Planner 接受 LLM 语义判定的 taskType，不再被后端 baseline 锁
   assert.deepEqual(plan.steps.slice(0, 3).map((step) => step.tool), ['resolve_chapter', 'collect_chapter_context', 'write_chapter']);
 });
 
+test('Planner 接受创作引导 guided taskType', () => {
+  const tools = { list: () => [createTool({ name: 'report_result', requiresApproval: false, sideEffects: [] })] } as unknown as ToolRegistryService;
+  const planner = new AgentPlannerService(new SkillRegistryService(), tools, new RuleEngineService(), {} as LlmGatewayService) as unknown as {
+    validateAndNormalizeLlmPlan: (data: unknown, baseline: { taskType: string; summary: string; assumptions: string[]; risks: string[] }) => { taskType: string; steps: Array<{ tool: string; args: Record<string, unknown> }> };
+  };
+
+  const plan = planner.validateAndNormalizeLlmPlan(
+    {
+      taskType: 'guided_step_consultation',
+      summary: '回答当前引导步骤问题',
+      assumptions: ['当前页面已提供 guided context'],
+      risks: [],
+      steps: [{ stepNo: 1, name: '整理当前步骤建议', tool: 'report_result', mode: 'act', requiresApproval: false, args: { taskType: 'guided_step_consultation', summary: '围绕当前 guided step 给出填写建议' } }],
+    },
+    { taskType: 'general', summary: 'fallback', assumptions: [], risks: [] },
+  );
+
+  assert.equal(plan.taskType, 'guided_step_consultation');
+  assert.equal(plan.steps[0].tool, 'report_result');
+  assert.equal(plan.steps[0].args.taskType, 'guided_step_consultation');
+});
+
 test('Planner 为 write_chapter 强制追加章节质量门禁链路', () => {
   const toolNames = ['resolve_chapter', 'collect_chapter_context', 'write_chapter', 'polish_chapter', 'fact_validation', 'auto_repair_chapter', 'extract_chapter_facts', 'rebuild_memory', 'review_memory'];
   const tools = { list: () => toolNames.map((name) => createTool({ name, requiresApproval: !['resolve_chapter', 'collect_chapter_context'].includes(name), sideEffects: name === 'resolve_chapter' || name === 'collect_chapter_context' ? [] : ['write'] })) } as unknown as ToolRegistryService;

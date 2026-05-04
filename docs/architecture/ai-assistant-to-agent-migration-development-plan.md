@@ -70,7 +70,7 @@
 
 ### AAM-P0-004 Agent Planner 增加 guided 场景识别
 
-- 状态：`[ ]`
+- 状态：`[x]`
 - 模块：API
 - 文件：`apps/api/src/modules/agent-runs/agent-planner.service.ts`、`apps/api/src/modules/agent-skills/builtin-skills.ts`
 - 任务：新增或扩展 `guided_step_generate/guided_step_consultation/guided_step_finalize` 任务类型说明。
@@ -80,6 +80,11 @@
   - 用户问当前步骤问题时可生成只读咨询计划。
   - 用户要求生成当前步骤时可生成预览计划。
 - 验证：`pnpm --filter api test:agent`
+- 完成记录：
+  - 完成内容：在内置技能白名单中加入 `guided_step_consultation/guided_step_generate/guided_step_finalize`，扩展 Planner 提示和修复提示，使 `context.session.guided.currentStep` 存在时优先识别为创作引导场景，并增加 guided taskType 归一化回归测试。
+  - 修改文件：`apps/api/src/modules/agent-runs/agent-planner.service.ts`、`apps/api/src/modules/agent-skills/builtin-skills.ts`、`apps/api/src/modules/agent-runs/agent-services.spec.ts`、`docs/architecture/ai-assistant-to-agent-migration-development-plan.md`
+  - 测试命令：`pnpm --filter api test:agent`
+  - 测试结果：通过
 
 ## 3. P1 前端入口迁移
 

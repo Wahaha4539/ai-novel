@@ -118,7 +118,8 @@ export class AgentPlannerService {
           '注意：outputContract.steps[].mode 是后端计划步骤字段，固定填 act；它不代表当前 UI 的 Plan/Act 开关。',
           'Plan 阶段不写正式业务表；运行时会用 mode=plan 只执行无副作用预览步骤，所有真实副作用必须等用户切到 Act 并审批后才允许。',
           '你需要根据 Available Tools 的 whenToUse/whenNotToUse/parameterHints/idPolicy 自主编排步骤和 args。',
-          '可引用上下文：{{context.session.currentProjectId}}、{{context.session.currentChapterId}}、{{context.project.defaultWordCount}}。',
+          '可引用上下文：{{context.session.currentProjectId}}、{{context.session.currentChapterId}}、{{context.project.defaultWordCount}}、{{context.session.guided.currentStep}}、{{context.session.guided.currentStepData}}。',
+          '如果 agentContext.session.guided.currentStep 存在，说明用户正在创作引导页；当前步骤问答优先选择 guided_step_consultation，当前步骤生成优先选择 guided_step_generate，确认保存/写入优先选择 guided_step_finalize，不要误判成普通章节正文写作。',
           '可引用前序步骤：{{steps.N.output.field}} 或 {{steps.step_id.output.field}}；不要引用当前或未来步骤。',
           '章节写作或修改必须保留用户给出的风格、氛围、字数、禁改项和剧情约束，例如“别改结局”。',
         ].join('\n'),
@@ -143,8 +144,24 @@ export class AgentPlannerService {
               worldbuilding_expand: '扩展世界观、宗门、城市、能力体系，且不覆盖已确认剧情。',
               plot_consistency_check: '检查剧情、大纲、事实是否冲突。',
               memory_review: '复核或整理记忆、事实沉淀质量。',
+              guided_step_consultation: '创作引导页当前步骤的只读问答/填写建议；必须读取 context.session.guided，不写库，不要当作 chapter_write。',
+              guided_step_generate: '创作引导页要求生成当前步骤结构化预览；必须围绕 context.session.guided.currentStep 和 currentStepData 生成 Plan 阶段预览，不写业务表。',
+              guided_step_finalize: '创作引导页确认保存当前步骤结构化数据；必须要求审批，后续接入 validate_guided_step_preview 和 persist_guided_step_result 后再执行写入。',
               general: '无法归入以上创作任务时才使用。',
             },
+            guidedSceneGuidance: context?.session.guided
+              ? {
+                  sourcePage: context.session.sourcePage,
+                  currentStep: context.session.guided.currentStep,
+                  currentStepLabel: context.session.guided.currentStepLabel,
+                  completedSteps: context.session.guided.completedSteps ?? [],
+                  rules: [
+                    '围绕当前 guided step 解释、生成预览或准备审批写入。',
+                    'Plan 阶段不得调用写业务表的工具。',
+                    '如果缺少当前 stepData 或必要上游信息，写入 missingInfo，而不是改写成章节正文任务。',
+                  ],
+                }
+              : undefined,
             skills,
             hardRules,
             availableTools: tools,
@@ -198,6 +215,7 @@ export class AgentPlannerService {
             '当前用户选择的是 Agent 工作台 Plan 模式：只修复可审批计划，不执行写入。',
             '必须修复 invalidPlan，使 taskType 来自 availableTaskTypes，steps[].tool 全部来自 registeredTools。',
             'taskType 由 userGoal 语义决定；不要依赖后端关键词分类。',
+            '如果 agentContext.session.guided.currentStep 存在，修复后的 taskType 仍应优先使用 guided_step_consultation、guided_step_generate 或 guided_step_finalize，不要修成 chapter_write。',
             'steps[].mode 是后端计划步骤字段，固定填 act；Plan/Act 运行时模式由后端注入，不由 LLM 决定。',
             '引用前序步骤输出时，完整对象用 {{steps.N.output}}，对象字段用 {{steps.N.output.field}}；不要把对象序列化成字符串。',
             '连续生成多章正文时必须使用 write_chapter_series；不要把多个 write_chapter 展开为多套步骤。',
@@ -213,6 +231,13 @@ export class AgentPlannerService {
               currentAgentMode: 'plan',
               stepModeContract: 'steps[].mode 固定为 act；Plan/Act 运行时模式由后端 AgentRuntimeService 注入，不由 LLM 决定。',
               availableTaskTypes,
+              guidedSceneGuidance: context?.session.guided
+                ? {
+                    currentStep: context.session.guided.currentStep,
+                    currentStepLabel: context.session.guided.currentStepLabel,
+                    preferredTaskTypes: ['guided_step_consultation', 'guided_step_generate', 'guided_step_finalize'],
+                  }
+                : undefined,
               invalidPlan,
               validationError,
               registeredTools,
