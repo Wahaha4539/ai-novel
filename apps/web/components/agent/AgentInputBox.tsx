@@ -1,7 +1,8 @@
 'use client';
 
-import { FormEvent, KeyboardEvent, useEffect, useMemo, useRef } from 'react';
+import { ChangeEvent, FormEvent, KeyboardEvent, useEffect, useMemo, useRef } from 'react';
 import type { AgentPlanPayload } from '../../hooks/useAgentRun';
+import { CREATIVE_DOCUMENT_ACCEPT } from '../../lib/uploadCreativeDocument';
 
 /** 输入字符数达到此阈值时显示计数器 */
 const CHAR_COUNT_THRESHOLD = 20;
@@ -34,6 +35,7 @@ interface AgentInputBoxProps {
   onSubmit: () => void | Promise<void>;
   onReplan: () => void | Promise<void>;
   onRefresh: () => void | Promise<void>;
+  onCreativeDocumentSelect?: (file: File) => void | Promise<void>;
 }
 
 /**
@@ -41,7 +43,7 @@ interface AgentInputBoxProps {
  * 输入：受控 goal 文本、当前 Run/Plan 摘要与外部运行状态；输出：通过回调触发计划生成、聊天确认执行、重新规划或刷新；
  * 副作用：提交表单会调用上层 API 流程，具体执行分支由父组件根据消息意图决定。
  */
-export function AgentInputBox({ goal, loading, canReplan, hasCurrentRun, canAct = false, plan, currentRunGoal, riskSummary = [], chatHistory = [], onGoalChange, onSubmit, onReplan, onRefresh }: AgentInputBoxProps) {
+export function AgentInputBox({ goal, loading, canReplan, hasCurrentRun, canAct = false, plan, currentRunGoal, riskSummary = [], chatHistory = [], onGoalChange, onSubmit, onReplan, onRefresh, onCreativeDocumentSelect }: AgentInputBoxProps) {
   /** 当前输入长度，超过阈值时展示字符计数 */
   const charCount = useMemo(() => goal.length, [goal]);
   const showCounter = charCount >= CHAR_COUNT_THRESHOLD;
@@ -50,6 +52,7 @@ export function AgentInputBox({ goal, loading, canReplan, hasCurrentRun, canAct 
 
   /** 自动滚动到最新消息 */
   const threadRef = useRef<HTMLDivElement>(null);
+  const documentInputRef = useRef<HTMLInputElement>(null);
   useEffect(() => {
     if (threadRef.current) {
       threadRef.current.scrollTop = threadRef.current.scrollHeight;
@@ -69,6 +72,18 @@ export function AgentInputBox({ goal, loading, canReplan, hasCurrentRun, canAct 
       if (!goal.trim() || loading) return;
       await onSubmit();
     }
+  };
+
+  const handleCreativeDocumentClick = () => {
+    if (loading) return;
+    documentInputRef.current?.click();
+  };
+
+  const handleCreativeDocumentChange = async (event: ChangeEvent<HTMLInputElement>) => {
+    const file = event.target.files?.[0];
+    event.target.value = '';
+    if (!file || loading) return;
+    await onCreativeDocumentSelect?.(file);
   };
 
   return (
@@ -175,7 +190,24 @@ export function AgentInputBox({ goal, loading, canReplan, hasCurrentRun, canAct 
               <span className="agent-chat-shortcut">
                 {canAct ? '发送后先由 LLM 判定确认意图' : <><kbd>Enter</kbd> 发送 · <kbd>Shift+Enter</kbd> 换行</>}
               </span>
+              <input
+                ref={documentInputRef}
+                type="file"
+                accept={CREATIVE_DOCUMENT_ACCEPT}
+                hidden
+                disabled={loading}
+                onChange={(event) => { void handleCreativeDocumentChange(event); }}
+              />
               <div className="agent-chat-actions">
+                <button
+                  type="button"
+                  onClick={handleCreativeDocumentClick}
+                  disabled={loading}
+                  className="agent-chat-ghost-btn"
+                  title="导入 .md、.txt、.docx、.pdf 创意文档"
+                >
+                  <span aria-hidden="true">📄</span> 导入创意文档
+                </button>
                 {hasCurrentRun && (
                   <button type="button" onClick={() => void onReplan()} disabled={!canReplan || loading} className="agent-chat-ghost-btn">
                     <span aria-hidden="true">🔄</span> 重新规划

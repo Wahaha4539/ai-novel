@@ -56,7 +56,7 @@
 
 ### CDI-P0-003 在 AgentInputBox 增加「导入创意文档」入口
 
-- 状态：`[ ]`
+- 状态：`[x]`
 - 模块：Web
 - 文件：`apps/web/components/agent/AgentInputBox.tsx`
 - 任务：增加文件选择按钮，按钮文案为「导入创意文档」，文件 input 使用文档 accept 白名单。
@@ -67,6 +67,11 @@
   - 按钮在 loading 时禁用。
   - 保留 Enter 发送体验。
 - 验证：`pnpm --filter web build`
+- 完成记录：
+  - 完成内容：在 Agent 输入框底部操作区新增「导入创意文档」按钮和隐藏文件 input，`accept` 复用文档白名单，仅允许 `.md/.txt/.docx/.pdf` 及对应 MIME 类型；按钮在 loading 时禁用，且保持原 Enter 发送与 Shift+Enter 换行行为不变。
+  - 修改文件：`apps/web/components/agent/AgentInputBox.tsx`、`docs/architecture/creative-document-import-agent-development-plan.md`
+  - 测试命令：`pnpm --filter web build`
+  - 测试结果：通过
 
 ### CDI-P0-004 渲染附件卡片和删除操作
 
