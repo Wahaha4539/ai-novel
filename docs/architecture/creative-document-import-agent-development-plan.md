@@ -37,7 +37,7 @@
 
 ### CDI-P0-002 实现临时文件上传工具函数
 
-- 状态：`[ ]`
+- 状态：`[x]`
 - 模块：Web
 - 文件：新增 `apps/web/hooks/useCreativeDocumentUpload.ts` 或 `apps/web/lib/uploadCreativeDocument.ts`
 - 任务：实现 `uploadCreativeDocument(file)`，使用 `FormData` 将字段 `file` POST 到 `https://tmpfile.link/api/upload`，并归一化为 `AgentCreativeDocumentAttachment`。
@@ -48,6 +48,11 @@
   - 只接受 `.md/.txt/.docx/.pdf`。
   - 单文件大小先限制为前端 20MB。
 - 验证：`pnpm --filter web build`
+- 完成记录：
+  - 完成内容：新增 `uploadCreativeDocument(file)` 工具函数，前端校验文档扩展名和 20MB 大小限制，使用 `FormData` 直传 `tmpfile.link`，并将上传响应归一化为标准 `AgentCreativeDocumentAttachment`；上传失败、无下载链接和非 HTTPS 链接会抛出用户可读错误。
+  - 修改文件：`apps/web/lib/uploadCreativeDocument.ts`、`docs/architecture/creative-document-import-agent-development-plan.md`
+  - 测试命令：`pnpm --filter web build`
+  - 测试结果：通过
 
 ### CDI-P0-003 在 AgentInputBox 增加「导入创意文档」入口
 
