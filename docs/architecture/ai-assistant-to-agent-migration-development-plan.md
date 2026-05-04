@@ -342,7 +342,7 @@
 
 ### AAM-P3-005 标记旧 finalize-step 为兼容路径
 
-- 状态：`[ ]`
+- 状态：`[x]`
 - 模块：API/Docs
 - 文件：`apps/api/src/modules/guided/guided.controller.ts`、迁移文档
 - 任务：标记 `guided-session/finalize-step` 为兼容接口，新功能不再直接调用。
@@ -351,6 +351,11 @@
   - 文档说明新写入入口是 Agent Tool。
   - 旧接口保留，避免破坏未迁移页面。
 - 验证：`pnpm --filter api build`
+- 完成记录：
+  - 完成内容：为旧 `guided-session/finalize-step` endpoint 增加 `@deprecated` 兼容注释，并将日志标记为 `[compat][deprecated-write]`，指向新入口 `persist_guided_step_result`；迁移设计文档补充说明旧接口仅保留给未迁移路径，新写入必须通过 `guided_step_finalize` AgentRun，按 `validate_guided_step_preview -> persist_guided_step_result` 顺序审批执行。
+  - 修改文件：`apps/api/src/modules/guided/guided.controller.ts`、`docs/architecture/ai-assistant-to-agent-migration-design.md`、`docs/architecture/ai-assistant-to-agent-migration-development-plan.md`
+  - 测试命令：`pnpm --filter api build`
+  - 测试结果：通过
 
 ## 6. P4 创意文档导入接入
 

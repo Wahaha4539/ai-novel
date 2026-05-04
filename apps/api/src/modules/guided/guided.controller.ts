@@ -51,12 +51,16 @@ export class GuidedController {
     return this.guidedService.generateStepData(projectId, dto);
   }
 
+  /**
+   * @deprecated 兼容旧 guided UI 的直接写入路径。新功能必须通过 Agent
+   * `guided_step_finalize` 计划，在审批后执行 `persist_guided_step_result`。
+   */
   @Post('projects/:projectId/guided-session/finalize-step')
   finalizeStep(
     @Param('projectId') projectId: string,
     @Body() dto: FinalizeStepDto,
   ) {
-    console.log(`[Guided] POST finalize pid=${projectId} step=${dto.currentStep} keys=[${Object.keys(dto.structuredData ?? {}).join(',')}] volumeNo=${dto.volumeNo ?? 'all'}`);
+    console.log(`[Guided][compat][deprecated-write] POST finalize pid=${projectId} step=${dto.currentStep} keys=[${Object.keys(dto.structuredData ?? {}).join(',')}] volumeNo=${dto.volumeNo ?? 'all'} newEntry=persist_guided_step_result`);
     return this.guidedService.finalizeStep(
       projectId,
       dto.currentStep,

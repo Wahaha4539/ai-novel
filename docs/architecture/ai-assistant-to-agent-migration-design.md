@@ -300,6 +300,8 @@ sideEffects:
 
 首版可以内部复用 `GuidedService.finalizeStep()` 的归一化和写入逻辑，但外部必须经过 Agent approval。
 
+兼容说明：`guided-session/finalize-step` 仅保留给尚未迁移的旧 UI/脚本路径；新写入入口必须是 `guided_step_finalize` AgentRun，并按 `validate_guided_step_preview -> persist_guided_step_result` 顺序在用户审批后执行。
+
 ## 9. 分阶段迁移策略
 
 ### Phase 0：文档和任务拆解
