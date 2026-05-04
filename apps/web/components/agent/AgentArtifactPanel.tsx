@@ -2,6 +2,7 @@
 
 import { useMemo, useState } from 'react';
 import { AgentRun } from '../../hooks/useAgentRun';
+import { GUIDED_STEPS } from '../../hooks/useGuidedSession';
 import { EmptyText, Metric, asArray, asRecord, numberValue, safeJson, textValue } from './AgentSharedWidgets';
 
 // ────────────────────────────────────────────
@@ -17,6 +18,31 @@ function dedupeArtifacts(artifacts: NonNullable<AgentRun['artifacts']>) {
     seen.add(key);
     return true;
   }).reverse();
+}
+
+function enrichArtifactsFromPlanSteps(run: AgentRun | null): NonNullable<AgentRun['artifacts']> {
+  const artifacts = [...(run?.artifacts ?? [])];
+  if (!run || artifacts.some((artifact) => artifact.artifactType === 'guided_step_preview')) return artifacts;
+
+  const previewStep = [...(run.steps ?? [])].reverse().find((step) => {
+    const toolName = step.tool ?? (step as { toolName?: string | null }).toolName;
+    return step.mode === 'plan'
+      && step.status === 'succeeded'
+      && toolName === 'generate_guided_step_preview'
+      && step.output;
+  });
+  if (!previewStep) return artifacts;
+
+  return [
+    ...artifacts,
+    {
+      id: `${run.id}:guided_step_preview:${previewStep.stepNo}`,
+      artifactType: 'guided_step_preview',
+      title: '创作引导步骤预览',
+      content: previewStep.output,
+      createdAt: previewStep.finishedAt ?? previewStep.startedAt,
+    },
+  ];
 }
 
 function filterArtifacts(artifacts: NonNullable<AgentRun['artifacts']>, query: string) {
@@ -39,7 +65,7 @@ interface AgentArtifactPanelProps {
 
 /** 产物预览面板：搜索、去重、按类型渲染业务化摘要 */
 export function AgentArtifactPanel({ run, query, onQueryChange, onRequestWorldbuildingPersistSelection, actionDisabled }: AgentArtifactPanelProps) {
-  const artifacts = dedupeArtifacts(run?.artifacts ?? []);
+  const artifacts = dedupeArtifacts(enrichArtifactsFromPlanSteps(run));
   const filteredArtifacts = filterArtifacts(artifacts, query);
 
   return (
@@ -80,6 +106,7 @@ export function AgentArtifactPanel({ run, query, onQueryChange, onRequestWorldbu
 /** 产物类型的 emoji 映射，提升视觉扫描效率 */
 function typeEmoji(type?: string): string {
   if (!type) return '📦';
+  if (type.includes('guided')) return '🧭';
   if (type.includes('outline')) return '📑';
   if (type.includes('plot')) return '🧭';
   if (type.includes('chapter')) return '📝';
@@ -145,6 +172,7 @@ function TypedArtifactPreview({
   actionDisabled?: boolean;
 }) {
   if (artifactType === 'outline_preview') return <OutlinePreviewSummary content={content} />;
+  if (artifactType === 'guided_step_preview') return <GuidedStepPreviewSummary content={content} />;
   if (artifactType === 'outline_validation_report' || artifactType === 'import_validation_report' || artifactType === 'fact_validation_report' || artifactType === 'worldbuilding_validation_report') return <ValidationSummary content={content} />;
   if (artifactType === 'project_profile_preview') return <ProjectProfileSummary content={content} />;
   if (artifactType === 'characters_preview') return <ArraySummary content={content} label="角色" primaryKey="name" secondaryKey="roleType" />;
@@ -185,6 +213,67 @@ function OutlinePreviewSummary({ content }: { content: unknown }) {
           const chapter = asRecord(item);
           return <div key={index} className="text-xs leading-5" style={{ color: 'var(--text-muted)' }}><b style={{ color: 'var(--text-main)' }}>{numberValue(chapter?.chapterNo, index + 1)}. {textValue(chapter?.title, '未命名章节')}</b> — {textValue(chapter?.objective ?? chapter?.outline, '暂无目标')}</div>;
         })}
+      </div>
+    </div>
+  );
+}
+
+function GuidedStepPreviewSummary({ content }: { content: unknown }) {
+  const data = asRecord(content);
+  const structuredData = asRecord(data?.structuredData ?? content) ?? {};
+  const stepKey = textValue(data?.stepKey, '');
+  const stepInfo = GUIDED_STEPS.find((step) => step.key === stepKey);
+  const warnings = asArray(data?.warnings).map((item) => textValue(item)).filter(Boolean);
+  const summary = textValue(data?.summary, '');
+  const fieldLabels: Record<string, string> = {
+    genre: '类型',
+    theme: '主题',
+    tone: '基调',
+    logline: '一句话概述',
+    synopsis: '故事简介',
+    pov: '视角',
+    tense: '时态',
+    proseStyle: '文风',
+    pacing: '节奏',
+    outline: '故事总纲',
+  };
+  const primitiveEntries = Object.entries(structuredData)
+    .filter(([, value]) => typeof value === 'string' || typeof value === 'number' || typeof value === 'boolean')
+    .slice(0, 8);
+  const collectionEntries = Object.entries(structuredData)
+    .filter(([, value]) => Array.isArray(value) || (value && typeof value === 'object'))
+    .slice(0, 4);
+
+  return (
+    <div className="space-y-3">
+      <div className="grid gap-2 md:grid-cols-3">
+        <Metric label="步骤" value={stepInfo?.label ?? (stepKey || '创作引导')} />
+        <Metric label="字段数" value={Object.keys(structuredData).length} />
+        <Metric label="警告" value={warnings.length} tone={warnings.length ? 'warn' : 'ok'} />
+      </div>
+      {summary && <div className="text-xs leading-5" style={{ color: 'var(--text-muted)' }}>{summary}</div>}
+      <div className="grid gap-2 md:grid-cols-2">
+        {primitiveEntries.map(([key, value]) => (
+          <div key={key} className="rounded-lg border px-3 py-2" style={{ borderColor: 'var(--border-dim)', background: 'rgba(15,23,42,0.18)' }}>
+            <div className="text-[11px] font-semibold" style={{ color: 'var(--agent-text-label)' }}>{fieldLabels[key] ?? key}</div>
+            <div className="mt-1 text-xs leading-5" style={{ color: 'var(--text-main)' }}>{String(value) || '未填写'}</div>
+          </div>
+        ))}
+      </div>
+      {collectionEntries.length > 0 && (
+        <div className="space-y-1">
+          {collectionEntries.map(([key, value]) => (
+            <div key={key} className="text-xs leading-5" style={{ color: 'var(--text-muted)' }}>
+              <b style={{ color: 'var(--text-main)' }}>{fieldLabels[key] ?? key}</b>：{Array.isArray(value) ? `${value.length} 项` : `${Object.keys(asRecord(value) ?? {}).length} 个字段`}
+            </div>
+          ))}
+        </div>
+      )}
+      <div className="space-y-1">
+        {warnings.slice(0, 5).map((warning, index) => (
+          <div key={index} className="text-xs leading-5" style={{ color: '#fbbf24' }}>⚠ {warning}</div>
+        ))}
+        {!primitiveEntries.length && !collectionEntries.length && <div className="text-xs" style={{ color: 'var(--text-muted)' }}>预览暂无结构化字段。</div>}
       </div>
     </div>
   );

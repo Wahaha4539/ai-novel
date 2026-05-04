@@ -233,7 +233,7 @@
 
 ### AAM-P2-005 Agent Artifact 展示 guided step preview
 
-- 状态：`[ ]`
+- 状态：`[x]`
 - 模块：Web
 - 文件：`apps/web/components/agent/AgentArtifactPanel.tsx`
 - 任务：新增 `guided_step_preview` Artifact 展示。
@@ -242,6 +242,11 @@
   - 基础设定、风格定义等预览能以用户可读方式展示。
   - JSON 兜底仍可查看。
 - 验证：`pnpm --filter web build`
+- 完成记录：
+  - 完成内容：为 Agent 产物面板新增 `guided_step_preview` 专用摘要视图，展示步骤、字段数、警告、摘要和主要结构化字段；原始 JSON 折叠兜底保持可用。面板同时兼容后端尚未提升 Artifact 时的 plan-mode `generate_guided_step_preview` step 输出，自动合成为预览卡片。
+  - 修改文件：`apps/web/components/agent/AgentArtifactPanel.tsx`、`docs/architecture/ai-assistant-to-agent-migration-development-plan.md`
+  - 测试命令：`pnpm --filter web build`
+  - 测试结果：通过
 
 ### AAM-P2-006 扩展 generate_guided_step_preview 到全部步骤
 
