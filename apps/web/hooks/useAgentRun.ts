@@ -1,4 +1,5 @@
 import { useCallback, useRef, useState } from 'react';
+import type { AgentCreativeDocumentAttachment } from '../types/agent-attachment';
 
 const API_BASE = process.env.NEXT_PUBLIC_API_BASE_URL ?? 'http://127.0.0.1:3001/api';
 
@@ -193,14 +194,26 @@ export interface AgentPageContext {
   [key: string]: unknown;
 }
 
-function createClientRequestId(projectId: string, message: string, currentChapterId?: string) {
+function hashRequestPart(value: string) {
+  return Array.from(value).reduce((acc, char) => (acc * 31 + char.charCodeAt(0)) >>> 0, 0).toString(36);
+}
+
+function createAttachmentRequestFingerprint(attachments?: AgentCreativeDocumentAttachment[]) {
+  if (!attachments?.length) return 'no-attachments';
+  return attachments
+    .map((attachment) => attachment.id || attachment.url)
+    .filter(Boolean)
+    .join('|');
+}
+
+function createClientRequestId(projectId: string, message: string, currentChapterId?: string, attachments?: AgentCreativeDocumentAttachment[]) {
   const normalizedMessage = message.trim().slice(0, 120);
-  const hash = Array.from(normalizedMessage).reduce((acc, char) => (acc * 31 + char.charCodeAt(0)) >>> 0, 0).toString(36);
+  const hash = hashRequestPart(`${normalizedMessage}:${createAttachmentRequestFingerprint(attachments)}`);
   return `agent_${projectId}_${currentChapterId ?? 'project'}_${Date.now().toString(36)}_${hash}`;
 }
 
-function createPlanRequestFingerprint(projectId: string, message: string, currentChapterId?: string) {
-  return `${projectId}:${currentChapterId ?? 'project'}:${message.trim()}`;
+function createPlanRequestFingerprint(projectId: string, message: string, currentChapterId?: string, attachments?: AgentCreativeDocumentAttachment[]) {
+  return `${projectId}:${currentChapterId ?? 'project'}:${message.trim()}:${createAttachmentRequestFingerprint(attachments)}`;
 }
 
 /**
@@ -238,16 +251,17 @@ export function useAgentRun() {
     return events;
   }, []);
 
-  const createPlan = useCallback(async (projectId: string, message: string, pageContextOrChapterId?: string | AgentPageContext) => {
+  const createPlan = useCallback(async (projectId: string, message: string, pageContextOrChapterId?: string | AgentPageContext, attachments?: AgentCreativeDocumentAttachment[]) => {
     setLoading(true);
     setError('');
     setActionMessage('正在生成 Agent 执行计划…');
     const pageContext: AgentPageContext = typeof pageContextOrChapterId === 'string' ? { currentChapterId: pageContextOrChapterId } : (pageContextOrChapterId ?? {});
     const currentChapterId = pageContext.currentChapterId;
-    const fingerprint = createPlanRequestFingerprint(projectId, message, currentChapterId);
+    const planAttachments = attachments?.length ? attachments : undefined;
+    const fingerprint = createPlanRequestFingerprint(projectId, message, currentChapterId, planAttachments);
     let clientRequestId = createPlanRequestIdsRef.current.get(fingerprint);
     if (!clientRequestId) {
-      clientRequestId = createClientRequestId(projectId, message, currentChapterId);
+      clientRequestId = createClientRequestId(projectId, message, currentChapterId, planAttachments);
       createPlanRequestIdsRef.current.set(fingerprint, clientRequestId);
     }
     try {
@@ -257,6 +271,7 @@ export function useAgentRun() {
           projectId,
           message,
           context: { currentProjectId: projectId, sourcePage: 'agent_workspace', ...pageContext },
+          attachments: planAttachments,
           clientRequestId,
         }),
       });

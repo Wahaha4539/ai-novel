@@ -120,7 +120,7 @@
 
 ### CDI-P0-007 扩展 useAgentRun.createPlan 支持 attachments
 
-- 状态：`[ ]`
+- 状态：`[x]`
 - 模块：Web
 - 文件：`apps/web/hooks/useAgentRun.ts`
 - 任务：给 `createPlan(projectId, message, pageContext, attachments?)` 或等价参数结构增加附件传递。
@@ -130,6 +130,11 @@
   - `clientRequestId` 指纹包含附件 ID 或 URL，避免同一 message 换文件时复用旧请求。
   - 旧调用点不传附件时保持兼容。
 - 验证：`pnpm --filter web build`
+- 完成记录：
+  - 完成内容：为 `useAgentRun.createPlan` 增加可选 `attachments` 参数，计划请求体顶层携带附件数组；前端幂等指纹和 `clientRequestId` 哈希纳入附件 ID/URL，避免相同 message 更换文件时复用旧请求，同时保持旧调用点不传附件时兼容。
+  - 修改文件：`apps/web/hooks/useAgentRun.ts`、`docs/architecture/creative-document-import-agent-development-plan.md`
+  - 测试命令：`pnpm --filter web build`
+  - 测试结果：通过
 
 ### CDI-P0-008 定义后端附件 DTO 和归一化函数
 
