@@ -13,9 +13,12 @@ import { LorebookModule } from './modules/lorebook/lorebook.module';
 import { MemoryModule } from './modules/memory/memory.module';
 import { ProjectsModule } from './modules/projects/projects.module';
 import { PromptTemplatesModule } from './modules/prompt-templates/prompt-templates.module';
+import { RelationshipsModule } from './modules/relationships/relationships.module';
+import { TimelineEventsModule } from './modules/timeline-events/timeline-events.module';
 import { UploadsModule } from './modules/uploads/uploads.module';
 import { ValidationModule } from './modules/validation/validation.module';
 import { VolumesModule } from './modules/volumes/volumes.module';
+import { WritingRulesModule } from './modules/writing-rules/writing-rules.module';
 import { PrismaModule } from './prisma/prisma.module';
 
 @Module({
@@ -34,6 +37,9 @@ import { PrismaModule } from './prisma/prisma.module';
     LlmProvidersModule,
     LlmModule,
     PromptTemplatesModule,
+    WritingRulesModule,
+    RelationshipsModule,
+    TimelineEventsModule,
     UploadsModule,
     ValidationModule,
     MemoryModule,

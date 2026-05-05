@@ -5,7 +5,15 @@ import { StructuredLogger } from '../../common/logging/structured-logger';
 import { PrismaService } from '../../prisma/prisma.service';
 import { EmbeddingGatewayService } from '../llm/embedding-gateway.service';
 
-export type RetrievalHitSourceType = 'lorebook' | 'memory' | 'story_event' | 'character_state' | 'foreshadow';
+export type RetrievalHitSourceType =
+  | 'lorebook'
+  | 'memory'
+  | 'story_event'
+  | 'character_state'
+  | 'foreshadow'
+  | 'relationship_edge'
+  | 'timeline_event'
+  | 'writing_rule';
 export type RetrievalSearchMethod = 'lorebook_keyword' | 'pgvector_sql' | 'keyword_fallback' | 'structured_keyword';
 
 /**
@@ -80,6 +88,8 @@ export interface RetrieveContext {
     lorebook?: RetrievalPlannedQuery[];
     memory?: RetrievalPlannedQuery[];
     relationship?: RetrievalPlannedQuery[];
+    timeline?: RetrievalPlannedQuery[];
+    writingRule?: RetrievalPlannedQuery[];
     foreshadow?: RetrievalPlannedQuery[];
   };
 }
@@ -104,6 +114,57 @@ interface MemoryVectorRow {
   recencyScore: number;
   sourceTrace: unknown;
   vectorDistance: number | null;
+}
+
+interface RelationshipEdgeRow {
+  id: string;
+  characterAId: string | null;
+  characterBId: string | null;
+  characterAName: string;
+  characterBName: string;
+  relationType: string;
+  publicState: string | null;
+  hiddenState: string | null;
+  conflictPoint: string | null;
+  emotionalArc: string | null;
+  turnChapterNos: unknown;
+  finalState: string | null;
+  status: string;
+  sourceType: string;
+  metadata: unknown;
+}
+
+interface TimelineEventRow {
+  id: string;
+  chapterId: string | null;
+  chapterNo: number | null;
+  title: string;
+  eventTime: string | null;
+  locationName: string | null;
+  participants: unknown;
+  cause: string | null;
+  result: string | null;
+  impactScope: string | null;
+  isPublic: boolean;
+  knownBy: unknown;
+  unknownBy: unknown;
+  eventStatus: string;
+  sourceType: string;
+  metadata: unknown;
+}
+
+interface WritingRuleRow {
+  id: string;
+  ruleType: string;
+  title: string;
+  content: string;
+  severity: 'info' | 'warning' | 'error';
+  appliesFromChapterNo: number | null;
+  appliesToChapterNo: number | null;
+  entityType: string | null;
+  entityRef: string | null;
+  status: string;
+  metadata: unknown;
 }
 
 interface RetrievalQuerySpec {
@@ -133,7 +194,7 @@ export interface RetrievalBenchmarkCase {
 @Injectable()
 export class RetrievalService {
   private readonly logger = new StructuredLogger(RetrievalService.name);
-  private static readonly CACHE_VERSION = 2;
+  private static readonly CACHE_VERSION = 3;
 
   constructor(private readonly prisma: PrismaService, private readonly embeddings: EmbeddingGatewayService, private readonly cacheService: NovelCacheService) {}
 
@@ -297,23 +358,29 @@ export class RetrievalService {
 
   private async retrieveMemory(projectId: string, context: RetrieveContext, queryVector?: number[], vectorError?: string): Promise<RetrievalHit[]> {
     const keywords = this.extractKeywords(context);
-    const plannedQueries = [...(context.plannerQueries?.memory ?? []), ...(context.plannerQueries?.relationship ?? []), ...(context.plannerQueries?.foreshadow ?? [])];
+    const plannedQueries = [
+      ...(context.plannerQueries?.memory ?? []),
+      ...(context.plannerQueries?.relationship ?? []),
+      ...(context.plannerQueries?.timeline ?? []),
+      ...(context.plannerQueries?.writingRule ?? []),
+      ...(context.plannerQueries?.foreshadow ?? []),
+    ];
     if (queryVector?.length) {
       try {
-        return await this.retrieveMemoryViaPgvector(projectId, keywords, queryVector, plannedQueries);
+        return await this.retrieveMemoryViaPgvector(projectId, keywords, queryVector, plannedQueries, context.chapterNo);
       } catch (error) {
-        return this.retrieveMemoryViaKeyword(projectId, keywords, `pgvector_failed: ${error instanceof Error ? error.message : String(error)}`, plannedQueries);
+        return this.retrieveMemoryViaKeyword(projectId, keywords, `pgvector_failed: ${error instanceof Error ? error.message : String(error)}`, plannedQueries, context.chapterNo);
       }
     }
 
-    return this.retrieveMemoryViaKeyword(projectId, keywords, vectorError ? `embedding_failed: ${vectorError}` : 'embedding_unavailable', plannedQueries);
+    return this.retrieveMemoryViaKeyword(projectId, keywords, vectorError ? `embedding_failed: ${vectorError}` : 'embedding_unavailable', plannedQueries, context.chapterNo);
   }
 
   /**
    * 优先使用数据库侧 pgvector 排序，避免长期在应用层扫描 MemoryChunk embedding。
    * embeddingVector 是正式检索列；旧 JSON embedding 仅作为迁移期回填来源保留。
    */
-  private async retrieveMemoryViaPgvector(projectId: string, keywords: string[], queryVector: number[], plannedQueries: RetrievalPlannedQuery[]): Promise<RetrievalHit[]> {
+  private async retrieveMemoryViaPgvector(projectId: string, keywords: string[], queryVector: number[], plannedQueries: RetrievalPlannedQuery[], chapterNo?: number): Promise<RetrievalHit[]> {
     const vectorLiteral = `[${queryVector.join(',')}]`;
     const rows = await this.prisma.$queryRawUnsafe<MemoryVectorRow[]>(
       `SELECT id,
@@ -332,15 +399,22 @@ export class RetrievalService {
         WHERE "projectId" = $1::uuid
           AND status IN ('auto', 'user_confirmed')
           AND "embeddingVector" IS NOT NULL
+          AND (
+            $3::integer IS NULL
+            OR "sourceTrace"->>'chapterNo' IS NULL
+            OR (("sourceTrace"->>'chapterNo') ~ '^[0-9]+$' AND ("sourceTrace"->>'chapterNo')::integer <= $3::integer)
+          )
         ORDER BY "embeddingVector" <=> $2::vector ASC,
                  "importanceScore" DESC,
                  "recencyScore" DESC
         LIMIT 20`,
       projectId,
       vectorLiteral,
+      chapterNo ?? null,
     );
 
     return rows
+      .filter((row) => this.isMemoryVisibleAtChapter(row.sourceTrace, chapterNo))
       .map((row) => {
         const distance = Number(row.vectorDistance ?? 1);
         const vectorScore = Math.round(Math.max(0, 1 - distance) * 10000) / 10000;
@@ -371,7 +445,7 @@ export class RetrievalService {
   }
 
   /** embedding/pgvector 失败时的确定性兜底，保证生成链路仍能拿到可解释的上下文。 */
-  private async retrieveMemoryViaKeyword(projectId: string, keywords: string[], fallbackReason: string, plannedQueries: RetrievalPlannedQuery[]): Promise<RetrievalHit[]> {
+  private async retrieveMemoryViaKeyword(projectId: string, keywords: string[], fallbackReason: string, plannedQueries: RetrievalPlannedQuery[], chapterNo?: number): Promise<RetrievalHit[]> {
     const rows = await this.prisma.memoryChunk.findMany({
       where: { projectId, status: { in: ['auto', 'user_confirmed'] } },
       orderBy: [{ importanceScore: 'desc' }, { recencyScore: 'desc' }, { updatedAt: 'desc' }],
@@ -379,6 +453,7 @@ export class RetrievalService {
     });
 
     return rows
+      .filter((row) => this.isMemoryVisibleAtChapter(row.sourceTrace, chapterNo))
       .map((row) => {
         const searchableText = `${row.summary ?? ''}\n${row.content}\n${JSON.stringify(row.tags)}`;
         const keywordScore = this.scoreText(searchableText, keywords);
@@ -425,12 +500,15 @@ export class RetrievalService {
   }
 
   private async retrieveStructuredFacts(projectId: string, context: RetrieveContext): Promise<RetrievalHit[]> {
-    const [events, states, foreshadows] = await Promise.all([
+    const [events, states, foreshadows, relationships, timelineEvents, writingRules] = await Promise.all([
       this.retrieveStoryEvents(projectId, context),
       this.retrieveCharacterStates(projectId, context),
       this.retrieveForeshadows(projectId, context),
+      this.retrieveRelationshipEdges(projectId, context),
+      this.retrieveTimelineEvents(projectId, context),
+      this.retrieveWritingRules(projectId, context),
     ]);
-    return [...events, ...states, ...foreshadows].sort((a, b) => b.score - a.score).slice(0, 10);
+    return [...events, ...states, ...foreshadows, ...relationships, ...timelineEvents, ...writingRules].sort((a, b) => b.score - a.score).slice(0, 16);
   }
 
   private async retrieveStoryEvents(projectId: string, context: RetrieveContext): Promise<RetrievalHit[]> {
@@ -540,6 +618,178 @@ export class RetrievalService {
       .slice(0, 6);
   }
 
+  private async retrieveRelationshipEdges(projectId: string, context: RetrieveContext): Promise<RetrievalHit[]> {
+    const client = (this.prisma as unknown as { relationshipEdge?: { findMany(args: unknown): Promise<RelationshipEdgeRow[]> } }).relationshipEdge;
+    if (!client) return [];
+
+    const keywords = this.extractKeywords(context);
+    const queries = context.plannerQueries?.relationship ?? [];
+    const rows = await client.findMany({
+      where: { projectId, status: 'active' },
+      orderBy: [{ updatedAt: 'desc' }],
+    });
+
+    return rows
+      .filter((row) => this.isRelationshipVisibleAtChapter(row.turnChapterNos, context.chapterNo))
+      .map((row) => {
+        const customMetadata = this.asRecord(row.metadata);
+        const turnChapterNos = this.readNumberArray(row.turnChapterNos);
+        const content = [
+          `${row.characterAName} -> ${row.characterBName}`,
+          `relationType: ${row.relationType}`,
+          row.publicState ? `publicState: ${row.publicState}` : '',
+          row.hiddenState ? `hiddenState: ${row.hiddenState}` : '',
+          row.conflictPoint ? `conflictPoint: ${row.conflictPoint}` : '',
+          row.emotionalArc ? `emotionalArc: ${row.emotionalArc}` : '',
+          row.finalState ? `finalState: ${row.finalState}` : '',
+          turnChapterNos.length ? `turnChapterNos: ${turnChapterNos.join(',')}` : '',
+        ].filter(Boolean).join('\n');
+        const searchableText = `${content}\n${JSON.stringify(customMetadata)}`;
+        const keywordScore = this.scoreText(searchableText, keywords);
+        const plannerScore = this.scorePlannedQueries(searchableText, queries);
+        const score = keywordScore + plannerScore + 0.08;
+        const searchMethod: RetrievalSearchMethod = 'structured_keyword';
+        const matchedKeywords = this.matchKeywords(searchableText, keywords);
+        const reason = this.buildHitReason(searchMethod, matchedKeywords, keywordScore, undefined, plannerScore);
+        return {
+          sourceType: 'relationship_edge' as const,
+          sourceId: row.id,
+          projectId,
+          title: `${row.characterAName} / ${row.characterBName}`,
+          content: content.slice(0, 900),
+          score,
+          searchMethod,
+          reason,
+          sourceTrace: this.buildSourceTrace({ sourceType: 'relationship_edge', sourceId: row.id, projectId, score, searchMethod, reason }),
+          metadata: { ...customMetadata, characterAId: row.characterAId, characterBId: row.characterBId, characterAName: row.characterAName, characterBName: row.characterBName, relationType: row.relationType, status: row.status, sourceType: row.sourceType, turnChapterNos, keywordScore, plannerScore, matchedKeywords, projectId },
+        };
+      })
+      .filter((hit) => hit.score > 0.12)
+      .sort((a, b) => b.score - a.score)
+      .slice(0, 6);
+  }
+
+  private async retrieveTimelineEvents(projectId: string, context: RetrieveContext): Promise<RetrievalHit[]> {
+    const client = (this.prisma as unknown as { timelineEvent?: { findMany(args: unknown): Promise<TimelineEventRow[]> } }).timelineEvent;
+    if (!client) return [];
+
+    const keywords = this.extractKeywords(context);
+    const queries = context.plannerQueries?.timeline ?? [];
+    const rows = await client.findMany({
+      where: {
+        projectId,
+        eventStatus: 'active',
+        ...(typeof context.chapterNo === 'number' ? { chapterNo: { lte: context.chapterNo } } : {}),
+      },
+      orderBy: [{ chapterNo: 'desc' }, { updatedAt: 'desc' }],
+      take: 80,
+    });
+
+    return rows
+      .map((row) => {
+        const participants = this.readStringArray(row.participants);
+        const knownBy = this.readStringArray(row.knownBy);
+        const unknownBy = this.readStringArray(row.unknownBy);
+        const customMetadata = this.asRecord(row.metadata);
+        const content = [
+          row.eventTime ? `eventTime: ${row.eventTime}` : '',
+          row.locationName ? `location: ${row.locationName}` : '',
+          participants.length ? `participants: ${participants.join(', ')}` : '',
+          row.cause ? `cause: ${row.cause}` : '',
+          row.result ? `result: ${row.result}` : '',
+          row.impactScope ? `impactScope: ${row.impactScope}` : '',
+          `isPublic: ${row.isPublic}`,
+          knownBy.length ? `knownBy: ${knownBy.join(', ')}` : '',
+          unknownBy.length ? `unknownBy: ${unknownBy.join(', ')}` : '',
+        ].filter(Boolean).join('\n');
+        const searchableText = `${row.title}\n${content}\n${JSON.stringify(customMetadata)}`;
+        const keywordScore = this.scoreText(searchableText, keywords);
+        const plannerScore = this.scorePlannedQueries(searchableText, queries);
+        const score = keywordScore + plannerScore + 0.08;
+        const searchMethod: RetrievalSearchMethod = 'structured_keyword';
+        const matchedKeywords = this.matchKeywords(searchableText, keywords);
+        const reason = this.buildHitReason(searchMethod, matchedKeywords, keywordScore, undefined, plannerScore);
+        return {
+          sourceType: 'timeline_event' as const,
+          sourceId: row.id,
+          projectId,
+          title: row.title,
+          content: content.slice(0, 900),
+          score,
+          searchMethod,
+          reason,
+          sourceTrace: this.buildSourceTrace({ sourceType: 'timeline_event', sourceId: row.id, projectId, score, searchMethod, reason, storedSourceTrace: { chapterId: row.chapterId, chapterNo: row.chapterNo } }),
+          metadata: { ...customMetadata, chapterId: row.chapterId, chapterNo: row.chapterNo, eventTime: row.eventTime, locationName: row.locationName, participants, knownBy, unknownBy, eventStatus: row.eventStatus, sourceType: row.sourceType, keywordScore, plannerScore, matchedKeywords, projectId },
+        };
+      })
+      .filter((hit) => hit.score > 0.12)
+      .sort((a, b) => b.score - a.score)
+      .slice(0, 6);
+  }
+
+  private async retrieveWritingRules(projectId: string, context: RetrieveContext): Promise<RetrievalHit[]> {
+    const client = (this.prisma as unknown as { writingRule?: { findMany(args: unknown): Promise<WritingRuleRow[]> } }).writingRule;
+    if (!client) return [];
+
+    const keywords = this.extractKeywords(context);
+    const queries = context.plannerQueries?.writingRule ?? [];
+    const rows = await client.findMany({
+      where: {
+        projectId,
+        status: 'active',
+        ...(typeof context.chapterNo === 'number'
+          ? {
+              AND: [
+                { OR: [{ appliesFromChapterNo: null }, { appliesFromChapterNo: { lte: context.chapterNo } }] },
+                { OR: [{ appliesToChapterNo: null }, { appliesToChapterNo: { gte: context.chapterNo } }] },
+              ],
+            }
+          : {}),
+      },
+      orderBy: [{ updatedAt: 'desc' }],
+    });
+
+    return rows
+      .map((row) => {
+        const customMetadata = this.asRecord(row.metadata);
+        const range = [
+          row.appliesFromChapterNo != null ? `from=${row.appliesFromChapterNo}` : '',
+          row.appliesToChapterNo != null ? `to=${row.appliesToChapterNo}` : '',
+        ].filter(Boolean).join(',');
+        const content = [
+          `ruleType: ${row.ruleType}`,
+          `severity: ${row.severity}`,
+          range ? `chapterRange: ${range}` : '',
+          row.entityType ? `entityType: ${row.entityType}` : '',
+          row.entityRef ? `entityRef: ${row.entityRef}` : '',
+          row.content,
+        ].filter(Boolean).join('\n');
+        const searchableText = `${row.title}\n${content}\n${JSON.stringify(customMetadata)}`;
+        const keywordScore = this.scoreText(searchableText, keywords);
+        const plannerScore = this.scorePlannedQueries(searchableText, queries);
+        const severityScore = row.severity === 'error' ? 0.18 : row.severity === 'warning' ? 0.12 : 0.06;
+        const score = keywordScore + plannerScore + severityScore;
+        const searchMethod: RetrievalSearchMethod = 'structured_keyword';
+        const matchedKeywords = this.matchKeywords(searchableText, keywords);
+        const reason = this.buildHitReason(searchMethod, matchedKeywords, keywordScore, undefined, plannerScore);
+        return {
+          sourceType: 'writing_rule' as const,
+          sourceId: row.id,
+          projectId,
+          title: row.title,
+          content: content.slice(0, 900),
+          score,
+          searchMethod,
+          reason,
+          sourceTrace: this.buildSourceTrace({ sourceType: 'writing_rule', sourceId: row.id, projectId, score, searchMethod, reason }),
+          metadata: { ...customMetadata, ruleType: row.ruleType, severity: row.severity, appliesFromChapterNo: row.appliesFromChapterNo, appliesToChapterNo: row.appliesToChapterNo, entityType: row.entityType, entityRef: row.entityRef, status: row.status, keywordScore, plannerScore, matchedKeywords, projectId },
+        };
+      })
+      .filter((hit) => hit.score > 0.12)
+      .sort((a, b) => (this.severityRank(b.metadata.severity) - this.severityRank(a.metadata.severity)) || b.score - a.score)
+      .slice(0, 6);
+  }
+
   private rerankAndCompress(lorebookHits: RetrievalHit[], memoryHits: RetrievalHit[], structuredHits: RetrievalHit[] = []) {
     return [...lorebookHits, ...memoryHits, ...structuredHits].sort((a, b) => b.score - a.score).slice(0, 12);
   }
@@ -584,6 +834,8 @@ export class RetrievalService {
         lorebook: this.normalizePlannedQueries(context.plannerQueries?.lorebook),
         memory: this.normalizePlannedQueries(context.plannerQueries?.memory),
         relationship: this.normalizePlannedQueries(context.plannerQueries?.relationship),
+        timeline: this.normalizePlannedQueries(context.plannerQueries?.timeline),
+        writingRule: this.normalizePlannedQueries(context.plannerQueries?.writingRule),
         foreshadow: this.normalizePlannedQueries(context.plannerQueries?.foreshadow),
       },
     };
@@ -685,6 +937,34 @@ export class RetrievalService {
     return undefined;
   }
 
+  private readNumberArray(value: unknown): number[] {
+    return Array.isArray(value)
+      ? value.map((item) => Number(item)).filter((item) => Number.isInteger(item) && item > 0)
+      : [];
+  }
+
+  private readStringArray(value: unknown): string[] {
+    return Array.isArray(value)
+      ? value.map((item) => (typeof item === 'string' ? item.trim() : '')).filter(Boolean)
+      : [];
+  }
+
+  private isRelationshipVisibleAtChapter(turnChapterNos: unknown, chapterNo: number | undefined): boolean {
+    if (typeof chapterNo !== 'number') return true;
+    const turns = this.readNumberArray(turnChapterNos);
+    return turns.length === 0 || turns.some((item) => item <= chapterNo);
+  }
+
+  private isMemoryVisibleAtChapter(sourceTrace: unknown, chapterNo: number | undefined): boolean {
+    if (typeof chapterNo !== 'number') return true;
+    const traceChapterNo = this.readNumber(this.asRecord(sourceTrace).chapterNo);
+    return typeof traceChapterNo !== 'number' || traceChapterNo <= chapterNo;
+  }
+
+  private severityRank(value: unknown): number {
+    return value === 'error' ? 3 : value === 'warning' ? 2 : value === 'info' ? 1 : 0;
+  }
+
   private truncateForLog(value: string | null | undefined, maxLength: number): string | undefined {
     if (!value) return undefined;
     return value.length > maxLength ? `${value.slice(0, maxLength)}...` : value;
@@ -706,7 +986,12 @@ export class RetrievalService {
   private countPlannerQueries(context: RetrieveContext): number {
     const queries = context.plannerQueries;
     if (!queries) return 0;
-    return (queries.lorebook?.length ?? 0) + (queries.memory?.length ?? 0) + (queries.relationship?.length ?? 0) + (queries.foreshadow?.length ?? 0);
+    return (queries.lorebook?.length ?? 0)
+      + (queries.memory?.length ?? 0)
+      + (queries.relationship?.length ?? 0)
+      + (queries.timeline?.length ?? 0)
+      + (queries.writingRule?.length ?? 0)
+      + (queries.foreshadow?.length ?? 0);
   }
 
 }

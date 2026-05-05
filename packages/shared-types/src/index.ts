@@ -97,3 +97,143 @@ export interface ProjectCreativeProfileDto {
   createdAt: string;
   updatedAt: string;
 }
+
+export type WritingRuleSeverity = ValidationSeverity;
+
+export interface WritingRuleDto {
+  id: string;
+  projectId: string;
+  ruleType: string;
+  title: string;
+  content: string;
+  severity: WritingRuleSeverity;
+  appliesFromChapterNo?: number | null;
+  appliesToChapterNo?: number | null;
+  entityType?: string | null;
+  entityRef?: string | null;
+  status: string;
+  metadata: Record<string, unknown>;
+  createdAt: string;
+  updatedAt: string;
+}
+
+export interface CreateWritingRuleRequest {
+  ruleType: string;
+  title: string;
+  content: string;
+  severity?: WritingRuleSeverity;
+  appliesFromChapterNo?: number;
+  appliesToChapterNo?: number;
+  entityType?: string;
+  entityRef?: string;
+  status?: string;
+  metadata?: Record<string, unknown>;
+}
+
+export type UpdateWritingRuleRequest = Partial<CreateWritingRuleRequest>;
+
+export interface ListWritingRulesQuery {
+  ruleType?: string;
+  status?: string;
+  severity?: WritingRuleSeverity;
+  chapterNo?: number;
+  entityType?: string;
+  entityRef?: string;
+  q?: string;
+}
+
+export interface RelationshipEdgeDto {
+  id: string;
+  projectId: string;
+  characterAId?: string | null;
+  characterBId?: string | null;
+  characterAName: string;
+  characterBName: string;
+  relationType: string;
+  publicState?: string | null;
+  hiddenState?: string | null;
+  conflictPoint?: string | null;
+  emotionalArc?: string | null;
+  turnChapterNos: number[];
+  finalState?: string | null;
+  status: string;
+  sourceType: string;
+  metadata: Record<string, unknown>;
+  createdAt: string;
+  updatedAt: string;
+}
+
+export interface CreateRelationshipEdgeRequest {
+  characterAId?: string;
+  characterBId?: string;
+  characterAName: string;
+  characterBName: string;
+  relationType: string;
+  publicState?: string;
+  hiddenState?: string;
+  conflictPoint?: string;
+  emotionalArc?: string;
+  turnChapterNos?: number[];
+  finalState?: string;
+  status?: string;
+  sourceType?: string;
+  metadata?: Record<string, unknown>;
+}
+
+export type UpdateRelationshipEdgeRequest = Partial<CreateRelationshipEdgeRequest>;
+
+export interface ListRelationshipEdgesQuery {
+  characterName?: string;
+  status?: string;
+  chapterNo?: number;
+  q?: string;
+}
+
+export interface TimelineEventDto {
+  id: string;
+  projectId: string;
+  chapterId?: string | null;
+  chapterNo?: number | null;
+  title: string;
+  eventTime?: string | null;
+  locationName?: string | null;
+  participants: string[];
+  cause?: string | null;
+  result?: string | null;
+  impactScope?: string | null;
+  isPublic: boolean;
+  knownBy: string[];
+  unknownBy: string[];
+  eventStatus: string;
+  sourceType: string;
+  metadata: Record<string, unknown>;
+  createdAt: string;
+  updatedAt: string;
+}
+
+export interface CreateTimelineEventRequest {
+  chapterId?: string;
+  chapterNo?: number;
+  title: string;
+  eventTime?: string;
+  locationName?: string;
+  participants?: string[];
+  cause?: string;
+  result?: string;
+  impactScope?: string;
+  isPublic?: boolean;
+  knownBy?: string[];
+  unknownBy?: string[];
+  eventStatus?: string;
+  sourceType?: string;
+  metadata?: Record<string, unknown>;
+}
+
+export type UpdateTimelineEventRequest = Partial<CreateTimelineEventRequest>;
+
+export interface ListTimelineEventsQuery {
+  chapterNo?: number;
+  eventStatus?: string;
+  knownBy?: string;
+  q?: string;
+}

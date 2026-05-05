@@ -69,7 +69,7 @@ export class RetrievalPlannerService {
       '你是长篇小说章节生成前的 Retrieval Planner。',
       '职责：只分析这一章应该查询哪些已有资料，不要创造剧情事实，不要补写正文。',
       '必须输出严格 JSON 对象，不要 Markdown，不要解释。',
-      '输出字段固定为：chapterTasks, entities, lorebookQueries, memoryQueries, relationshipQueries, foreshadowQueries, constraints。',
+      '输出字段固定为：chapterTasks, entities, lorebookQueries, memoryQueries, relationshipQueries, timelineQueries, writingRuleQueries, foreshadowQueries, constraints。',
       'entities 固定包含 characters, locations, items, factions 四个字符串数组。',
       '每个 query 对象固定包含 query,type,importance,reason；importance 只能是 must/should/nice_to_have。',
       '如果某内容可能是本章首次出现，只能写入 constraints 或 user intent 相关查询意图，不能当作已存在事实。',
@@ -95,6 +95,8 @@ export class RetrievalPlannerService {
           lorebookQueries: [{ query: '需要查询的设定关键词', type: 'setting', importance: 'must', reason: '为什么本章需要该设定' }],
           memoryQueries: [{ query: '需要查询的前情记忆', type: 'event', importance: 'should', reason: '为什么需要前情' }],
           relationshipQueries: [{ query: '人物A 与 人物B 信任状态', type: 'relationship_state', importance: 'should', reason: '为什么需要关系状态' }],
+          timelineQueries: [{ query: '事件发生顺序与知情角色', type: 'timeline_event', importance: 'should', reason: '为什么需要时间线与知情范围' }],
+          writingRuleQueries: [{ query: '本章必须遵守的禁写/保密/出场规则', type: 'writing_rule', importance: 'must', reason: '为什么需要写作约束' }],
           foreshadowQueries: [{ query: '伏笔或道具的首次出现/当前状态', type: 'foreshadow', importance: 'nice_to_have', reason: '为什么需要伏笔资料' }],
           constraints: ['查不到的规划内容不得当作事实写入 Prompt。'],
         },
@@ -114,6 +116,8 @@ export class RetrievalPlannerService {
       lorebookQueries: query ? [{ query, type: 'chapter_setting', importance: 'should', reason: '根据章节目标查询相关设定。' }] : [],
       memoryQueries: query ? [{ query, type: 'previous_context', importance: 'should', reason: '根据章节目标查询前情记忆。' }] : [],
       relationshipQueries: characterNames.length ? [{ query: `${characterNames.slice(0, 4).join('、')} 当前关系与信任状态`, type: 'relationship_state', importance: 'nice_to_have', reason: '根据登场角色查询关系状态，避免人物互动断裂。' }] : [],
+      timelineQueries: query ? [{ query, type: 'timeline_event', importance: 'should', reason: '根据章节目标查询已发生时间线事件与知情范围。' }] : [],
+      writingRuleQueries: query ? [{ query, type: 'writing_rule', importance: 'must', reason: '查询本章适用的写作硬约束。' }] : [],
       foreshadowQueries: input.chapter.foreshadowPlan || input.chapter.revealPoints ? [{ query: [input.chapter.foreshadowPlan, input.chapter.revealPoints].filter(Boolean).join('；'), type: 'foreshadow', importance: 'should', reason: '章节含伏笔计划或揭示点，需要查询伏笔状态。' }] : [],
       constraints: ['只使用数据库真实命中的资料作为已验证上下文。', '未命中查询只进入诊断，不当作既有事实。'],
     };
@@ -133,6 +137,8 @@ export class RetrievalPlannerService {
       lorebookQueries: this.normalizeQueries(record.lorebookQueries, 'lorebook', fallback.lorebookQueries),
       memoryQueries: this.normalizeQueries(record.memoryQueries, 'memory', fallback.memoryQueries),
       relationshipQueries: this.normalizeQueries(record.relationshipQueries, 'relationship', fallback.relationshipQueries),
+      timelineQueries: this.normalizeQueries(record.timelineQueries, 'timeline', fallback.timelineQueries),
+      writingRuleQueries: this.normalizeQueries(record.writingRuleQueries, 'writing_rule', fallback.writingRuleQueries),
       foreshadowQueries: this.normalizeQueries(record.foreshadowQueries, 'foreshadow', fallback.foreshadowQueries),
       constraints: this.normalizeStringArray(record.constraints, MAX_CONSTRAINTS, fallback.constraints),
     };
@@ -167,11 +173,11 @@ export class RetrievalPlannerService {
 
   private countRawQueries(data: unknown): number {
     const record = this.asRecord(data);
-    return ['lorebookQueries', 'memoryQueries', 'relationshipQueries', 'foreshadowQueries'].reduce((sum, key) => sum + (Array.isArray(record[key]) ? (record[key] as unknown[]).length : 0), 0);
+    return ['lorebookQueries', 'memoryQueries', 'relationshipQueries', 'timelineQueries', 'writingRuleQueries', 'foreshadowQueries'].reduce((sum, key) => sum + (Array.isArray(record[key]) ? (record[key] as unknown[]).length : 0), 0);
   }
 
   private countPlanQueries(plan: RetrievalPlan): number {
-    return plan.lorebookQueries.length + plan.memoryQueries.length + plan.relationshipQueries.length + plan.foreshadowQueries.length;
+    return plan.lorebookQueries.length + plan.memoryQueries.length + plan.relationshipQueries.length + plan.timelineQueries.length + plan.writingRuleQueries.length + plan.foreshadowQueries.length;
   }
 
   private dedupeBy<T>(items: T[], keyOf: (item: T) => string): T[] {

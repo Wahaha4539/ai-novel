@@ -22,6 +22,8 @@ export interface RetrievalPlan {
   lorebookQueries: RetrievalPlanQuery[];
   memoryQueries: RetrievalPlanQuery[];
   relationshipQueries: RetrievalPlanQuery[];
+  timelineQueries: RetrievalPlanQuery[];
+  writingRuleQueries: RetrievalPlanQuery[];
   foreshadowQueries: RetrievalPlanQuery[];
   constraints: string[];
 }

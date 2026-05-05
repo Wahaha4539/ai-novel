@@ -3,7 +3,7 @@ import { ProjectSummary, ChapterSummary, VolumeSummary } from '../types/dashboar
 import { ThemeSwitcher } from './ThemeSwitcher';
 import { VolumeChapterTree } from './VolumeChapterTree';
 
-type ActiveView = 'editor' | 'outline' | 'lore' | 'story-bible' | 'generation-config' | 'projects' | 'volumes' | 'guided' | 'prompts' | 'foreshadow' | 'generate' | 'llm-config';
+type ActiveView = 'editor' | 'outline' | 'lore' | 'story-bible' | 'writing-rules' | 'relationships' | 'timeline' | 'character-state' | 'generation-config' | 'projects' | 'volumes' | 'guided' | 'prompts' | 'foreshadow' | 'generate' | 'llm-config';
 
 interface Props {
   projects: ProjectSummary[];
@@ -19,6 +19,10 @@ interface Props {
   onNavigateToOutline: () => void;
   onNavigateToLore: () => void;
   onNavigateToStoryBible: () => void;
+  onNavigateToWritingRules: () => void;
+  onNavigateToRelationships: () => void;
+  onNavigateToTimeline: () => void;
+  onNavigateToCharacterState: () => void;
   onNavigateToGenerationConfig: () => void;
   onNavigateToVolumes: () => void;
   onNavigateToGuided: () => void;
@@ -44,6 +48,10 @@ export function WorkspaceSidebar({
   onNavigateToOutline,
   onNavigateToLore,
   onNavigateToStoryBible,
+  onNavigateToWritingRules,
+  onNavigateToRelationships,
+  onNavigateToTimeline,
+  onNavigateToCharacterState,
   onNavigateToGenerationConfig,
   onNavigateToVolumes,
   onNavigateToGuided,
@@ -123,6 +131,38 @@ export function WorkspaceSidebar({
                   isActive={activeView === 'story-bible'}
                   activeColor="#10b981"
                   onClick={onNavigateToStoryBible}
+                />
+              </li>
+              <li>
+                <NavButton
+                  label="写作规则 (Rules)"
+                  isActive={activeView === 'writing-rules'}
+                  activeColor="#f43f5e"
+                  onClick={onNavigateToWritingRules}
+                />
+              </li>
+              <li>
+                <NavButton
+                  label="人物关系 (Relationships)"
+                  isActive={activeView === 'relationships'}
+                  activeColor="#14b8a6"
+                  onClick={onNavigateToRelationships}
+                />
+              </li>
+              <li>
+                <NavButton
+                  label="时间线 (Timeline)"
+                  isActive={activeView === 'timeline'}
+                  activeColor="#6366f1"
+                  onClick={onNavigateToTimeline}
+                />
+              </li>
+              <li>
+                <NavButton
+                  label="角色状态 (State)"
+                  isActive={activeView === 'character-state'}
+                  activeColor="#38bdf8"
+                  onClick={onNavigateToCharacterState}
                 />
               </li>
               <li>

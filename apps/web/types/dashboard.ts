@@ -134,6 +134,67 @@ export type CharacterStateItem = {
   stateValue: string;
   summary?: string | null;
   status: string;
+  metadata?: Record<string, unknown> | null;
+};
+
+export type WritingRule = {
+  id: string;
+  projectId: string;
+  ruleType: string;
+  title: string;
+  content: string;
+  severity: 'info' | 'warning' | 'error';
+  appliesFromChapterNo?: number | null;
+  appliesToChapterNo?: number | null;
+  entityType?: string | null;
+  entityRef?: string | null;
+  status: string;
+  metadata: Record<string, unknown>;
+  createdAt: string;
+  updatedAt: string;
+};
+
+export type RelationshipEdge = {
+  id: string;
+  projectId: string;
+  characterAId?: string | null;
+  characterBId?: string | null;
+  characterAName: string;
+  characterBName: string;
+  relationType: string;
+  publicState?: string | null;
+  hiddenState?: string | null;
+  conflictPoint?: string | null;
+  emotionalArc?: string | null;
+  turnChapterNos: number[];
+  finalState?: string | null;
+  status: string;
+  sourceType: string;
+  metadata: Record<string, unknown>;
+  createdAt: string;
+  updatedAt: string;
+};
+
+export type TimelineEvent = {
+  id: string;
+  projectId: string;
+  chapterId?: string | null;
+  chapterNo?: number | null;
+  title: string;
+  eventTime?: string | null;
+  locationName?: string | null;
+  participants: string[];
+  cause?: string | null;
+  result?: string | null;
+  impactScope?: string | null;
+  isPublic: boolean;
+  knownBy: string[];
+  unknownBy: string[];
+  eventStatus: string;
+  sourceType: string;
+  metadata: Record<string, unknown>;
+  createdAt: string;
+  updatedAt: string;
 };
 
 export type ForeshadowItem = {

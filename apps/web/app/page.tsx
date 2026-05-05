@@ -16,13 +16,17 @@ import { PromptManagerPanel } from '../components/PromptManagerPanel';
 import { ForeshadowBoard } from '../components/ForeshadowBoard';
 import { BatchGeneratePanel } from '../components/BatchGeneratePanel';
 import { LlmProviderPanel } from '../components/LlmProviderPanel';
+import { WritingRulesPanel } from '../components/WritingRulesPanel';
+import { RelationshipMapPanel } from '../components/RelationshipMapPanel';
+import { TimelinePanel } from '../components/TimelinePanel';
+import { CharacterStatePanel } from '../components/CharacterStatePanel';
 import { AgentFloatingOrb } from '../components/agent/AgentFloatingOrb';
 import { AgentPageContext } from '../hooks/useAgentRun';
 
-type ActiveView = 'editor' | 'outline' | 'lore' | 'story-bible' | 'generation-config' | 'projects' | 'volumes' | 'guided' | 'prompts' | 'foreshadow' | 'generate' | 'llm-config';
+type ActiveView = 'editor' | 'outline' | 'lore' | 'story-bible' | 'writing-rules' | 'relationships' | 'timeline' | 'character-state' | 'generation-config' | 'projects' | 'volumes' | 'guided' | 'prompts' | 'foreshadow' | 'generate' | 'llm-config';
 
 const WORKSPACE_STATE_STORAGE_KEY = 'ai-novel:workspace-state';
-const ACTIVE_VIEWS: ActiveView[] = ['editor', 'outline', 'lore', 'story-bible', 'generation-config', 'projects', 'volumes', 'guided', 'prompts', 'foreshadow', 'generate', 'llm-config'];
+const ACTIVE_VIEWS: ActiveView[] = ['editor', 'outline', 'lore', 'story-bible', 'writing-rules', 'relationships', 'timeline', 'character-state', 'generation-config', 'projects', 'volumes', 'guided', 'prompts', 'foreshadow', 'generate', 'llm-config'];
 
 type WorkspaceState = {
   activeView: ActiveView;
@@ -150,6 +154,22 @@ export default function HomePage() {
     setActiveView('story-bible');
   }, []);
 
+  const handleNavigateToWritingRules = useCallback(() => {
+    setActiveView('writing-rules');
+  }, []);
+
+  const handleNavigateToRelationships = useCallback(() => {
+    setActiveView('relationships');
+  }, []);
+
+  const handleNavigateToTimeline = useCallback(() => {
+    setActiveView('timeline');
+  }, []);
+
+  const handleNavigateToCharacterState = useCallback(() => {
+    setActiveView('character-state');
+  }, []);
+
   const handleNavigateToGenerationConfig = useCallback(() => {
     setActiveView('generation-config');
   }, []);
@@ -236,6 +256,10 @@ export default function HomePage() {
         onNavigateToOutline={handleNavigateToOutline}
         onNavigateToLore={handleNavigateToLore}
         onNavigateToStoryBible={handleNavigateToStoryBible}
+        onNavigateToWritingRules={handleNavigateToWritingRules}
+        onNavigateToRelationships={handleNavigateToRelationships}
+        onNavigateToTimeline={handleNavigateToTimeline}
+        onNavigateToCharacterState={handleNavigateToCharacterState}
         onNavigateToGenerationConfig={handleNavigateToGenerationConfig}
         onNavigateToVolumes={handleNavigateToVolumes}
         onNavigateToGuided={handleNavigateToGuided}
@@ -266,6 +290,20 @@ export default function HomePage() {
           <LorePanel selectedProject={selectedProject} selectedProjectId={data.selectedProjectId} />
         ) : activeView === 'story-bible' ? (
           <StoryBiblePanel selectedProject={selectedProject} selectedProjectId={data.selectedProjectId} />
+        ) : activeView === 'writing-rules' ? (
+          <WritingRulesPanel selectedProject={selectedProject} selectedProjectId={data.selectedProjectId} />
+        ) : activeView === 'relationships' ? (
+          <RelationshipMapPanel selectedProject={selectedProject} selectedProjectId={data.selectedProjectId} />
+        ) : activeView === 'timeline' ? (
+          <TimelinePanel selectedProject={selectedProject} selectedProjectId={data.selectedProjectId} />
+        ) : activeView === 'character-state' ? (
+          <CharacterStatePanel
+            selectedProject={selectedProject}
+            selectedProjectId={data.selectedProjectId}
+            characterStates={data.characterStates}
+            loading={data.loading}
+            onRefresh={() => data.loadProjectData(data.selectedProjectId, data.selectedChapterId)}
+          />
         ) : activeView === 'generation-config' ? (
           <CreativeProfilePanel selectedProject={selectedProject} selectedProjectId={data.selectedProjectId} />
         ) : activeView === 'volumes' ? (

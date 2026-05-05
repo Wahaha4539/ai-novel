@@ -168,6 +168,8 @@ export class GenerateChapterService {
           lorebook: retrievalPlanResult.plan.lorebookQueries,
           memory: retrievalPlanResult.plan.memoryQueries,
           relationship: retrievalPlanResult.plan.relationshipQueries,
+          timeline: retrievalPlanResult.plan.timelineQueries,
+          writingRule: retrievalPlanResult.plan.writingRuleQueries,
           foreshadow: retrievalPlanResult.plan.foreshadowQueries,
         },
       },
@@ -293,6 +295,8 @@ export class GenerateChapterService {
       ...plan.lorebookQueries,
       ...plan.memoryQueries,
       ...plan.relationshipQueries,
+      ...plan.timelineQueries,
+      ...plan.writingRuleQueries,
       ...plan.foreshadowQueries,
     ].map((item) => item.query);
     return [baseQuery, ...plan.chapterTasks, ...plannerQueries, ...plan.constraints].filter(Boolean).join('\n').slice(0, 4000);

@@ -15,6 +15,8 @@ import { AgentTraceService } from './agent-trace.service';
 import { AgentRunsService } from './agent-runs.service';
 import { GenerateChapterService } from '../generation/generate-chapter.service';
 import { ChapterAutoRepairService } from '../generation/chapter-auto-repair.service';
+import { PromptBuilderService } from '../generation/prompt-builder.service';
+import { RetrievalPlannerService } from '../generation/retrieval-planner.service';
 import { ValidateOutlineTool } from '../agent-tools/tools/validate-outline.tool';
 import { ValidateImportedAssetsTool } from '../agent-tools/tools/validate-imported-assets.tool';
 import { PersistOutlineTool } from '../agent-tools/tools/persist-outline.tool';
@@ -36,6 +38,10 @@ import { WriteChapterSeriesTool } from '../agent-tools/tools/write-chapter-serie
 import { RetrievalService } from '../memory/retrieval.service';
 import { LorebookService } from '../lorebook/lorebook.service';
 import { ProjectsService } from '../projects/projects.service';
+import { ValidationService } from '../validation/validation.service';
+import { WritingRulesService } from '../writing-rules/writing-rules.service';
+import { RelationshipsService } from '../relationships/relationships.service';
+import { TimelineEventsService } from '../timeline-events/timeline-events.service';
 
 type TestCase = { name: string; run: () => void | Promise<void> };
 
@@ -2373,6 +2379,697 @@ test('AgentContextBuilder 将多轮澄清状态注入 Planner session', async ()
   assert.equal(context.session.clarification?.history.length, 1);
   assert.equal(context.session.clarification?.latestChoice?.label, '林烬');
   assert.deepEqual(context.session.clarification?.latestChoice?.payload, { characterId: 'char_1' });
+});
+
+test('WritingRulesService create update remove invalidate recall cache', async () => {
+  const invalidatedProjectIds: string[] = [];
+  const createdRows: Array<Record<string, unknown>> = [];
+  const updatedRows: Array<Record<string, unknown>> = [];
+  const deletedRuleIds: string[] = [];
+  const prisma = {
+    project: { async findUnique() { return { id: 'p1' }; } },
+    writingRule: {
+      async create(args: { data: Record<string, unknown> }) {
+        createdRows.push(args.data);
+        return { id: 'wr1', ...args.data };
+      },
+      async findFirst(args: { where: Record<string, unknown> }) {
+        if (args.where.id === 'missing') return null;
+        return { id: 'wr1', projectId: 'p1', title: 'No spoilers', metadata: {} };
+      },
+      async update(args: { data: Record<string, unknown> }) {
+        updatedRows.push(args.data);
+        return { id: 'wr1', projectId: 'p1', ...args.data };
+      },
+      async delete(args: { where: { id: string } }) {
+        deletedRuleIds.push(args.where.id);
+        return { id: args.where.id };
+      },
+    },
+  };
+  const cache = {
+    async deleteProjectRecallResults(projectId: string) {
+      invalidatedProjectIds.push(projectId);
+    },
+  };
+  const service = new WritingRulesService(prisma as never, cache as never);
+
+  const created = await service.create('p1', {
+    ruleType: 'no_appearance',
+    title: 'No spoilers',
+    content: 'Do not let Shen Yan appear before chapter 8.',
+    severity: 'error',
+    appliesFromChapterNo: 1,
+    entityRef: 'Shen Yan',
+  });
+  const updated = await service.update('p1', 'wr1', {
+    content: 'Do not let Shen Yan appear before chapter 10.',
+    appliesToChapterNo: 9,
+  });
+  const removed = await service.remove('p1', 'wr1');
+
+  assert.equal(created.id, 'wr1');
+  assert.equal(createdRows[0].projectId, 'p1');
+  assert.equal(createdRows[0].entityRef, 'Shen Yan');
+  assert.equal(updated.id, 'wr1');
+  assert.equal(updatedRows[0].appliesToChapterNo, 9);
+  assert.deepEqual(deletedRuleIds, ['wr1']);
+  assert.deepEqual(invalidatedProjectIds, ['p1', 'p1', 'p1']);
+  assert.deepEqual(removed, { deleted: true, id: 'wr1' });
+});
+
+test('RetrievalService returns phase2 structured hits and filters future chapter facts', async () => {
+  const prisma = {
+    lorebookEntry: { async findMany() { return []; } },
+    memoryChunk: { async count() { return 0; } },
+    storyEvent: { async findMany() { return []; } },
+    characterStateSnapshot: { async findMany() { return []; } },
+    foreshadowTrack: { async findMany() { return []; } },
+    relationshipEdge: {
+      async findMany() {
+        return [
+          {
+            id: 'rel-visible',
+            characterAId: 'char-1',
+            characterBId: 'char-2',
+            characterAName: 'Lin Che',
+            characterBName: 'Shen Yan',
+            relationType: 'allies',
+            publicState: 'fragile trust',
+            hiddenState: null,
+            conflictPoint: 'the stolen key',
+            emotionalArc: null,
+            turnChapterNos: [2],
+            finalState: null,
+            status: 'active',
+            sourceType: 'relationship_edge',
+            metadata: {},
+          },
+          {
+            id: 'rel-future',
+            characterAId: 'char-1',
+            characterBId: 'char-3',
+            characterAName: 'Lin Che',
+            characterBName: 'Mu Qin',
+            relationType: 'betrayal',
+            publicState: 'future reveal',
+            hiddenState: null,
+            conflictPoint: null,
+            emotionalArc: null,
+            turnChapterNos: [5],
+            finalState: null,
+            status: 'active',
+            sourceType: 'relationship_edge',
+            metadata: {},
+          },
+        ];
+      },
+    },
+    timelineEvent: {
+      async findMany() {
+        return [
+          {
+            id: 'time-visible',
+            chapterId: 'c3',
+            chapterNo: 3,
+            title: 'Stolen key exposed',
+            eventTime: '3',
+            locationName: 'Archive',
+            participants: ['Lin Che', 'Shen Yan'],
+            cause: 'archive break-in',
+            result: 'the stolen key is exposed',
+            impactScope: 'city',
+            isPublic: false,
+            knownBy: ['Lin Che'],
+            unknownBy: ['Shen Yan'],
+            eventStatus: 'active',
+            sourceType: 'timeline_event',
+            metadata: {},
+          },
+        ];
+      },
+    },
+    writingRule: {
+      async findMany() {
+        return [
+          {
+            id: 'rule-visible',
+            ruleType: 'forbidden',
+            title: 'No true name',
+            content: 'Do not reveal Shen Yan true name before the oath scene.',
+            severity: 'error',
+            appliesFromChapterNo: 1,
+            appliesToChapterNo: 3,
+            entityType: 'character',
+            entityRef: 'Shen Yan',
+            status: 'active',
+            metadata: {},
+          },
+        ];
+      },
+    },
+  };
+  const cache = {
+    async getRecallResult() { return null; },
+    async setRecallResult() {},
+  };
+  const service = new RetrievalService(prisma as never, {} as never, cache as never);
+
+  const bundle = await service.retrieveBundleWithCacheMeta(
+    'p1',
+    {
+      queryText: 'Lin Che Shen Yan stolen key true name',
+      chapterNo: 3,
+      characters: ['Lin Che', 'Shen Yan'],
+      plannerQueries: {
+        relationship: [{ query: 'Lin Che Shen Yan trust state', type: 'relationship_state', importance: 'should', reason: 'Need current relationship.' }],
+        timeline: [{ query: 'stolen key event order and who knows it', type: 'timeline_event', importance: 'must', reason: 'Need timeline.' }],
+        writingRule: [{ query: 'true name ban for Shen Yan', type: 'writing_rule', importance: 'must', reason: 'Need writing rule.' }],
+      },
+    },
+    { includeLorebook: false, includeMemory: false },
+  );
+
+  assert.deepEqual(bundle.structuredHits.map((hit) => hit.sourceId).sort(), ['rel-visible', 'rule-visible', 'time-visible']);
+  assert.deepEqual(bundle.structuredHits.map((hit) => hit.sourceType).sort(), ['relationship_edge', 'timeline_event', 'writing_rule']);
+  assert.equal(bundle.structuredHits.some((hit) => hit.sourceId === 'rel-future'), false);
+  const timelineHit = bundle.structuredHits.find((hit) => hit.sourceType === 'timeline_event');
+  assert.equal(timelineHit?.sourceTrace.chapterNo, 3);
+  assert.equal(timelineHit?.metadata.chapterNo, 3);
+  assert.equal(bundle.diagnostics.qualityStatus, 'ok');
+});
+
+test('RetrievalPlannerService normalizes timeline and writing rule queries', async () => {
+  const llm = {
+    async chatJson() {
+      return {
+        data: {
+          chapterTasks: ['Trace what Shen Yan knows'],
+          entities: { characters: ['Lin Che', 'Shen Yan'], locations: [], items: [], factions: [] },
+          timelineQueries: [
+            { query: '  stolen key knowledge  ', type: '', importance: 'invalid', reason: '' },
+            { query: 'stolen key knowledge', type: 'timeline_event', importance: 'must', reason: 'duplicate should collapse' },
+          ],
+          writingRuleQueries: ['  true name ban  '],
+        },
+        result: { model: 'mock-planner' },
+      };
+    },
+  };
+  const service = new RetrievalPlannerService(llm as never);
+
+  const result = await service.createPlan({
+    project: { id: 'p1', title: 'Novel', genre: null, tone: null, synopsis: null, outline: null },
+    chapter: { chapterNo: 3, title: 'Archive Night', objective: 'Find the key', conflict: 'Shen Yan hides the truth', outline: 'The archive is opened.' },
+    characters: [{ name: 'Lin Che', roleType: null, personalityCore: null, motivation: null }, { name: 'Shen Yan', roleType: null, personalityCore: null, motivation: null }],
+    previousChapters: [],
+  });
+
+  assert.equal(result.diagnostics.status, 'ok');
+  assert.equal(result.plan.timelineQueries.length, 2);
+  assert.equal(result.plan.timelineQueries[0].type, 'timeline');
+  assert.equal(result.plan.timelineQueries[0].importance, 'should');
+  assert.ok(result.plan.timelineQueries[0].reason.length > 0);
+  assert.equal(result.plan.timelineQueries[1].type, 'timeline_event');
+  assert.equal(result.plan.writingRuleQueries.length, 1);
+  assert.equal(result.plan.writingRuleQueries[0].query, 'true name ban');
+  assert.equal(result.plan.writingRuleQueries[0].type, 'writing_rule');
+});
+
+test('RetrievalPlannerService fallback keeps timeline and writing rule queries', async () => {
+  const llm = {
+    async chatJson() {
+      throw new Error('planner unavailable');
+    },
+  };
+  const service = new RetrievalPlannerService(llm as never);
+
+  const result = await service.createPlan({
+    project: { id: 'p1', title: 'Novel', genre: null, tone: null, synopsis: null, outline: null },
+    chapter: { chapterNo: 4, title: 'Aftermath', objective: 'Hide the leak', conflict: 'The secret spreads', outline: 'The team covers the trail.', foreshadowPlan: null, revealPoints: null },
+    characters: [{ name: 'Lin Che', roleType: null, personalityCore: null, motivation: null }],
+    previousChapters: [],
+    userInstruction: 'Avoid spoilers and respect knowledge boundaries.',
+  });
+
+  assert.equal(result.diagnostics.status, 'fallback');
+  assert.equal(result.plan.timelineQueries.length > 0, true);
+  assert.equal(result.plan.writingRuleQueries.length > 0, true);
+  assert.equal(result.plan.writingRuleQueries[0].importance, 'must');
+});
+
+test('PromptBuilderService renders dedicated relationship timeline and writing rule blocks with trace', async () => {
+  const prisma = {
+    promptTemplate: {
+      async findFirst() {
+        return {
+          systemPrompt: 'system prompt',
+          userTemplate: 'user template',
+        };
+      },
+    },
+  };
+  const service = new PromptBuilderService(prisma as never);
+  const context = {
+    project: { id: 'p1', title: 'Novel', genre: null, tone: null, synopsis: null, outline: null },
+    chapter: { chapterNo: 3, title: 'Archive Night', objective: 'Find the key', conflict: 'Trust breaks', outline: 'Outline', expectedWordCount: 3000 },
+    characters: [],
+    plannedForeshadows: [],
+    previousChapters: [],
+    hardFacts: [],
+    contextPack: {
+      schemaVersion: 1,
+      verifiedContext: {
+        lorebookHits: [],
+        memoryHits: [],
+        structuredHits: [
+          {
+            sourceType: 'relationship_edge',
+            sourceId: 'rel-1',
+            projectId: 'p1',
+            title: 'Lin Che / Shen Yan',
+            content: 'trust is collapsing',
+            score: 0.71,
+            searchMethod: 'structured_keyword',
+            reason: 'relationship match',
+            sourceTrace: { sourceType: 'relationship_edge', sourceId: 'rel-1', projectId: 'p1', score: 0.71, searchMethod: 'structured_keyword', reason: 'relationship match' },
+            metadata: {},
+          },
+          {
+            sourceType: 'timeline_event',
+            sourceId: 'time-1',
+            projectId: 'p1',
+            title: 'Stolen key exposed',
+            content: 'unknownBy: Shen Yan',
+            score: 0.82,
+            searchMethod: 'structured_keyword',
+            reason: 'timeline match',
+            sourceTrace: { sourceType: 'timeline_event', sourceId: 'time-1', projectId: 'p1', chapterNo: 3, score: 0.82, searchMethod: 'structured_keyword', reason: 'timeline match' },
+            metadata: {},
+          },
+          {
+            sourceType: 'writing_rule',
+            sourceId: 'rule-1',
+            projectId: 'p1',
+            title: 'No true name',
+            content: 'Do not reveal the true name.',
+            score: 0.93,
+            searchMethod: 'structured_keyword',
+            reason: 'rule match',
+            sourceTrace: { sourceType: 'writing_rule', sourceId: 'rule-1', projectId: 'p1', score: 0.93, searchMethod: 'structured_keyword', reason: 'rule match' },
+            metadata: {},
+          },
+        ],
+      },
+      userIntent: {},
+      retrievalDiagnostics: {
+        includeLorebook: true,
+        includeMemory: true,
+        diagnostics: { searchMethod: 'disabled', qualityScore: 0.5, qualityStatus: 'ok', memoryAvailableCount: 0, warnings: [] },
+      },
+    },
+  };
+
+  const result = await service.buildChapterPrompt(context as never);
+
+  assert.match(result.user, /人物关系网/);
+  assert.match(result.user, /时间线/);
+  assert.match(result.user, /写作约束/);
+  assert.match(result.user, /sourceType=relationship_edge/);
+  assert.match(result.user, /sourceId=rel-1/);
+  assert.match(result.user, /sourceType=timeline_event/);
+  assert.match(result.user, /sourceId=time-1/);
+  assert.match(result.user, /sourceType=writing_rule/);
+  assert.match(result.user, /sourceId=rule-1/);
+});
+
+test('ValidationService flags writing rule no appearance deterministically', async () => {
+  let createdIssues: Array<Record<string, unknown>> = [];
+  const prisma = {
+    project: { async findUnique() { return { id: 'p1', title: 'Novel' }; } },
+    chapter: { async findMany() { return [{ id: 'c2', chapterNo: 2, title: 'Blocked scene', timelineSeq: null }]; } },
+    storyEvent: {
+      async findMany() {
+        return [{
+          id: 'se-1',
+          chapterId: 'c2',
+          chapterNo: 2,
+          title: 'Shen Yan enters the archive',
+          description: 'A normal on-stage appearance.',
+          participants: ['Shen Yan'],
+          timelineSeq: null,
+        }];
+      },
+    },
+    characterStateSnapshot: { async findMany() { return []; } },
+    foreshadowTrack: { async findMany() { return []; } },
+    character: { async findMany() { return []; } },
+    writingRule: {
+      async findMany() {
+        return [{
+          id: 'wr-1',
+          ruleType: 'no_appearance',
+          title: 'Shen Yan cannot appear',
+          content: 'Shen Yan must stay off-stage before chapter 8.',
+          severity: 'error',
+          appliesFromChapterNo: 1,
+          appliesToChapterNo: 7,
+          entityType: 'character',
+          entityRef: 'Shen Yan',
+          status: 'active',
+        }];
+      },
+    },
+    timelineEvent: { async findMany() { return []; } },
+    validationIssue: {
+      async deleteMany() { return { count: 0 }; },
+      async createMany(args: { data: Array<Record<string, unknown>> }) {
+        createdIssues = args.data;
+        return { count: args.data.length };
+      },
+    },
+  };
+  const service = new ValidationService(prisma as never);
+
+  const result = await service.runFactRules('p1');
+
+  assert.equal(result.createdCount, 1);
+  assert.equal(result.issues[0].issueType, 'writing_rule_no_appearance');
+  assert.equal(result.issues[0].entityId, 'se-1');
+  assert.equal(createdIssues[0].issueType, 'writing_rule_no_appearance');
+  assert.equal(createdIssues[0].severity, 'error');
+});
+
+test('ValidationService flags timeline unknownBy knowledge leak deterministically', async () => {
+  let createdIssues: Array<Record<string, unknown>> = [];
+  const prisma = {
+    project: { async findUnique() { return { id: 'p1', title: 'Novel' }; } },
+    chapter: {
+      async findMany() {
+        return [
+          { id: 'c2', chapterNo: 2, title: 'Leak setup', timelineSeq: null },
+          { id: 'c3', chapterNo: 3, title: 'Leak payoff', timelineSeq: null },
+        ];
+      },
+    },
+    storyEvent: {
+      async findMany() {
+        return [{
+          id: 'se-2',
+          chapterId: 'c3',
+          chapterNo: 3,
+          title: 'Shen Yan mentions the stolen key',
+          description: 'Shen Yan explains how the stolen key vanished.',
+          participants: ['Shen Yan'],
+          timelineSeq: null,
+        }];
+      },
+    },
+    characterStateSnapshot: { async findMany() { return []; } },
+    foreshadowTrack: { async findMany() { return []; } },
+    character: { async findMany() { return []; } },
+    writingRule: { async findMany() { return []; } },
+    timelineEvent: {
+      async findMany() {
+        return [{
+          id: 'te-1',
+          chapterId: 'c2',
+          chapterNo: 2,
+          title: 'Stolen key',
+          eventTime: '2',
+          locationName: 'Archive',
+          participants: ['Lin Che'],
+          cause: 'break-in',
+          result: 'stolen key vanished',
+          isPublic: false,
+          knownBy: ['Lin Che'],
+          unknownBy: ['Shen Yan'],
+          eventStatus: 'active',
+        }];
+      },
+    },
+    validationIssue: {
+      async deleteMany() { return { count: 0 }; },
+      async createMany(args: { data: Array<Record<string, unknown>> }) {
+        createdIssues = args.data;
+        return { count: args.data.length };
+      },
+    },
+  };
+  const service = new ValidationService(prisma as never);
+
+  const result = await service.runFactRules('p1');
+
+  assert.equal(result.createdCount, 1);
+  assert.equal(result.issues[0].issueType, 'timeline_knowledge_leak');
+  assert.equal(result.issues[0].entityId, 'se-2');
+  assert.equal(createdIssues[0].issueType, 'timeline_knowledge_leak');
+  assert.equal(createdIssues[0].severity, 'error');
+});
+
+test('RetrievalService filters future MemoryChunk hits by sourceTrace chapterNo', async () => {
+  const prisma = {
+    lorebookEntry: { async findMany() { return []; } },
+    memoryChunk: {
+      async count() { return 2; },
+      async findMany() {
+        return [
+          {
+            id: 'mem-past',
+            sourceType: 'story_event',
+            sourceId: 'source-past',
+            memoryType: 'event',
+            content: 'Lin Che found the past key in chapter two.',
+            summary: 'past key',
+            tags: [],
+            status: 'auto',
+            importanceScore: 80,
+            recencyScore: 40,
+            sourceTrace: { chapterNo: 2, chapterId: 'c2' },
+          },
+          {
+            id: 'mem-future',
+            sourceType: 'story_event',
+            sourceId: 'source-future',
+            memoryType: 'event',
+            content: 'The future betrayal is revealed in chapter five.',
+            summary: 'future betrayal',
+            tags: [],
+            status: 'auto',
+            importanceScore: 100,
+            recencyScore: 100,
+            sourceTrace: { chapterNo: 5, chapterId: 'c5' },
+          },
+        ];
+      },
+    },
+    storyEvent: { async findMany() { return []; } },
+    characterStateSnapshot: { async findMany() { return []; } },
+    foreshadowTrack: { async findMany() { return []; } },
+  };
+  const embeddings = {
+    async embedTexts() {
+      throw new Error('embedding unavailable');
+    },
+  };
+  const cache = {
+    async getRecallResult() { return null; },
+    async setRecallResult() {},
+  };
+  const service = new RetrievalService(prisma as never, embeddings as never, cache as never);
+
+  const bundle = await service.retrieveBundleWithCacheMeta(
+    'p1',
+    { queryText: 'key betrayal', chapterNo: 3 },
+    { includeLorebook: false, includeMemory: true },
+  );
+
+  assert.deepEqual(bundle.memoryHits.map((hit) => hit.sourceId), ['mem-past']);
+  assert.equal(bundle.memoryHits.some((hit) => hit.sourceId === 'mem-future'), false);
+});
+
+test('RelationshipsService rejects character ids outside the current project', async () => {
+  let createCalled = false;
+  const prisma = {
+    project: { async findUnique() { return { id: 'p1' }; } },
+    character: {
+      async findMany() {
+        return [{ id: 'char-a' }];
+      },
+    },
+    relationshipEdge: {
+      async create() {
+        createCalled = true;
+        return { id: 'rel-1' };
+      },
+    },
+  };
+  const cache = { async deleteProjectRecallResults() {} };
+  const service = new RelationshipsService(prisma as never, cache as never);
+
+  await assert.rejects(
+    () => service.create('p1', {
+      characterAId: 'char-a',
+      characterBId: 'char-other-project',
+      characterAName: 'Lin Che',
+      characterBName: 'Shen Yan',
+      relationType: 'ally',
+    }),
+    /do not belong to project/,
+  );
+  assert.equal(createCalled, false);
+});
+
+test('TimelineEventsService resolves chapterNo to chapterId and rejects missing chapters', async () => {
+  const createdRows: Array<Record<string, unknown>> = [];
+  const prisma = {
+    project: { async findUnique() { return { id: 'p1' }; } },
+    chapter: {
+      async findFirst(args: { where: Record<string, unknown> }) {
+        return args.where.chapterNo === 2 ? { id: 'c2', chapterNo: 2 } : null;
+      },
+    },
+    timelineEvent: {
+      async create(args: { data: Record<string, unknown> }) {
+        createdRows.push(args.data);
+        return { id: 'te-1', ...args.data };
+      },
+    },
+  };
+  const cache = { async deleteProjectRecallResults() {} };
+  const service = new TimelineEventsService(prisma as never, cache as never);
+
+  const created = await service.create('p1', { title: 'Archive break-in', chapterNo: 2 });
+  assert.equal(created.chapterId, 'c2');
+  assert.equal(created.chapterNo, 2);
+  assert.equal(createdRows[0].chapterId, 'c2');
+
+  await assert.rejects(
+    () => service.create('p1', { title: 'Missing chapter event', chapterNo: 99 }),
+    /Chapter number not found/,
+  );
+});
+
+test('WritingRulesService rejects inverted chapter ranges on create and update', async () => {
+  const prisma = {
+    project: { async findUnique() { return { id: 'p1' }; } },
+    writingRule: {
+      async create() {
+        throw new Error('create should not be called for invalid ranges');
+      },
+      async findFirst() {
+        return {
+          id: 'wr-1',
+          projectId: 'p1',
+          appliesFromChapterNo: 2,
+          appliesToChapterNo: 8,
+        };
+      },
+      async update() {
+        throw new Error('update should not be called for invalid ranges');
+      },
+    },
+  };
+  const cache = { async deleteProjectRecallResults() {} };
+  const service = new WritingRulesService(prisma as never, cache as never);
+
+  await assert.rejects(
+    () => service.create('p1', {
+      ruleType: 'forbidden',
+      title: 'Invalid range',
+      content: 'This should not be saved.',
+      appliesFromChapterNo: 10,
+      appliesToChapterNo: 3,
+    }),
+    /chapter range is invalid/,
+  );
+
+  await assert.rejects(
+    () => service.update('p1', 'wr-1', { appliesFromChapterNo: 9 }),
+    /chapter range is invalid/,
+  );
+});
+
+test('ValidationService does not treat writing rule entityRef as forbidden text', async () => {
+  const prisma = {
+    project: { async findUnique() { return { id: 'p1', title: 'Novel' }; } },
+    chapter: { async findMany() { return [{ id: 'c2', chapterNo: 2, title: 'Quiet scene', timelineSeq: null }]; } },
+    storyEvent: {
+      async findMany() {
+        return [{
+          id: 'se-safe',
+          chapterId: 'c2',
+          chapterNo: 2,
+          title: 'Shen Yan talks in the corridor',
+          description: 'Shen Yan argues about patrol routes without mentioning the true name.',
+          participants: ['Shen Yan'],
+          timelineSeq: null,
+        }];
+      },
+    },
+    characterStateSnapshot: { async findMany() { return []; } },
+    foreshadowTrack: { async findMany() { return []; } },
+    character: { async findMany() { return []; } },
+    writingRule: {
+      async findMany() {
+        return [{
+          id: 'wr-secret',
+          ruleType: 'forbidden',
+          title: 'Do not reveal Shen Yan secret',
+          content: 'The forbidden phrase is "blood heir", not the target character name.',
+          severity: 'error',
+          appliesFromChapterNo: 1,
+          appliesToChapterNo: 5,
+          entityType: 'character',
+          entityRef: 'Shen Yan',
+          status: 'active',
+          metadata: { forbiddenTerms: ['blood heir'] },
+        }];
+      },
+    },
+    timelineEvent: { async findMany() { return []; } },
+    validationIssue: {
+      async deleteMany() { return { count: 0 }; },
+      async createMany(args: { data: Array<Record<string, unknown>> }) {
+        return { count: args.data.length };
+      },
+    },
+  };
+  const service = new ValidationService(prisma as never);
+
+  const result = await service.runFactRules('p1');
+
+  assert.equal(result.createdCount, 0);
+  assert.equal(result.issues.some((issue) => issue.issueType === 'writing_rule_forbidden_text'), false);
+});
+
+test('RelationshipsService rejects character id and name mismatches', async () => {
+  const prisma = {
+    project: { async findUnique() { return { id: 'p1' }; } },
+    character: {
+      async findMany() {
+        return [{ id: 'char-a', name: 'Lin Che' }, { id: 'char-b', name: 'Shen Yan' }];
+      },
+    },
+    relationshipEdge: {
+      async create() {
+        throw new Error('create should not be called for mismatched names');
+      },
+    },
+  };
+  const cache = { async deleteProjectRecallResults() {} };
+  const service = new RelationshipsService(prisma as never, cache as never);
+
+  await assert.rejects(
+    () => service.create('p1', {
+      characterAId: 'char-a',
+      characterBId: 'char-b',
+      characterAName: 'Wrong Name',
+      characterBName: 'Shen Yan',
+      relationType: 'ally',
+    }),
+    /id\/name mismatch/,
+  );
 });
 
 async function main() {

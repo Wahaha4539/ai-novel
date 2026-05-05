@@ -56,6 +56,9 @@ export class PromptBuilderService {
       this.buildUserIntentSection(context),
       this.buildLorebookSection(context),
       this.buildMemorySection(context),
+      this.buildRelationshipSection(context),
+      this.buildTimelineSection(context),
+      this.buildWritingRulesSection(context),
       this.buildStructuredContextSection(context),
       this.buildPreviousChaptersSection(context),
     ].join('\n\n');
@@ -69,6 +72,9 @@ export class PromptBuilderService {
         lorebookCount: context.contextPack.verifiedContext.lorebookHits.length,
         memoryCount: context.contextPack.verifiedContext.memoryHits.length,
         structuredCount: context.contextPack.verifiedContext.structuredHits.length,
+        relationshipEdgeCount: context.contextPack.verifiedContext.structuredHits.filter((hit) => hit.sourceType === 'relationship_edge').length,
+        timelineEventCount: context.contextPack.verifiedContext.structuredHits.filter((hit) => hit.sourceType === 'timeline_event').length,
+        writingRuleCount: context.contextPack.verifiedContext.structuredHits.filter((hit) => hit.sourceType === 'writing_rule').length,
         verifiedContextCount: context.contextPack.verifiedContext.lorebookHits.length + context.contextPack.verifiedContext.memoryHits.length + context.contextPack.verifiedContext.structuredHits.length,
         previousChapterCount: context.previousChapters.length,
         foreshadowCount: context.plannedForeshadows.length,
@@ -194,16 +200,36 @@ export class PromptBuilderService {
     return hits.length ? ['【记忆召回】', ...hits.map((hit) => this.formatRetrievalHit(hit))].join('\n') : '【记忆召回】\n- 无';
   }
 
+  private buildRelationshipSection(data: ChapterPromptContext): string {
+    const hits = this.structuredHitsByType(data, 'relationship_edge').slice(0, 4);
+    return hits.length ? ['【人物关系网】', ...hits.map((hit) => this.formatRetrievalHit(hit, 650))].join('\n') : '【人物关系网】\n- 无';
+  }
+
+  private buildTimelineSection(data: ChapterPromptContext): string {
+    const hits = this.structuredHitsByType(data, 'timeline_event').slice(0, 4);
+    return hits.length ? ['【时间线与角色知情范围】', ...hits.map((hit) => this.formatRetrievalHit(hit, 700))].join('\n') : '【时间线与角色知情范围】\n- 无';
+  }
+
+  private buildWritingRulesSection(data: ChapterPromptContext): string {
+    const hits = this.structuredHitsByType(data, 'writing_rule').slice(0, 5);
+    return hits.length ? ['【写作约束】', ...hits.map((hit) => this.formatRetrievalHit(hit, 650))].join('\n') : '【写作约束】\n- 无';
+  }
+
   private buildStructuredContextSection(data: ChapterPromptContext): string {
-    const hits = data.contextPack.verifiedContext.structuredHits;
+    const hits = data.contextPack.verifiedContext.structuredHits.filter((hit) => !['relationship_edge', 'timeline_event', 'writing_rule'].includes(hit.sourceType));
     return hits.length ? ['【结构化事实召回】', ...hits.map((hit) => this.formatRetrievalHit(hit))].join('\n') : '【结构化事实召回】\n- 无';
   }
 
-  private formatRetrievalHit(hit: RetrievalHit): string {
+  private structuredHitsByType(data: ChapterPromptContext, sourceType: RetrievalHit['sourceType']): RetrievalHit[] {
+    return data.contextPack.verifiedContext.structuredHits.filter((hit) => hit.sourceType === sourceType);
+  }
+
+  private formatRetrievalHit(hit: RetrievalHit, maxContent = 1200): string {
     const trace = hit.sourceTrace;
     const chapterPart = typeof trace.chapterNo === 'number' ? `｜chapterNo=${trace.chapterNo}` : '';
     const sourceTag = `sourceType=${trace.sourceType}｜sourceId=${trace.sourceId}｜projectId=${trace.projectId}${chapterPart}｜score=${hit.score.toFixed(3)}｜method=${hit.searchMethod}`;
-    return [`- [${sourceTag}] ${hit.title}: ${hit.content}`, `  召回原因：${hit.reason}`].join('\n');
+    const content = hit.content.length > maxContent ? `${hit.content.slice(0, maxContent)}...` : hit.content;
+    return [`- [${sourceTag}] ${hit.title}: ${content}`, `  召回原因：${hit.reason}`].join('\n');
   }
 
   private buildPreviousChaptersSection(data: ChapterPromptContext): string {

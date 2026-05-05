@@ -94,35 +94,35 @@ pnpm --filter api test:agent
 
 | ID | 状态 | 任务 | 影响文件 | 依赖 | 验收标准 |
 |---|---|---|---|---|---|
-| LQ-P2-01 | todo | 新增 `WritingRule` model + migration | `apps/api/prisma/schema.prisma` | Phase 1 migration 完成 | 支持 ruleType/severity/chapter range/status/metadata |
-| LQ-P2-02 | todo | 新增 `RelationshipEdge` model + migration | `apps/api/prisma/schema.prisma` | 无 | 支持公开关系、隐藏关系、冲突点、转折章节 |
-| LQ-P2-03 | todo | 新增 `TimelineEvent` model + migration | `apps/api/prisma/schema.prisma` | 无 | 支持 knownBy/unknownBy/isPublic/eventStatus |
-| LQ-P2-04 | todo | 新增 WritingRulesModule CRUD | `apps/api/src/modules/writing-rules/*` | LQ-P2-01 | create/list/update/delete 可用，写入清召回缓存 |
-| LQ-P2-05 | todo | 新增 RelationshipsModule CRUD | `apps/api/src/modules/relationships/*` | LQ-P2-02 | 可按角色名/章节范围筛选 |
-| LQ-P2-06 | todo | 新增 TimelineModule CRUD | `apps/api/src/modules/timeline/*` | LQ-P2-03 | 可按 chapterNo/eventStatus/knownBy 筛选 |
-| LQ-P2-07 | todo | 更新 `AppModule` 注册新模块 | `apps/api/src/app.module.ts` | P2 modules | API build 通过 |
+| LQ-P2-01 | done | 新增 `WritingRule` model + migration | `apps/api/prisma/schema.prisma` | Phase 1 migration 完成 | 支持 ruleType/severity/chapter range/status/metadata |
+| LQ-P2-02 | done | 新增 `RelationshipEdge` model + migration | `apps/api/prisma/schema.prisma` | 无 | 支持公开关系、隐藏关系、冲突点、转折章节 |
+| LQ-P2-03 | done | 新增 `TimelineEvent` model + migration | `apps/api/prisma/schema.prisma` | 无 | 支持 knownBy/unknownBy/isPublic/eventStatus |
+| LQ-P2-04 | done | 新增 WritingRulesModule CRUD | `apps/api/src/modules/writing-rules/*` | LQ-P2-01 | create/list/update/delete 可用，写入清召回缓存 |
+| LQ-P2-05 | done | 新增 RelationshipsModule CRUD | `apps/api/src/modules/relationships/*` | LQ-P2-02 | 可按角色名/章节范围筛选 |
+| LQ-P2-06 | done | 新增 TimelineModule CRUD | `apps/api/src/modules/timeline/*` | LQ-P2-03 | 可按 chapterNo/eventStatus/knownBy 筛选 |
+| LQ-P2-07 | done | 更新 `AppModule` 注册新模块 | `apps/api/src/app.module.ts` | P2 modules | API build 通过 |
 
 ### 召回与校验
 
 | ID | 状态 | 任务 | 影响文件 | 依赖 | 验收标准 |
 |---|---|---|---|---|---|
-| LQ-P2-08 | todo | `RetrievalService` 新增 relationship/timeline/rule 结构化召回 | `apps/api/src/modules/memory/retrieval.service.ts` | P2 API/model | `structuredHits` 包含新 sourceType |
-| LQ-P2-09 | todo | `RetrievalPlannerService` 输出 writingRule/timeline 查询意图 | `apps/api/src/modules/generation/retrieval-planner.service.ts` | LQ-P2-08 | Planner JSON 归一化包含新增 query 类型 |
-| LQ-P2-10 | todo | `PromptBuilderService` 新增【人物关系网】【时间线】【写作约束】区块 | `apps/api/src/modules/generation/prompt-builder.service.ts` | LQ-P2-08 | 章节 Prompt 注入相关命中并保留 sourceTrace |
-| LQ-P2-11 | todo | `ValidationService` 增加写作规则硬校验框架 | `apps/api/src/modules/validation/validation.service.ts` | LQ-P2-01 | active error 级规则可生成 ValidationIssue |
-| LQ-P2-12 | todo | 实现死亡角色/不可出场规则检查 | `ValidationService` | LQ-P2-11 | 已死亡角色正常出场产生 error/warning |
-| LQ-P2-13 | todo | 实现提前泄密/知情范围检查 | `ValidationService` | LQ-P2-03/P2-11 | 角色知道 unknownBy 事件产生 issue |
-| LQ-P2-14 | todo | 实现时间线顺序和位置冲突基础检查 | `ValidationService` | LQ-P2-03 | 同角色同时间多地点产生 warning |
+| LQ-P2-08 | done | `RetrievalService` 新增 relationship/timeline/rule 结构化召回 | `apps/api/src/modules/memory/retrieval.service.ts` | P2 API/model | `structuredHits` 包含新 sourceType |
+| LQ-P2-09 | done | `RetrievalPlannerService` 输出 writingRule/timeline 查询意图 | `apps/api/src/modules/generation/retrieval-planner.service.ts` | LQ-P2-08 | Planner JSON 归一化包含新增 query 类型 |
+| LQ-P2-10 | done | `PromptBuilderService` 新增【人物关系网】【时间线】【写作约束】区块 | `apps/api/src/modules/generation/prompt-builder.service.ts` | LQ-P2-08 | 章节 Prompt 注入相关命中并保留 sourceTrace |
+| LQ-P2-11 | done | `ValidationService` 增加写作规则硬校验框架 | `apps/api/src/modules/validation/validation.service.ts` | LQ-P2-01 | active error 级规则可生成 ValidationIssue |
+| LQ-P2-12 | done | 实现死亡角色/不可出场规则检查 | `ValidationService` | LQ-P2-11 | 已死亡角色正常出场产生 error/warning |
+| LQ-P2-13 | done | 实现提前泄密/知情范围检查 | `ValidationService` | LQ-P2-03/P2-11 | 角色知道 unknownBy 事件产生 issue |
+| LQ-P2-14 | done | 实现时间线顺序和位置冲突基础检查 | `ValidationService` | LQ-P2-03 | 同角色同时间多地点产生 warning |
 
 ### 前端
 
 | ID | 状态 | 任务 | 影响文件 | 依赖 | 验收标准 |
 |---|---|---|---|---|---|
-| LQ-P2-15 | todo | 新增 `WritingRulesPanel` | `apps/web/components/*` | LQ-P2-04 | 可编辑禁忌规则、严重级别、章节范围 |
-| LQ-P2-16 | todo | 新增 `RelationshipMapPanel` | `apps/web/components/*` | LQ-P2-05 | 可查看/编辑人物关系边和隐藏关系 |
-| LQ-P2-17 | todo | 新增 `TimelinePanel` | `apps/web/components/*` | LQ-P2-06 | 可编辑事件、发生时间、地点、知情角色 |
-| LQ-P2-18 | todo | 新增全局 `CharacterStatePanel` | `apps/web/components/*`、`useDashboardData.ts` | 现有 CharacterStateSnapshot API | 可按角色展示当前状态、历史状态、死亡/失踪 |
-| LQ-P2-19 | todo | 侧边栏接入 Rules/Relationships/Timeline/State | `WorkspaceSidebar.tsx`、`page.tsx` | P2 panels | 导航和状态持久化正常 |
+| LQ-P2-15 | done | 新增 `WritingRulesPanel` | `apps/web/components/*` | LQ-P2-04 | 可编辑禁忌规则、严重级别、章节范围 |
+| LQ-P2-16 | done | 新增 `RelationshipMapPanel` | `apps/web/components/*` | LQ-P2-05 | 可查看/编辑人物关系边和隐藏关系 |
+| LQ-P2-17 | done | 新增 `TimelinePanel` | `apps/web/components/*` | LQ-P2-06 | 可编辑事件、发生时间、地点、知情角色 |
+| LQ-P2-18 | done | 新增全局 `CharacterStatePanel` | `apps/web/components/*`、`useDashboardData.ts` | 现有 CharacterStateSnapshot API | 可按角色展示当前状态、历史状态、死亡/失踪 |
+| LQ-P2-19 | done | 侧边栏接入 Rules/Relationships/Timeline/State | `WorkspaceSidebar.tsx`、`page.tsx` | P2 panels | 导航和状态持久化正常 |
 
 验收命令：
 
@@ -131,6 +131,17 @@ pnpm --filter api build
 pnpm --filter web build
 pnpm --filter api test:agent
 ```
+
+完成记录（2026-05-05）：
+
+- 已完成 `LQ-P2-01 ~ LQ-P2-19`，落地 `WritingRule`、`RelationshipEdge`、`TimelineEvent` 与 migration `202605050002_longform_quality_phase2_core`。
+- 新增 API：`GET/POST/PATCH/DELETE /projects/:projectId/writing-rules`、`/projects/:projectId/relationships`、`/projects/:projectId/timeline-events`；所有写入口均按 projectId 隔离，并调用 `NovelCacheService.deleteProjectRecallResults(projectId)`。
+- `WritingRule` 增加章节范围校验与 DB check constraint，避免 from/to 倒置导致硬规则静默失效；`RelationshipEdge` 对 `characterAId/characterBId` 做项目内角色校验和 ID/name 一致性校验；`TimelineEvent.chapterNo` 会解析到项目章节，避免跨项目或悬空引用。
+- `RetrievalService` 新增 `relationship_edge`、`timeline_event`、`writing_rule` 结构化命中，并按 `chapterNo` 过滤未来 Memory/Relationship/Timeline 信息；`sourceTrace` 保留可追踪来源。
+- `RetrievalPlannerService` 输出 timeline/writingRule 查询意图；`PromptBuilderService` 注入【人物关系网】【时间线与知情范围】【写作约束】区块；`ValidationService` 实现写作规则、死亡角色、提前泄密、时间线顺序/位置冲突的确定性校验。
+- 前端新增 `WritingRulesPanel`、`RelationshipMapPanel`、`TimelinePanel`、`CharacterStatePanel`，并接入 `ActiveView`、`ACTIVE_VIEWS`、`localStorage` 状态恢复、`WorkspaceSidebar` 和 `page.tsx` 主视图渲染分支。
+- Reviewer 发现的倒置章节范围、`entityRef` 误当禁用词、前端 PATCH 无法清空可空字段、关系 ID/name 不一致问题已修复，并补充服务级回归测试。
+- 验证通过：`pnpm db:generate`、`pnpm exec prisma validate --schema apps/api/prisma/schema.prisma`、`pnpm --filter api test:agent`（101 项）、`pnpm --filter api build`、`pnpm --filter web build`、`git diff --check`。其中 `web build` 首次因 Next dev server 占用 `.next/trace` 失败，停止该验证进程并清理 `.next` 后重跑通过。
 
 ## 6. Phase 3：生成配置与生成链路接入
 

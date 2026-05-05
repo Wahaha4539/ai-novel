@@ -56,6 +56,9 @@ model Project {
   storyEvents           StoryEvent[]
   characterStateSnapshots CharacterStateSnapshot[]
   foreshadowTracks      ForeshadowTrack[]
+  writingRules          WritingRule[]
+  relationshipEdges     RelationshipEdge[]
+  timelineEvents        TimelineEvent[]
   validationIssues      ValidationIssue[]
   generationJobs        GenerationJob[]
   styleProfiles         StyleProfile[]
@@ -249,6 +252,8 @@ model Character {
   createdAt         DateTime @default(now())
   updatedAt         DateTime @updatedAt
   project           Project  @relation(fields: [projectId], references: [id], onDelete: Cascade)
+  relationshipEdgesAsA RelationshipEdge[] @relation("RelationshipEdgeCharacterA")
+  relationshipEdgesAsB RelationshipEdge[] @relation("RelationshipEdgeCharacterB")
 
   @@index([projectId, name])
   @@index([projectId, source, scope], map: "Character_project_source_scope_idx")
@@ -300,6 +305,7 @@ model Chapter {
   storyEvents       StoryEvent[]
   characterStateSnapshots CharacterStateSnapshot[]
   foreshadowTracks  ForeshadowTrack[]
+  timelineEvents    TimelineEvent[]
   validationIssues  ValidationIssue[]
   generationJobs    GenerationJob[]
 
@@ -419,6 +425,89 @@ model ForeshadowTrack {
   @@index([projectId, status])
   @@index([projectId, source], map: "ForeshadowTrack_project_source_idx")
   @@index([projectId, chapterId, sourceDraftId], map: "ForeshadowTrack_project_chapter_draft_idx")
+}
+
+model WritingRule {
+  id                   String             @id @default(uuid()) @db.Uuid
+  projectId            String             @db.Uuid
+  ruleType             String             @db.VarChar(80)
+  title                String             @db.VarChar(255)
+  content              String
+  severity             ValidationSeverity @default(info)
+  appliesFromChapterNo Int?
+  appliesToChapterNo   Int?
+  entityType           String?            @db.VarChar(50)
+  entityRef            String?            @db.VarChar(255)
+  status               String             @default("active") @db.VarChar(50)
+  metadata             Json               @default("{}")
+  createdAt            DateTime           @default(now())
+  updatedAt            DateTime           @updatedAt
+  project              Project            @relation(fields: [projectId], references: [id], onDelete: Cascade)
+
+  @@index([projectId, ruleType, status], map: "WritingRule_project_ruleType_status_idx")
+  @@index([projectId, severity, status], map: "WritingRule_project_severity_status_idx")
+  @@index([projectId, entityType, entityRef], map: "WritingRule_project_entity_idx")
+  @@index([projectId, appliesFromChapterNo, appliesToChapterNo], map: "WritingRule_project_chapter_range_idx")
+}
+
+model RelationshipEdge {
+  id               String   @id @default(uuid()) @db.Uuid
+  projectId        String   @db.Uuid
+  characterAId     String?  @db.Uuid
+  characterBId     String?  @db.Uuid
+  characterAName   String   @db.VarChar(100)
+  characterBName   String   @db.VarChar(100)
+  relationType     String   @db.VarChar(80)
+  publicState      String?
+  hiddenState      String?
+  conflictPoint    String?
+  emotionalArc     String?
+  turnChapterNos   Json     @default("[]")
+  finalState       String?
+  status           String   @default("active") @db.VarChar(50)
+  sourceType       String   @default("manual") @db.VarChar(50)
+  metadata         Json     @default("{}")
+  createdAt        DateTime @default(now())
+  updatedAt        DateTime @updatedAt
+  project          Project  @relation(fields: [projectId], references: [id], onDelete: Cascade)
+  characterA       Character? @relation("RelationshipEdgeCharacterA", fields: [characterAId], references: [id], onDelete: SetNull)
+  characterB       Character? @relation("RelationshipEdgeCharacterB", fields: [characterBId], references: [id], onDelete: SetNull)
+
+  @@index([projectId, status, updatedAt], map: "RelationshipEdge_project_status_updated_idx")
+  @@index([projectId, relationType, status], map: "RelationshipEdge_project_relation_status_idx")
+  @@index([projectId, characterAName], map: "RelationshipEdge_project_characterAName_idx")
+  @@index([projectId, characterBName], map: "RelationshipEdge_project_characterBName_idx")
+  @@index([projectId, characterAId, characterBId], map: "RelationshipEdge_project_characterIds_idx")
+}
+
+model TimelineEvent {
+  id           String   @id @default(uuid()) @db.Uuid
+  projectId    String   @db.Uuid
+  chapterId    String?  @db.Uuid
+  chapterNo    Int?
+  title        String   @db.VarChar(255)
+  eventTime    String?  @db.VarChar(120)
+  locationName String?  @db.VarChar(255)
+  participants Json     @default("[]")
+  cause        String?
+  result       String?
+  impactScope  String?  @db.VarChar(80)
+  isPublic     Boolean  @default(false)
+  knownBy      Json     @default("[]")
+  unknownBy    Json     @default("[]")
+  eventStatus  String   @default("active") @db.VarChar(50)
+  sourceType   String   @default("manual") @db.VarChar(50)
+  metadata     Json     @default("{}")
+  createdAt    DateTime @default(now())
+  updatedAt    DateTime @updatedAt
+  project      Project  @relation(fields: [projectId], references: [id], onDelete: Cascade)
+  chapter      Chapter? @relation(fields: [chapterId], references: [id], onDelete: SetNull)
+
+  @@index([projectId, chapterNo, eventStatus], map: "TimelineEvent_project_chapter_status_idx")
+  @@index([projectId, eventStatus, updatedAt], map: "TimelineEvent_project_status_updated_idx")
+  @@index([projectId, eventTime], map: "TimelineEvent_project_eventTime_idx")
+  @@index([projectId, chapterId], map: "TimelineEvent_project_chapterId_idx")
+  @@index([projectId, locationName], map: "TimelineEvent_project_location_idx")
 }
 
 
