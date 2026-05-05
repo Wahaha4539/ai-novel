@@ -46,15 +46,16 @@ export class QualityReportsService {
 
   async list(projectId: string, query: ListQualityReportsQueryDto = {}) {
     await this.assertProjectExists(projectId);
+    const refs = await this.resolveRefs(projectId, query);
     return this.prisma.qualityReport.findMany({
       where: {
         projectId,
-        ...(query.chapterId ? { chapterId: query.chapterId } : {}),
-        ...(query.draftId ? { draftId: query.draftId } : {}),
-        ...(query.agentRunId ? { agentRunId: query.agentRunId } : {}),
-        ...(query.sourceType ? { sourceType: query.sourceType } : {}),
-        ...(query.reportType ? { reportType: query.reportType } : {}),
-        ...(query.verdict ? { verdict: query.verdict } : {}),
+        ...(refs.chapterId ? { chapterId: refs.chapterId } : {}),
+        ...(refs.draftId ? { draftId: refs.draftId } : {}),
+        ...(refs.agentRunId ? { agentRunId: refs.agentRunId } : {}),
+        ...(query.sourceType ? { sourceType: this.normalizeSourceType(query.sourceType) } : {}),
+        ...(query.reportType ? { reportType: this.normalizeReportType(query.reportType) } : {}),
+        ...(query.verdict ? { verdict: this.normalizeVerdict(query.verdict) } : {}),
       },
       orderBy: [{ createdAt: 'desc' }],
       take: 200,
@@ -76,22 +77,29 @@ export class QualityReportsService {
       agentRunId: dto.agentRunId === undefined ? existing.agentRunId : dto.agentRunId,
     });
 
-    const updated = await this.prisma.qualityReport.update({
-      where: { id: reportId },
-      data: {
-        ...(dto.chapterId !== undefined || dto.draftId !== undefined ? { chapterId: refs.chapterId } : {}),
-        ...(dto.draftId !== undefined ? { draftId: refs.draftId } : {}),
-        ...(dto.agentRunId !== undefined ? { agentRunId: refs.agentRunId } : {}),
-        ...(dto.sourceType !== undefined && { sourceType: this.normalizeSourceType(dto.sourceType) }),
-        ...(dto.sourceId !== undefined && { sourceId: this.normalizeNullableId(dto.sourceId) }),
-        ...(dto.reportType !== undefined && { reportType: this.normalizeReportType(dto.reportType) }),
-        ...(dto.scores !== undefined && { scores: this.normalizeJsonObject(dto.scores, 'scores') as Prisma.InputJsonValue }),
-        ...(dto.issues !== undefined && { issues: this.normalizeJsonArray(dto.issues, 'issues') as Prisma.InputJsonValue }),
-        ...(dto.verdict !== undefined && { verdict: this.normalizeVerdict(dto.verdict) }),
-        ...(dto.summary !== undefined && { summary: this.normalizeNullableText(dto.summary) }),
-        ...(dto.metadata !== undefined && { metadata: this.normalizeJsonObject(dto.metadata, 'metadata') as Prisma.InputJsonValue }),
-      },
+    const data = {
+      ...(dto.chapterId !== undefined || dto.draftId !== undefined ? { chapterId: refs.chapterId } : {}),
+      ...(dto.draftId !== undefined ? { draftId: refs.draftId } : {}),
+      ...(dto.agentRunId !== undefined ? { agentRunId: refs.agentRunId } : {}),
+      ...(dto.sourceType !== undefined && { sourceType: this.normalizeSourceType(dto.sourceType) }),
+      ...(dto.sourceId !== undefined && { sourceId: this.normalizeNullableId(dto.sourceId) }),
+      ...(dto.reportType !== undefined && { reportType: this.normalizeReportType(dto.reportType) }),
+      ...(dto.scores !== undefined && { scores: this.normalizeJsonObject(dto.scores, 'scores') as Prisma.InputJsonValue }),
+      ...(dto.issues !== undefined && { issues: this.normalizeJsonArray(dto.issues, 'issues') as Prisma.InputJsonValue }),
+      ...(dto.verdict !== undefined && { verdict: this.normalizeVerdict(dto.verdict) }),
+      ...(dto.summary !== undefined && { summary: this.normalizeNullableText(dto.summary) }),
+      ...(dto.metadata !== undefined && { metadata: this.normalizeJsonObject(dto.metadata, 'metadata') as Prisma.InputJsonValue }),
+    };
+
+    await this.prisma.qualityReport.updateMany({
+      where: { id: reportId, projectId },
+      data,
     });
+
+    const updated = await this.prisma.qualityReport.findFirst({ where: { id: reportId, projectId } });
+    if (!updated) {
+      throw new NotFoundException(`QualityReport not found: ${reportId}`);
+    }
 
     await this.cacheService.deleteProjectRecallResults(projectId);
     return updated;
@@ -106,7 +114,7 @@ export class QualityReportsService {
       throw new NotFoundException(`QualityReport not found: ${reportId}`);
     }
 
-    await this.prisma.qualityReport.delete({ where: { id: reportId } });
+    await this.prisma.qualityReport.deleteMany({ where: { id: reportId, projectId } });
     await this.cacheService.deleteProjectRecallResults(projectId);
     return { deleted: true, id: reportId };
   }

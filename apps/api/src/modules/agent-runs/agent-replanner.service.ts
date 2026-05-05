@@ -25,11 +25,17 @@ export class AgentReplannerService {
       return { action: 'fail_with_reason', reason: '该错误不可安全自动修复，或失败步骤已不在当前计划中。' };
     }
 
+    const approvalBoundary = this.patchApprovalBoundaryFailure(failedObservation);
+    if (approvalBoundary) return approvalBoundary;
+
     const ambiguous = this.patchAmbiguousEntity(failedObservation);
     if (ambiguous) return ambiguous;
 
     const lowConfidence = this.patchLowConfidenceResolver(failedObservation);
     if (lowConfidence) return lowConfidence;
+
+    const previewValidationRepair = this.patchMissingPreviewValidation(userGoal, failedObservation, failedStep, currentPlanSteps);
+    if (previewValidationRepair) return previewValidationRepair;
 
     const missingField = this.patchMissingToolOutputField(failedObservation, failedStep);
     if (missingField) return missingField;
@@ -139,7 +145,7 @@ export class AgentReplannerService {
     if (patch.action === 'fail_with_reason') return true;
     if (patch.action === 'ask_user') return Boolean(patch.questionForUser);
     const inserted = patch.insertStepsBeforeFailedStep ?? [];
-    if (inserted.some((step) => step.requiresApproval || !['resolve_chapter', 'resolve_character', 'collect_task_context', 'collect_chapter_context', 'inspect_project_context'].includes(step.tool))) return false;
+    if (inserted.some((step) => step.requiresApproval || !this.isAllowedReadOnlyRepairTool(step.tool))) return false;
     const replacements = patch.replaceFailedStepArgs ?? {};
     if (Object.entries(replacements).some(([key, value]) => /(^id$|Id$)/.test(key) && !this.isSafeIdReplacement(value))) return false;
     const failedStep = input.currentPlanSteps.find((step) => step.stepNo === input.failedObservation.stepNo);
@@ -149,6 +155,20 @@ export class AgentReplannerService {
 
   private isSafeIdReplacement(value: unknown): boolean {
     return typeof value === 'string' && /^{{(steps\.[A-Za-z0-9_]+\.output\.[A-Za-z0-9_]+|context\.[A-Za-z0-9_.]+)}}$/.test(value);
+  }
+
+  private isAllowedReadOnlyRepairTool(tool: string): boolean {
+    return [
+      'resolve_chapter',
+      'resolve_character',
+      'collect_task_context',
+      'collect_chapter_context',
+      'inspect_project_context',
+      'generate_story_bible_preview',
+      'validate_story_bible',
+      'generate_continuity_preview',
+      'validate_continuity_changes',
+    ].includes(tool);
   }
 
   /** 自动修复必须有界：总轮数和同类错误都设硬上限，避免 Replan 循环扩大风险。 */
@@ -295,6 +315,140 @@ export class AgentReplannerService {
         instruction: '仅根据 validation failed 的具体问题做最小必要修复；不得新增重大剧情、角色长期状态或世界观设定。',
       },
     };
+  }
+
+  private patchApprovalBoundaryFailure(observation: AgentObservation): ReplanPatch | undefined {
+    if (observation.error.code !== 'APPROVAL_REQUIRED') return undefined;
+    return {
+      action: 'fail_with_reason',
+      reason: 'Write tool is missing explicit user approval. Replan must not insert write steps or bypass approval; return to the approval flow before retrying persist.',
+    };
+  }
+
+  private patchMissingPreviewValidation(userGoal: string, observation: AgentObservation, failedStep: AgentPlanStepSpec, currentPlanSteps: AgentPlanStepSpec[]): ReplanPatch | undefined {
+    const config = this.previewValidationRepairConfig(observation.tool);
+    if (!config || observation.error.code !== 'MISSING_REQUIRED_ARGUMENT') return undefined;
+
+    const missing = new Set(observation.error.missing ?? []);
+    const missingPreview = missing.has('preview') || !this.isSafePreviousStepOutputReference(failedStep.args.preview);
+    const missingValidation = missing.has('validation') || !this.isSafePreviousStepOutputReference(failedStep.args.validation);
+    if (!missingPreview && !missingValidation) return undefined;
+    if (!this.tools.get(config.previewTool) || !this.tools.get(config.validateTool) || !this.tools.get('collect_task_context')) return undefined;
+
+    const insertStepsBeforeFailedStep: NonNullable<ReplanPatch['insertStepsBeforeFailedStep']> = [];
+    const existingContextStep = this.findPreviousReadOnlyContextStep(currentPlanSteps, failedStep);
+    const contextRef = existingContextStep
+      ? `{{steps.${existingContextStep.id ?? existingContextStep.stepNo}.output}}`
+      : `{{steps.${config.collectStepId}.output}}`;
+
+    if (!existingContextStep) {
+      insertStepsBeforeFailedStep.push({
+        id: config.collectStepId,
+        stepNo: failedStep.stepNo,
+        name: config.collectName,
+        purpose: 'Collect read-only context required to rebuild missing preview and validation artifacts without writing business data.',
+        tool: 'collect_task_context',
+        mode: 'act',
+        requiresApproval: this.tools.get('collect_task_context')?.requiresApproval ?? false,
+        args: { taskType: config.taskType, focus: config.contextFocus, instruction: userGoal },
+        produces: ['taskContext'],
+      });
+    }
+
+    const previewRef = missingPreview ? `{{steps.${config.previewStepId}.output}}` : String(failedStep.args.preview);
+    if (missingPreview) {
+      insertStepsBeforeFailedStep.push({
+        id: config.previewStepId,
+        stepNo: failedStep.stepNo,
+        name: config.previewName,
+        purpose: 'Recreate the missing read-only preview artifact before retrying the existing persist step.',
+        tool: config.previewTool,
+        mode: 'act',
+        requiresApproval: this.tools.get(config.previewTool)?.requiresApproval ?? false,
+        args: { context: contextRef, instruction: userGoal },
+        produces: ['preview'],
+      });
+    }
+
+    const validationRef = (missingValidation || missingPreview) ? `{{steps.${config.validateStepId}.output}}` : String(failedStep.args.validation);
+    if (missingValidation || missingPreview) {
+      insertStepsBeforeFailedStep.push({
+        id: config.validateStepId,
+        stepNo: failedStep.stepNo,
+        name: config.validateName,
+        purpose: 'Validate the read-only preview artifact before the existing persist step can retry.',
+        tool: config.validateTool,
+        mode: 'act',
+        requiresApproval: this.tools.get(config.validateTool)?.requiresApproval ?? false,
+        args: { preview: previewRef, taskContext: contextRef },
+        produces: ['validation'],
+      });
+    }
+
+    if (insertStepsBeforeFailedStep.some((step) => step.requiresApproval || !this.isAllowedReadOnlyRepairTool(step.tool))) return undefined;
+
+    return {
+      action: 'patch_plan',
+      reason: config.reason,
+      insertStepsBeforeFailedStep,
+      replaceFailedStepArgs: { preview: previewRef, validation: validationRef },
+    };
+  }
+
+  private previewValidationRepairConfig(tool: string): {
+    taskType: string;
+    collectStepId: string;
+    collectName: string;
+    previewStepId: string;
+    previewName: string;
+    previewTool: string;
+    validateStepId: string;
+    validateName: string;
+    validateTool: string;
+    contextFocus: string[];
+    reason: string;
+  } | undefined {
+    if (tool === 'persist_story_bible') {
+      return {
+        taskType: 'story_bible_expand',
+        collectStepId: 'collect_story_bible_context_for_failed_persist',
+        collectName: 'Collect Story Bible context',
+        previewStepId: 'generate_story_bible_preview_for_failed_persist',
+        previewName: 'Regenerate Story Bible preview',
+        previewTool: 'generate_story_bible_preview',
+        validateStepId: 'validate_story_bible_for_failed_persist',
+        validateName: 'Validate Story Bible preview',
+        validateTool: 'validate_story_bible',
+        contextFocus: ['world_facts', 'plot_events', 'memory_chunks'],
+        reason: 'persist_story_bible is missing preview or validation output. Replan may only insert read-only collect_task_context, generate_story_bible_preview, and validate_story_bible steps before retrying; it must not add writes or bypass approval.',
+      };
+    }
+    if (tool === 'persist_continuity_changes') {
+      return {
+        taskType: 'continuity_check',
+        collectStepId: 'collect_continuity_context_for_failed_persist',
+        collectName: 'Collect continuity context',
+        previewStepId: 'generate_continuity_preview_for_failed_persist',
+        previewName: 'Regenerate continuity preview',
+        previewTool: 'generate_continuity_preview',
+        validateStepId: 'validate_continuity_changes_for_failed_persist',
+        validateName: 'Validate continuity preview',
+        validateTool: 'validate_continuity_changes',
+        contextFocus: ['relationship_graph', 'timeline_events', 'world_facts', 'memory_chunks'],
+        reason: 'persist_continuity_changes is missing continuity preview or validation output. Replan may only insert read-only collect_task_context, generate_continuity_preview, and validate_continuity_changes steps before retrying; it must not add writes or bypass approval.',
+      };
+    }
+    return undefined;
+  }
+
+  private findPreviousReadOnlyContextStep(currentPlanSteps: AgentPlanStepSpec[], failedStep: AgentPlanStepSpec): AgentPlanStepSpec | undefined {
+    return [...currentPlanSteps]
+      .filter((step) => step.stepNo < failedStep.stepNo && ['collect_task_context', 'collect_chapter_context', 'inspect_project_context'].includes(step.tool))
+      .at(-1);
+  }
+
+  private isSafePreviousStepOutputReference(value: unknown): boolean {
+    return typeof value === 'string' && /^{{steps\.[A-Za-z0-9_-]+\.output(?:\.[A-Za-z0-9_.-]+)?}}$/.test(value);
   }
 
   private hasNaturalLanguageId(args: Record<string, unknown>, key: string): boolean {

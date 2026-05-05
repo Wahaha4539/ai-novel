@@ -185,7 +185,7 @@ export class GenerateGuidedStepPreviewTool implements BaseTool<GenerateGuidedSte
     const volumeId = volume?.id ?? chapter?.volumeId ?? undefined;
     const chapterId = chapter?.id ?? undefined;
 
-    const [patterns, rawPacingTargets] = await Promise.all([
+    const [patterns, rawPacingTargets, rawSceneCards] = await Promise.all([
       this.prisma!.chapterPattern.findMany({
         where: { projectId, status: 'active' },
         orderBy: [{ patternType: 'asc' }, { updatedAt: 'desc' }],
@@ -196,15 +196,25 @@ export class GenerateGuidedStepPreviewTool implements BaseTool<GenerateGuidedSte
         orderBy: [{ updatedAt: 'desc' }],
         take: 30,
       }),
+      chapterId
+        ? this.prisma!.sceneCard.findMany({
+            where: { projectId, chapterId, NOT: { status: 'archived' } },
+            orderBy: [{ sceneNo: 'asc' }, { updatedAt: 'asc' }],
+            take: 12,
+          })
+        : Promise.resolve([]),
     ]);
     const pacingTargets = rawPacingTargets
       .sort((a, b) => this.rankPacingTarget(a, volumeId, chapterId, chapterNo) - this.rankPacingTarget(b, volumeId, chapterId, chapterNo))
       .slice(0, 10);
+    const sceneCards = rawSceneCards
+      .sort((a, b) => this.rankSceneCard(a, b))
+      .slice(0, 8);
 
-    if (!patterns.length && !pacingTargets.length) return undefined;
+    if (!patterns.length && !pacingTargets.length && !sceneCards.length) return undefined;
 
     return {
-      note: 'ChapterPattern 与 PacingBeat 是只读计划资产，用来增强 guided_chapter 的 craftBrief，不代表已发生正文事实。',
+      note: 'ChapterPattern、PacingBeat 与 SceneCard 是只读计划资产，用来增强 guided_chapter 的 craftBrief，不代表已发生正文事实。',
       target: {
         volumeNo: volume?.volumeNo ?? volumeNo,
         volumeTitle: volume?.title,
@@ -235,6 +245,24 @@ export class GenerateGuidedStepPreviewTool implements BaseTool<GenerateGuidedSte
         notes: beat.notes,
         sourceTrace: { sourceType: 'pacing_beat', sourceId: beat.id, projectId, chapterNo: beat.chapterNo ?? undefined },
       })),
+      sceneCards: sceneCards.map((scene) => ({
+        id: scene.id,
+        volumeId: scene.volumeId,
+        chapterId: scene.chapterId,
+        sceneNo: scene.sceneNo,
+        title: scene.title,
+        locationName: scene.locationName,
+        participants: this.stringArray(scene.participants),
+        purpose: scene.purpose,
+        conflict: scene.conflict,
+        emotionalTone: scene.emotionalTone,
+        keyInformation: scene.keyInformation,
+        result: scene.result,
+        relatedForeshadowIds: this.stringArray(scene.relatedForeshadowIds),
+        status: scene.status,
+        metadata: this.asRecord(scene.metadata),
+        sourceTrace: { sourceType: 'scene_card', sourceId: scene.id, projectId, chapterNo: chapter?.chapterNo ?? chapterNo, sceneNo: scene.sceneNo },
+      })),
     };
   }
 
@@ -261,6 +289,21 @@ export class GenerateGuidedStepPreviewTool implements BaseTool<GenerateGuidedSte
     if (volumeId && beat.volumeId === volumeId && beat.chapterId === null && beat.chapterNo === null) return 2;
     if (beat.volumeId === null && beat.chapterId === null && beat.chapterNo === null) return 3;
     return 4;
+  }
+
+  private rankSceneCard(
+    left: { id: string; title: string; sceneNo: number | null; updatedAt?: Date },
+    right: { id: string; title: string; sceneNo: number | null; updatedAt?: Date },
+  ): number {
+    if (left.sceneNo !== null && right.sceneNo !== null && left.sceneNo !== right.sceneNo) {
+      return left.sceneNo - right.sceneNo;
+    }
+    if (left.sceneNo === null && right.sceneNo !== null) return 1;
+    if (left.sceneNo !== null && right.sceneNo === null) return -1;
+    const updatedDelta = (left.updatedAt?.getTime() ?? 0) - (right.updatedAt?.getTime() ?? 0);
+    if (updatedDelta !== 0) return updatedDelta;
+    const titleDelta = left.title.localeCompare(right.title);
+    return titleDelta !== 0 ? titleDelta : left.id.localeCompare(right.id);
   }
 
   private buildInputWarnings(stepKey: GuidedStepSchemaKey, args: GenerateGuidedStepPreviewInput): string[] {
@@ -354,5 +397,11 @@ export class GenerateGuidedStepPreviewTool implements BaseTool<GenerateGuidedSte
     return Array.isArray(value)
       ? value.map((item) => (typeof item === 'string' ? item.trim() : '')).filter(Boolean)
       : [];
+  }
+
+  private asRecord(value: unknown): Record<string, unknown> {
+    return value !== null && typeof value === 'object' && !Array.isArray(value)
+      ? value as Record<string, unknown>
+      : {};
   }
 }

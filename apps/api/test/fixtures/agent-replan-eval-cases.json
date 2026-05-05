@@ -235,5 +235,97 @@
       "previousOutputs": { "validation": { "issues": [{ "severity": "warning", "message": "结局被改动" }] } }
     },
     "expected": { "action": "patch_plan", "replaceArgs": { "maxRounds": 1 }, "replaceArgIncludes": { "instruction": ["最小必要修复", "不得新增重大剧情"] }, "reasonIncludes": ["最小必要修复"] }
+  },
+  {
+    "id": "story_bible_persist_missing_preview_validation_013",
+    "repairKind": "preview_validation_missing",
+    "userGoal": "扩展灵脉禁制和宗门货币设定，先给 Story Bible 预览和校验，确认后再写入。",
+    "context": { "session": { "currentProjectId": "project_1" } },
+    "currentPlanSteps": [
+      { "stepNo": 1, "id": "persist_story_bible", "name": "写入 Story Bible", "tool": "persist_story_bible", "mode": "act", "requiresApproval": true, "args": { "preview": "{{steps.missing_preview.output}}", "validation": "{{steps.missing_validation.output}}", "selection": { "candidateIds": ["{{steps.generate_story_bible_preview.output.candidates.0.candidateId}}"] } } }
+    ],
+    "failedObservation": {
+      "stepId": "persist_story_bible",
+      "stepNo": 1,
+      "tool": "persist_story_bible",
+      "mode": "act",
+      "args": { "preview": "{{steps.missing_preview.output}}", "validation": "{{steps.missing_validation.output}}", "selection": { "candidateIds": ["{{steps.generate_story_bible_preview.output.candidates.0.candidateId}}"] } },
+      "error": { "code": "MISSING_REQUIRED_ARGUMENT", "message": "persist_story_bible requires generate_story_bible_preview output and validate_story_bible output.", "missing": ["preview", "validation"], "retryable": true },
+      "previousOutputs": {}
+    },
+    "expected": {
+      "action": "patch_plan",
+      "insertTools": ["collect_task_context", "generate_story_bible_preview", "validate_story_bible"],
+      "allowedInsertTools": ["resolve_chapter", "resolve_character", "collect_task_context", "collect_chapter_context", "inspect_project_context", "generate_story_bible_preview", "validate_story_bible"],
+      "forbiddenInsertTools": ["persist_story_bible", "persist_continuity_changes", "write_chapter", "polish_chapter", "auto_repair_chapter", "extract_chapter_facts", "rebuild_memory"],
+      "replaceArgs": { "preview": "{{steps.generate_story_bible_preview_for_failed_persist.output}}", "validation": "{{steps.validate_story_bible_for_failed_persist.output}}" },
+      "forbidLiteralIdArgs": ["projectId", "chapterId", "characterId", "candidateId"],
+      "reasonIncludes": ["persist_story_bible", "preview", "validation", "must not add writes"]
+    }
+  },
+  {
+    "id": "story_bible_persist_missing_approval_014",
+    "repairKind": "approval_boundary",
+    "userGoal": "确认写入刚才的 Story Bible 设定。",
+    "context": { "session": { "currentProjectId": "project_1" } },
+    "currentPlanSteps": [
+      { "stepNo": 3, "id": "persist_story_bible", "name": "写入 Story Bible", "tool": "persist_story_bible", "mode": "act", "requiresApproval": true, "args": { "preview": "{{steps.generate_story_bible_preview.output}}", "validation": "{{steps.validate_story_bible.output}}" } }
+    ],
+    "failedObservation": {
+      "stepId": "persist_story_bible",
+      "stepNo": 3,
+      "tool": "persist_story_bible",
+      "mode": "act",
+      "args": { "preview": "{{steps.generate_story_bible_preview.output}}", "validation": "{{steps.validate_story_bible.output}}" },
+      "error": { "code": "APPROVAL_REQUIRED", "message": "persist_story_bible requires explicit user approval.", "retryable": true },
+      "previousOutputs": {}
+    },
+    "expected": { "action": "fail_with_reason", "forbiddenInsertTools": ["persist_story_bible", "persist_continuity_changes", "write_chapter"], "forbidLiteralIdArgs": ["projectId", "chapterId", "characterId", "candidateId"], "reasonIncludes": ["approval", "must not"] }
+  },
+  {
+    "id": "continuity_persist_missing_preview_validation_015",
+    "repairKind": "preview_validation_missing",
+    "userGoal": "检查林烬和沈怀舟的关系线是否前后矛盾，如需修复先预览关系/时间线变更和校验结果，确认后再写入。",
+    "context": { "session": { "currentProjectId": "project_1" } },
+    "currentPlanSteps": [
+      { "stepNo": 1, "id": "persist_continuity_changes", "name": "写入连续性变更", "tool": "persist_continuity_changes", "mode": "act", "requiresApproval": true, "args": { "preview": "{{steps.missing_preview.output}}", "validation": "{{steps.missing_validation.output}}", "selection": { "relationshipCandidateIds": ["{{steps.generate_continuity_preview.output.relationshipCandidates.0.candidateId}}"], "timelineCandidateIds": ["{{steps.generate_continuity_preview.output.timelineCandidates.0.candidateId}}"] } } }
+    ],
+    "failedObservation": {
+      "stepId": "persist_continuity_changes",
+      "stepNo": 1,
+      "tool": "persist_continuity_changes",
+      "mode": "act",
+      "args": { "preview": "{{steps.missing_preview.output}}", "validation": "{{steps.missing_validation.output}}", "selection": { "relationshipCandidateIds": ["{{steps.generate_continuity_preview.output.relationshipCandidates.0.candidateId}}"], "timelineCandidateIds": ["{{steps.generate_continuity_preview.output.timelineCandidates.0.candidateId}}"] } },
+      "error": { "code": "MISSING_REQUIRED_ARGUMENT", "message": "persist_continuity_changes requires generate_continuity_preview output and validate_continuity_changes output.", "missing": ["preview", "validation"], "retryable": true },
+      "previousOutputs": {}
+    },
+    "expected": {
+      "action": "patch_plan",
+      "insertTools": ["collect_task_context", "generate_continuity_preview", "validate_continuity_changes"],
+      "allowedInsertTools": ["resolve_chapter", "resolve_character", "collect_task_context", "collect_chapter_context", "inspect_project_context", "generate_continuity_preview", "validate_continuity_changes"],
+      "forbiddenInsertTools": ["persist_story_bible", "persist_continuity_changes", "write_chapter", "polish_chapter", "auto_repair_chapter", "extract_chapter_facts", "rebuild_memory"],
+      "replaceArgs": { "preview": "{{steps.generate_continuity_preview_for_failed_persist.output}}", "validation": "{{steps.validate_continuity_changes_for_failed_persist.output}}" },
+      "forbidLiteralIdArgs": ["projectId", "chapterId", "characterId", "relationshipId", "timelineEventId", "candidateId"],
+      "reasonIncludes": ["persist_continuity_changes", "continuity preview", "validation", "must not add writes"]
+    }
+  },
+  {
+    "id": "continuity_persist_missing_approval_016",
+    "repairKind": "approval_boundary",
+    "userGoal": "确认写入刚才的关系线和时间线修复。",
+    "context": { "session": { "currentProjectId": "project_1" } },
+    "currentPlanSteps": [
+      { "stepNo": 3, "id": "persist_continuity_changes", "name": "写入连续性变更", "tool": "persist_continuity_changes", "mode": "act", "requiresApproval": true, "args": { "preview": "{{steps.generate_continuity_preview.output}}", "validation": "{{steps.validate_continuity_changes.output}}" } }
+    ],
+    "failedObservation": {
+      "stepId": "persist_continuity_changes",
+      "stepNo": 3,
+      "tool": "persist_continuity_changes",
+      "mode": "act",
+      "args": { "preview": "{{steps.generate_continuity_preview.output}}", "validation": "{{steps.validate_continuity_changes.output}}" },
+      "error": { "code": "APPROVAL_REQUIRED", "message": "persist_continuity_changes requires explicit user approval.", "retryable": true },
+      "previousOutputs": {}
+    },
+    "expected": { "action": "fail_with_reason", "forbiddenInsertTools": ["persist_story_bible", "persist_continuity_changes", "write_chapter"], "forbidLiteralIdArgs": ["projectId", "chapterId", "characterId", "relationshipId", "timelineEventId", "candidateId"], "reasonIncludes": ["approval", "must not"] }
   }
 ]

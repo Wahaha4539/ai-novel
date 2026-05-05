@@ -26,6 +26,7 @@ export interface BuiltChapterPrompt {
 }
 
 const MAX_PREVIOUS_CONTEXT_TOTAL = 15_000;
+const MAX_SCENE_CARDS_IN_PROMPT = 8;
 
 /**
  * API 内章节提示词构建服务，迁移 Worker PromptBuilder 的上下文拼装能力。
@@ -83,6 +84,7 @@ export class PromptBuilderService {
         previousChapterCount: context.previousChapters.length,
         foreshadowCount: context.plannedForeshadows.length,
         sceneCardCount: context.contextPack.planningContext?.sceneCards.length ?? 0,
+        sceneCardSourceTrace: context.contextPack.planningContext?.sceneCards.map((scene) => scene.sourceTrace) ?? [],
         hasVolume: Boolean(context.volume),
         hasStyleProfile: Boolean(context.styleProfile),
         hasCraftBrief: this.hasRecordContent(context.chapter.craftBrief),
@@ -174,11 +176,13 @@ export class PromptBuilderService {
     if (!sceneCards.length) {
       return '【场景执行】\n- 未提供本章场景卡；请依据本章执行卡和章节目标自行组织场景，不要把未登记场景当成已发生事实。';
     }
+    const visibleSceneCards = sceneCards.slice(0, MAX_SCENE_CARDS_IN_PROMPT);
 
     return [
       '【场景执行】',
       '说明：以下 SceneCard 是本章写作计划资产，不是已经发生的正文事实；请按场景顺序落实行动、冲突、线索与结果，并保留可追踪来源。',
-      ...sceneCards.slice(0, 8).map((scene) => this.formatSceneCard(scene)),
+      ...(sceneCards.length > MAX_SCENE_CARDS_IN_PROMPT ? [`- SceneCard prompt truncated: showing first ${MAX_SCENE_CARDS_IN_PROMPT} of ${sceneCards.length}; full list remains in retrievalPayload/sourceTrace.`] : []),
+      ...visibleSceneCards.map((scene) => this.formatSceneCard(scene)),
     ].join('\n');
   }
 
@@ -279,6 +283,8 @@ export class PromptBuilderService {
       scene.emotionalTone ? `情绪：${scene.emotionalTone}` : '',
       scene.keyInformation ? `关键信息：${scene.keyInformation}` : '',
       scene.result ? `结果：${scene.result}` : '',
+      scene.relatedForeshadowIds.length ? `relatedForeshadowIds：${scene.relatedForeshadowIds.join('、')}` : '',
+      this.formatJsonObject(scene.metadata, 700) ? `metadata：${this.formatJsonObject(scene.metadata, 700)}` : '',
       `状态：${scene.status}`,
     ].filter(Boolean);
     return [`- [${traceParts}] ${scene.sceneNo ?? '?'}｜${scene.title}`, ...fields.map((field) => `  ${field}`)].join('\n');

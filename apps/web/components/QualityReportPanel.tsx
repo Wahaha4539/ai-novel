@@ -191,6 +191,8 @@ function ReportCard({ report, chapter, onDelete }: { report: QualityReport; chap
       </div>
 
       <div className="p-4 space-y-3">
+        <QualityReportMetadataSummary report={report} />
+
         <section>
           <div className="flex items-center justify-between mb-2">
             <h3 className="text-xs font-bold" style={{ color: 'var(--text-muted)' }}>评分</h3>
@@ -230,6 +232,53 @@ function ReportCard({ report, chapter, onDelete }: { report: QualityReport; chap
         </section>
       </div>
     </section>
+  );
+}
+
+function QualityReportMetadataSummary({ report }: { report: QualityReport }) {
+  const metadata = safeRecord(report.metadata);
+  const metadataEntries = Object.entries(metadata);
+  const focus = readString(metadata.focus)
+    || readString(metadata.reviewFocus)
+    || readString(metadata.aiReviewFocus);
+  const instruction = readString(metadata.instruction)
+    || readString(metadata.reviewInstruction)
+    || readString(metadata.prompt);
+  const sourceMetadata = safeRecord(metadata.sourceMetadata ?? metadata.source ?? metadata.sourceTrace);
+  const knownKeys = new Set(['focus', 'reviewFocus', 'aiReviewFocus', 'instruction', 'reviewInstruction', 'prompt', 'sourceMetadata', 'source', 'sourceTrace']);
+  const extraEntries = metadataEntries.filter(([key]) => !knownKeys.has(key)).slice(0, 6);
+
+  if (!metadataEntries.length && report.sourceType !== 'ai_review') return null;
+
+  return (
+    <section className="rounded-lg border p-3" style={{ borderColor: 'var(--border-dim)', background: 'rgba(15,23,42,0.18)' }}>
+      <div className="mb-2 flex items-center justify-between gap-2">
+        <h3 className="text-xs font-bold" style={{ color: 'var(--text-muted)' }}>{report.sourceType === 'ai_review' ? 'AI 审稿元数据' : '报告 metadata'}</h3>
+        <span className="text-xs" style={{ color: 'var(--text-dim)' }}>{metadataEntries.length} 项</span>
+      </div>
+      <div className="space-y-2">
+        {focus ? <MetadataLine label="focus" value={focus} /> : null}
+        {instruction ? <MetadataLine label="instruction" value={instruction} /> : null}
+        {Object.entries(sourceMetadata).slice(0, 6).map(([key, value]) => (
+          <MetadataLine key={`source-${key}`} label={`source.${key}`} value={formatUnknown(value)} />
+        ))}
+        {extraEntries.map(([key, value]) => (
+          <MetadataLine key={key} label={key} value={formatUnknown(value)} />
+        ))}
+        {!focus && !instruction && !Object.keys(sourceMetadata).length && !extraEntries.length ? (
+          <div className="text-xs" style={{ color: 'var(--text-dim)' }}>未记录可读审稿 metadata。</div>
+        ) : null}
+      </div>
+    </section>
+  );
+}
+
+function MetadataLine({ label, value }: { label: string; value: string }) {
+  return (
+    <div className="grid gap-2" style={{ gridTemplateColumns: 'minmax(5rem, 8rem) minmax(0, 1fr)' }}>
+      <div className="text-xs font-semibold" style={{ color: 'var(--text-dim)' }}>{label}</div>
+      <div className="text-xs leading-5" style={{ color: 'var(--text-muted)', wordBreak: 'break-word' }}>{value || '-'}</div>
+    </div>
   );
 }
 

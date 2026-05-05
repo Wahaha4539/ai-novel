@@ -1,7 +1,7 @@
 # AI 长篇小说质量保障系统任务文档
 
 > 最后更新：2026-05-05  
-> 状态：Phase 6 Agent 工作流增强已完成，已覆盖 Story Bible、关系/时间线闭环与 Agent Eval 长篇质量用例
+> 状态：Phase 6 Agent 工作流增强已完成，已覆盖 Story Bible、关系/时间线闭环与 Agent Eval 长篇质量用例；Phase 7 回归补强已完成 LQ-P7-01 ~ LQ-P7-12
 > 对应设计：`docs/architecture/longform-quality-system-design.md`  
 > 明确排除：`apps/worker` 已弃用，所有任务不得把它作为实现目标或验收条件。
 
@@ -350,7 +350,68 @@ git diff --check
 - Mapper 只读复核结论：fixture schema、live planner mock registry 与 mock planner 分支必须同步新增 P6 工具，否则新增 case 会在 live eval 失败；已按此建议实现。Tester 复核认为 Planner/Retrieval/Gate 主线已覆盖三类目标，唯一非阻塞缺口是尚未新增 story_bible/continuity 专项 replan case；Reviewer 子 Agent 本轮复核超时未返回，主控按审批边界、ID 幻觉、工具副作用和文档状态做了收尾检查，未发现阻塞问题。
 - 验证结果：`docker compose up -d` 通过；`pnpm exec prisma migrate status --schema apps/api/prisma/schema.prisma` 返回 18 个 migrations 且 `Database schema is up to date!`；`pnpm --filter api eval:agent` 加载 15 个用例通过；`pnpm --filter api eval:agent:live` 15/15 通过；`pnpm --filter api eval:agent:retrieval` 15/15 通过；`pnpm --filter api eval:agent:replan` 12/12 通过；`pnpm --filter api eval:agent:gate` 通过；`pnpm --filter api build` 通过；`pnpm --filter web build` 通过；`pnpm --filter api test:agent` 通过 140 项；`git diff --check` 通过，仅有 Windows CRLF 提示，无 whitespace error。
 
-## 10. 跨阶段约束
+## 10. Phase 7：回归补强与生产加固
+
+目标：把 Phase 0 ~ Phase 6 完成记录中散落的非阻塞后续项、测试缺口和可继续增强项收敛为统一 backlog。除已标记 `done` 的任务外，后续任务仍按 `todo` 顺序推进，未实现或未验证不得标记完成。
+
+排序原则：
+
+1. 先补 Agent Replan Eval，保护审批边界、只读工具边界和 ID 幻觉防线。
+2. 再补前端交互测试，覆盖用户可见的 artifact、报告和 Phase 4 面板状态。
+3. 再处理质量报告与 AI 审稿重复执行策略。
+4. 再补 SceneCard / 生成链路回归。
+5. 最后补只读 Tool 的 spy 级安全回归。
+
+### 10.1 任务表
+
+| ID | 状态 | 任务名称 | 影响文件 | 依赖 | 验收标准 |
+|---|---|---|---|---|---|
+| LQ-P7-01 | done | 新增 `story_bible_expand` 专项 replan eval case | `apps/api/test/fixtures/agent-replan-eval-cases.json`、`scripts/dev/eval_agent_replanner.ts`、`AgentReplannerService` | LQ-P6-04、LQ-P6-06 | 覆盖缺少 preview / validation 输出时如何 patch；persist 缺审批时不得绕过审批；replan 只允许插入只读 resolver / collect context / preview / validate 步骤；不得插入写入类或 `requiresApproval` 步骤自动修复；不得发明 `projectId` / `chapterId` / `characterId` / `candidateId`；`pnpm --filter api eval:agent:gate` 通过 |
+| LQ-P7-02 | done | 新增 `continuity_check` 专项 replan eval case | `apps/api/test/fixtures/agent-replan-eval-cases.json`、`scripts/dev/eval_agent_replanner.ts`、`AgentReplannerService` | LQ-P6-04、LQ-P6-06 | 覆盖缺少 continuity preview / validation 输出时如何 patch；persist 缺审批时不得绕过审批；replan 只允许插入只读 resolver / collect context / preview / validate 步骤；不得插入写入类或 `requiresApproval` 步骤自动修复；不得发明 `projectId` / `chapterId` / `characterId` / `relationshipId` / `timelineEventId` / `candidateId`；`pnpm --filter api eval:agent:gate` 通过 |
+| LQ-P7-03 | done | `AgentArtifactPanel` 交互测试 | `apps/web/components/agent/AgentArtifactPanel.tsx`、现有前端测试文件或 Playwright 用例 | LQ-P6-05 | 覆盖 Story Bible diff 展示、relationship / timeline changes 展示、persist result 展示、accepted / rejected / diff 信息可读、空态 / 错误态 / JSON fallback；测试不得触发错误写入；不大改 UI，不做营销页；优先使用现有前端测试框架或 Playwright，不引入大型新依赖，除非单独审批 |
+| LQ-P7-04 | done | `QualityReportPanel` 交互测试 | `apps/web/components/QualityReportPanel.tsx`、`apps/web/hooks/useContinuityActions.ts`、现有前端测试文件或 Playwright 用例 | LQ-P5-03、LQ-P5-05 | 覆盖质量报告列表/详情、scores / issues / verdict / summary 展示、AI 审稿 focus / instruction / source metadata 可读、空态 / 错误态 / JSON fallback；测试不得触发错误写入；不大改 UI，不做营销页；优先使用现有前端测试框架或 Playwright，不引入大型新依赖，除非单独审批 |
+| LQ-P7-05 | done | `SceneBankPanel` / `PacingPanel` / `ChapterPatternPanel` 交互测试 | `apps/web/components/SceneBankPanel.tsx`、`PacingPanel.tsx`、`ChapterPatternPanel.tsx`、现有前端测试文件或 Playwright 用例 | LQ-P4-09、LQ-P4-10、LQ-P4-11 | 覆盖筛选、刷新、创建、编辑、删除/归档、JSON 字段校验、空态 / 错误态 / JSON fallback；SceneCard、PacingBeat、ChapterPattern 请求均保持项目作用域；测试不得触发错误写入；不大改 UI，不做营销页；优先使用现有前端测试框架或 Playwright，不引入大型新依赖，除非单独审批 |
+| LQ-P7-06 | done | `quality-reports` controller / e2e 覆盖 | `apps/api/src/modules/quality-reports/*`、`apps/api/test/*` 或现有 e2e 测试入口 | LQ-P5-01、LQ-P5-03 | 覆盖按 project / chapter / draft / sourceType / reportType 查询；跨项目隔离；不存在资源和非法参数错误；写入或状态变更仍需 `projectId` 隔离和缓存失效；不依赖 `apps/worker` |
+| LQ-P7-07 | done | AI 审稿重复执行幂等 / 去重策略设计与实现任务记录 | `apps/api/src/modules/quality-reports/*`、`apps/api/src/modules/validation/*` 或 AI 审稿服务、`apps/web/components/QualityReportPanel.tsx`、必要文档 | LQ-P5-04、LQ-P5-05、LQ-P7-06 | 明确同一 draft / same focus / same instruction 的重复审稿策略；说明是否允许多次报告及如何展示趋势；评估是否需要 idempotency key；不改变现有 AI 审稿审批边界；写入仍需 projectId 隔离和缓存失效；策略落地前不得把重复执行默认为已解决 |
+| LQ-P7-08 | done | `SceneCard` 多卡排序 / 截断测试 | `apps/api/src/modules/generation/*`、`apps/api/src/modules/scenes/*`、`agent-services.spec.ts` 或相关服务测试 | LQ-P4-04、LQ-P4-08 | 多个 SceneCard 按 `sceneNo` 稳定排序；无 `sceneNo` 或重复 `sceneNo` 时排序可预测；Prompt 中场景卡不会无限膨胀，超预算时有明确截断策略；不把 SceneCard 计划资产误当作正文已发生事实 |
+| LQ-P7-09 | done | `GenerateChapterService` 读取 `SceneCard` 的端到端断言 | `apps/api/src/modules/generation/generate-chapter.service.ts`、`prompt-builder.service.ts`、相关服务/e2e 测试 | LQ-P4-08、LQ-P7-08 | 覆盖 SceneCard 进入 `ChapterContextPack.planningContext.sceneCards`、`retrievalPayload` / Prompt sourceTrace 与正文生成链路；验证 guided chat 路径和直接生成路径均读取本章非 archived SceneCard；不把 SceneCard 计划资产误当作正文已发生事实 |
+| LQ-P7-10 | done | `SceneCard` 覆盖质量门禁 | `apps/api/src/modules/generation/*`、`apps/api/src/modules/validation/*`、`apps/api/src/modules/quality-reports/*` | LQ-P4-08、LQ-P5-02、LQ-P7-09 | 质量门禁能识别本章计划场景是否被正文覆盖或明显遗漏；输出可追踪 issue / warning / QualityReport metadata；默认不改变现有阻断边界，除非 GenerationProfile / validation 配置明确要求；不把 SceneCard 计划资产误当作正文已发生事实 |
+| LQ-P7-11 | done | `SceneExecutionPlan` 渲染 `relatedForeshadowIds` / `metadata` | `apps/api/src/modules/generation/*`、`apps/web/components/*` 中的场景执行展示路径、相关测试 | LQ-P4-01、LQ-P4-08、LQ-P7-09 | `relatedForeshadowIds` / `metadata` 进入可追踪输出；用户能看到场景与伏笔/自定义 metadata 的关联；输出保持计划资产语义，不当作已发生正文事实；缺失或异常 metadata 有 JSON fallback |
+| LQ-P7-12 | done | preview / validate / analysis Tool 的 Prisma 写方法 spy 级断言 | `apps/api/src/modules/agent-tools/tools/*`、`apps/api/src/modules/agent-runs/agent-services.spec.ts` 或专用 tool safety 测试 | LQ-P6-01、LQ-P6-02、LQ-P6-03 | `generate_story_bible_preview` 不写 DB；`validate_story_bible` 不写 DB；`generate_continuity_preview` 不写 DB；`validate_continuity_changes` 不写 DB；collect / analysis 类工具不调用 Prisma `create` / `update` / `delete` / `upsert` / `updateMany` / `deleteMany`；写入仍只允许 persist 类工具在 Act + approval 后执行 |
+
+### 10.2 Phase 7 验收命令建议
+
+```bash
+pnpm --filter api eval:agent:gate
+pnpm --filter api test:agent
+pnpm --filter api build
+pnpm --filter web build
+git diff --check
+```
+
+涉及浏览器交互测试的任务优先使用现有前端测试框架或 Playwright；不引入大型新依赖，除非单独审批。
+
+### 10.3 本轮记录
+
+- 已完成 `LQ-P7-01` 与 `LQ-P7-02`：`agent-replan-eval-cases.json` 新增 Story Bible 与 continuity 两组专项 replan 用例，分别覆盖缺少 preview/validation 前序输出、persist 缺审批两个场景；eval 断言补充插入工具序列、只读工具白名单、禁止插入 persist/write/requiresApproval 步骤，以及 `projectId` / `chapterId` / `characterId` / `relationshipId` / `timelineEventId` / `candidateId` 字段不得使用字面量 ID。
+- `AgentReplannerService` 补充 persist 前置产物缺失的最小修复：`persist_story_bible` 只允许插入 `collect_task_context -> generate_story_bible_preview -> validate_story_bible`；`persist_continuity_changes` 只允许插入 `collect_task_context -> generate_continuity_preview -> validate_continuity_changes`；`APPROVAL_REQUIRED` 直接安全失败，不自动补写入、不绕过审批。
+- 新增 API：无。新增生产 Agent Tool：无。新增 migration：无。新增依赖：无。
+- 验证结果：`pnpm --filter api eval:agent:replan` 16/16 通过；`pnpm --filter api eval:agent:gate` 通过，其中 live planner 15/15、retrieval 15/15、replan 16/16；`pnpm --filter api test:agent` 通过 140 项；`pnpm --filter api build` 通过；`pnpm --filter web build` 通过；`git diff --check` 通过，仅有 Windows CRLF 提示，无 whitespace error。
+- 未覆盖风险：本条记录对应 `LQ-P7-01 ~ LQ-P7-02` 的 eval 与 Replanner 安全边界补强；当时未新增前端交互测试、质量报告 e2e、SceneCard 生成链路断言或只读 Tool Prisma spy，后续任务继续按 Phase 7 顺序推进。`apps/worker` 未作为实现、测试或验收依赖。
+- 已完成 `LQ-P7-03 ~ LQ-P7-05`：在 `apps/web` 新增无浏览器轻量回归脚本 `test:longform`，通过现有 React/TypeScript 依赖渲染和模拟组件状态，不引入 Playwright/Vitest/Jest 或其他新依赖；覆盖 `AgentArtifactPanel` 的 Story Bible preview/validation/persist、continuity preview/validation/persist、accepted/rejected/diff、空态、错误 artifact 与 JSON fallback，且渲染测试不会触发 persist 选择或真实写入。
+- `QualityReportPanel` 补充 AI 审稿 metadata 摘要展示，focus、instruction、source metadata 与额外 metadata 现在可读；测试覆盖质量报告列表/详情、scores、issues、verdict、summary、空态、错误态与对象 JSON fallback。该改动仅增强报告卡片中的元数据阅读区，不新增 API、不改变写入或删除行为。
+- `SceneBankPanel`、`PacingPanel`、`ChapterPatternPanel` 交互测试覆盖筛选、刷新、新建、编辑、删除/归档、JSON 字段校验失败不得调用 create/update、空态，以及 SceneCard/PacingBeat/ChapterPattern/QualityReport 请求路径均由 `/projects/:projectId/...` 构造，保持 projectId 作用域。测试使用 hook mock，不连接真实 API，不依赖 `apps/worker`。
+- 新增 API：无。新增生产 Agent Tool：无。新增 migration：无。新增依赖：无。新增前端脚本：`pnpm --filter web test:longform`。
+- 验证结果：`pnpm --filter web test:longform` 6/6 通过；`pnpm --filter api eval:agent:gate` 通过，其中 live planner 15/15、retrieval 15/15、replan 16/16；`pnpm --filter api test:agent` 通过 140 项；`pnpm --filter api build` 通过；`pnpm --filter web build` 通过；`git diff --check` 通过，仅有 Windows CRLF 提示，无 whitespace error。
+- 未覆盖风险：本组为前端组件级轻量交互回归，未启动真实浏览器或真实 API；不会验证 CSS 像素级布局、真实网络失败边界、后端 quality-reports controller/e2e、AI 审稿幂等策略、SceneCard 生成链路或只读 Tool Prisma spy，这些仍保留在后续 `LQ-P7-06 ~ LQ-P7-12`。
+- 已完成 `LQ-P7-06 ~ LQ-P7-07`：`QualityReportsService.list` 对 `chapterId`、`draftId`、`agentRunId` 做 UUID 归一化与同项目引用校验，列表筛选覆盖 `projectId`、chapter、draft、agentRun、`sourceType`、`reportType`、`verdict`；`update/remove` 改为 `updateMany/deleteMany({ id, projectId })` 并在写后继续清理项目召回缓存。`AiQualityReviewService` 落地无 migration 幂等策略：同一 draft + 归一化 focus + instruction + promptVersion 复用既有 `ai_review/ai_chapter_review` 报告，不再次调用 LLM；focus、instruction、draft 或 promptVersion 不同时允许生成新报告作为趋势点，metadata 记录 `idempotency.key`、策略说明和 `requiresSchemaMigration=false`。
+- 已完成 `LQ-P7-08 ~ LQ-P7-11`：`GenerateChapterService` 对本章非 archived `SceneCard` 做稳定排序，编号优先、重复编号按 `updatedAt/title/id` 排序、无编号置后，并把 `relatedForeshadowIds`、`metadata`、`sourceTrace` 写入 `ChapterContextPack.planningContext.sceneCards` 与 `retrievalPayload`；`PromptBuilderService` 将 SceneCard Prompt 渲染限制为前 8 张，超量时显示截断说明，并在 debug 中输出 `sceneCardSourceTrace`。直接生成链路与 guided chat / `GenerateGuidedStepPreviewTool` 均读取本章非 archived SceneCard，仍明确其为只读计划资产。生成后质量门禁新增 `sceneCardCoverage` warning/metadata，可指出正文明显遗漏的计划场景字段，默认不新增 blocker。
+- 已完成 `LQ-P7-12`：`agent-services.spec.ts` 新增 Prisma 写方法 spy 级安全回归，覆盖 `generate_story_bible_preview`、`validate_story_bible`、`generate_continuity_preview`、`validate_continuity_changes`、`collect_task_context`、`inspect_project_context`、`generate_guided_step_preview` 不调用 `create/update/delete/upsert/updateMany/deleteMany/createMany`；同时断言 `persist_story_bible` 与 `persist_continuity_changes` 仍 `requiresApproval=true`。
+- 新增 API：无。新增生产 Agent Tool：无。新增 migration：无。新增依赖：无。`apps/worker` 未作为实现、测试或验收依赖。
+- 验证结果：`pnpm --filter api test:agent` 通过 147 项；`pnpm --filter api build` 通过；`pnpm --filter web build` 通过；`pnpm --filter api eval:agent:gate` 通过，其中 live planner 15/15、retrieval 15/15、replan 16/16。`git diff --check` 待本记录写入后复跑。
+- 未覆盖风险：本组后端回归覆盖服务级和工具级行为，未启动真实浏览器或真实 API 服务器；AI 审稿去重目前基于无 schema 变更的 metadata 匹配，不具备数据库唯一约束级并发互斥；SceneCard 覆盖检查为确定性文本启发式 warning，可能需要后续按项目 profile 调整灵敏度或升级为可配置 blocker。
+
+## 11. 跨阶段约束
 
 所有任务必须遵守：
 
@@ -362,7 +423,7 @@ git diff --check
 - 前端新增 view 必须加入 `ACTIVE_VIEWS`、本地状态恢复和侧边栏导航。
 - 文档、API、前端类型要同步更新，避免“后端有字段前端不知道”。
 
-## 11. 推荐首批 Sprint
+## 12. 推荐首批 Sprint
 
 ### Sprint 1：最小 Story Bible
 
@@ -410,7 +471,7 @@ LQ-P3-01 ~ LQ-P3-08
 - 新增实体权限
 - PromptBuilder/FactExtractor 接入生成策略
 
-## 12. 验收样例
+## 13. 验收样例
 
 ### 样例 1：禁止提前泄密
 

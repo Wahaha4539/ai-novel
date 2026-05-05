@@ -70,6 +70,20 @@ type DraftWithChapter = {
   };
 };
 
+type ExistingAiReviewReport = {
+  id: string;
+  projectId: string;
+  chapterId: string | null;
+  draftId: string | null;
+  sourceType: string;
+  reportType: string;
+  verdict: string;
+  summary: string | null;
+  scores: Prisma.JsonValue;
+  issues: Prisma.JsonValue;
+  metadata: Prisma.JsonValue;
+};
+
 const SCORE_DIMENSIONS = [
   'plotProgress',
   'characterConsistency',
@@ -93,6 +107,12 @@ export class AiQualityReviewService {
 
   async reviewAndCreate(projectId: string, input: AiQualityReviewInput, runtime: AiQualityReviewRuntime = {}): Promise<AiQualityReviewResult> {
     const draft = await this.resolveDraft(projectId, input);
+    const reviewIdentity = this.buildReviewIdentity(draft.id, input);
+    const duplicate = await this.findDuplicateReview(projectId, draft, reviewIdentity);
+    if (duplicate) {
+      return this.toResultFromExistingReport(projectId, draft, duplicate);
+    }
+
     const context = await this.loadReviewContext(projectId, draft.chapter.id, draft.chapter.chapterNo);
     const { data, result } = await this.llm.chatJson<unknown>(
       [
@@ -155,6 +175,16 @@ export class AiQualityReviewService {
         },
         focus: this.stringArray(input.focus),
         instruction: input.instruction ?? null,
+        idempotency: {
+          strategy: 'reuse_same_draft_focus_instruction_prompt_version',
+          key: reviewIdentity.key,
+          promptVersion: PROMPT_VERSION,
+          draftId: draft.id,
+          focus: reviewIdentity.focus,
+          instruction: reviewIdentity.instruction || null,
+          allowsMultipleReportsWhen: 'Different focus, instruction, draft, or promptVersion creates a new trend point.',
+          requiresSchemaMigration: false,
+        },
         llm: {
           model: result.model,
           usage: result.usage ?? null,
@@ -178,6 +208,81 @@ export class AiQualityReviewService {
       issues: normalized.issues,
       model: result.model,
       normalizationWarnings: normalized.normalizationWarnings,
+    };
+  }
+
+  private buildReviewIdentity(draftId: string, input: AiQualityReviewInput) {
+    const focus = this.normalizeFocus(input.focus);
+    const instruction = this.normalizeInstruction(input.instruction);
+    return {
+      draftId,
+      focus,
+      instruction,
+      key: [PROMPT_VERSION, draftId, focus.join(','), instruction].join('|'),
+    };
+  }
+
+  private async findDuplicateReview(projectId: string, draft: DraftWithChapter, identity: ReturnType<AiQualityReviewService['buildReviewIdentity']>): Promise<ExistingAiReviewReport | undefined> {
+    const reports = await this.prisma.qualityReport.findMany({
+      where: {
+        projectId,
+        draftId: draft.id,
+        sourceType: 'ai_review',
+        reportType: 'ai_chapter_review',
+        sourceId: draft.id,
+      },
+      orderBy: { createdAt: 'desc' },
+      take: 20,
+      select: {
+        id: true,
+        projectId: true,
+        chapterId: true,
+        draftId: true,
+        sourceType: true,
+        reportType: true,
+        verdict: true,
+        summary: true,
+        scores: true,
+        issues: true,
+        metadata: true,
+      },
+    });
+
+    return (reports as ExistingAiReviewReport[]).find((report) => this.matchesReviewIdentity(report.metadata, identity));
+  }
+
+  private matchesReviewIdentity(metadata: unknown, identity: ReturnType<AiQualityReviewService['buildReviewIdentity']>): boolean {
+    const record = this.asRecord(metadata);
+    if (record.promptVersion !== PROMPT_VERSION) return false;
+
+    const idempotency = this.asRecord(record.idempotency);
+    const storedKey = this.text(idempotency.key, '');
+    if (storedKey && storedKey === identity.key) return true;
+
+    const storedDraftId = this.text(idempotency.draftId, '');
+    const storedFocus = this.normalizeFocus(idempotency.focus ?? record.focus);
+    const storedInstruction = this.normalizeInstruction(idempotency.instruction ?? record.instruction);
+    return (!storedDraftId || storedDraftId === identity.draftId)
+      && this.sameStringArray(storedFocus, identity.focus)
+      && storedInstruction === identity.instruction;
+  }
+
+  private toResultFromExistingReport(projectId: string, draft: DraftWithChapter, report: ExistingAiReviewReport): AiQualityReviewResult {
+    const metadata = this.asRecord(report.metadata);
+    const llm = this.asRecord(metadata.llm);
+    return {
+      reportId: report.id,
+      projectId,
+      chapterId: report.chapterId ?? draft.chapter.id,
+      draftId: report.draftId ?? draft.id,
+      sourceType: 'ai_review',
+      reportType: 'ai_chapter_review',
+      verdict: this.normalizeVerdict(report.verdict, this.score(this.asRecord(report.scores).overall, 70), []),
+      summary: report.summary ?? this.defaultSummary(this.normalizeVerdict(report.verdict, 70, []), 70),
+      scores: this.normalizeScores(report.scores),
+      issues: this.normalizeIssues(report.issues).issues,
+      model: this.text(llm.model, '') || undefined,
+      normalizationWarnings: this.stringArray(metadata.normalizationWarnings),
     };
   }
 
@@ -454,6 +559,18 @@ export class AiQualityReviewService {
 
   private stringArray(value: unknown): string[] {
     return Array.isArray(value) ? value.filter((item): item is string => typeof item === 'string' && item.trim().length > 0).map((item) => item.trim()) : [];
+  }
+
+  private normalizeFocus(value: unknown): string[] {
+    return [...new Set(this.stringArray(value).map((item) => item.replace(/\s+/g, ' ').trim().toLowerCase()))].sort();
+  }
+
+  private normalizeInstruction(value: unknown): string {
+    return this.text(value, '').replace(/\s+/g, ' ').trim();
+  }
+
+  private sameStringArray(left: string[], right: string[]): boolean {
+    return left.length === right.length && left.every((item, index) => item === right[index]);
   }
 
   private asRecord(value: unknown): Record<string, unknown> {

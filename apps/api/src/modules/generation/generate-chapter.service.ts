@@ -81,6 +81,24 @@ export interface ExecutionCardCoverageResult {
   };
 }
 
+export interface SceneCardCoverageResult {
+  warnings: string[];
+  checked: Array<{
+    sourceTrace: SceneExecutionPlan['sourceTrace'];
+    sceneNo: number | null;
+    title: string;
+    fields: Array<{ field: string; value: string }>;
+    relatedForeshadowIds: string[];
+  }>;
+  missing: Array<{
+    sourceTrace: SceneExecutionPlan['sourceTrace'];
+    sceneNo: number | null;
+    title: string;
+    missingFields: Array<{ field: string; value: string }>;
+    relatedForeshadowIds: string[];
+  }>;
+}
+
 export interface GeneratedDraftQualityGateResult {
   valid: boolean;
   blocked: boolean;
@@ -88,6 +106,7 @@ export interface GeneratedDraftQualityGateResult {
   blockers: string[];
   warnings: string[];
   executionCardCoverage?: ExecutionCardCoverageResult;
+  sceneCardCoverage?: SceneCardCoverageResult;
   metrics: {
     actualWordCount: number;
     targetWordCount: number;
@@ -256,7 +275,7 @@ export class GenerateChapterService {
     if (!content) throw new BadRequestException('write_chapter 生成正文为空');
 
     const actualWordCount = this.countChineseLikeWords(content);
-    const qualityGate = this.assessGeneratedDraftQuality(content, actualWordCount, targetWordCount, chapter);
+    const qualityGate = this.assessGeneratedDraftQuality(content, actualWordCount, targetWordCount, chapter, contextPack.planningContext?.sceneCards ?? []);
     if (qualityGate.blocked) {
       throw new BadRequestException(`生成后质量门禁未通过：${qualityGate.blockers.join('；')}`);
     }
@@ -432,6 +451,7 @@ export class GenerateChapterService {
     actualWordCount: number,
     targetWordCount: number,
     chapter?: { outline: string | null; craftBrief?: Prisma.JsonValue | null },
+    sceneCards: SceneExecutionPlan[] = [],
   ): GeneratedDraftQualityGateResult {
     const paragraphs = content
       .split(/\n+/)
@@ -467,6 +487,10 @@ export class GenerateChapterService {
     if (executionCardCoverage?.warnings.length) {
       warnings.push(...executionCardCoverage.warnings);
     }
+    const sceneCardCoverage = sceneCards.length ? this.assessSceneCardCoverage(content, sceneCards) : undefined;
+    if (sceneCardCoverage?.warnings.length) {
+      warnings.push(...sceneCardCoverage.warnings);
+    }
     const score = Math.max(0, Math.min(100, 100 - blockers.length * 35 - warnings.length * 10 - Math.round(duplicateParagraphRatio * 40)));
 
     return {
@@ -476,6 +500,7 @@ export class GenerateChapterService {
       blockers,
       warnings,
       ...(executionCardCoverage && { executionCardCoverage }),
+      ...(sceneCardCoverage && { sceneCardCoverage }),
       metrics: { actualWordCount, targetWordCount, targetRatio, paragraphCount: paragraphs.length, duplicateParagraphCount, duplicateParagraphRatio, hasWrapperOrMarkdown, hasRefusalPattern, hasTemplateMarker },
     };
   }
@@ -690,6 +715,44 @@ export class GenerateChapterService {
     };
   }
 
+  private assessSceneCardCoverage(content: string, sceneCards: SceneExecutionPlan[]): SceneCardCoverageResult {
+    const checked = sceneCards.map((scene) => ({
+      sourceTrace: scene.sourceTrace,
+      sceneNo: scene.sceneNo,
+      title: scene.title,
+      fields: this.sceneCardCoverageFields(scene),
+      relatedForeshadowIds: scene.relatedForeshadowIds,
+    }));
+    const missing = checked
+      .map((scene) => ({
+        sourceTrace: scene.sourceTrace,
+        sceneNo: scene.sceneNo,
+        title: scene.title,
+        missingFields: scene.fields.filter((field) => !this.hasMeaningfulCoverage(content, field.value)),
+        relatedForeshadowIds: scene.relatedForeshadowIds,
+      }))
+      .filter((scene) => scene.missingFields.length > 0);
+    const warnings = missing.length
+      ? [`SceneCard coverage warning: ${missing.length} planned scene(s) have missing fields: ${missing.map((scene) => `${scene.sceneNo ?? '?'}:${scene.title}(${scene.missingFields.map((field) => field.field).join(',')})`).join('; ')}`]
+      : [];
+
+    return { warnings, checked, missing };
+  }
+
+  private sceneCardCoverageFields(scene: SceneExecutionPlan): Array<{ field: string; value: string }> {
+    const fields = [
+      { field: 'keyInformation', value: scene.keyInformation },
+      { field: 'result', value: scene.result },
+      { field: 'purpose', value: scene.purpose },
+      { field: 'conflict', value: scene.conflict },
+      { field: 'locationName', value: scene.locationName },
+    ]
+      .map((item) => ({ field: item.field, value: this.text(item.value) }))
+      .filter((item): item is { field: string; value: string } => Boolean(item.value));
+
+    return (fields.length ? fields : [{ field: 'title', value: scene.title }]).slice(0, 8);
+  }
+
   private hasMeaningfulCoverage(content: string, requirement: string): boolean {
     if (this.includesLoose(content, requirement)) return true;
     return this.extractCoverageTerms(requirement).some((term) => this.includesLoose(content, term));
@@ -775,8 +838,8 @@ export class GenerateChapterService {
         chapterId,
         NOT: { status: 'archived' },
       },
-      orderBy: [{ sceneNo: 'asc' }, { updatedAt: 'asc' }],
-      take: 12,
+      orderBy: [{ updatedAt: 'asc' }],
+      take: 30,
     }).then((items) => items.map((item) => ({ ...item, chapterNo })));
   }
 
@@ -796,11 +859,14 @@ export class GenerateChapterService {
       emotionalTone: string | null;
       keyInformation: string | null;
       result: string | null;
+      relatedForeshadowIds: Prisma.JsonValue;
       status: string;
+      metadata: Prisma.JsonValue;
+      updatedAt: Date;
     }>,
     chapter: { id: string; chapterNo: number },
   ): SceneExecutionPlan[] {
-    return sceneCards.map((scene) => ({
+    return [...sceneCards].sort((left, right) => this.compareSceneCards(left, right)).slice(0, 12).map((scene) => ({
       id: scene.id,
       sceneNo: scene.sceneNo,
       title: scene.title,
@@ -811,7 +877,9 @@ export class GenerateChapterService {
       emotionalTone: scene.emotionalTone,
       keyInformation: scene.keyInformation,
       result: scene.result,
+      relatedForeshadowIds: this.stringArray(scene.relatedForeshadowIds),
       status: scene.status,
+      metadata: this.asRecord(scene.metadata) ?? {},
       sourceTrace: {
         sourceType: 'scene_card',
         sourceId: scene.id,
@@ -822,6 +890,21 @@ export class GenerateChapterService {
         sceneNo: scene.sceneNo,
       },
     }));
+  }
+
+  private compareSceneCards(
+    left: { id: string; title: string; sceneNo: number | null; updatedAt?: Date },
+    right: { id: string; title: string; sceneNo: number | null; updatedAt?: Date },
+  ): number {
+    if (left.sceneNo !== null && right.sceneNo !== null && left.sceneNo !== right.sceneNo) {
+      return left.sceneNo - right.sceneNo;
+    }
+    if (left.sceneNo === null && right.sceneNo !== null) return 1;
+    if (left.sceneNo !== null && right.sceneNo === null) return -1;
+    const updatedDelta = (left.updatedAt?.getTime() ?? 0) - (right.updatedAt?.getTime() ?? 0);
+    if (updatedDelta !== 0) return updatedDelta;
+    const titleDelta = left.title.localeCompare(right.title);
+    return titleDelta !== 0 ? titleDelta : left.id.localeCompare(right.id);
   }
 
   private async loadStyleProfile(projectId: string, defaultStyleProfileId?: string | null) {

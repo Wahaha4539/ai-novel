@@ -30,6 +30,7 @@ import { ValidateImportedAssetsTool } from '../agent-tools/tools/validate-import
 import { PersistOutlineTool } from '../agent-tools/tools/persist-outline.tool';
 import { CollectChapterContextTool } from '../agent-tools/tools/collect-chapter-context.tool';
 import { CollectTaskContextTool } from '../agent-tools/tools/collect-task-context.tool';
+import { InspectProjectContextTool } from '../agent-tools/tools/inspect-project-context.tool';
 import { CharacterConsistencyCheckTool } from '../agent-tools/tools/character-consistency-check.tool';
 import { PlotConsistencyCheckTool } from '../agent-tools/tools/plot-consistency-check.tool';
 import { GenerateGuidedStepPreviewTool } from '../agent-tools/tools/generate-guided-step-preview.tool';
@@ -63,6 +64,7 @@ import { PacingBeatsService } from '../pacing-beats/pacing-beats.service';
 import { QualityReportsService } from '../quality-reports/quality-reports.service';
 import { AiQualityReviewService } from '../quality-reports/ai-quality-review.service';
 import { UpdateQualityReportDto } from '../quality-reports/dto/update-quality-report.dto';
+import { QualityReportsController } from '../quality-reports/quality-reports.controller';
 
 type TestCase = { name: string; run: () => void | Promise<void> };
 
@@ -355,6 +357,225 @@ test('GenerateChapterService 生成后执行卡覆盖检查标记漏写关键项
   assert.match(result.warnings.join('；'), /不可逆后果/);
   assert.deepEqual(result.executionCardCoverage?.missing.clueNames, ['湿红线']);
   assert.equal(result.executionCardCoverage?.missing.irreversibleConsequence, '井开始叫他的名字');
+});
+
+test('GenerateChapterService scene card coverage adds traceable warnings without blocking', () => {
+  const service = new GenerateChapterService({} as never, {} as never, {} as never, {} as never, {} as never, {} as never) as unknown as {
+    assessGeneratedDraftQuality: (
+      content: string,
+      actualWordCount: number,
+      targetWordCount: number,
+      chapter?: { outline: string | null; craftBrief?: unknown },
+      sceneCards?: unknown[],
+    ) => { blocked: boolean; warnings: string[]; sceneCardCoverage?: { missing: Array<{ title: string; missingFields: Array<{ field: string; value: string }>; relatedForeshadowIds: string[] }> } };
+  };
+  const sceneCards = [{
+    id: 'scene-1',
+    sceneNo: 1,
+    title: 'Archive Gate',
+    locationName: 'Old archive',
+    participants: ['Lin Che'],
+    purpose: 'Enter the locked archive.',
+    conflict: 'The guard hides the ledger key.',
+    emotionalTone: 'cold dread',
+    keyInformation: 'The ledger has a missing page.',
+    result: 'Lin Che gets a false key.',
+    relatedForeshadowIds: ['foreshadow-1'],
+    status: 'planned',
+    metadata: { beat: 'reveal' },
+    sourceTrace: { sourceType: 'scene_card', sourceId: 'scene-1', projectId: 'p1', chapterId: 'c4', chapterNo: 4, sceneNo: 1 },
+  }];
+
+  const result = service.assessGeneratedDraftQuality('Lin Che waits in the rain and leaves before anyone opens the gate.', 900, 1200, { outline: null, craftBrief: {} }, sceneCards);
+
+  assert.equal(result.blocked, false);
+  assert.match(result.warnings.join(' | '), /SceneCard coverage warning/);
+  assert.equal(result.sceneCardCoverage?.missing[0].title, 'Archive Gate');
+  assert.ok(result.sceneCardCoverage?.missing[0].missingFields.some((field) => field.field === 'keyInformation'));
+  assert.ok(result.sceneCardCoverage?.missing[0].missingFields.some((field) => field.field === 'result'));
+  assert.deepEqual(result.sceneCardCoverage?.missing[0].relatedForeshadowIds, ['foreshadow-1']);
+});
+
+test('GenerateChapterService sorts SceneCards predictably and preserves trace metadata', () => {
+  const service = new GenerateChapterService({} as never, {} as never, {} as never, {} as never, {} as never, {} as never) as unknown as {
+    buildSceneExecutionPlans: (sceneCards: Array<Record<string, unknown>>, chapter: { id: string; chapterNo: number }) => Array<Record<string, unknown>>;
+  };
+  const base = {
+    projectId: 'p1',
+    volumeId: null,
+    chapterId: 'c4',
+    chapterNo: 4,
+    locationName: null,
+    participants: [],
+    purpose: null,
+    conflict: null,
+    emotionalTone: null,
+    keyInformation: null,
+    result: null,
+    relatedForeshadowIds: [],
+    status: 'planned',
+    metadata: {},
+  };
+  const plans = service.buildSceneExecutionPlans([
+    { ...base, id: 'scene-null', sceneNo: null, title: 'No Number', updatedAt: new Date('2026-05-05T00:00:03Z') },
+    { ...base, id: 'scene-2-late', sceneNo: 2, title: 'Second Late', updatedAt: new Date('2026-05-05T00:00:04Z') },
+    { ...base, id: 'scene-1', sceneNo: 1, title: 'First', updatedAt: new Date('2026-05-05T00:00:05Z'), relatedForeshadowIds: ['f1'], metadata: { beat: 'plant' } },
+    { ...base, id: 'scene-2-early', sceneNo: 2, title: 'Second Early', updatedAt: new Date('2026-05-05T00:00:01Z') },
+  ], { id: 'c4', chapterNo: 4 });
+
+  assert.deepEqual(plans.map((scene) => scene.id), ['scene-1', 'scene-2-early', 'scene-2-late', 'scene-null']);
+  assert.deepEqual(plans[0].relatedForeshadowIds, ['f1']);
+  assert.deepEqual(plans[0].metadata, { beat: 'plant' });
+  assert.deepEqual(plans[0].sourceTrace, { sourceType: 'scene_card', sourceId: 'scene-1', projectId: 'p1', volumeId: null, chapterId: 'c4', chapterNo: 4, sceneNo: 1 });
+});
+
+test('GenerateChapterService run carries current chapter SceneCards through contextPack retrievalPayload and prompt trace', async () => {
+  let sceneWhere: Record<string, unknown> | undefined;
+  let draftCreateData: Record<string, unknown> | undefined;
+  let qualityReportData: Record<string, unknown> | undefined;
+  const chapter = {
+    id: 'c1',
+    chapterNo: 4,
+    title: 'Archive Gate',
+    objective: 'Open the archive',
+    conflict: 'The guard lies',
+    outline: 'Lin Che tests the guard at the archive gate.',
+    revealPoints: null,
+    foreshadowPlan: null,
+    craftBrief: {},
+    expectedWordCount: 240,
+    status: 'planned',
+    project: {
+      id: 'p1',
+      title: 'Novel',
+      genre: null,
+      tone: null,
+      synopsis: null,
+      outline: null,
+      defaultStyleProfileId: null,
+      creativeProfile: null,
+      generationProfile: null,
+    },
+    volume: null,
+  };
+  const prisma = {
+    chapter: {
+      async findFirst() {
+        return chapter;
+      },
+      async findMany() {
+        return [];
+      },
+      async update() {
+        return { ...chapter, status: 'drafted' };
+      },
+    },
+    chapterDraft: {
+      async findFirst() {
+        return null;
+      },
+      async updateMany() {
+        return { count: 0 };
+      },
+      async create(args: { data: Record<string, unknown> }) {
+        draftCreateData = args.data;
+        return { id: 'draft-created', versionNo: 1, ...args.data };
+      },
+    },
+    styleProfile: { async findFirst() { return null; } },
+    character: { async findMany() { return []; } },
+    foreshadowTrack: { async findMany() { return []; } },
+    sceneCard: {
+      async findMany(args: { where: Record<string, unknown> }) {
+        sceneWhere = args.where;
+        return [{
+          id: 'scene-run',
+          projectId: 'p1',
+          volumeId: null,
+          chapterId: 'c1',
+          sceneNo: 1,
+          title: 'Archive Gate Scene',
+          locationName: 'Old archive',
+          participants: ['Lin Che'],
+          purpose: 'Enter the archive.',
+          conflict: 'The guard hides the ledger key.',
+          emotionalTone: 'cold dread',
+          keyInformation: 'The ledger has a missing page.',
+          result: 'Lin Che gets a false key.',
+          relatedForeshadowIds: ['f-ledger'],
+          status: 'planned',
+          metadata: { beat: 'reveal' },
+          updatedAt: new Date('2026-05-05T00:00:00Z'),
+        }];
+      },
+    },
+    promptTemplate: {
+      async findFirst() {
+        return { systemPrompt: 'system prompt', userTemplate: 'user template' };
+      },
+    },
+    qualityReport: {
+      async create(args: { data: Record<string, unknown> }) {
+        qualityReportData = args.data;
+        return { id: 'quality-report', ...args.data };
+      },
+    },
+    $transaction: async (fn: (tx: unknown) => Promise<unknown>) => fn(prisma),
+  };
+  const retrievalPlanner = {
+    async createPlan() {
+      return {
+        plan: { lorebookQueries: [], memoryQueries: [], relationshipQueries: [], timelineQueries: [], writingRuleQueries: [], foreshadowQueries: [], chapterTasks: [], constraints: [], entities: { characters: [] } },
+        diagnostics: { planner: 'mock' },
+      };
+    },
+  };
+  const retrieval = {
+    async retrieveBundleWithCacheMeta() {
+      return {
+        lorebookHits: [],
+        memoryHits: [],
+        structuredHits: [],
+        rankedHits: [],
+        cache: { strategy: 'mock' },
+        diagnostics: { searchMethod: 'disabled', qualityScore: 0.9, qualityStatus: 'ok', memoryAvailableCount: 0, warnings: [] },
+      };
+    },
+  };
+  const llm = {
+    async chat() {
+      return {
+        text: 'Lin Che reaches the Old archive. The ledger has a missing page. Lin Che gets a false key. '.repeat(20),
+        model: 'mock-generate-model',
+        usage: { total_tokens: 120 },
+        rawPayloadSummary: { id: 'mock' },
+      };
+    },
+  };
+  const cache = { async deleteProjectRecallResults() {} };
+  const service = new GenerateChapterService(
+    prisma as never,
+    llm as never,
+    retrieval as never,
+    new PromptBuilderService(prisma as never),
+    retrievalPlanner as never,
+    { async listByChapter() { return []; } } as never,
+    cache as never,
+  );
+
+  const result = await service.run('p1', 'c1', { instruction: 'Write the planned scene.' });
+  const contextPack = result.retrievalPayload.contextPack as { planningContext: { sceneCards: Array<Record<string, unknown>> } };
+  const promptTrace = result.promptDebug.sceneCardSourceTrace as Array<Record<string, unknown>>;
+  const generationContext = draftCreateData?.generationContext as { retrievalPayload: { contextPack: { planningContext: { sceneCards: Array<Record<string, unknown>> } } } };
+
+  assert.deepEqual(sceneWhere, { projectId: 'p1', chapterId: 'c1', NOT: { status: 'archived' } });
+  assert.equal(contextPack.planningContext.sceneCards[0].id, 'scene-run');
+  assert.deepEqual(contextPack.planningContext.sceneCards[0].relatedForeshadowIds, ['f-ledger']);
+  assert.deepEqual(contextPack.planningContext.sceneCards[0].metadata, { beat: 'reveal' });
+  assert.deepEqual(promptTrace[0], { sourceType: 'scene_card', sourceId: 'scene-run', projectId: 'p1', volumeId: null, chapterId: 'c1', chapterNo: 4, sceneNo: 1 });
+  assert.equal(generationContext.retrievalPayload.contextPack.planningContext.sceneCards[0].id, 'scene-run');
+  assert.equal(((qualityReportData?.metadata as Record<string, unknown>).qualityGate as Record<string, unknown>).sceneCardCoverage !== undefined, true);
+  assert.equal(result.qualityGate.sceneCardCoverage?.missing.length, 0);
 });
 
 test('GenerateChapterService uses GenerationProfile as conservative word count fallback', () => {
@@ -1321,6 +1542,7 @@ test('GenerateGuidedStepPreviewTool 对缺少上下文的章节预览返回 warn
 test('GenerateGuidedStepPreviewTool injects chapter patterns and pacing targets for guided chapters', async () => {
   let promptText = '';
   let pacingWhere: Record<string, unknown> | undefined;
+  let sceneWhere: Record<string, unknown> | undefined;
   const llm = {
     async chatJson(messages: Array<{ role: string; content: string }>) {
       promptText = messages.map((item) => item.content).join('\n\n');
@@ -1381,6 +1603,29 @@ test('GenerateGuidedStepPreviewTool injects chapter patterns and pacing targets 
         }];
       },
     },
+    sceneCard: {
+      async findMany(args: { where: Record<string, unknown> }) {
+        sceneWhere = args.where;
+        return [{
+          id: 'scene-guided',
+          volumeId: 'v1',
+          chapterId: 'c3',
+          sceneNo: 1,
+          title: 'Archive Gate Confrontation',
+          locationName: 'Archive gate',
+          participants: ['Lin Che'],
+          purpose: 'Force the guard to reveal the missing ledger.',
+          conflict: 'The guard hides the ledger key.',
+          emotionalTone: 'cold dread',
+          keyInformation: 'The ledger key is fake.',
+          result: 'Lin Che enters with the wrong key.',
+          relatedForeshadowIds: ['f-ledger'],
+          status: 'planned',
+          metadata: { beat: 'turn' },
+          updatedAt: new Date('2026-05-05T00:00:00Z'),
+        }];
+      },
+    },
   };
   const tool = new GenerateGuidedStepPreviewTool(llm as never, prisma as never);
 
@@ -1394,14 +1639,19 @@ test('GenerateGuidedStepPreviewTool injects chapter patterns and pacing targets 
   assert.match(promptText, /Pressure Reversal/);
   assert.match(promptText, /pacing_beat/);
   assert.match(promptText, /tensionLevel/);
+  assert.match(promptText, /scene_card/);
+  assert.match(promptText, /Archive Gate Confrontation/);
+  assert.match(promptText, /f-ledger/);
   const pacingOr = (pacingWhere?.OR ?? []) as Array<Record<string, unknown>>;
   assert.ok(pacingOr.some((item) => item.volumeId === 'v1' && item.chapterId === null && item.chapterNo === null));
   assert.equal(pacingOr.some((item) => item.volumeId === 'v1' && !Object.prototype.hasOwnProperty.call(item, 'chapterId') && !Object.prototype.hasOwnProperty.call(item, 'chapterNo')), false);
+  assert.deepEqual(sceneWhere, { projectId: 'p1', chapterId: 'c3', NOT: { status: 'archived' } });
 });
 
 test('GuidedService chat injects chapter patterns and pacing targets for guided chapter consultation', async () => {
   let systemPrompt = '';
   let pacingWhere: Record<string, unknown> | undefined;
+  let sceneWhere: Record<string, unknown> | undefined;
   const prisma = {
     promptTemplate: {
       async findFirst() {
@@ -1451,6 +1701,28 @@ test('GuidedService chat injects chapter patterns and pacing targets for guided 
         }];
       },
     },
+    sceneCard: {
+      async findMany(args: { where: Record<string, unknown> }) {
+        sceneWhere = args.where;
+        return [{
+          id: 'scene-chat',
+          chapterId: 'c3',
+          sceneNo: 1,
+          title: 'Ledger Gate',
+          locationName: 'Archive gate',
+          participants: ['Lin Che'],
+          purpose: 'Test the guard lie.',
+          conflict: 'The guard conceals the real ledger.',
+          emotionalTone: 'uneasy',
+          keyInformation: 'The guard uses a fake key.',
+          result: 'The team enters a trap.',
+          relatedForeshadowIds: ['f-trap'],
+          status: 'planned',
+          metadata: { beat: 'trap' },
+          updatedAt: new Date('2026-05-05T00:00:00Z'),
+        }];
+      },
+    },
   };
   const llm = {
     async chat(messages: Array<{ role: string; content: string }>) {
@@ -1467,10 +1739,14 @@ test('GuidedService chat injects chapter patterns and pacing targets for guided 
   assert.match(systemPrompt, /Question Escalation/);
   assert.match(systemPrompt, /sourceType=pacing_beat/);
   assert.match(systemPrompt, /张力 70/);
+  assert.match(systemPrompt, /sourceType=scene_card/);
+  assert.match(systemPrompt, /Ledger Gate/);
+  assert.match(systemPrompt, /f-trap/);
   const pacingOr = (pacingWhere?.OR ?? []) as Array<Record<string, unknown>>;
   assert.ok(pacingOr.some((item) => item.chapterId === 'c3'));
   assert.ok(pacingOr.some((item) => item.volumeId === 'v1' && item.chapterId === null && item.chapterNo === null));
   assert.equal(pacingOr.some((item) => item.volumeId === 'v1' && !Object.prototype.hasOwnProperty.call(item, 'chapterId') && !Object.prototype.hasOwnProperty.call(item, 'chapterNo')), false);
+  assert.deepEqual(sceneWhere, { projectId: 'p1', chapterId: 'c3', NOT: { status: 'archived' } });
 });
 
 test('GenerateGuidedStepPreviewTool 对未知步骤显式拒绝', async () => {
@@ -2544,6 +2820,91 @@ test('ValidateContinuityChangesTool compares duplicate keys against existing row
   assert.ok(result.issues.some((issue) => issue.candidateId === 'rel_duplicate' && issue.message.includes(relId)));
   assert.ok(result.issues.some((issue) => issue.candidateId === 'rel_update_missing_name' && issue.message.includes('requires matching characterAName')));
   assert.ok(result.issues.some((issue) => issue.candidateId === 'time_duplicate' && issue.message.includes(timeId)));
+});
+
+test('Read-only preview validate and analysis tools never call Prisma write methods', async () => {
+  const writeCalls: string[] = [];
+  const writeMethods = new Set(['create', 'update', 'delete', 'upsert', 'updateMany', 'deleteMany', 'createMany']);
+  const readDefaults: Record<string, unknown> = {
+    findMany: [],
+    findUnique: null,
+    findFirst: null,
+    count: 0,
+  };
+  const prisma = new Proxy({}, {
+    get(_target, model: string | symbol) {
+      const modelName = String(model);
+      if (modelName === '$transaction') {
+        return async (fn: (tx: unknown) => Promise<unknown>) => fn(prisma);
+      }
+      const overrides: Record<string, Record<string, unknown>> = {
+        project: { findUnique: { id: 'p1', title: 'Read Only Project', genre: null, theme: null, tone: null, synopsis: null, outline: null } },
+        volume: { findMany: [], findFirst: { id: 'v1', volumeNo: 1, title: 'Volume One', objective: null } },
+        chapter: { findMany: [], findFirst: { id: 'c1', volumeId: 'v1', chapterNo: 1, title: 'Chapter One', objective: null } },
+        chapterPattern: { findMany: [] },
+        pacingBeat: { findMany: [] },
+        sceneCard: { findMany: [] },
+        lorebookEntry: { findMany: [] },
+        character: { findMany: [] },
+        relationshipEdge: { findMany: [] },
+        timelineEvent: { findMany: [] },
+        memoryChunk: { findMany: [] },
+        validationIssue: { findMany: [] },
+        characterStateSnapshot: { findMany: [] },
+        storyEvent: { findMany: [] },
+      };
+      return new Proxy({}, {
+        get(_modelTarget, method: string | symbol) {
+          const methodName = String(method);
+          if (writeMethods.has(methodName)) {
+            return async () => {
+              writeCalls.push(`${modelName}.${methodName}`);
+              throw new Error(`Unexpected write: ${modelName}.${methodName}`);
+            };
+          }
+          if (Object.prototype.hasOwnProperty.call(overrides[modelName] ?? {}, methodName)) {
+            return async () => overrides[modelName][methodName];
+          }
+          if (Object.prototype.hasOwnProperty.call(readDefaults, methodName)) {
+            return async () => readDefaults[methodName];
+          }
+          return undefined;
+        },
+      });
+    },
+  });
+  const llm = {
+    async chatJson(_messages: unknown, options: Record<string, unknown>) {
+      if (options.appStep === 'planner') {
+        return { data: { candidates: [{ title: 'Archive Rule', entryType: 'world_rule', summary: 'Rule', content: 'Rule content', tags: ['rule'], triggerKeywords: ['archive'] }] } };
+      }
+      return { data: { relationshipCandidates: [], timelineCandidates: [] } };
+    },
+  };
+  const context = { agentRunId: 'run-readonly', projectId: 'p1', mode: 'plan' as const, approved: false, outputs: {}, policy: {} };
+  const storyPreviewTool = new GenerateStoryBiblePreviewTool(llm as never);
+  const storyValidationTool = new ValidateStoryBibleTool(prisma as never);
+  const continuityPreviewTool = new GenerateContinuityPreviewTool(llm as never);
+  const continuityValidationTool = new ValidateContinuityChangesTool(prisma as never);
+  const collectTool = new CollectTaskContextTool(prisma as never);
+  const inspectTool = new InspectProjectContextTool(prisma as never);
+  const guidedPreviewTool = new GenerateGuidedStepPreviewTool(llm as never, prisma as never);
+
+  const storyPreview = await storyPreviewTool.run({ instruction: 'Plan archive rules.' }, context);
+  await storyValidationTool.run({ preview: storyPreview }, context);
+  const continuityPreview = await continuityPreviewTool.run({ instruction: 'Check continuity.' }, context);
+  await continuityValidationTool.run({ preview: continuityPreview }, context);
+  await collectTool.run({ taskType: 'general' }, context);
+  await inspectTool.run({}, context);
+  await guidedPreviewTool.run({ stepKey: 'guided_chapter', volumeNo: 1, chapterNo: 1, projectContext: { seed: true } }, context);
+
+  assert.deepEqual(writeCalls, []);
+  for (const tool of [storyPreviewTool, storyValidationTool, continuityPreviewTool, continuityValidationTool, collectTool, inspectTool, guidedPreviewTool]) {
+    assert.equal(tool.requiresApproval, false);
+    assert.deepEqual(tool.sideEffects, []);
+  }
+  assert.equal(new PersistStoryBibleTool(prisma as never, { async deleteProjectRecallResults() {} } as never).requiresApproval, true);
+  assert.equal(new PersistContinuityChangesTool(prisma as never, { async deleteProjectRecallResults() {} } as never).requiresApproval, true);
 });
 
 test('PersistContinuityChangesTool rejects plan/unapproved/invalid/unknown selection/sourceTrace mismatch', async () => {
@@ -4572,7 +4933,9 @@ test('PromptBuilderService renders current chapter SceneCard execution block as 
           emotionalTone: 'cold dread',
           keyInformation: 'The ledger has a missing page.',
           result: 'Lin Che gets a false key.',
+          relatedForeshadowIds: ['foreshadow-ledger'],
           status: 'planned',
+          metadata: { beat: 'reveal', camera: 'close' },
           sourceTrace: { sourceType: 'scene_card', sourceId: 'scene-1', projectId: 'p1', chapterId: 'c3', chapterNo: 3, sceneNo: 1 },
         }],
       },
@@ -4592,7 +4955,69 @@ test('PromptBuilderService renders current chapter SceneCard execution block as 
   assert.match(result.user, /sourceType=scene_card/);
   assert.match(result.user, /sourceId=scene-1/);
   assert.match(result.user, /Archive Gate/);
+  assert.match(result.user, /relatedForeshadowIds/);
+  assert.match(result.user, /foreshadow-ledger/);
+  assert.match(result.user, /metadata/);
+  assert.match(result.user, /camera/);
   assert.equal(result.debug.sceneCardCount, 1);
+  assert.deepEqual(result.debug.sceneCardSourceTrace, [{ sourceType: 'scene_card', sourceId: 'scene-1', projectId: 'p1', chapterId: 'c3', chapterNo: 3, sceneNo: 1 }]);
+});
+
+test('PromptBuilderService truncates SceneCard prompt rendering with explicit trace notice', async () => {
+  const prisma = {
+    promptTemplate: {
+      async findFirst() {
+        return {
+          systemPrompt: 'system prompt',
+          userTemplate: 'user template',
+        };
+      },
+    },
+  };
+  const service = new PromptBuilderService(prisma as never);
+  const sceneCards = Array.from({ length: 9 }, (_, index) => ({
+    id: `scene-${index + 1}`,
+    sceneNo: index + 1,
+    title: `Scene ${index + 1}`,
+    locationName: null,
+    participants: [],
+    purpose: `Purpose ${index + 1}`,
+    conflict: null,
+    emotionalTone: null,
+    keyInformation: null,
+    result: null,
+    relatedForeshadowIds: [],
+    status: 'planned',
+    metadata: {},
+    sourceTrace: { sourceType: 'scene_card' as const, sourceId: `scene-${index + 1}`, projectId: 'p1', chapterId: 'c3', chapterNo: 3, sceneNo: index + 1 },
+  }));
+  const context = {
+    project: { id: 'p1', title: 'Novel', genre: null, tone: null, synopsis: null, outline: null },
+    chapter: { chapterNo: 3, title: 'Archive Night', objective: 'Find the key', conflict: 'Trust breaks', outline: 'Outline', expectedWordCount: 3000 },
+    characters: [],
+    plannedForeshadows: [],
+    previousChapters: [],
+    hardFacts: [],
+    contextPack: {
+      schemaVersion: 1,
+      verifiedContext: { lorebookHits: [], memoryHits: [], structuredHits: [] },
+      planningContext: { sceneCards },
+      userIntent: {},
+      retrievalDiagnostics: {
+        includeLorebook: true,
+        includeMemory: true,
+        diagnostics: { searchMethod: 'disabled', qualityScore: 0.5, qualityStatus: 'ok', memoryAvailableCount: 0, warnings: [] },
+      },
+    },
+  };
+
+  const result = await service.buildChapterPrompt(context as never);
+
+  assert.match(result.user, /showing first 8 of 9/);
+  assert.match(result.user, /Scene 8/);
+  assert.doesNotMatch(result.user, /Scene 9/);
+  assert.equal(result.debug.sceneCardCount, 9);
+  assert.equal((result.debug.sceneCardSourceTrace as unknown[]).length, 9);
 });
 
 test('ValidationService flags writing rule no appearance deterministically', async () => {
@@ -5207,9 +5632,10 @@ test('QualityReportsService create list update remove validates refs and invalid
   const invalidatedProjectIds: string[] = [];
   const createdRows: Array<Record<string, unknown>> = [];
   const updatedRows: Array<Record<string, unknown>> = [];
+  const listWheres: Array<Record<string, unknown>> = [];
   const deletedReportIds: string[] = [];
   const prisma = {
-    project: { async findUnique() { return { id: 'p1' }; } },
+    project: { async findUnique(args: { where: { id: string } }) { return args.where.id === 'missing-project' ? null : { id: args.where.id }; } },
     chapter: {
       async findFirst(args: { where: Record<string, unknown> }) {
         return args.where.id === chapterId && args.where.projectId === 'p1' ? { id: chapterId } : null;
@@ -5217,7 +5643,7 @@ test('QualityReportsService create list update remove validates refs and invalid
     },
     chapterDraft: {
       async findFirst(args: { where: Record<string, unknown> }) {
-        return args.where.id === draftId ? { id: draftId, chapterId } : null;
+        return args.where.id === draftId && JSON.stringify(args.where).includes('"projectId":"p1"') ? { id: draftId, chapterId } : null;
       },
     },
     agentRun: {
@@ -5231,19 +5657,22 @@ test('QualityReportsService create list update remove validates refs and invalid
         return { id: 'report-1', ...args.data };
       },
       async findMany(args: { where: Record<string, unknown> }) {
+        listWheres.push(args.where);
         return [{ id: 'report-1', ...args.where }];
       },
       async findFirst(args: { where: { id: string; projectId: string } }) {
         if (args.where.id === 'missing' || args.where.projectId !== 'p1') return null;
-        return { id: args.where.id, chapterId, draftId, agentRunId };
+        return { id: args.where.id, projectId: args.where.projectId, chapterId, draftId, agentRunId };
       },
-      async update(args: { data: Record<string, unknown> }) {
+      async updateMany(args: { where: Record<string, unknown>; data: Record<string, unknown> }) {
+        assert.deepEqual(args.where, { id: 'report-1', projectId: 'p1' });
         updatedRows.push(args.data);
-        return { id: 'report-1', projectId: 'p1', ...args.data };
+        return { count: 1 };
       },
-      async delete(args: { where: { id: string } }) {
+      async deleteMany(args: { where: { id: string; projectId: string } }) {
+        assert.deepEqual(args.where, { id: 'report-1', projectId: 'p1' });
         deletedReportIds.push(args.where.id);
-        return { id: args.where.id };
+        return { count: 1 };
       },
     },
   };
@@ -5261,25 +5690,65 @@ test('QualityReportsService create list update remove validates refs and invalid
     verdict: 'pass',
     summary: 'ok',
   });
-  const listed = await service.list('p1', { chapterId, draftId, sourceType: 'generation', verdict: 'pass' });
+  const listed = await service.list('p1', { chapterId, draftId, agentRunId, sourceType: 'generation', reportType: 'generation_quality_gate', verdict: 'pass' });
   const updated = await service.update('p1', 'report-1', { verdict: 'warn', issues: [{ severity: 'warning', message: 'thin pacing' }] });
   const removed = await service.remove('p1', 'report-1');
 
   assert.equal(created.chapterId, chapterId);
   assert.equal(createdRows[0].draftId, draftId);
   assert.equal(listed[0].chapterId, chapterId);
+  assert.deepEqual(listWheres[0], { projectId: 'p1', chapterId, draftId, agentRunId, sourceType: 'generation', reportType: 'generation_quality_gate', verdict: 'pass' });
   assert.equal(updatedRows[0].verdict, 'warn');
   assert.deepEqual(updatedRows[0].issues, [{ severity: 'warning', message: 'thin pacing' }]);
+  assert.equal(updated.projectId, 'p1');
   assert.deepEqual(removed, { deleted: true, id: 'report-1' });
   assert.deepEqual(deletedReportIds, ['report-1']);
   assert.deepEqual(invalidatedProjectIds, ['p1', 'p1', 'p1']);
 
+  await assert.rejects(() => service.list('p1', { chapterId: 'not-a-uuid' }), /UUID/);
+  await assert.rejects(() => service.list('p1', { chapterId: draftId, draftId }), /draftId does not belong to chapterId/);
+  await assert.rejects(() => service.list('p1', { chapterId: '44444444-4444-4444-8444-444444444444' }), /Chapter not found in project/);
+  await assert.rejects(() => service.list('p1', { draftId: '55555555-5555-4555-8555-555555555555' }), /Draft not found in project/);
+  await assert.rejects(() => service.list('p1', { agentRunId: '66666666-6666-4666-8666-666666666666' }), /AgentRun not found in project/);
   await assert.rejects(() => service.create('p1', { sourceType: 'bad', reportType: 'manual', verdict: 'pass' } as never), /sourceType/);
   await assert.rejects(() => service.create('p1', { sourceType: 'manual', reportType: 'manual', verdict: 'bad' } as never), /verdict/);
   await assert.rejects(() => service.create('p1', { sourceType: 'manual', reportType: 'manual', verdict: 'pass', scores: null } as never), /scores must be a JSON object/);
   await assert.rejects(() => service.create('p1', { sourceType: 'manual', reportType: 'manual', verdict: 'pass', issues: {} } as never), /issues must be a JSON array/);
   await assert.rejects(() => service.update('other-project', 'report-1', { verdict: 'warn' }), /QualityReport not found/);
   await assert.rejects(() => service.remove('p1', 'missing'), /QualityReport not found/);
+  await assert.rejects(() => service.list('missing-project', {}), /Project not found/);
+});
+
+test('QualityReportsController delegates project-scoped report operations', async () => {
+  const calls: Array<{ method: string; projectId: string; reportId?: string; payload?: unknown }> = [];
+  const service = {
+    async list(projectId: string, query: unknown) {
+      calls.push({ method: 'list', projectId, payload: query });
+      return [];
+    },
+    async create(projectId: string, dto: unknown) {
+      calls.push({ method: 'create', projectId, payload: dto });
+      return { id: 'report-1' };
+    },
+    async update(projectId: string, reportId: string, dto: unknown) {
+      calls.push({ method: 'update', projectId, reportId, payload: dto });
+      return { id: reportId };
+    },
+    async remove(projectId: string, reportId: string) {
+      calls.push({ method: 'remove', projectId, reportId });
+      return { deleted: true, id: reportId };
+    },
+  };
+  const controller = new QualityReportsController(service as never);
+
+  await controller.list('p1', { sourceType: 'generation' } as never);
+  await controller.create('p1', { sourceType: 'manual' } as never);
+  await controller.update('p1', 'report-1', { verdict: 'warn' } as never);
+  await controller.remove('p1', 'report-1');
+
+  assert.deepEqual(calls.map((call) => call.method), ['list', 'create', 'update', 'remove']);
+  assert.deepEqual(calls.map((call) => call.projectId), ['p1', 'p1', 'p1', 'p1']);
+  assert.equal(calls[2].reportId, 'report-1');
 });
 
 test('AiQualityReviewService writes normalized ai_review QualityReport', async () => {
@@ -5366,6 +5835,90 @@ test('AiQualityReviewService writes normalized ai_review QualityReport', async (
     chapterNo: 12,
     agentRunId,
   });
+  assert.equal(((createdReports[0].dto.metadata as Record<string, unknown>).idempotency as Record<string, unknown>).strategy, 'reuse_same_draft_focus_instruction_prompt_version');
+  assert.equal(((createdReports[0].dto.metadata as Record<string, unknown>).idempotency as Record<string, unknown>).requiresSchemaMigration, false);
+});
+
+test('AiQualityReviewService reuses duplicate same draft focus instruction and creates new trend points for changed inputs', async () => {
+  const draftId = '22222222-2222-4222-8222-222222222222';
+  const chapterId = '11111111-1111-4111-8111-111111111111';
+  const storedReports: Array<Record<string, unknown>> = [];
+  let llmCalls = 0;
+  const prisma = {
+    chapterDraft: {
+      async findFirst() {
+        return {
+          id: draftId,
+          versionNo: 1,
+          content: 'The archive scene reveals a ledger clue and leaves the door half-open. '.repeat(60),
+          source: 'ai',
+          modelInfo: {},
+          generationContext: {},
+          createdAt: new Date('2026-05-05T00:00:00Z'),
+          chapter: {
+            id: chapterId,
+            chapterNo: 4,
+            title: 'Archive Gate',
+            objective: 'Review the generated chapter.',
+            conflict: 'The clue may be too easy.',
+            revealPoints: null,
+            foreshadowPlan: null,
+            outline: null,
+            craftBrief: {},
+            expectedWordCount: null,
+            volume: null,
+          },
+        };
+      },
+    },
+    project: { async findUnique() { return { id: 'p1', title: 'Project', genre: null, theme: null, tone: null, logline: null, synopsis: null, outline: null, creativeProfile: null }; } },
+    validationIssue: { async findMany() { return []; } },
+    writingRule: { async findMany() { return []; } },
+    relationshipEdge: { async findMany() { return []; } },
+    timelineEvent: { async findMany() { return []; } },
+    foreshadowTrack: { async findMany() { return []; } },
+    sceneCard: { async findMany() { return []; } },
+    pacingBeat: { async findMany() { return []; } },
+    qualityReport: {
+      async findMany() {
+        return storedReports;
+      },
+    },
+  };
+  const llm = {
+    async chatJson() {
+      llmCalls += 1;
+      return {
+        data: {
+          summary: `review ${llmCalls}`,
+          verdict: 'pass',
+          scores: { overall: 91 },
+          issues: [],
+        },
+        result: { model: `review-model-${llmCalls}` },
+      };
+    },
+  };
+  const qualityReports = {
+    async create(projectId: string, dto: Record<string, unknown>) {
+      const report = { id: `report-${storedReports.length + 1}`, projectId, ...dto };
+      storedReports.unshift(report);
+      return report;
+    },
+  };
+  const service = new AiQualityReviewService(prisma as never, llm as never, qualityReports as never);
+
+  const first = await service.reviewAndCreate('p1', { draftId, instruction: 'Focus pacing', focus: ['pacing', 'foreshadowing'] });
+  const duplicate = await service.reviewAndCreate('p1', { draftId, instruction: 'Focus pacing', focus: ['foreshadowing', 'pacing'] });
+  const changedInstruction = await service.reviewAndCreate('p1', { draftId, instruction: 'Focus prose', focus: ['foreshadowing', 'pacing'] });
+  const changedFocus = await service.reviewAndCreate('p1', { draftId, instruction: 'Focus pacing', focus: ['pacing'] });
+
+  assert.equal(first.reportId, 'report-1');
+  assert.equal(duplicate.reportId, 'report-1');
+  assert.equal(changedInstruction.reportId, 'report-2');
+  assert.equal(changedFocus.reportId, 'report-3');
+  assert.equal(llmCalls, 3);
+  assert.equal(storedReports.length, 3);
 });
 
 test('AiQualityReviewService skips malformed LLM issues instead of creating default warnings', async () => {

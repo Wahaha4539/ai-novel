@@ -143,14 +143,22 @@ export type QualityReportFormData = {
   metadata?: Record<string, unknown>;
 };
 
+export function buildContinuityCollectionPath(projectId: string, resourcePath: string) {
+  return `/projects/${projectId}/${resourcePath}`;
+}
+
+export function buildContinuityItemPath(projectId: string, resourcePath: string, itemId: string) {
+  return `${buildContinuityCollectionPath(projectId, resourcePath)}/${itemId}`;
+}
+
 function useContinuityResource<TItem, TFormData>(projectId: string, resourcePath: string, createErrorText: string, updateErrorText: string, deleteErrorText: string, loadErrorText: string) {
   const [items, setItems] = useState<TItem[]>([]);
   const [loading, setLoading] = useState(false);
   const [formLoading, setFormLoading] = useState(false);
   const [error, setError] = useState('');
 
-  const collectionPath = useCallback(() => `/projects/${projectId}/${resourcePath}`, [projectId, resourcePath]);
-  const itemPath = useCallback((itemId: string) => `/projects/${projectId}/${resourcePath}/${itemId}`, [projectId, resourcePath]);
+  const collectionPath = useCallback(() => buildContinuityCollectionPath(projectId, resourcePath), [projectId, resourcePath]);
+  const itemPath = useCallback((itemId: string) => buildContinuityItemPath(projectId, resourcePath, itemId), [projectId, resourcePath]);
 
   const loadItems = useCallback(async () => {
     if (!projectId) {
@@ -237,7 +245,7 @@ function useContinuityResource<TItem, TFormData>(projectId: string, resourcePath
   };
 }
 
-function buildQuery(filters?: QualityReportFilters) {
+export function buildQualityReportQuery(filters?: QualityReportFilters) {
   const params = new URLSearchParams();
   Object.entries(filters ?? {}).forEach(([key, value]) => {
     const trimmed = value?.trim();
@@ -247,6 +255,10 @@ function buildQuery(filters?: QualityReportFilters) {
 
   const query = params.toString();
   return query ? `?${query}` : '';
+}
+
+export function buildQualityReportPath(projectId: string, filters?: QualityReportFilters) {
+  return `${buildContinuityCollectionPath(projectId, 'quality-reports')}${buildQualityReportQuery(filters)}`;
 }
 
 export function useWritingRuleActions(projectId: string) {
@@ -411,8 +423,7 @@ export function useQualityReportActions(projectId: string) {
     }
 
     setError('');
-    const query = buildQuery(filters);
-    const path = `/projects/${projectId}/quality-reports${query}`;
+    const path = buildQualityReportPath(projectId, filters);
 
     try {
       const data = await apiFetch<QualityReport[]>(path);

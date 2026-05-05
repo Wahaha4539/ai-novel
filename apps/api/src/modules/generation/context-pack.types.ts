@@ -12,7 +12,9 @@ export interface SceneExecutionPlan {
   emotionalTone?: string | null;
   keyInformation?: string | null;
   result?: string | null;
+  relatedForeshadowIds: string[];
   status: string;
+  metadata: Record<string, unknown>;
   sourceTrace: {
     sourceType: 'scene_card';
     sourceId: string;

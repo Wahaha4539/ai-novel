@@ -577,7 +577,7 @@ export class GuidedService {
     const volumeId = volume?.id ?? chapter?.volumeId ?? undefined;
     const chapterId = chapter?.id ?? undefined;
 
-    const [patterns, rawPacingTargets] = await Promise.all([
+    const [patterns, rawPacingTargets, rawSceneCards] = await Promise.all([
       this.prisma.chapterPattern.findMany({
         where: { projectId, status: 'active' },
         orderBy: [{ patternType: 'asc' }, { updatedAt: 'desc' }],
@@ -588,15 +588,25 @@ export class GuidedService {
         orderBy: [{ updatedAt: 'desc' }],
         take: 30,
       }),
+      chapterId
+        ? this.prisma.sceneCard.findMany({
+            where: { projectId, chapterId, NOT: { status: 'archived' } },
+            orderBy: [{ sceneNo: 'asc' }, { updatedAt: 'asc' }],
+            take: 12,
+          })
+        : Promise.resolve([]),
     ]);
     const pacingTargets = rawPacingTargets
       .sort((a, b) => this.rankPacingTarget(a, volumeId, chapterId, chapterNo) - this.rankPacingTarget(b, volumeId, chapterId, chapterNo))
       .slice(0, 10);
+    const sceneCards = rawSceneCards
+      .sort((a, b) => this.rankSceneCard(a, b))
+      .slice(0, 8);
 
-    if (!patterns.length && !pacingTargets.length) return undefined;
+    if (!patterns.length && !pacingTargets.length && !sceneCards.length) return undefined;
 
     const lines = [
-      '说明：以下 ChapterPattern 与 PacingBeat 只用于增强章节细纲和 craftBrief，是计划资产，不是已发生正文事实。',
+      '说明：以下 ChapterPattern、PacingBeat 与 SceneCard 只用于增强章节细纲和 craftBrief，是计划资产，不是已发生正文事实。',
       patterns.length ? '### 可用章节模板' : '',
       ...patterns.map((pattern) => [
         `- [sourceType=chapter_pattern｜sourceId=${pattern.id}] ${pattern.patternType}｜${pattern.name}`,
@@ -611,6 +621,18 @@ export class GuidedService {
         `- [sourceType=pacing_beat｜sourceId=${beat.id}] chapterNo=${beat.chapterNo ?? '全局/卷级'}｜${beat.beatType}`,
         `  情绪：${beat.emotionalTone ?? '未指定'}｜情绪强度 ${beat.emotionalIntensity}｜张力 ${beat.tensionLevel}｜兑现 ${beat.payoffLevel}`,
         beat.notes ? `  备注：${beat.notes}` : '',
+      ].filter(Boolean).join('\n')),
+      sceneCards.length ? '### 本章场景计划' : '',
+      ...sceneCards.map((scene) => [
+        `- [sourceType=scene_card｜sourceId=${scene.id}] sceneNo=${scene.sceneNo ?? '?'}｜${scene.title}`,
+        scene.locationName ? `  地点：${scene.locationName}` : '',
+        stringArray(scene.participants).length ? `  参与者：${stringArray(scene.participants).join('、')}` : '',
+        scene.purpose ? `  目的：${scene.purpose}` : '',
+        scene.conflict ? `  冲突：${scene.conflict}` : '',
+        scene.keyInformation ? `  关键信息：${scene.keyInformation}` : '',
+        scene.result ? `  结果：${scene.result}` : '',
+        stringArray(scene.relatedForeshadowIds).length ? `  relatedForeshadowIds：${stringArray(scene.relatedForeshadowIds).join('、')}` : '',
+        formatJsonBrief(scene.metadata, 600) ? `  metadata：${formatJsonBrief(scene.metadata, 600)}` : '',
       ].filter(Boolean).join('\n')),
     ].filter(Boolean);
 
@@ -640,6 +662,21 @@ export class GuidedService {
     if (volumeId && beat.volumeId === volumeId && beat.chapterId === null && beat.chapterNo === null) return 2;
     if (beat.volumeId === null && beat.chapterId === null && beat.chapterNo === null) return 3;
     return 4;
+  }
+
+  private rankSceneCard(
+    left: { id: string; title: string; sceneNo: number | null; updatedAt?: Date },
+    right: { id: string; title: string; sceneNo: number | null; updatedAt?: Date },
+  ): number {
+    if (left.sceneNo !== null && right.sceneNo !== null && left.sceneNo !== right.sceneNo) {
+      return left.sceneNo - right.sceneNo;
+    }
+    if (left.sceneNo === null && right.sceneNo !== null) return 1;
+    if (left.sceneNo !== null && right.sceneNo === null) return -1;
+    const updatedDelta = (left.updatedAt?.getTime() ?? 0) - (right.updatedAt?.getTime() ?? 0);
+    if (updatedDelta !== 0) return updatedDelta;
+    const titleDelta = left.title.localeCompare(right.title);
+    return titleDelta !== 0 ? titleDelta : left.id.localeCompare(right.id);
   }
 
   private normalizeSingleChapterResult(
