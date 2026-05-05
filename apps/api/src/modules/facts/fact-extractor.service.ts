@@ -2,6 +2,7 @@ import { Injectable, NotFoundException } from '@nestjs/common';
 import { Prisma } from '@prisma/client';
 import { NovelCacheService } from '../../common/cache/novel-cache.service';
 import { PrismaService } from '../../prisma/prisma.service';
+import { buildGenerationProfileSnapshot, GenerationProfileSnapshot } from '../generation-profile/generation-profile.defaults';
 import { LlmGatewayService } from '../llm/llm-gateway.service';
 import { ChapterFirstAppearanceMemoryInput, MemoryWriterService } from '../memory/memory-writer.service';
 
@@ -81,8 +82,9 @@ export class FactExtractorService {
   ) {}
 
   async extractChapterFacts(projectId: string, chapterId: string, draftId?: string): Promise<FactExtractionResult> {
-    const chapter = await this.prisma.chapter.findFirst({ where: { id: chapterId, projectId }, include: { project: true } });
+    const chapter = await this.prisma.chapter.findFirst({ where: { id: chapterId, projectId }, include: { project: { include: { generationProfile: true } } } });
     if (!chapter) throw new NotFoundException(`章节不存在或不属于当前项目：${chapterId}`);
+    const generationProfile = buildGenerationProfileSnapshot(chapter.project.generationProfile);
 
     const draft = draftId
       ? await this.prisma.chapterDraft.findFirst({ where: { id: draftId, chapterId } })
@@ -98,8 +100,10 @@ export class FactExtractorService {
       this.extractRelationshipChanges(chapter.project.title, chapter, draft.content),
     ]);
     const eventInputs = this.dedupeEvents([...events, ...this.relationshipChangesToEvents(relationshipChanges, chapter)]);
-    const firstAppearanceWrite = await this.persistFirstAppearanceCandidates(projectId, chapter, draft.id, firstAppearances);
-    if (firstAppearanceWrite.createdLorebookCandidates > 0) {
+    const profiledFirstAppearances = this.applyGenerationProfileToFirstAppearances(firstAppearances, generationProfile);
+    const profiledForeshadows = this.applyGenerationProfileToForeshadows(foreshadows, generationProfile);
+    const firstAppearanceWrite = await this.persistFirstAppearanceCandidates(projectId, chapter, draft.id, profiledFirstAppearances);
+    if (firstAppearanceWrite.createdLorebookCandidates > 0 || firstAppearanceWrite.createdCharacters > 0 || firstAppearanceWrite.updatedCharacters > 0) {
       await this.cacheService?.deleteProjectRecallResults(projectId);
     }
 
@@ -147,9 +151,9 @@ export class FactExtractorService {
           })
         : { count: 0 };
 
-      const createdForeshadows = foreshadows.length
+      const createdForeshadows = profiledForeshadows.length
         ? await tx.foreshadowTrack.createMany({
-            data: foreshadows.map((item) => ({
+            data: profiledForeshadows.map((item) => ({
               projectId,
               chapterId,
               chapterNo: chapter.chapterNo,
@@ -161,7 +165,7 @@ export class FactExtractorService {
               source: 'auto_extracted',
               firstSeenChapterNo: chapter.chapterNo,
               lastSeenChapterNo: chapter.chapterNo,
-              metadata: { generatedBy: 'agent_fact_extractor' } as Prisma.InputJsonValue,
+              metadata: { generatedBy: 'agent_fact_extractor', generationProfile: { allowNewForeshadows: generationProfile.allowNewForeshadows } } as Prisma.InputJsonValue,
             })),
           })
         : { count: 0 };
@@ -178,8 +182,8 @@ export class FactExtractorService {
       summary,
       events: eventInputs,
       characterStates,
-      foreshadows,
-      firstAppearances,
+      foreshadows: profiledForeshadows,
+      firstAppearances: profiledFirstAppearances,
     });
     const pendingReviewMemoryChunks = memory.chunks.filter((chunk) => chunk.status === 'pending_review').length;
 
@@ -192,15 +196,36 @@ export class FactExtractorService {
       createdForeshadows: created.createdForeshadows.count,
       createdCharacters: firstAppearanceWrite.createdCharacters,
       createdLorebookCandidates: firstAppearanceWrite.createdLorebookCandidates,
-      firstAppearanceCandidates: firstAppearances.length,
+      firstAppearanceCandidates: profiledFirstAppearances.length,
       createdMemoryChunks: memory.createdCount,
       pendingReviewMemoryChunks,
       events: eventInputs,
       characterStates,
-      foreshadows,
-      firstAppearances,
+      foreshadows: profiledForeshadows,
+      firstAppearances: profiledFirstAppearances,
       relationshipChanges,
     };
+  }
+
+  private applyGenerationProfileToFirstAppearances(
+    appearances: ExtractedFirstAppearance[],
+    generationProfile: GenerationProfileSnapshot,
+  ): ExtractedFirstAppearance[] {
+    return appearances.map((item) => {
+      const disallowed =
+        (item.entityType === 'character' && !generationProfile.allowNewCharacters) ||
+        (item.entityType === 'location' && !generationProfile.allowNewLocations);
+
+      return disallowed ? { ...item, status: 'pending_review' } : item;
+    });
+  }
+
+  private applyGenerationProfileToForeshadows(
+    foreshadows: ExtractedForeshadow[],
+    generationProfile: GenerationProfileSnapshot,
+  ): ExtractedForeshadow[] {
+    if (generationProfile.allowNewForeshadows) return foreshadows;
+    return foreshadows.map((item) => ({ ...item, status: 'pending_review' }));
   }
 
   private async summarizeChapter(projectTitle: string, chapter: { chapterNo: number; title: string | null; objective: string | null; conflict: string | null }, text: string): Promise<string> {
@@ -354,6 +379,11 @@ export class FactExtractorService {
             } else {
               skippedExisting += 1;
             }
+            continue;
+          }
+
+          if (item.status === 'pending_review') {
+            skippedExisting += 1;
             continue;
           }
 

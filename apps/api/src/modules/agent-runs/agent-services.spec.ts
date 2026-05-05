@@ -1,5 +1,11 @@
 import assert from 'node:assert/strict';
 import { NotFoundException } from '@nestjs/common';
+import { plainToInstance } from 'class-transformer';
+import { validate } from 'class-validator';
+import { Test } from '@nestjs/testing';
+import { AppModule } from '../../app.module';
+import { NovelCacheService } from '../../common/cache/novel-cache.service';
+import { PrismaService } from '../../prisma/prisma.service';
 import { BaseTool } from '../agent-tools/base-tool';
 import { ToolRegistryService } from '../agent-tools/tool-registry.service';
 import { RuleEngineService } from '../agent-rules/rule-engine.service';
@@ -14,6 +20,8 @@ import { AgentPolicyService, AgentSecondConfirmationRequiredError } from './agen
 import { AgentTraceService } from './agent-trace.service';
 import { AgentRunsService } from './agent-runs.service';
 import { GenerateChapterService } from '../generation/generate-chapter.service';
+import { GenerationProfileService } from '../generation-profile/generation-profile.service';
+import { UpdateGenerationProfileDto } from '../generation-profile/dto/update-generation-profile.dto';
 import { ChapterAutoRepairService } from '../generation/chapter-auto-repair.service';
 import { PromptBuilderService } from '../generation/prompt-builder.service';
 import { RetrievalPlannerService } from '../generation/retrieval-planner.service';
@@ -32,16 +40,29 @@ import { PersistProjectAssetsTool } from '../agent-tools/tools/persist-project-a
 import { GenerateWorldbuildingPreviewTool } from '../agent-tools/tools/generate-worldbuilding-preview.tool';
 import { ValidateWorldbuildingTool } from '../agent-tools/tools/validate-worldbuilding.tool';
 import { PersistWorldbuildingTool } from '../agent-tools/tools/persist-worldbuilding.tool';
+import { GenerateStoryBiblePreviewTool } from '../agent-tools/tools/generate-story-bible-preview.tool';
+import { ValidateStoryBibleTool } from '../agent-tools/tools/validate-story-bible.tool';
+import { PersistStoryBibleTool } from '../agent-tools/tools/persist-story-bible.tool';
+import { GenerateContinuityPreviewTool, PersistContinuityChangesTool, ValidateContinuityChangesTool } from '../agent-tools/tools/continuity-changes.tool';
 import { RelationshipGraphService } from '../agent-tools/relationship-graph.service';
 import { FactExtractorService } from '../facts/fact-extractor.service';
 import { WriteChapterSeriesTool } from '../agent-tools/tools/write-chapter-series.tool';
+import { AiQualityReviewTool } from '../agent-tools/tools/ai-quality-review.tool';
 import { RetrievalService } from '../memory/retrieval.service';
+import { GuidedService } from '../guided/guided.service';
 import { LorebookService } from '../lorebook/lorebook.service';
 import { ProjectsService } from '../projects/projects.service';
 import { ValidationService } from '../validation/validation.service';
 import { WritingRulesService } from '../writing-rules/writing-rules.service';
 import { RelationshipsService } from '../relationships/relationships.service';
 import { TimelineEventsService } from '../timeline-events/timeline-events.service';
+import { ScenesService } from '../scenes/scenes.service';
+import { ChapterPatternsService } from '../chapter-patterns/chapter-patterns.service';
+import { UpdateChapterPatternDto } from '../chapter-patterns/dto/update-chapter-pattern.dto';
+import { PacingBeatsService } from '../pacing-beats/pacing-beats.service';
+import { QualityReportsService } from '../quality-reports/quality-reports.service';
+import { AiQualityReviewService } from '../quality-reports/ai-quality-review.service';
+import { UpdateQualityReportDto } from '../quality-reports/dto/update-quality-report.dto';
 
 type TestCase = { name: string; run: () => void | Promise<void> };
 
@@ -62,6 +83,25 @@ function createTool(overrides: Partial<BaseTool> = {}): BaseTool {
     async run() {
       return {};
     },
+    ...overrides,
+  };
+}
+
+function createGenerationProfile(overrides: Record<string, unknown> = {}) {
+  return {
+    source: 'database',
+    defaultChapterWordCount: null,
+    autoContinue: false,
+    autoSummarize: true,
+    autoUpdateCharacterState: true,
+    autoUpdateTimeline: false,
+    autoValidation: true,
+    allowNewCharacters: false,
+    allowNewLocations: true,
+    allowNewForeshadows: true,
+    preGenerationChecks: [],
+    promptBudget: {},
+    metadata: {},
     ...overrides,
   };
 }
@@ -188,6 +228,70 @@ test('GenerateChapterService 生成后质量门禁标记重复段落退化', () 
   assert.match(result.blockers.join('；'), /重复段落/);
 });
 
+test('GenerateChapterService maps pass and warning quality gates to QualityReport payloads', () => {
+  const service = new GenerateChapterService({} as never, {} as never, {} as never, {} as never, {} as never, {} as never) as unknown as {
+    buildGenerationQualityReportData: (input: Record<string, unknown>) => Record<string, unknown>;
+  };
+  const qualityGate = {
+    valid: true,
+    blocked: false,
+    score: 96,
+    blockers: [],
+    warnings: [],
+    metrics: {
+      actualWordCount: 3200,
+      targetWordCount: 3000,
+      targetRatio: 1.06,
+      paragraphCount: 32,
+      duplicateParagraphCount: 0,
+      duplicateParagraphRatio: 0,
+      hasWrapperOrMarkdown: false,
+      hasRefusalPattern: false,
+      hasTemplateMarker: false,
+    },
+  };
+  const passReport = service.buildGenerationQualityReportData({
+    projectId: 'p1',
+    chapterId: '11111111-1111-4111-8111-111111111111',
+    draftId: '22222222-2222-4222-8222-222222222222',
+    agentRunId: 'not-a-uuid',
+    qualityGate,
+    actualWordCount: 3200,
+    targetWordCount: 3000,
+    summary: 'ok',
+    modelInfo: {},
+  });
+  const warnReport = service.buildGenerationQualityReportData({
+    projectId: 'p1',
+    chapterId: '11111111-1111-4111-8111-111111111111',
+    draftId: '22222222-2222-4222-8222-222222222222',
+    agentRunId: '33333333-3333-4333-8333-333333333333',
+    qualityGate: { ...qualityGate, score: 72, warnings: ['too short'] },
+    actualWordCount: 1800,
+    targetWordCount: 3000,
+    summary: 'warn',
+    modelInfo: {},
+  });
+  const failReport = service.buildGenerationQualityReportData({
+    projectId: 'p1',
+    chapterId: '11111111-1111-4111-8111-111111111111',
+    draftId: '22222222-2222-4222-8222-222222222222',
+    qualityGate: { ...qualityGate, valid: false, blocked: true, score: 20, blockers: ['refusal text'] },
+    actualWordCount: 40,
+    targetWordCount: 3000,
+    summary: 'fail',
+    modelInfo: {},
+  });
+
+  assert.equal(passReport.verdict, 'pass');
+  assert.equal(passReport.agentRunId, undefined);
+  assert.equal(warnReport.verdict, 'warn');
+  assert.equal(warnReport.agentRunId, '33333333-3333-4333-8333-333333333333');
+  assert.deepEqual(warnReport.issues, [{ severity: 'warning', issueType: 'generation_quality_gate_warning', message: 'too short' }]);
+  assert.equal(failReport.verdict, 'fail');
+  assert.deepEqual(failReport.issues, [{ severity: 'error', issueType: 'generation_quality_gate_blocker', message: 'refusal text' }]);
+});
+
 test('GenerateChapterService 生成前细纲密度检查标记缺失执行卡字段', () => {
   const service = new GenerateChapterService({} as never, {} as never, {} as never, {} as never, {} as never, {} as never) as unknown as {
     assessOutlineDensity: (
@@ -251,6 +355,57 @@ test('GenerateChapterService 生成后执行卡覆盖检查标记漏写关键项
   assert.match(result.warnings.join('；'), /不可逆后果/);
   assert.deepEqual(result.executionCardCoverage?.missing.clueNames, ['湿红线']);
   assert.equal(result.executionCardCoverage?.missing.irreversibleConsequence, '井开始叫他的名字');
+});
+
+test('GenerateChapterService uses GenerationProfile as conservative word count fallback', () => {
+  const service = new GenerateChapterService({} as never, {} as never, {} as never, {} as never, {} as never, {} as never) as unknown as {
+    resolveTargetWordCount: (
+      input: { wordCount?: number },
+      chapter: { expectedWordCount: number | null; project: { creativeProfile?: { chapterWordCount: number | null } | null } },
+      generationProfile: { defaultChapterWordCount: number | null },
+    ) => number;
+  };
+  const generationProfile = createGenerationProfile({ defaultChapterWordCount: 2400 });
+
+  assert.equal(service.resolveTargetWordCount({}, { expectedWordCount: null, project: { creativeProfile: null } }, generationProfile), 2400);
+  assert.equal(service.resolveTargetWordCount({}, { expectedWordCount: null, project: { creativeProfile: { chapterWordCount: 1800 } } }, generationProfile), 1800);
+  assert.equal(service.resolveTargetWordCount({ wordCount: 1200 }, { expectedWordCount: 1600, project: { creativeProfile: { chapterWordCount: 1800 } } }, generationProfile), 1200);
+});
+
+test('GenerateChapterService preflight warns or blocks disallowed new entity candidates from GenerationProfile', async () => {
+  const service = new GenerateChapterService({} as never, {} as never, {} as never, {} as never, {} as never, { async listByChapter() { return []; } } as never) as unknown as {
+    runPreflight: (
+      projectId: string,
+      chapter: { id: string; chapterNo: number; objective: string | null; conflict: string | null; outline: string | null; craftBrief?: unknown; status: string },
+      currentDraftVersionNo: number | undefined,
+      input: { instruction?: string; outlineQualityGate?: 'warning' | 'blocker' },
+      generationProfile: ReturnType<typeof createGenerationProfile>,
+    ) => Promise<{ valid: boolean; blockers: string[]; warnings: string[]; newEntityPolicy: { candidates: Array<{ type: string }> } }>;
+  };
+  const chapter = {
+    id: 'c1',
+    chapterNo: 3,
+    objective: '新增角色沈砚加入队伍',
+    conflict: '守门人阻止主角进入档案库',
+    outline: '主角在档案库外遇到阻力。',
+    craftBrief: {
+      visibleGoal: '进入档案库',
+      coreConflict: '守门人阻止',
+      actionBeats: ['对峙', '绕行', '取得钥匙'],
+      concreteClues: [{ name: '铜钥匙' }],
+      irreversibleConsequence: '守门人认出主角身份',
+    },
+    status: 'planned',
+  };
+
+  const warningResult = await service.runPreflight('p1', chapter, undefined, {}, createGenerationProfile({ allowNewCharacters: false, preGenerationChecks: [] }));
+  assert.equal(warningResult.valid, true);
+  assert.match(warningResult.warnings.join('；'), /禁止新增角色/);
+  assert.equal(warningResult.newEntityPolicy.candidates.some((item) => item.type === 'character'), true);
+
+  const blockerResult = await service.runPreflight('p1', chapter, undefined, {}, createGenerationProfile({ allowNewCharacters: false, preGenerationChecks: ['blockNewEntities'] }));
+  assert.equal(blockerResult.valid, false);
+  assert.match(blockerResult.blockers.join('；'), /禁止新增角色/);
 });
 
 test('ChapterAutoRepairService 可从草稿上下文提取执行卡覆盖问题', () => {
@@ -370,6 +525,7 @@ test('Executor 重试只复用当前计划中同 stepNo 且同 toolName 的成�
 test('Executor Act 阶段复用同版本 Plan 预览输出作为后续步骤输入', async () => {
   let previewToolRunCount = 0;
   let receivedContext: unknown;
+  let receivedToolContext: Record<string, unknown> | undefined;
   const prisma = {
     agentRun: {
       async findUnique(args: { select?: { status?: boolean } }) {
@@ -388,7 +544,7 @@ test('Executor Act 阶段复用同版本 Plan 预览输出作为后续步骤输�
       if (name === 'collect_chapter_context') {
         return createTool({ name, requiresApproval: false, riskLevel: 'low', sideEffects: [], outputSchema: { type: 'object' }, async run() { previewToolRunCount += 1; return { cached: false }; } });
       }
-      return createTool({ name, requiresApproval: false, riskLevel: 'low', sideEffects: [], inputSchema: { type: 'object', properties: { context: { type: 'object' } } }, outputSchema: { type: 'object' }, async run(args: Record<string, unknown>) { receivedContext = args.context; return { ok: true }; } });
+      return createTool({ name, requiresApproval: false, riskLevel: 'low', sideEffects: [], inputSchema: { type: 'object', properties: { context: { type: 'object' } } }, outputSchema: { type: 'object' }, async run(args: Record<string, unknown>, context) { receivedContext = args.context; receivedToolContext = context as unknown as Record<string, unknown>; return { ok: true }; } });
     },
   };
   const policy = { assertPlanExecutable() {}, assertAllowed() {} };
@@ -405,6 +561,7 @@ test('Executor Act 阶段复用同版本 Plan 预览输出作为后续步骤输�
 
   assert.equal(previewToolRunCount, 0);
   assert.deepEqual(receivedContext, { chapterId: 'c1', cached: true });
+  assert.deepEqual(receivedToolContext?.stepTools, { 1: 'collect_chapter_context', 2: 'report_result' });
   assert.deepEqual(outputs[1], { chapterId: 'c1', cached: true });
 });
 
@@ -997,6 +1154,106 @@ test('AgentRuntime 为剧情一致性检查提升上下文和报告 Artifact', (
   assert.equal(artifacts[1].title, '剧情一致性检查报告');
 });
 
+test('AgentRuntime 为 AI 审稿提升 QualityReport Artifact', () => {
+  const runtime = new AgentRuntimeService({} as never, {} as never, {} as never, {} as never, {} as never, {} as never) as unknown as {
+    buildExecutionArtifacts: (taskType: string, outputs: Record<number, unknown>, steps: Array<{ stepNo: number; tool: string }>) => Array<{ artifactType: string; title: string; content: unknown }>;
+  };
+  const report = { reportId: 'report-1', verdict: 'warn', scores: { overall: 82 }, issues: [{ severity: 'warning', message: '节奏略急' }] };
+  const artifacts = runtime.buildExecutionArtifacts(
+    'ai_quality_review',
+    { 1: { chapterId: 'c1' }, 2: report },
+    [{ stepNo: 1, tool: 'resolve_chapter' }, { stepNo: 2, tool: 'ai_quality_review' }],
+  );
+
+  assert.deepEqual(artifacts.map((item) => item.artifactType), ['ai_quality_report']);
+  assert.equal(artifacts[0].title, 'AI 审稿质量报告');
+  assert.deepEqual(artifacts[0].content, report);
+});
+
+test('AgentRuntime 为 Story Bible 扩展提升 preview/validation/persist Artifacts', () => {
+  const runtime = new AgentRuntimeService({} as never, {} as never, {} as never, {} as never, {} as never, {} as never) as unknown as {
+    buildExecutionArtifacts: (taskType: string, outputs: Record<number, unknown>, steps: Array<{ stepNo: number; tool: string }>) => Array<{ artifactType: string; title: string; content: unknown }>;
+  };
+  const preview = { candidates: [{ candidateId: 'sbc_1', title: '宗门戒律' }] };
+  const validation = { valid: true, accepted: [{ candidateId: 'sbc_1', title: '宗门戒律' }] };
+  const persist = { createdCount: 1, updatedCount: 0 };
+  const artifacts = runtime.buildExecutionArtifacts(
+    'story_bible_expand',
+    { 1: { diagnostics: {} }, 2: preview, 3: validation, 4: persist },
+    [
+      { stepNo: 1, tool: 'collect_task_context' },
+      { stepNo: 2, tool: 'generate_story_bible_preview' },
+      { stepNo: 3, tool: 'validate_story_bible' },
+      { stepNo: 4, tool: 'persist_story_bible' },
+    ],
+  );
+
+  assert.deepEqual(artifacts.map((item) => item.artifactType), ['story_bible_preview', 'story_bible_validation_report', 'story_bible_persist_result']);
+  assert.deepEqual(artifacts.map((item) => item.content), [preview, validation, persist]);
+});
+
+test('AgentRuntime 为 Story Bible Plan 预览按 tool 名提升 Artifacts', () => {
+  const runtime = new AgentRuntimeService({} as never, {} as never, {} as never, {} as never, {} as never, {} as never) as unknown as {
+    buildPreviewArtifacts: (taskType: string, outputs: Record<number, unknown>, steps: Array<{ stepNo: number; tool: string }>) => Array<{ artifactType: string; title: string; content: unknown }>;
+  };
+  const preview = { candidates: [{ candidateId: 'sbc_1', title: '宗门戒律' }] };
+  const validation = { valid: true, accepted: [{ candidateId: 'sbc_1', title: '宗门戒律' }] };
+  const artifacts = runtime.buildPreviewArtifacts(
+    'story_bible_expand',
+    { 2: { noise: true }, 4: preview, 5: validation },
+    [
+      { stepNo: 2, tool: 'collect_task_context' },
+      { stepNo: 4, tool: 'generate_story_bible_preview' },
+      { stepNo: 5, tool: 'validate_story_bible' },
+    ],
+  );
+
+  assert.deepEqual(artifacts.map((item) => item.artifactType), ['story_bible_preview', 'story_bible_validation_report']);
+  assert.deepEqual(artifacts.map((item) => item.content), [preview, validation]);
+});
+
+test('AgentRuntime maps continuity preview/validation/persist artifacts', () => {
+  const runtime = new AgentRuntimeService({} as never, {} as never, {} as never, {} as never, {} as never, {} as never) as unknown as {
+    buildExecutionArtifacts: (taskType: string, outputs: Record<number, unknown>, steps: Array<{ stepNo: number; tool: string }>) => Array<{ artifactType: string; title: string; content: unknown }>;
+  };
+  const preview = { candidates: [{ candidateId: 'cont_1', changeType: 'relationship_edge' }] };
+  const validation = { valid: true, accepted: [{ candidateId: 'cont_1', action: 'create' }] };
+  const persist = { createdRelationshipEdgeCount: 1, createdTimelineEventCount: 0 };
+  const artifacts = runtime.buildExecutionArtifacts(
+    'continuity_check',
+    { 1: { diagnostics: {} }, 2: preview, 3: validation, 4: persist },
+    [
+      { stepNo: 1, tool: 'collect_task_context' },
+      { stepNo: 2, tool: 'generate_continuity_preview' },
+      { stepNo: 3, tool: 'validate_continuity_changes' },
+      { stepNo: 4, tool: 'persist_continuity_changes' },
+    ],
+  );
+
+  assert.deepEqual(artifacts.map((item) => item.artifactType), ['continuity_preview', 'continuity_validation_report', 'continuity_persist_result']);
+  assert.deepEqual(artifacts.map((item) => item.content), [preview, validation, persist]);
+});
+
+test('AgentRuntime maps continuity preview and validation artifacts in plan mode', () => {
+  const runtime = new AgentRuntimeService({} as never, {} as never, {} as never, {} as never, {} as never, {} as never) as unknown as {
+    buildPreviewArtifacts: (taskType: string, outputs: Record<number, unknown>, steps: Array<{ stepNo: number; tool: string }>) => Array<{ artifactType: string; title: string; content: unknown }>;
+  };
+  const preview = { candidates: [{ candidateId: 'cont_1', changeType: 'timeline_event' }] };
+  const validation = { valid: true, accepted: [{ candidateId: 'cont_1', action: 'update' }] };
+  const artifacts = runtime.buildPreviewArtifacts(
+    'continuity_check',
+    { 2: { noise: true }, 4: preview, 5: validation },
+    [
+      { stepNo: 2, tool: 'collect_task_context' },
+      { stepNo: 4, tool: 'generate_continuity_preview' },
+      { stepNo: 5, tool: 'validate_continuity_changes' },
+    ],
+  );
+
+  assert.deepEqual(artifacts.map((item) => item.artifactType), ['continuity_preview', 'continuity_validation_report']);
+  assert.deepEqual(artifacts.map((item) => item.content), [preview, validation]);
+});
+
 test('GenerateGuidedStepPreviewTool 生成全部 guided 步骤预览且保持只读', async () => {
   const calls: Array<{ messages: Array<{ role: string; content: string }>; options: Record<string, unknown> }> = [];
   const responses = [
@@ -1059,6 +1316,161 @@ test('GenerateGuidedStepPreviewTool 对缺少上下文的章节预览返回 warn
 
   assert.match(result.warnings.join('；'), /缺少前置步骤上下文/);
   assert.match(result.warnings.join('；'), /未指定 volumeNo/);
+});
+
+test('GenerateGuidedStepPreviewTool injects chapter patterns and pacing targets for guided chapters', async () => {
+  let promptText = '';
+  let pacingWhere: Record<string, unknown> | undefined;
+  const llm = {
+    async chatJson(messages: Array<{ role: string; content: string }>) {
+      promptText = messages.map((item) => item.content).join('\n\n');
+      return {
+        data: {
+          chapters: [{
+            chapterNo: 3,
+            volumeNo: 1,
+            title: 'Archive Gate',
+            objective: 'Force the guard to reveal the missing ledger.',
+            conflict: 'The guard hides the ledger key.',
+            outline: 'The protagonist confronts the guard at the archive gate.',
+            craftBrief: { visibleGoal: 'Get inside the archive.' },
+          }],
+        },
+      };
+    },
+  };
+  const prisma = {
+    volume: {
+      async findFirst() {
+        return { id: 'v1', volumeNo: 1, title: 'Volume One', objective: 'Open the archive' };
+      },
+    },
+    chapter: {
+      async findFirst() {
+        return { id: 'c3', volumeId: 'v1', chapterNo: 3, title: 'Archive Gate', objective: 'Get the ledger' };
+      },
+    },
+    chapterPattern: {
+      async findMany() {
+        return [{
+          id: 'pat-1',
+          patternType: 'reversal',
+          name: 'Pressure Reversal',
+          applicableScenes: ['confrontation'],
+          structure: { beats: ['approach', 'pressure', 'reversal'] },
+          pacingAdvice: { tempo: 'tight' },
+          emotionalAdvice: { tone: 'contained anger' },
+          conflictAdvice: { source: 'information asymmetry' },
+        }];
+      },
+    },
+    pacingBeat: {
+      async findMany(args: { where: Record<string, unknown> }) {
+        pacingWhere = args.where;
+        return [{
+          id: 'pace-1',
+          volumeId: 'v1',
+          chapterId: 'c3',
+          chapterNo: 3,
+          beatType: 'reveal',
+          emotionalTone: 'cold dread',
+          emotionalIntensity: 72,
+          tensionLevel: 85,
+          payoffLevel: 35,
+          notes: 'Keep the reveal partial.',
+        }];
+      },
+    },
+  };
+  const tool = new GenerateGuidedStepPreviewTool(llm as never, prisma as never);
+
+  await tool.run(
+    { stepKey: 'guided_chapter', volumeNo: 1, chapterNo: 3, projectContext: { existing: true } },
+    { agentRunId: 'run1', projectId: 'p1', mode: 'plan', approved: false, outputs: {}, policy: {} },
+  );
+
+  assert.match(promptText, /phase4Guidance/);
+  assert.match(promptText, /chapter_pattern/);
+  assert.match(promptText, /Pressure Reversal/);
+  assert.match(promptText, /pacing_beat/);
+  assert.match(promptText, /tensionLevel/);
+  const pacingOr = (pacingWhere?.OR ?? []) as Array<Record<string, unknown>>;
+  assert.ok(pacingOr.some((item) => item.volumeId === 'v1' && item.chapterId === null && item.chapterNo === null));
+  assert.equal(pacingOr.some((item) => item.volumeId === 'v1' && !Object.prototype.hasOwnProperty.call(item, 'chapterId') && !Object.prototype.hasOwnProperty.call(item, 'chapterNo')), false);
+});
+
+test('GuidedService chat injects chapter patterns and pacing targets for guided chapter consultation', async () => {
+  let systemPrompt = '';
+  let pacingWhere: Record<string, unknown> | undefined;
+  const prisma = {
+    promptTemplate: {
+      async findFirst() {
+        return null;
+      },
+    },
+    volume: {
+      async findFirst(args: { where: Record<string, unknown> }) {
+        if (args.where.volumeNo === 1 && args.where.projectId === 'p1') return { id: 'v1', volumeNo: 1, title: 'Volume One' };
+        return null;
+      },
+    },
+    chapter: {
+      async findFirst(args: { where: Record<string, unknown> }) {
+        if (args.where.chapterNo === 3 && args.where.projectId === 'p1') return { id: 'c3', volumeId: 'v1', chapterNo: 3, title: 'Archive Gate' };
+        return null;
+      },
+    },
+    chapterPattern: {
+      async findMany() {
+        return [{
+          id: 'pat-chat',
+          patternType: 'suspense',
+          name: 'Question Escalation',
+          applicableScenes: ['investigation'],
+          structure: { beats: ['clue', 'misread', 'new question'] },
+          pacingAdvice: { tempo: 'slow burn' },
+          emotionalAdvice: { tone: 'uneasy' },
+          conflictAdvice: { source: 'false certainty' },
+        }];
+      },
+    },
+    pacingBeat: {
+      async findMany(args: { where: Record<string, unknown> }) {
+        pacingWhere = args.where;
+        return [{
+          id: 'pace-chat',
+          volumeId: 'v1',
+          chapterId: 'c3',
+          chapterNo: 3,
+          beatType: 'setup',
+          emotionalTone: 'uneasy',
+          emotionalIntensity: 60,
+          tensionLevel: 70,
+          payoffLevel: 20,
+          notes: 'Keep the answer incomplete.',
+        }];
+      },
+    },
+  };
+  const llm = {
+    async chat(messages: Array<{ role: string; content: string }>) {
+      systemPrompt = messages[0].content;
+      return '好的。[STEP_COMPLETE]{}';
+    },
+  };
+  const service = new GuidedService(prisma as never, llm as never, {} as never);
+
+  await service.chatWithAi('p1', { currentStep: 'guided_chapter', userMessage: '帮我细化这一章。', volumeNo: 1, chapterNo: 3 });
+
+  assert.match(systemPrompt, /章节模板与节奏目标/);
+  assert.match(systemPrompt, /sourceType=chapter_pattern/);
+  assert.match(systemPrompt, /Question Escalation/);
+  assert.match(systemPrompt, /sourceType=pacing_beat/);
+  assert.match(systemPrompt, /张力 70/);
+  const pacingOr = (pacingWhere?.OR ?? []) as Array<Record<string, unknown>>;
+  assert.ok(pacingOr.some((item) => item.chapterId === 'c3'));
+  assert.ok(pacingOr.some((item) => item.volumeId === 'v1' && item.chapterId === null && item.chapterNo === null));
+  assert.equal(pacingOr.some((item) => item.volumeId === 'v1' && !Object.prototype.hasOwnProperty.call(item, 'chapterId') && !Object.prototype.hasOwnProperty.call(item, 'chapterNo')), false);
 });
 
 test('GenerateGuidedStepPreviewTool 对未知步骤显式拒绝', async () => {
@@ -1365,6 +1777,1021 @@ test('PersistWorldbuildingTool 阻止未通过校验的世界观预览写入', a
   );
 });
 
+test('GenerateStoryBiblePreviewTool 归一化候选并保持只读', async () => {
+  const relatedId = '11111111-1111-4111-8111-111111111111';
+  const llm = {
+    async chatJson() {
+      return {
+        data: {
+          candidates: [{
+            title: 'Sect Oath',
+            entryType: 'rule',
+            summary: 'No private duels.',
+            content: { rule: 'Disputes must be resolved in public trial.' },
+            tags: ['sect'],
+            relatedEntityIds: [relatedId],
+            priority: 75,
+          }],
+          assumptions: ['planned only'],
+          risks: ['needs validation'],
+        },
+      };
+    },
+  };
+  const tool = new GenerateStoryBiblePreviewTool(llm as never);
+  const result = await tool.run(
+    { instruction: 'Plan sect rules', focus: ['forbidden_rule'], maxCandidates: 3 },
+    { agentRunId: 'run-story', projectId: 'p1', mode: 'plan', approved: false, outputs: {}, policy: {} },
+  );
+
+  assert.equal(result.candidates[0].title, 'Sect Oath');
+  assert.equal(result.candidates[0].entryType, 'forbidden_rule');
+  assert.equal(result.candidates[0].content, '{"rule":"Disputes must be resolved in public trial."}');
+  assert.deepEqual(result.candidates[0].relatedEntityIds, [relatedId]);
+  assert.equal(result.candidates[0].metadata.sourceKind, 'planned_story_bible_asset');
+  assert.equal(result.candidates[0].sourceTrace.agentRunId, 'run-story');
+  assert.equal(result.writePlan.requiresValidation, true);
+  assert.equal(result.writePlan.requiresApprovalBeforePersist, true);
+  assert.equal(tool.requiresApproval, false);
+  assert.deepEqual(tool.sideEffects, []);
+});
+
+test('ValidateStoryBibleTool 只读校验重复、locked 和跨项目引用', async () => {
+  const allowedId = '11111111-1111-4111-8111-111111111111';
+  const crossProjectId = '22222222-2222-4222-8222-222222222222';
+  const prisma = {
+    lorebookEntry: {
+      async findMany(args: { where: Record<string, unknown> }) {
+        if (Object.prototype.hasOwnProperty.call(args.where, 'id')) return [{ id: allowedId }];
+        return [{
+          id: '33333333-3333-4333-8333-333333333333',
+          title: 'Locked City',
+          entryType: 'location',
+          summary: 'Existing',
+          content: 'Locked existing city.',
+          tags: [],
+          triggerKeywords: [],
+          relatedEntityIds: [],
+          priority: 50,
+          status: 'locked',
+          sourceType: 'manual',
+          metadata: { locked: true },
+          updatedAt: new Date('2026-05-05T00:00:00Z'),
+        }];
+      },
+    },
+    character: { async findMany() { return []; } },
+    chapter: { async findMany() { return []; } },
+    volume: { async findMany() { return []; } },
+    relationshipEdge: { async findMany() { return []; } },
+    timelineEvent: { async findMany() { return []; } },
+  };
+  const tool = new ValidateStoryBibleTool(prisma as never);
+  const preview = {
+    candidates: [
+      {
+        candidateId: 'sbc_valid',
+        title: 'New Rule',
+        entryType: 'forbidden_rule',
+        summary: 'No private duels.',
+        content: 'Disputes must be resolved in public trial.',
+        tags: ['sect'],
+        triggerKeywords: ['New Rule'],
+        relatedEntityIds: [allowedId],
+        priority: 70,
+        metadata: { sourceKind: 'planned_story_bible_asset' },
+        sourceTrace: { sourceKind: 'planned_story_bible_asset', originTool: 'generate_story_bible_preview', agentRunId: 'run1', candidateIndex: 0, instruction: 'Plan rules', focus: [], contextSources: [] },
+      },
+      {
+        candidateId: 'sbc_locked',
+        title: ' locked   city ',
+        entryType: 'location',
+        summary: 'Try update.',
+        content: 'Update locked city.',
+        tags: [],
+        triggerKeywords: [],
+        relatedEntityIds: [],
+        priority: 60,
+        metadata: { sourceKind: 'planned_story_bible_asset' },
+        sourceTrace: { sourceKind: 'planned_story_bible_asset', originTool: 'generate_story_bible_preview', agentRunId: 'run1', candidateIndex: 1, instruction: 'Plan city', focus: [], contextSources: [] },
+      },
+      {
+        candidateId: 'sbc_bad_ref',
+        title: 'Bad Reference',
+        entryType: 'item',
+        summary: 'Bad refs.',
+        content: 'References must be real IDs.',
+        tags: [],
+        triggerKeywords: [],
+        relatedEntityIds: ['not-an-id', crossProjectId],
+        priority: 50,
+        metadata: { sourceKind: 'planned_story_bible_asset' },
+        sourceTrace: { sourceKind: 'planned_story_bible_asset', originTool: 'generate_story_bible_preview', agentRunId: 'run1', candidateIndex: 2, instruction: 'Plan item', focus: [], contextSources: [] },
+      },
+    ],
+    assumptions: [],
+    risks: [],
+    writePlan: { mode: 'preview_only' as const, target: 'LorebookEntry' as const, sourceKind: 'planned_story_bible_asset' as const, requiresValidation: true, requiresApprovalBeforePersist: true },
+  };
+
+  const result = await tool.run({ preview: preview as never }, { agentRunId: 'run1', projectId: 'p1', mode: 'plan', approved: false, outputs: {}, policy: {} });
+
+  assert.equal(result.valid, false);
+  assert.deepEqual(result.accepted.map((item) => item.candidateId), ['sbc_valid']);
+  assert.equal(result.writePreview.summary.createCount, 1);
+  assert.equal(result.writePreview.summary.rejectCount, 2);
+  assert.ok(result.issues.some((issue) => issue.message.includes('locked')));
+  assert.ok(result.issues.some((issue) => issue.message.includes('non-UUID')));
+  assert.ok(result.issues.some((issue) => issue.message.includes('outside the current project')));
+  assert.equal(tool.requiresApproval, false);
+  assert.deepEqual(tool.sideEffects, []);
+});
+
+test('PersistStoryBibleTool 仅在 Act 审批后写入并清理召回缓存', async () => {
+  const relatedId = '11111111-1111-4111-8111-111111111111';
+  const existingId = '33333333-3333-4333-8333-333333333333';
+  const createdData: Array<Record<string, unknown>> = [];
+  const updatedData: Array<Record<string, unknown>> = [];
+  const invalidatedProjectIds: string[] = [];
+  const prisma = {
+    async $transaction(callback: (tx: unknown) => Promise<unknown>) {
+      return callback({
+        lorebookEntry: {
+          async findMany(args: { where: Record<string, unknown> }) {
+            if (Object.prototype.hasOwnProperty.call(args.where, 'id')) return [{ id: relatedId }];
+            return [{
+              id: existingId,
+              title: 'Existing Rule',
+              entryType: 'forbidden_rule',
+              summary: 'Old',
+              content: 'Old content',
+              tags: [],
+              triggerKeywords: [],
+              relatedEntityIds: [],
+              priority: 50,
+              status: 'active',
+              sourceType: 'manual',
+              metadata: {},
+            }];
+          },
+          async create(args: { data: Record<string, unknown> }) {
+            createdData.push(args.data);
+            return { id: '44444444-4444-4444-8444-444444444444', title: args.data.title, entryType: args.data.entryType };
+          },
+          async update(args: { where: Record<string, unknown>; data: Record<string, unknown> }) {
+            updatedData.push({ where: args.where, ...args.data });
+            return { id: existingId, title: 'Existing Rule', entryType: args.data.entryType };
+          },
+        },
+        character: { async findMany() { return []; } },
+        chapter: { async findMany() { return []; } },
+        volume: { async findMany() { return []; } },
+        relationshipEdge: { async findMany() { return []; } },
+        timelineEvent: { async findMany() { return []; } },
+      });
+    },
+  };
+  const cache = {
+    async deleteProjectRecallResults(projectId: string) {
+      invalidatedProjectIds.push(projectId);
+    },
+  };
+  const preview = {
+    candidates: [
+      {
+        candidateId: 'sbc_create',
+        title: 'New Rule',
+        entryType: 'forbidden_rule',
+        summary: 'New',
+        content: 'New content',
+        tags: ['sect'],
+        triggerKeywords: ['New Rule'],
+        relatedEntityIds: [relatedId],
+        priority: 80,
+        metadata: { sourceKind: 'planned_story_bible_asset' },
+        sourceTrace: { sourceKind: 'planned_story_bible_asset', originTool: 'generate_story_bible_preview', agentRunId: 'run1', candidateIndex: 0, instruction: 'Plan rules', focus: [], contextSources: [] },
+      },
+      {
+        candidateId: 'sbc_update',
+        title: 'Existing Rule',
+        entryType: 'forbidden_rule',
+        summary: 'Updated',
+        content: 'Updated content',
+        tags: ['sect'],
+        triggerKeywords: ['Existing Rule'],
+        relatedEntityIds: [],
+        priority: 65,
+        metadata: { sourceKind: 'planned_story_bible_asset' },
+        sourceTrace: { sourceKind: 'planned_story_bible_asset', originTool: 'generate_story_bible_preview', agentRunId: 'run1', candidateIndex: 1, instruction: 'Plan rules', focus: [], contextSources: [] },
+      },
+      {
+        candidateId: 'sbc_skip',
+        title: 'Skipped Rule',
+        entryType: 'setting',
+        summary: 'Skip',
+        content: 'Skip content',
+        tags: [],
+        triggerKeywords: [],
+        relatedEntityIds: [],
+        priority: 50,
+        metadata: { sourceKind: 'planned_story_bible_asset' },
+        sourceTrace: { sourceKind: 'planned_story_bible_asset', originTool: 'generate_story_bible_preview', agentRunId: 'run1', candidateIndex: 2, instruction: 'Plan rules', focus: [], contextSources: [] },
+      },
+    ],
+    assumptions: [],
+    risks: [],
+    writePlan: { mode: 'preview_only' as const, target: 'LorebookEntry' as const, sourceKind: 'planned_story_bible_asset' as const, requiresValidation: true, requiresApprovalBeforePersist: true },
+  };
+  const validation = {
+    valid: true,
+    issueCount: 0,
+    issues: [],
+    accepted: [
+      { candidateId: 'sbc_create', title: 'New Rule', entryType: 'forbidden_rule', action: 'create' as const, existingEntryId: null, sourceTrace: preview.candidates[0].sourceTrace },
+      { candidateId: 'sbc_update', title: 'Existing Rule', entryType: 'forbidden_rule', action: 'update' as const, existingEntryId: existingId, sourceTrace: preview.candidates[1].sourceTrace },
+    ],
+    rejected: [],
+    writePreview: {
+      target: 'LorebookEntry' as const,
+      projectScope: 'context.projectId' as const,
+      sourceKind: 'planned_story_bible_asset' as const,
+      summary: { createCount: 1, updateCount: 1, rejectCount: 0 },
+      entries: [
+        { candidateId: 'sbc_create', title: 'New Rule', entryType: 'forbidden_rule', action: 'create' as const, existingEntryId: null, existingStatus: null, before: null, after: {}, fieldDiff: {}, sourceTrace: preview.candidates[0].sourceTrace },
+        { candidateId: 'sbc_update', title: 'Existing Rule', entryType: 'forbidden_rule', action: 'update' as const, existingEntryId: existingId, existingStatus: 'active', before: {}, after: {}, fieldDiff: {}, sourceTrace: preview.candidates[1].sourceTrace },
+      ],
+      approvalMessage: 'ok',
+    },
+  };
+  const tool = new PersistStoryBibleTool(prisma as never, cache as never);
+
+  const result = await tool.run(
+    { preview: preview as never, validation: validation as never, selectedCandidateIds: ['sbc_create', 'sbc_update'] },
+    { agentRunId: 'run1', projectId: 'p1', mode: 'act', approved: true, outputs: {}, policy: {} },
+  );
+
+  assert.equal(result.createdCount, 1);
+  assert.equal(result.updatedCount, 1);
+  assert.equal(result.skippedUnselectedCount, 1);
+  assert.deepEqual(invalidatedProjectIds, ['p1']);
+  assert.equal(createdData[0].projectId, 'p1');
+  assert.deepEqual(createdData[0].relatedEntityIds, [relatedId]);
+  assert.equal((createdData[0].metadata as Record<string, unknown>).sourceKind, 'planned_story_bible_asset');
+  assert.deepEqual(updatedData[0].where, { id: existingId });
+  assert.equal(tool.requiresApproval, true);
+  assert.deepEqual(tool.allowedModes, ['act']);
+  assert.deepEqual(tool.sideEffects, ['create_lorebook_entries', 'update_lorebook_entries', 'fact_layer_story_bible_write']);
+});
+
+test('PersistStoryBibleTool 阻止 Plan、未审批、无效校验、未知选择和跨项目引用', async () => {
+  let transactionCount = 0;
+  const prisma = {
+    async $transaction(callback: (tx: unknown) => Promise<unknown>) {
+      transactionCount += 1;
+      return callback({
+        lorebookEntry: { async findMany() { return []; }, async create() { throw new Error('should not write'); }, async update() { throw new Error('should not write'); } },
+        character: { async findMany() { return []; } },
+        chapter: { async findMany() { return []; } },
+        volume: { async findMany() { return []; } },
+        relationshipEdge: { async findMany() { return []; } },
+        timelineEvent: { async findMany() { return []; } },
+      });
+    },
+  };
+  const cache = { async deleteProjectRecallResults() { throw new Error('should not invalidate'); } };
+  const preview = {
+    candidates: [{
+      candidateId: 'sbc_cross',
+      title: 'Cross Ref',
+      entryType: 'setting',
+      summary: 'Cross',
+      content: 'Cross content',
+      tags: [],
+      triggerKeywords: [],
+      relatedEntityIds: ['22222222-2222-4222-8222-222222222222'],
+      priority: 50,
+      metadata: { sourceKind: 'planned_story_bible_asset' },
+      sourceTrace: { sourceKind: 'planned_story_bible_asset', originTool: 'generate_story_bible_preview', agentRunId: 'run1', candidateIndex: 0, instruction: 'Plan', focus: [], contextSources: [] },
+    }],
+    assumptions: [],
+    risks: [],
+    writePlan: { mode: 'preview_only' as const, target: 'LorebookEntry' as const, sourceKind: 'planned_story_bible_asset' as const, requiresValidation: true, requiresApprovalBeforePersist: true },
+  };
+  const validValidation = {
+    valid: true,
+    issueCount: 0,
+    issues: [],
+    accepted: [{ candidateId: 'sbc_cross', title: 'Cross Ref', entryType: 'setting', action: 'create' as const, existingEntryId: null, sourceTrace: preview.candidates[0].sourceTrace }],
+    rejected: [],
+    writePreview: {
+      target: 'LorebookEntry' as const,
+      projectScope: 'context.projectId' as const,
+      sourceKind: 'planned_story_bible_asset' as const,
+      summary: { createCount: 1, updateCount: 0, rejectCount: 0 },
+      entries: [
+        { candidateId: 'sbc_cross', title: 'Cross Ref', entryType: 'setting', action: 'create' as const, existingEntryId: null, existingStatus: null, before: null, after: {}, fieldDiff: {}, sourceTrace: preview.candidates[0].sourceTrace },
+      ],
+      approvalMessage: 'ok',
+    },
+  };
+  const tool = new PersistStoryBibleTool(prisma as never, cache as never);
+  const unacceptedPreview = {
+    ...preview,
+    candidates: [
+      ...preview.candidates,
+      {
+        ...preview.candidates[0],
+        candidateId: 'sbc_unaccepted',
+        title: 'Unaccepted Ref',
+        relatedEntityIds: [],
+        sourceTrace: { ...preview.candidates[0].sourceTrace, candidateIndex: 1 },
+      },
+    ],
+  };
+  const mismatchedValidation = {
+    ...validValidation,
+    accepted: [{ ...validValidation.accepted[0], title: 'Other Title' }],
+  };
+
+  await assert.rejects(() => tool.run({ preview: preview as never, validation: validValidation as never }, { agentRunId: 'run1', projectId: 'p1', mode: 'plan', approved: true, outputs: {}, policy: {} }), /act mode/);
+  await assert.rejects(() => tool.run({ preview: preview as never, validation: validValidation as never }, { agentRunId: 'run1', projectId: 'p1', mode: 'act', approved: false, outputs: {}, policy: {} }), /approval/);
+  await assert.rejects(() => tool.run({ preview: preview as never, validation: { ...validValidation, valid: false } as never }, { agentRunId: 'run1', projectId: 'p1', mode: 'act', approved: true, outputs: {}, policy: {} }), /did not pass/);
+  await assert.rejects(() => tool.run({ preview: preview as never, validation: validValidation as never, selectedCandidateIds: ['sbc_missing'] }, { agentRunId: 'run1', projectId: 'p1', mode: 'act', approved: true, outputs: {}, policy: {} }), /Unknown Story Bible candidateId/);
+  await assert.rejects(() => tool.run({ preview: unacceptedPreview as never, validation: validValidation as never, selectedCandidateIds: ['sbc_unaccepted'] }, { agentRunId: 'run1', projectId: 'p1', mode: 'act', approved: true, outputs: {}, policy: {} }), /does not approve selected candidates/);
+  await assert.rejects(() => tool.run({ preview: preview as never, validation: mismatchedValidation as never }, { agentRunId: 'run1', projectId: 'p1', mode: 'act', approved: true, outputs: {}, policy: {} }), /does not match/);
+  await assert.rejects(() => tool.run({ preview: preview as never, validation: validValidation as never }, { agentRunId: 'run2', projectId: 'p1', mode: 'act', approved: true, outputs: {}, policy: {} }), /current agent run/);
+  await assert.rejects(() => tool.run({ preview: preview as never, validation: validValidation as never }, { agentRunId: 'run1', projectId: 'p1', mode: 'act', approved: true, outputs: {}, policy: {} }), /outside the current project/);
+  assert.equal(transactionCount, 1);
+});
+
+test('GenerateContinuityPreviewTool normalizes relationship/timeline candidates and stays read-only', async () => {
+  const counters = { relationshipCreate: 0, relationshipUpdate: 0, relationshipDelete: 0, timelineCreate: 0, timelineUpdate: 0, timelineDelete: 0 };
+  const llm = {
+    async chatJson() {
+      return {
+        data: {
+          relationships: [{
+            characterAId: '11111111-1111-4111-8111-111111111111',
+            characterAName: 'Lin',
+            characterBId: '22222222-2222-4222-8222-222222222222',
+            characterBName: 'Shen',
+            relationType: 'ally',
+            publicState: 'tense trust',
+            turnChapterNos: [3, 3, 4],
+          }],
+          timeline: [{
+            chapterNo: 7,
+            title: 'Archive Fire',
+            eventTime: 'night',
+            participants: ['Lin', 'Shen'],
+            knownBy: ['Lin'],
+            unknownBy: ['Council'],
+          }],
+          assumptions: ['preview only'],
+          risks: ['needs validation'],
+        },
+      };
+    },
+  };
+  const tool = new GenerateContinuityPreviewTool(llm as never);
+
+  const result = await tool.run(
+    {
+      instruction: 'repair continuity',
+      focus: ['relationship_graph', 'timeline_events'],
+      context: {
+        relationshipGraph: [{ id: 'rel-src-1', title: 'Old alliance' }],
+        timelineEvents: [{ id: 'evt-src-1', title: 'Old fire' }],
+      },
+    },
+    { agentRunId: 'run-cont', projectId: 'p1', mode: 'plan', approved: false, outputs: {}, policy: {} },
+  );
+
+  assert.equal(result.relationshipCandidates.length, 1);
+  assert.equal(result.timelineCandidates.length, 1);
+  assert.equal(result.relationshipCandidates[0].action, 'create');
+  assert.equal(result.relationshipCandidates[0].candidateId.startsWith('relc_'), true);
+  assert.deepEqual(result.relationshipCandidates[0].turnChapterNos, [3, 4]);
+  assert.equal(result.relationshipCandidates[0].metadata.sourceKind, 'planned_continuity_change');
+  assert.equal(result.relationshipCandidates[0].sourceTrace.agentRunId, 'run-cont');
+  assert.equal(result.relationshipCandidates[0].sourceTrace.candidateType, 'relationship');
+  assert.equal(result.timelineCandidates[0].candidateId.startsWith('tlc_'), true);
+  assert.equal(result.timelineCandidates[0].sourceTrace.candidateType, 'timeline');
+  assert.equal(result.timelineCandidates[0].proposedFields.chapterNo, 7);
+  assert.equal(result.writePlan.relationshipCandidates.count, 1);
+  assert.equal(result.writePlan.timelineCandidates.count, 1);
+  assert.equal(result.writePlan.requiresApprovalBeforePersist, true);
+  assert.deepEqual(counters, { relationshipCreate: 0, relationshipUpdate: 0, relationshipDelete: 0, timelineCreate: 0, timelineUpdate: 0, timelineDelete: 0 });
+  assert.equal(tool.requiresApproval, false);
+  assert.deepEqual(tool.sideEffects, []);
+});
+
+test('ValidateContinuityChangesTool accepts same-project candidates and rejects cross-project character/chapter mismatches', async () => {
+  const charA = '11111111-1111-4111-8111111111111';
+  const charB = '22222222-2222-4222-8222222222222';
+  const foreignChar = '33333333-3333-4333-8333333333333';
+  const chapter1 = '44444444-4444-4444-8444444444444';
+  const foreignChapter = '55555555-5555-4555-8555555555555';
+  const prisma = {
+    relationshipEdge: { async findMany() { return []; } },
+    timelineEvent: { async findMany() { return []; } },
+    character: {
+      async findMany() {
+        return [
+          { id: charA, name: 'Lin' },
+          { id: charB, name: 'Shen' },
+        ];
+      },
+    },
+    chapter: {
+      async findMany(args: { where: Record<string, unknown> }) {
+        if (Object.prototype.hasOwnProperty.call(args.where, 'id')) return [{ id: chapter1, chapterNo: 7 }];
+        return [{ id: chapter1, chapterNo: 7 }];
+      },
+    },
+  };
+  const tool = new ValidateContinuityChangesTool(prisma as never);
+  const preview = {
+    relationshipCandidates: [
+      {
+        candidateId: 'rel_valid',
+        action: 'create' as const,
+        characterAId: charA,
+        characterAName: 'Lin',
+        characterBId: charB,
+        characterBName: 'Shen',
+        relationType: 'ally',
+        turnChapterNos: [7],
+        impactAnalysis: 'ok',
+        conflictRisk: 'low',
+        metadata: { sourceKind: 'planned_continuity_change' as const },
+        sourceTrace: { sourceKind: 'planned_continuity_change' as const, originTool: 'generate_continuity_preview' as const, agentRunId: 'run1', candidateType: 'relationship' as const, candidateIndex: 0, instruction: 'Plan', focus: [], contextSources: [] },
+        diffKey: { characterAName: 'Lin', characterBName: 'Shen', relationType: 'ally' },
+        proposedFields: {},
+      },
+      {
+        candidateId: 'rel_cross',
+        action: 'create' as const,
+        characterAId: foreignChar,
+        characterAName: 'Foreign',
+        characterBId: charB,
+        characterBName: 'Shen',
+        relationType: 'enemy',
+        turnChapterNos: [],
+        impactAnalysis: 'bad',
+        conflictRisk: 'high',
+        metadata: { sourceKind: 'planned_continuity_change' as const },
+        sourceTrace: { sourceKind: 'planned_continuity_change' as const, originTool: 'generate_continuity_preview' as const, agentRunId: 'run1', candidateType: 'relationship' as const, candidateIndex: 1, instruction: 'Plan', focus: [], contextSources: [] },
+        diffKey: { characterAName: 'Foreign', characterBName: 'Shen', relationType: 'enemy' },
+        proposedFields: {},
+      },
+      {
+        candidateId: 'rel_mismatch',
+        action: 'create' as const,
+        characterAId: charA,
+        characterAName: 'Wrong Name',
+        characterBId: charB,
+        characterBName: 'Shen',
+        relationType: 'mentor',
+        turnChapterNos: [],
+        impactAnalysis: 'bad',
+        conflictRisk: 'high',
+        metadata: { sourceKind: 'planned_continuity_change' as const },
+        sourceTrace: { sourceKind: 'planned_continuity_change' as const, originTool: 'generate_continuity_preview' as const, agentRunId: 'run1', candidateType: 'relationship' as const, candidateIndex: 2, instruction: 'Plan', focus: [], contextSources: [] },
+        diffKey: { characterAName: 'Wrong Name', characterBName: 'Shen', relationType: 'mentor' },
+        proposedFields: {},
+      },
+      {
+        candidateId: 'rel_project',
+        action: 'create' as const,
+        projectId: 'p1',
+        characterAId: charA,
+        characterAName: 'Lin',
+        characterBId: charB,
+        characterBName: 'Shen',
+        relationType: 'rival',
+        turnChapterNos: [],
+        impactAnalysis: 'bad',
+        conflictRisk: 'high',
+        metadata: { sourceKind: 'planned_continuity_change' as const },
+        sourceTrace: { sourceKind: 'planned_continuity_change' as const, originTool: 'generate_continuity_preview' as const, agentRunId: 'run1', candidateType: 'relationship' as const, candidateIndex: 3, instruction: 'Plan', focus: [], contextSources: [] },
+        diffKey: { characterAName: 'Lin', characterBName: 'Shen', relationType: 'rival' },
+        proposedFields: {},
+      },
+    ],
+    timelineCandidates: [
+      {
+        candidateId: 'time_valid',
+        action: 'create' as const,
+        chapterId: chapter1,
+        chapterNo: 7,
+        title: 'Archive Fire',
+        participants: ['Lin'],
+        participantIds: [charA],
+        knownBy: ['Lin'],
+        knownByIds: [charA],
+        unknownBy: ['Shen'],
+        unknownByIds: [charB],
+        impactAnalysis: 'ok',
+        conflictRisk: 'low',
+        metadata: { sourceKind: 'planned_continuity_change' as const },
+        sourceTrace: { sourceKind: 'planned_continuity_change' as const, originTool: 'generate_continuity_preview' as const, agentRunId: 'run1', candidateType: 'timeline' as const, candidateIndex: 0, instruction: 'Plan', focus: [], contextSources: [] },
+        diffKey: { chapterNo: 7, title: 'Archive Fire', existingTimelineEventId: undefined, eventTime: undefined },
+        proposedFields: {},
+      },
+      {
+        candidateId: 'time_mismatch',
+        action: 'create' as const,
+        chapterId: chapter1,
+        chapterNo: 8,
+        title: 'Bad Chapter No',
+        participants: ['Lin'],
+        knownBy: [],
+        unknownBy: [],
+        impactAnalysis: 'bad',
+        conflictRisk: 'high',
+        metadata: { sourceKind: 'planned_continuity_change' as const },
+        sourceTrace: { sourceKind: 'planned_continuity_change' as const, originTool: 'generate_continuity_preview' as const, agentRunId: 'run1', candidateType: 'timeline' as const, candidateIndex: 1, instruction: 'Plan', focus: [], contextSources: [] },
+        diffKey: { chapterNo: 8, title: 'Bad Chapter No', existingTimelineEventId: undefined, eventTime: undefined },
+        proposedFields: {},
+      },
+      {
+        candidateId: 'time_cross',
+        action: 'create' as const,
+        chapterId: foreignChapter,
+        chapterNo: 9,
+        title: 'Foreign Chapter',
+        participants: ['Lin'],
+        knownBy: [],
+        unknownBy: [],
+        impactAnalysis: 'bad',
+        conflictRisk: 'high',
+        metadata: { sourceKind: 'planned_continuity_change' as const },
+        sourceTrace: { sourceKind: 'planned_continuity_change' as const, originTool: 'generate_continuity_preview' as const, agentRunId: 'run1', candidateType: 'timeline' as const, candidateIndex: 2, instruction: 'Plan', focus: [], contextSources: [] },
+        diffKey: { chapterNo: 9, title: 'Foreign Chapter', existingTimelineEventId: undefined, eventTime: undefined },
+        proposedFields: {},
+      },
+      {
+        candidateId: 'time_id_name_mismatch',
+        action: 'create' as const,
+        chapterId: chapter1,
+        chapterNo: 7,
+        title: 'Wrong Participant Name',
+        participants: ['Shen'],
+        participantIds: [charA],
+        knownBy: [],
+        unknownBy: [],
+        impactAnalysis: 'bad',
+        conflictRisk: 'high',
+        metadata: { sourceKind: 'planned_continuity_change' as const },
+        sourceTrace: { sourceKind: 'planned_continuity_change' as const, originTool: 'generate_continuity_preview' as const, agentRunId: 'run1', candidateType: 'timeline' as const, candidateIndex: 3, instruction: 'Plan', focus: [], contextSources: [] },
+        diffKey: { chapterNo: 7, title: 'Wrong Participant Name', existingTimelineEventId: undefined, eventTime: undefined },
+        proposedFields: {},
+      },
+    ],
+    assumptions: [],
+    risks: [],
+    writePlan: { mode: 'preview_only' as const, sourceKind: 'planned_continuity_change' as const, targets: ['RelationshipEdge', 'TimelineEvent'] as ['RelationshipEdge', 'TimelineEvent'], relationshipCandidates: { target: 'RelationshipEdge' as const, count: 4, allowedActions: ['create', 'update', 'delete'] as Array<'create' | 'update' | 'delete'> }, timelineCandidates: { target: 'TimelineEvent' as const, count: 4, allowedActions: ['create', 'update', 'delete'] as Array<'create' | 'update' | 'delete'> }, requiresValidation: true, requiresApprovalBeforePersist: true },
+  };
+
+  const result = await tool.run({ preview: preview as never }, { agentRunId: 'run1', projectId: 'p1', mode: 'plan', approved: false, outputs: {}, policy: {} });
+
+  assert.equal(result.valid, false);
+  assert.deepEqual(result.accepted.relationshipCandidates.map((item) => item.candidateId), ['rel_valid']);
+  assert.deepEqual(result.accepted.timelineCandidates.map((item) => item.candidateId), ['time_valid']);
+  assert.equal(result.writePreview.relationshipCandidates.summary.createCount, 1);
+  assert.equal(result.writePreview.relationshipCandidates.summary.rejectCount, 3);
+  assert.equal(result.writePreview.timelineCandidates.summary.createCount, 1);
+  assert.equal(result.writePreview.timelineCandidates.summary.rejectCount, 3);
+  assert.ok(result.issues.some((issue) => issue.message.includes('characterAId does not belong to current project')));
+  assert.ok(result.issues.some((issue) => issue.message.includes('characterAId/name mismatch')));
+  assert.ok(result.issues.some((issue) => issue.message.includes('must not include projectId')));
+  assert.ok(result.issues.some((issue) => issue.message.includes('chapterNo does not match chapterId')));
+  assert.ok(result.issues.some((issue) => issue.message.includes('chapterId does not belong to current project')));
+  assert.ok(result.issues.some((issue) => issue.message.includes('participantIds/participants mismatch')));
+  assert.equal(tool.requiresApproval, false);
+  assert.deepEqual(tool.sideEffects, []);
+});
+
+test('ValidateContinuityChangesTool compares duplicate keys against existing rows and rejects relationship id without name', async () => {
+  const charA = '11111111-1111-4111-8111111111111';
+  const charB = '22222222-2222-4222-8222222222222';
+  const charC = '33333333-3333-4333-8333333333333';
+  const charD = '44444444-4444-4444-8444444444444';
+  const relId = '55555555-5555-4555-8555555555555';
+  const chapter1 = '66666666-6666-4666-8666666666666';
+  const timeId = '77777777-7777-4777-8777777777777';
+  const prisma = {
+    relationshipEdge: {
+      async findMany() {
+        return [{
+          id: relId,
+          characterAId: charC,
+          characterBId: charD,
+          characterAName: 'Mo',
+          characterBName: 'Ye',
+          relationType: 'rival',
+          publicState: null,
+          hiddenState: null,
+          conflictPoint: null,
+          emotionalArc: null,
+          turnChapterNos: [],
+          finalState: null,
+          status: 'active',
+          sourceType: 'manual',
+          metadata: {},
+        }];
+      },
+    },
+    timelineEvent: {
+      async findMany() {
+        return [{
+          id: timeId,
+          chapterId: chapter1,
+          chapterNo: 7,
+          title: 'Old Fire',
+          eventTime: null,
+          locationName: null,
+          participants: [],
+          cause: null,
+          result: null,
+          impactScope: null,
+          isPublic: false,
+          knownBy: [],
+          unknownBy: [],
+          eventStatus: 'planned',
+          sourceType: 'manual',
+          metadata: {},
+        }];
+      },
+    },
+    character: {
+      async findMany() {
+        return [
+          { id: charA, name: 'Lin' },
+          { id: charB, name: 'Shen' },
+          { id: charC, name: 'Mo' },
+          { id: charD, name: 'Ye' },
+        ];
+      },
+    },
+    chapter: {
+      async findMany() {
+        return [{ id: chapter1, chapterNo: 7 }];
+      },
+    },
+  };
+  const tool = new ValidateContinuityChangesTool(prisma as never);
+  const trace = (candidateType: 'relationship' | 'timeline', candidateIndex: number) => ({
+    sourceKind: 'planned_continuity_change' as const,
+    originTool: 'generate_continuity_preview' as const,
+    agentRunId: 'run1',
+    candidateType,
+    candidateIndex,
+    instruction: 'Plan',
+    focus: [],
+    contextSources: [],
+  });
+  const preview = {
+    relationshipCandidates: [
+      {
+        candidateId: 'rel_create_ok',
+        action: 'create' as const,
+        characterAId: charA,
+        characterAName: 'Lin',
+        characterBId: charB,
+        characterBName: 'Shen',
+        relationType: 'ally',
+        turnChapterNos: [],
+        impactAnalysis: 'ok',
+        conflictRisk: 'low',
+        metadata: { sourceKind: 'planned_continuity_change' as const },
+        sourceTrace: trace('relationship', 0),
+        diffKey: { characterAName: 'Lin', characterBName: 'Shen', relationType: 'ally' },
+        proposedFields: {},
+      },
+      {
+        candidateId: 'rel_duplicate',
+        action: 'create' as const,
+        characterAId: charC,
+        characterAName: 'Mo',
+        characterBId: charD,
+        characterBName: 'Ye',
+        relationType: 'rival',
+        turnChapterNos: [],
+        impactAnalysis: 'duplicate',
+        conflictRisk: 'high',
+        metadata: { sourceKind: 'planned_continuity_change' as const },
+        sourceTrace: trace('relationship', 1),
+        diffKey: { characterAName: 'Mo', characterBName: 'Ye', relationType: 'rival' },
+        proposedFields: {},
+      },
+      {
+        candidateId: 'rel_update_missing_name',
+        action: 'update' as const,
+        existingRelationshipId: relId,
+        characterAId: charA,
+        turnChapterNos: [],
+        impactAnalysis: 'bad',
+        conflictRisk: 'high',
+        metadata: { sourceKind: 'planned_continuity_change' as const },
+        sourceTrace: trace('relationship', 2),
+        diffKey: { existingRelationshipId: relId },
+        proposedFields: {},
+      },
+    ],
+    timelineCandidates: [
+      {
+        candidateId: 'time_create_ok',
+        action: 'create' as const,
+        chapterNo: 7,
+        title: 'Archive Fire',
+        participants: [],
+        knownBy: [],
+        unknownBy: [],
+        impactAnalysis: 'ok',
+        conflictRisk: 'low',
+        metadata: { sourceKind: 'planned_continuity_change' as const },
+        sourceTrace: trace('timeline', 0),
+        diffKey: { chapterNo: 7, title: 'Archive Fire' },
+        proposedFields: {},
+      },
+      {
+        candidateId: 'time_duplicate',
+        action: 'create' as const,
+        chapterNo: 7,
+        title: 'Old Fire',
+        participants: [],
+        knownBy: [],
+        unknownBy: [],
+        impactAnalysis: 'duplicate',
+        conflictRisk: 'high',
+        metadata: { sourceKind: 'planned_continuity_change' as const },
+        sourceTrace: trace('timeline', 1),
+        diffKey: { chapterNo: 7, title: 'Old Fire' },
+        proposedFields: {},
+      },
+    ],
+    assumptions: [],
+    risks: [],
+    writePlan: { mode: 'preview_only' as const, sourceKind: 'planned_continuity_change' as const, targets: ['RelationshipEdge', 'TimelineEvent'] as ['RelationshipEdge', 'TimelineEvent'], relationshipCandidates: { target: 'RelationshipEdge' as const, count: 3, allowedActions: ['create', 'update', 'delete'] as Array<'create' | 'update' | 'delete'> }, timelineCandidates: { target: 'TimelineEvent' as const, count: 2, allowedActions: ['create', 'update', 'delete'] as Array<'create' | 'update' | 'delete'> }, requiresValidation: true, requiresApprovalBeforePersist: true },
+  };
+
+  const result = await tool.run({ preview: preview as never }, { agentRunId: 'run1', projectId: 'p1', mode: 'plan', approved: false, outputs: {}, policy: {} });
+
+  assert.deepEqual(result.accepted.relationshipCandidates.map((item) => item.candidateId), ['rel_create_ok']);
+  assert.deepEqual(result.accepted.timelineCandidates.map((item) => item.candidateId), ['time_create_ok']);
+  assert.ok(result.issues.some((issue) => issue.candidateId === 'rel_duplicate' && issue.message.includes(relId)));
+  assert.ok(result.issues.some((issue) => issue.candidateId === 'rel_update_missing_name' && issue.message.includes('requires matching characterAName')));
+  assert.ok(result.issues.some((issue) => issue.candidateId === 'time_duplicate' && issue.message.includes(timeId)));
+});
+
+test('PersistContinuityChangesTool rejects plan/unapproved/invalid/unknown selection/sourceTrace mismatch', async () => {
+  let transactionCount = 0;
+  const prisma = {
+    async $transaction(callback: (tx: unknown) => Promise<unknown>) {
+      transactionCount += 1;
+      return callback({
+        relationshipEdge: { async findMany() { return []; }, async create() { throw new Error('should not write'); }, async update() { throw new Error('should not write'); }, async delete() { throw new Error('should not write'); } },
+        timelineEvent: { async findMany() { return []; }, async create() { throw new Error('should not write'); }, async update() { throw new Error('should not write'); }, async delete() { throw new Error('should not write'); } },
+        character: { async findMany() { return []; } },
+        chapter: { async findMany() { return []; } },
+      });
+    },
+  };
+  const cache = { async deleteProjectRecallResults() { throw new Error('should not invalidate'); } };
+  const preview = {
+    relationshipCandidates: [{
+      candidateId: 'relc_1',
+      action: 'create' as const,
+      characterAName: 'Lin',
+      characterBName: 'Shen',
+      relationType: 'ally',
+      turnChapterNos: [],
+      impactAnalysis: 'ok',
+      conflictRisk: 'low',
+      metadata: { sourceKind: 'planned_continuity_change' as const },
+      sourceTrace: { sourceKind: 'planned_continuity_change' as const, originTool: 'generate_continuity_preview' as const, agentRunId: 'run1', candidateType: 'relationship' as const, candidateIndex: 0, instruction: 'Plan', focus: [], contextSources: [] },
+      diffKey: { characterAName: 'Lin', characterBName: 'Shen', relationType: 'ally' },
+      proposedFields: {},
+    }],
+    timelineCandidates: [],
+    assumptions: [],
+    risks: [],
+    writePlan: { mode: 'preview_only' as const, sourceKind: 'planned_continuity_change' as const, targets: ['RelationshipEdge', 'TimelineEvent'] as ['RelationshipEdge', 'TimelineEvent'], relationshipCandidates: { target: 'RelationshipEdge' as const, count: 1, allowedActions: ['create', 'update', 'delete'] as Array<'create' | 'update' | 'delete'> }, timelineCandidates: { target: 'TimelineEvent' as const, count: 0, allowedActions: ['create', 'update', 'delete'] as Array<'create' | 'update' | 'delete'> }, requiresValidation: true, requiresApprovalBeforePersist: true },
+  };
+  const validation = {
+    valid: true,
+    issueCount: 0,
+    issues: [],
+    accepted: { relationshipCandidates: [{ candidateId: 'relc_1', action: 'create' as const, existingId: null, label: 'Lin -> Shen (ally)', sourceTrace: preview.relationshipCandidates[0].sourceTrace }], timelineCandidates: [] },
+    rejected: { relationshipCandidates: [], timelineCandidates: [] },
+    writePreview: {
+      projectScope: 'context.projectId' as const,
+      sourceKind: 'planned_continuity_change' as const,
+      relationshipCandidates: { target: 'RelationshipEdge' as const, summary: { createCount: 1, updateCount: 0, deleteCount: 0, rejectCount: 0 }, entries: [{ candidateId: 'relc_1', action: 'create' as const, existingId: null, label: 'Lin -> Shen (ally)', before: null, after: { relationType: 'ally' }, fieldDiff: { relationType: true }, sourceTrace: preview.relationshipCandidates[0].sourceTrace }] },
+      timelineCandidates: { target: 'TimelineEvent' as const, summary: { createCount: 0, updateCount: 0, deleteCount: 0, rejectCount: 0 }, entries: [] },
+      approvalMessage: 'ok',
+    },
+  };
+  const tool = new PersistContinuityChangesTool(prisma as never, cache as never);
+  const mismatchedPreview = { ...preview, relationshipCandidates: [{ ...preview.relationshipCandidates[0], sourceTrace: { ...preview.relationshipCandidates[0].sourceTrace, agentRunId: 'run-other' } }] };
+  const contextFor = (previewOutput: unknown = preview, validationOutput: unknown = validation, overrides: Record<string, unknown> = {}) => ({
+    agentRunId: 'run1',
+    projectId: 'p1',
+    mode: 'act' as const,
+    approved: true,
+    outputs: { 2: previewOutput, 3: validationOutput },
+    stepTools: { 2: 'generate_continuity_preview', 3: 'validate_continuity_changes' },
+    policy: {},
+    ...overrides,
+  });
+
+  await assert.rejects(() => tool.run({ preview: preview as never, validation: validation as never }, contextFor(preview, validation, { mode: 'plan' }) as never), /act mode/);
+  await assert.rejects(() => tool.run({ preview: preview as never, validation: validation as never }, contextFor(preview, validation, { approved: false }) as never), /explicit user approval/);
+  const invalidValidation = { ...validation, valid: false };
+  await assert.rejects(() => tool.run({ preview: preview as never, validation: invalidValidation as never }, contextFor(preview, invalidValidation) as never), /did not pass/);
+  await assert.rejects(() => tool.run({ preview: preview as never, validation: validation as never, selectedCandidateIds: ['missing_candidate'] }, contextFor() as never), /Unknown continuity candidate selection/);
+  await assert.rejects(() => tool.run({ preview: JSON.parse(JSON.stringify(preview)) as never, validation: JSON.parse(JSON.stringify(validation)) as never }, contextFor() as never), /must reference previous generate_continuity_preview output/);
+  await assert.rejects(() => tool.run({ preview: mismatchedPreview as never, validation: validation as never }, contextFor(mismatchedPreview, validation) as never), /sourceTrace\.agentRunId does not match current agent run/);
+  assert.equal(transactionCount, 0);
+});
+
+test('PersistContinuityChangesTool writes selected relationship/timeline candidates, invalidates cache, and supports dryRun', async () => {
+  const charA = '11111111-1111-4111-8111111111111';
+  const charB = '22222222-2222-4222-8222222222222';
+  const chapter1 = '44444444-4444-4444-8444444444444';
+  const createdRelationships: Array<Record<string, unknown>> = [];
+  const createdTimeline: Array<Record<string, unknown>> = [];
+  const invalidatedProjectIds: string[] = [];
+  const txFactory = () => ({
+    relationshipEdge: {
+      async findMany() { return []; },
+      async create(args: { data: Record<string, unknown> }) {
+        createdRelationships.push(args.data);
+        return { id: 'rel-created-1' };
+      },
+      async update() { throw new Error('should not update'); },
+      async delete() { throw new Error('should not delete'); },
+    },
+    timelineEvent: {
+      async findMany() { return []; },
+      async create(args: { data: Record<string, unknown> }) {
+        createdTimeline.push(args.data);
+        return { id: 'time-created-1' };
+      },
+      async update() { throw new Error('should not update'); },
+      async delete() { throw new Error('should not delete'); },
+    },
+    character: {
+      async findMany() {
+        return [
+          { id: charA, name: 'Lin' },
+          { id: charB, name: 'Shen' },
+        ];
+      },
+    },
+    chapter: {
+      async findMany() {
+        return [{ id: chapter1, chapterNo: 7 }];
+      },
+    },
+  });
+  const prisma = {
+    async $transaction(callback: (tx: unknown) => Promise<unknown>) {
+      return callback(txFactory());
+    },
+  };
+  const cache = {
+    async deleteProjectRecallResults(projectId: string) {
+      invalidatedProjectIds.push(projectId);
+    },
+  };
+  const preview = {
+    relationshipCandidates: [{
+      candidateId: 'relc_create',
+      action: 'create' as const,
+      characterAId: charA,
+      characterAName: 'Lin',
+      characterBId: charB,
+      characterBName: 'Shen',
+      relationType: 'ally',
+      publicState: 'fragile',
+      turnChapterNos: [7],
+      impactAnalysis: 'ok',
+      conflictRisk: 'low',
+      metadata: { sourceKind: 'planned_continuity_change' as const },
+      sourceTrace: { sourceKind: 'planned_continuity_change' as const, originTool: 'generate_continuity_preview' as const, agentRunId: 'run1', candidateType: 'relationship' as const, candidateIndex: 0, instruction: 'Plan', focus: [], contextSources: [] },
+      diffKey: { characterAName: 'Lin', characterBName: 'Shen', relationType: 'ally' },
+      proposedFields: {},
+    }],
+    timelineCandidates: [{
+      candidateId: 'tlc_create',
+      action: 'create' as const,
+      chapterId: chapter1,
+      chapterNo: 7,
+      title: 'Archive Fire',
+      eventTime: 'night',
+      participants: ['Lin', 'Shen'],
+      participantIds: [charA, charB],
+      knownBy: ['Lin'],
+      knownByIds: [charA],
+      unknownBy: ['Council'],
+      impactAnalysis: 'ok',
+      conflictRisk: 'low',
+      metadata: { sourceKind: 'planned_continuity_change' as const },
+      sourceTrace: { sourceKind: 'planned_continuity_change' as const, originTool: 'generate_continuity_preview' as const, agentRunId: 'run1', candidateType: 'timeline' as const, candidateIndex: 0, instruction: 'Plan', focus: [], contextSources: [] },
+      diffKey: { chapterNo: 7, title: 'Archive Fire', existingTimelineEventId: undefined, eventTime: 'night' },
+      proposedFields: {},
+    }],
+    assumptions: [],
+    risks: [],
+    writePlan: { mode: 'preview_only' as const, sourceKind: 'planned_continuity_change' as const, targets: ['RelationshipEdge', 'TimelineEvent'] as ['RelationshipEdge', 'TimelineEvent'], relationshipCandidates: { target: 'RelationshipEdge' as const, count: 1, allowedActions: ['create', 'update', 'delete'] as Array<'create' | 'update' | 'delete'> }, timelineCandidates: { target: 'TimelineEvent' as const, count: 1, allowedActions: ['create', 'update', 'delete'] as Array<'create' | 'update' | 'delete'> }, requiresValidation: true, requiresApprovalBeforePersist: true },
+  };
+  const validation = {
+    valid: true,
+    issueCount: 0,
+    issues: [],
+    accepted: {
+      relationshipCandidates: [{ candidateId: 'relc_create', action: 'create' as const, existingId: null, label: 'Lin -> Shen (ally)', sourceTrace: preview.relationshipCandidates[0].sourceTrace }],
+      timelineCandidates: [{ candidateId: 'tlc_create', action: 'create' as const, existingId: null, label: 'Archive Fire', sourceTrace: preview.timelineCandidates[0].sourceTrace }],
+    },
+    rejected: { relationshipCandidates: [], timelineCandidates: [] },
+    writePreview: {
+      projectScope: 'context.projectId' as const,
+      sourceKind: 'planned_continuity_change' as const,
+      relationshipCandidates: { target: 'RelationshipEdge' as const, summary: { createCount: 1, updateCount: 0, deleteCount: 0, rejectCount: 0 }, entries: [{ candidateId: 'relc_create', action: 'create' as const, existingId: null, label: 'Lin -> Shen (ally)', before: null, after: { relationType: 'ally' }, fieldDiff: { relationType: true }, sourceTrace: preview.relationshipCandidates[0].sourceTrace }] },
+      timelineCandidates: { target: 'TimelineEvent' as const, summary: { createCount: 1, updateCount: 0, deleteCount: 0, rejectCount: 0 }, entries: [{ candidateId: 'tlc_create', action: 'create' as const, existingId: null, label: 'Archive Fire', before: null, after: { title: 'Archive Fire' }, fieldDiff: { title: true }, sourceTrace: preview.timelineCandidates[0].sourceTrace }] },
+      approvalMessage: 'ok',
+    },
+  };
+  const tool = new PersistContinuityChangesTool(prisma as never, cache as never);
+  const contextFor = (previewOutput: unknown = preview, validationOutput: unknown = validation) => ({
+    agentRunId: 'run1',
+    projectId: 'p1',
+    mode: 'act' as const,
+    approved: true,
+    outputs: { 2: previewOutput, 3: validationOutput },
+    stepTools: { 2: 'generate_continuity_preview', 3: 'validate_continuity_changes' },
+    policy: {},
+  });
+
+  const persisted = await tool.run(
+    { preview: preview as never, validation: validation as never, selectedCandidateIds: ['relc_create', 'tlc_create'] },
+    contextFor() as never,
+  );
+
+  assert.equal(persisted.dryRun, false);
+  assert.equal(persisted.relationshipResults.createdCount, 1);
+  assert.equal(persisted.timelineResults.createdCount, 1);
+  assert.equal(createdRelationships[0].projectId, 'p1');
+  assert.equal(createdRelationships[0].sourceType, 'agent_continuity');
+  assert.equal((createdRelationships[0].metadata as Record<string, unknown>).agentRunId, 'run1');
+  assert.equal(createdTimeline[0].projectId, 'p1');
+  assert.equal(createdTimeline[0].chapterId, chapter1);
+  assert.deepEqual(invalidatedProjectIds, ['p1']);
+
+  createdRelationships.length = 0;
+  createdTimeline.length = 0;
+  invalidatedProjectIds.length = 0;
+
+  const dryRun = await tool.run(
+    { preview: preview as never, validation: validation as never, dryRun: true },
+    contextFor() as never,
+  );
+
+  assert.equal(dryRun.dryRun, true);
+  assert.equal(dryRun.persistedAt, null);
+  assert.equal(dryRun.relationshipResults.createdCount, 0);
+  assert.equal(dryRun.timelineResults.createdCount, 0);
+  assert.equal(createdRelationships.length, 0);
+  assert.equal(createdTimeline.length, 0);
+  assert.deepEqual(invalidatedProjectIds, []);
+
+  const mismatchedTimelinePreview = {
+    ...preview,
+    timelineCandidates: [{ ...preview.timelineCandidates[0], participants: ['Wrong Name'], participantIds: [charA] }],
+  };
+  const mismatchedTimelineValidation = {
+    ...validation,
+    accepted: {
+      relationshipCandidates: validation.accepted.relationshipCandidates,
+      timelineCandidates: [{ ...validation.accepted.timelineCandidates[0], sourceTrace: mismatchedTimelinePreview.timelineCandidates[0].sourceTrace }],
+    },
+    writePreview: {
+      ...validation.writePreview,
+      timelineCandidates: {
+        ...validation.writePreview.timelineCandidates,
+        entries: [{ ...validation.writePreview.timelineCandidates.entries[0], sourceTrace: mismatchedTimelinePreview.timelineCandidates[0].sourceTrace }],
+      },
+    },
+  };
+  await assert.rejects(
+    () => tool.run({ preview: mismatchedTimelinePreview as never, validation: mismatchedTimelineValidation as never, selectedTimelineCandidateIds: ['tlc_create'] }, contextFor(mismatchedTimelinePreview, mismatchedTimelineValidation) as never),
+    /participantIds\/participants mismatch/,
+  );
+});
+
 test('ProjectsService 读取默认创作定位并 upsert 保存配置', async () => {
   const upserts: Array<Record<string, unknown>> = [];
   let findUniqueCount = 0;
@@ -1399,6 +2826,198 @@ test('ProjectsService 读取默认创作定位并 upsert 保存配置', async ()
   assert.equal(updated.audienceType, '男频长篇读者');
   assert.deepEqual((upserts[0].update as Record<string, unknown>).sellingPoints, ['升级', '悬疑']);
   assert.deepEqual((upserts[0].update as Record<string, unknown>).centralConflict, { protagonistGoal: '破局' });
+});
+
+test('PersistContinuityChangesTool scopes relationship update and timeline delete mutations by projectId', async () => {
+  const charA = '11111111-1111-4111-8111111111111';
+  const charB = '22222222-2222-4222-8222222222222';
+  const relId = '66666666-6666-4666-8666666666666';
+  const timeId = '77777777-7777-4777-8777777777777';
+  const updateWhere: Array<Record<string, unknown>> = [];
+  const deleteWhere: Array<Record<string, unknown>> = [];
+  const invalidatedProjectIds: string[] = [];
+  const existingRelationship = {
+    id: relId,
+    characterAId: charA,
+    characterBId: charB,
+    characterAName: 'Lin',
+    characterBName: 'Shen',
+    relationType: 'ally',
+    publicState: null,
+    hiddenState: null,
+    conflictPoint: null,
+    emotionalArc: null,
+    turnChapterNos: [],
+    finalState: null,
+    status: 'active',
+    sourceType: 'manual',
+    metadata: {},
+  };
+  const existingTimeline = {
+    id: timeId,
+    chapterId: null,
+    chapterNo: 7,
+    title: 'Old Fire',
+    eventTime: null,
+    locationName: null,
+    participants: ['Lin'],
+    cause: null,
+    result: null,
+    impactScope: null,
+    isPublic: false,
+    knownBy: [],
+    unknownBy: [],
+    eventStatus: 'planned',
+    sourceType: 'manual',
+    metadata: {},
+  };
+  const prisma = {
+    async $transaction(callback: (tx: unknown) => Promise<unknown>) {
+      return callback({
+        relationshipEdge: {
+          async findMany() { return [existingRelationship]; },
+          async create() { throw new Error('should not create relationship'); },
+          async updateMany(args: { where: Record<string, unknown> }) { updateWhere.push(args.where); return { count: 1 }; },
+          async deleteMany() { throw new Error('should not delete relationship'); },
+        },
+        timelineEvent: {
+          async findMany() { return [existingTimeline]; },
+          async create() { throw new Error('should not create timeline'); },
+          async updateMany() { throw new Error('should not update timeline'); },
+          async deleteMany(args: { where: Record<string, unknown> }) { deleteWhere.push(args.where); return { count: 1 }; },
+        },
+        character: {
+          async findMany() {
+            return [
+              { id: charA, name: 'Lin' },
+              { id: charB, name: 'Shen' },
+            ];
+          },
+        },
+        chapter: { async findMany() { return []; } },
+      });
+    },
+  };
+  const cache = { async deleteProjectRecallResults(projectId: string) { invalidatedProjectIds.push(projectId); } };
+  const preview = {
+    relationshipCandidates: [{
+      candidateId: 'relc_update',
+      action: 'update' as const,
+      existingRelationshipId: relId,
+      characterAId: charA,
+      characterAName: 'Lin',
+      characterBId: charB,
+      characterBName: 'Shen',
+      relationType: 'enemy',
+      turnChapterNos: [],
+      impactAnalysis: 'ok',
+      conflictRisk: 'low',
+      metadata: { sourceKind: 'planned_continuity_change' as const },
+      sourceTrace: { sourceKind: 'planned_continuity_change' as const, originTool: 'generate_continuity_preview' as const, agentRunId: 'run1', candidateType: 'relationship' as const, candidateIndex: 0, instruction: 'Plan', focus: [], contextSources: [] },
+      diffKey: { existingRelationshipId: relId },
+      proposedFields: {},
+    }],
+    timelineCandidates: [{
+      candidateId: 'tlc_delete',
+      action: 'delete' as const,
+      existingTimelineEventId: timeId,
+      participants: [],
+      knownBy: [],
+      unknownBy: [],
+      impactAnalysis: 'ok',
+      conflictRisk: 'low',
+      metadata: { sourceKind: 'planned_continuity_change' as const },
+      sourceTrace: { sourceKind: 'planned_continuity_change' as const, originTool: 'generate_continuity_preview' as const, agentRunId: 'run1', candidateType: 'timeline' as const, candidateIndex: 0, instruction: 'Plan', focus: [], contextSources: [] },
+      diffKey: { existingTimelineEventId: timeId },
+      proposedFields: {},
+    }],
+    assumptions: [],
+    risks: [],
+    writePlan: { mode: 'preview_only' as const, sourceKind: 'planned_continuity_change' as const, targets: ['RelationshipEdge', 'TimelineEvent'] as ['RelationshipEdge', 'TimelineEvent'], relationshipCandidates: { target: 'RelationshipEdge' as const, count: 1, allowedActions: ['create', 'update', 'delete'] as Array<'create' | 'update' | 'delete'> }, timelineCandidates: { target: 'TimelineEvent' as const, count: 1, allowedActions: ['create', 'update', 'delete'] as Array<'create' | 'update' | 'delete'> }, requiresValidation: true, requiresApprovalBeforePersist: true },
+  };
+  const validation = {
+    valid: true,
+    issueCount: 0,
+    issues: [],
+    accepted: {
+      relationshipCandidates: [{ candidateId: 'relc_update', action: 'update' as const, existingId: relId, label: 'Lin -> Shen (enemy)', sourceTrace: preview.relationshipCandidates[0].sourceTrace }],
+      timelineCandidates: [{ candidateId: 'tlc_delete', action: 'delete' as const, existingId: timeId, label: 'Old Fire', sourceTrace: preview.timelineCandidates[0].sourceTrace }],
+    },
+    rejected: { relationshipCandidates: [], timelineCandidates: [] },
+    writePreview: {
+      projectScope: 'context.projectId' as const,
+      sourceKind: 'planned_continuity_change' as const,
+      relationshipCandidates: { target: 'RelationshipEdge' as const, summary: { createCount: 0, updateCount: 1, deleteCount: 0, rejectCount: 0 }, entries: [{ candidateId: 'relc_update', action: 'update' as const, existingId: relId, label: 'Lin -> Shen (enemy)', before: {}, after: { relationType: 'enemy' }, fieldDiff: { relationType: true }, sourceTrace: preview.relationshipCandidates[0].sourceTrace }] },
+      timelineCandidates: { target: 'TimelineEvent' as const, summary: { createCount: 0, updateCount: 0, deleteCount: 1, rejectCount: 0 }, entries: [{ candidateId: 'tlc_delete', action: 'delete' as const, existingId: timeId, label: 'Old Fire', before: {}, after: null, fieldDiff: {}, sourceTrace: preview.timelineCandidates[0].sourceTrace }] },
+      approvalMessage: 'ok',
+    },
+  };
+  const tool = new PersistContinuityChangesTool(prisma as never, cache as never);
+
+  const result = await tool.run(
+    { preview: preview as never, validation: validation as never },
+    { agentRunId: 'run1', projectId: 'p1', mode: 'act', approved: true, outputs: { 2: preview, 3: validation }, stepTools: { 2: 'generate_continuity_preview', 3: 'validate_continuity_changes' }, policy: {} },
+  );
+
+  assert.deepEqual(updateWhere, [{ id: relId, projectId: 'p1' }]);
+  assert.deepEqual(deleteWhere, [{ id: timeId, projectId: 'p1' }]);
+  assert.equal(result.relationshipResults.updatedCount, 1);
+  assert.equal(result.timelineResults.deletedCount, 1);
+  assert.deepEqual(invalidatedProjectIds, ['p1']);
+});
+
+test('GenerationProfileService reads defaults and upserts project generation strategy with cache invalidation', async () => {
+  const upserts: Array<Record<string, unknown>> = [];
+  const invalidatedProjectIds: string[] = [];
+  const prisma = {
+    project: { async findUnique() { return { id: 'p1' }; } },
+    generationProfile: {
+      async findUnique() {
+        return null;
+      },
+      async upsert(args: Record<string, unknown>) {
+        upserts.push(args);
+        return { id: 'gp1', projectId: 'p1', ...(args.create as Record<string, unknown>), ...(args.update as Record<string, unknown>) };
+      },
+    },
+  };
+  const cache = {
+    async deleteProjectRecallResults(projectId: string) {
+      invalidatedProjectIds.push(projectId);
+    },
+  };
+  const service = new GenerationProfileService(prisma as never, cache as never);
+
+  const defaults = await service.get('p1');
+  const updated = await service.update('p1', {
+    defaultChapterWordCount: 2600,
+    allowNewCharacters: false,
+    allowNewLocations: false,
+    preGenerationChecks: ['blockNewEntities'],
+    promptBudget: { lorebook: 6 },
+  });
+
+  assert.equal(defaults.projectId, 'p1');
+  assert.equal(defaults.autoSummarize, true);
+  assert.equal(defaults.allowNewCharacters, false);
+  assert.equal(updated.defaultChapterWordCount, 2600);
+  assert.deepEqual((upserts[0].create as Record<string, unknown>).preGenerationChecks, ['blockNewEntities']);
+  assert.deepEqual((upserts[0].update as Record<string, unknown>).promptBudget, { lorebook: 6 });
+  assert.deepEqual(invalidatedProjectIds, ['p1']);
+
+  await assert.rejects(() => service.update('p1', { metadata: null } as never), /metadata must be a JSON object/);
+  await assert.rejects(() => service.update('p1', { promptBudget: null } as never), /promptBudget must be a JSON object/);
+  await assert.rejects(() => service.update('p1', { preGenerationChecks: ['blockNewEntities', 7] } as never), /preGenerationChecks must contain only strings/);
+
+  const invalidDto = plainToInstance(UpdateGenerationProfileDto, {
+    preGenerationChecks: ['blockNewEntities', 7],
+    promptBudget: null,
+    metadata: null,
+  });
+  const dtoErrors = await validate(invalidDto, { whitelist: true });
+  assert.equal(dtoErrors.some((error) => error.property === 'preGenerationChecks'), true);
+  assert.equal(dtoErrors.some((error) => error.property === 'promptBudget'), true);
+  assert.equal(dtoErrors.some((error) => error.property === 'metadata'), true);
 });
 
 test('LorebookService update/delete 写入后清理项目召回缓存', async () => {
@@ -1667,6 +3286,110 @@ test('Planner 接受创作引导 guided taskType', () => {
   assert.equal(plan.steps[0].args.taskType, 'guided_step_consultation');
 });
 
+test('Planner 接受 AI 审稿 taskType 并以后端 Tool 元数据要求审批', () => {
+  const tools = {
+    list: () => [
+      createTool({ name: 'resolve_chapter', requiresApproval: false, sideEffects: [] }),
+      createTool({ name: 'ai_quality_review', requiresApproval: true, sideEffects: ['create_quality_report'] }),
+    ],
+  } as unknown as ToolRegistryService;
+  const planner = new AgentPlannerService(new SkillRegistryService(), tools, new RuleEngineService(), {} as LlmGatewayService) as unknown as {
+    validateAndNormalizeLlmPlan: (data: unknown, baseline: { taskType: string; summary: string; assumptions: string[]; risks: string[] }) => { taskType: string; steps: Array<{ tool: string; requiresApproval: boolean }>; requiredApprovals: Array<Record<string, unknown>>; riskReview?: { requiresApproval: boolean } };
+  };
+
+  const plan = planner.validateAndNormalizeLlmPlan(
+    {
+      taskType: 'ai_quality_review',
+      summary: 'AI 审稿计划',
+      assumptions: [],
+      risks: [],
+      steps: [
+        { stepNo: 1, name: '解析章节', tool: 'resolve_chapter', mode: 'act', requiresApproval: false, args: { chapterRef: '当前章' } },
+        { stepNo: 2, name: '写入 AI 审稿报告', tool: 'ai_quality_review', mode: 'act', requiresApproval: false, args: { chapterId: '{{steps.1.output.chapterId}}', instruction: '重点看节奏和伏笔' } },
+      ],
+    },
+    { taskType: 'general', summary: 'fallback', assumptions: [], risks: [] },
+  );
+
+  assert.equal(plan.taskType, 'ai_quality_review');
+  assert.deepEqual(plan.steps.map((step) => step.tool), ['resolve_chapter', 'ai_quality_review']);
+  assert.equal(plan.steps[1].requiresApproval, true);
+  assert.deepEqual(plan.requiredApprovals[0], { approvalType: 'plan', target: { stepNos: [2], tools: ['ai_quality_review'] } });
+  assert.equal(plan.riskReview?.requiresApproval, true);
+});
+
+test('Planner 接受 Story Bible 扩展 taskType 并以后端 Tool 元数据要求 persist 审批', () => {
+  const tools = {
+    list: () => [
+      createTool({ name: 'collect_task_context', requiresApproval: false, sideEffects: [] }),
+      createTool({ name: 'generate_story_bible_preview', requiresApproval: false, sideEffects: [] }),
+      createTool({ name: 'validate_story_bible', requiresApproval: false, sideEffects: [] }),
+      createTool({ name: 'persist_story_bible', requiresApproval: true, sideEffects: ['create_lorebook_entries', 'update_lorebook_entries'] }),
+    ],
+  } as unknown as ToolRegistryService;
+  const planner = new AgentPlannerService(new SkillRegistryService(), tools, new RuleEngineService(), {} as LlmGatewayService) as unknown as {
+    validateAndNormalizeLlmPlan: (data: unknown, baseline: { taskType: string; summary: string; assumptions: string[]; risks: string[] }) => { taskType: string; steps: Array<{ tool: string; requiresApproval: boolean }>; requiredApprovals: Array<Record<string, unknown>>; riskReview?: { requiresApproval: boolean } };
+  };
+
+  const plan = planner.validateAndNormalizeLlmPlan(
+    {
+      taskType: 'story_bible_expand',
+      summary: 'Story Bible 扩展计划',
+      assumptions: [],
+      risks: [],
+      steps: [
+        { stepNo: 1, name: '收集上下文', tool: 'collect_task_context', mode: 'act', requiresApproval: false, args: { taskType: 'story_bible_expand' } },
+        { stepNo: 2, name: '生成预览', tool: 'generate_story_bible_preview', mode: 'act', requiresApproval: false, args: { context: '{{steps.1.output}}', instruction: '扩展宗门戒律' } },
+        { stepNo: 3, name: '校验预览', tool: 'validate_story_bible', mode: 'act', requiresApproval: false, args: { preview: '{{steps.2.output}}', taskContext: '{{steps.1.output}}' } },
+        { stepNo: 4, name: '写入 Story Bible', tool: 'persist_story_bible', mode: 'act', requiresApproval: false, args: { preview: '{{steps.2.output}}', validation: '{{steps.3.output}}' } },
+      ],
+    },
+    { taskType: 'general', summary: 'fallback', assumptions: [], risks: [] },
+  );
+
+  assert.equal(plan.taskType, 'story_bible_expand');
+  assert.deepEqual(plan.steps.map((step) => step.tool), ['collect_task_context', 'generate_story_bible_preview', 'validate_story_bible', 'persist_story_bible']);
+  assert.equal(plan.steps[3].requiresApproval, true);
+  assert.deepEqual(plan.requiredApprovals[0], { approvalType: 'plan', target: { stepNos: [4], tools: ['persist_story_bible'] } });
+  assert.equal(plan.riskReview?.requiresApproval, true);
+});
+
+test('Planner accepts continuity_check taskType and requires approval for persist step', () => {
+  const tools = {
+    list: () => [
+      createTool({ name: 'collect_task_context', requiresApproval: false, sideEffects: [] }),
+      createTool({ name: 'generate_continuity_preview', requiresApproval: false, sideEffects: [] }),
+      createTool({ name: 'validate_continuity_changes', requiresApproval: false, sideEffects: [] }),
+      createTool({ name: 'persist_continuity_changes', requiresApproval: true, sideEffects: ['create_relationship_edge', 'update_relationship_edge', 'create_timeline_event', 'update_timeline_event'] }),
+    ],
+  } as unknown as ToolRegistryService;
+  const planner = new AgentPlannerService(new SkillRegistryService(), tools, new RuleEngineService(), {} as LlmGatewayService) as unknown as {
+    validateAndNormalizeLlmPlan: (data: unknown, baseline: { taskType: string; summary: string; assumptions: string[]; risks: string[] }) => { taskType: string; steps: Array<{ tool: string; requiresApproval: boolean }>; requiredApprovals: Array<Record<string, unknown>>; riskReview?: { requiresApproval: boolean } };
+  };
+
+  const plan = planner.validateAndNormalizeLlmPlan(
+    {
+      taskType: 'continuity_check',
+      summary: '连续性修复计划',
+      assumptions: [],
+      risks: [],
+      steps: [
+        { stepNo: 1, name: '收集上下文', tool: 'collect_task_context', mode: 'act', requiresApproval: false, args: { taskType: 'continuity_check' } },
+        { stepNo: 2, name: '生成连续性预览', tool: 'generate_continuity_preview', mode: 'act', requiresApproval: false, args: { context: '{{steps.1.output}}', instruction: '修复角色关系与时间线冲突' } },
+        { stepNo: 3, name: '校验连续性变更', tool: 'validate_continuity_changes', mode: 'act', requiresApproval: false, args: { preview: '{{steps.2.output}}', taskContext: '{{steps.1.output}}' } },
+        { stepNo: 4, name: '写入连续性变更', tool: 'persist_continuity_changes', mode: 'act', requiresApproval: false, args: { preview: '{{steps.2.output}}', validation: '{{steps.3.output}}' } },
+      ],
+    },
+    { taskType: 'general', summary: 'fallback', assumptions: [], risks: [] },
+  );
+
+  assert.equal(plan.taskType, 'continuity_check');
+  assert.deepEqual(plan.steps.map((step) => step.tool), ['collect_task_context', 'generate_continuity_preview', 'validate_continuity_changes', 'persist_continuity_changes']);
+  assert.equal(plan.steps[3].requiresApproval, true);
+  assert.deepEqual(plan.requiredApprovals[0], { approvalType: 'plan', target: { stepNos: [4], tools: ['persist_continuity_changes'] } });
+  assert.equal(plan.riskReview?.requiresApproval, true);
+});
+
 test('Planner 为 write_chapter 强制追加章节质量门禁链路', () => {
   const toolNames = ['resolve_chapter', 'collect_chapter_context', 'write_chapter', 'polish_chapter', 'fact_validation', 'auto_repair_chapter', 'extract_chapter_facts', 'rebuild_memory', 'review_memory'];
   const tools = { list: () => toolNames.map((name) => createTool({ name, requiresApproval: !['resolve_chapter', 'collect_chapter_context'].includes(name), sideEffects: name === 'resolve_chapter' || name === 'collect_chapter_context' ? [] : ['write'] })) } as unknown as ToolRegistryService;
@@ -1854,7 +3577,7 @@ test('FactExtractorService 抽取事实后同步生成 pending_review 记忆', a
   const prisma = {
     chapter: {
       async findFirst() {
-        return { id: 'c1', projectId: 'p1', chapterNo: 12, title: '雨夜', objective: '推进冲突', conflict: '师徒对峙', timelineSeq: 12, project: { title: '测试书' } };
+        return { id: 'c1', projectId: 'p1', chapterNo: 12, title: '雨夜', objective: '推进冲突', conflict: '师徒对峙', timelineSeq: 12, project: { title: '测试书', generationProfile: { allowNewCharacters: true, allowNewLocations: true, allowNewForeshadows: true, preGenerationChecks: [] } } };
       },
     },
     chapterDraft: { async findFirst() { return { id: 'draft1', chapterId: 'c1', content: '林烬在雨夜得知真相，压下怒意，并注意到旧玉佩再次发光。' }; } },
@@ -1948,6 +3671,77 @@ test('FactExtractorService 抽取事实后同步生成 pending_review 记忆', a
   assert.equal((createdLorebookEntries[0].metadata as Record<string, unknown>).evidence, '林烬进入地下档案库。');
   assert.equal((createdLorebookEntries[0].metadata as Record<string, unknown>).significance, 'major');
   assert.deepEqual(invalidatedProjectIds, ['p1']);
+});
+
+test('FactExtractorService respects GenerationProfile by keeping disallowed new characters pending review', async () => {
+  const memoryInputs: Array<Record<string, unknown>> = [];
+  let characterCreateCalled = false;
+  const prisma = {
+    chapter: {
+      async findFirst() {
+        return {
+          id: 'c1',
+          projectId: 'p1',
+          chapterNo: 6,
+          title: '暗巷',
+          objective: '引出陌生人',
+          conflict: '主角被跟踪',
+          timelineSeq: 6,
+          project: { title: '测试书', generationProfile: { allowNewCharacters: false, allowNewLocations: true, allowNewForeshadows: true, preGenerationChecks: [] } },
+        };
+      },
+    },
+    chapterDraft: { async findFirst() { return { id: 'draft1', chapterId: 'c1', content: '沈砚第一次在暗巷中现身。' }; } },
+    character: { async findMany() { return []; } },
+    lorebookEntry: { async findMany() { return []; } },
+    async $transaction(callback: (tx: unknown) => Promise<unknown>) {
+      return callback({
+        storyEvent: { async deleteMany() { return { count: 0 }; }, async createMany(args: { data: unknown[] }) { return { count: args.data.length }; } },
+        characterStateSnapshot: { async deleteMany() { return { count: 0 }; }, async createMany(args: { data: unknown[] }) { return { count: args.data.length }; } },
+        foreshadowTrack: { async deleteMany() { return { count: 0 }; }, async createMany(args: { data: unknown[] }) { return { count: args.data.length }; } },
+        character: {
+          async update() { return { id: 'character-existing' }; },
+          async create() {
+            characterCreateCalled = true;
+            return { id: 'character-new' };
+          },
+        },
+        lorebookEntry: { async create() { return { id: 'lore-new' }; } },
+      });
+    },
+  };
+  const llm = {
+    async chat() { return { text: '沈砚在暗巷现身，主角无法判断他的立场。' }; },
+    async chatJson(_messages: unknown, options: { appStep: string }) {
+      if (options.appStep === 'fact_extractor.first_appearances') return { data: [{ entityType: 'character', title: '沈砚', detail: '沈砚首次现身。', significance: 'minor', evidence: '沈砚第一次在暗巷中现身。' }] };
+      return { data: [] };
+    },
+  };
+  const memoryWriter = {
+    async replaceGeneratedChapterFactMemories(input: Record<string, unknown>) {
+      memoryInputs.push(input);
+      const firstAppearances = input.firstAppearances as Array<{ entityType: string; status: string }>;
+      return {
+        deletedCount: 0,
+        createdCount: firstAppearances.length + 1,
+        embeddingAttachedCount: firstAppearances.length + 1,
+        chunks: [
+          { id: 'm-summary', memoryType: 'summary', summary: '摘要', status: 'auto' },
+          ...firstAppearances.map((item, index) => ({ id: `m-first-${index}`, memoryType: `first_appearance_${item.entityType}`, summary: '首现', status: item.status })),
+        ],
+      };
+    },
+  };
+  const service = new FactExtractorService(prisma as never, llm as never, memoryWriter as never, { async deleteProjectRecallResults() {} } as never);
+
+  const result = await service.extractChapterFacts('p1', 'c1', 'draft1');
+  const firstAppearances = memoryInputs[0].firstAppearances as Array<{ status: string; entityType: string }>;
+
+  assert.equal(characterCreateCalled, false);
+  assert.equal(result.createdCharacters, 0);
+  assert.equal(firstAppearances[0].entityType, 'character');
+  assert.equal(firstAppearances[0].status, 'pending_review');
+  assert.equal(result.pendingReviewMemoryChunks, 1);
 });
 
 test('RetrievalService 使用 querySpec hash 缓存召回并按开关和 Planner 查询隔离', async () => {
@@ -2703,6 +4497,104 @@ test('PromptBuilderService renders dedicated relationship timeline and writing r
   assert.match(result.user, /sourceId=rule-1/);
 });
 
+test('PromptBuilderService renders GenerationProfile new entity boundaries', async () => {
+  const prisma = {
+    promptTemplate: {
+      async findFirst() {
+        return {
+          systemPrompt: 'system prompt',
+          userTemplate: 'user template',
+        };
+      },
+    },
+  };
+  const service = new PromptBuilderService(prisma as never);
+  const context = {
+    project: { id: 'p1', title: 'Novel', genre: null, tone: null, synopsis: null, outline: null },
+    chapter: { chapterNo: 3, title: 'Archive Night', objective: 'Find the key', conflict: 'Trust breaks', outline: 'Outline', expectedWordCount: 3000 },
+    characters: [],
+    plannedForeshadows: [],
+    previousChapters: [],
+    hardFacts: [],
+    generationProfile: createGenerationProfile({ allowNewCharacters: false, allowNewLocations: true, allowNewForeshadows: false }),
+    contextPack: {
+      schemaVersion: 1,
+      verifiedContext: { lorebookHits: [], memoryHits: [], structuredHits: [] },
+      userIntent: {},
+      generationProfile: createGenerationProfile({ allowNewCharacters: false, allowNewLocations: true, allowNewForeshadows: false }),
+      retrievalDiagnostics: {
+        includeLorebook: true,
+        includeMemory: true,
+        diagnostics: { searchMethod: 'disabled', qualityScore: 0.5, qualityStatus: 'ok', memoryAvailableCount: 0, warnings: [] },
+      },
+    },
+  };
+
+  const result = await service.buildChapterPrompt(context as never);
+
+  assert.match(result.user, /新增事实策略/);
+  assert.match(result.user, /允许新增候选：地点/);
+  assert.match(result.user, /禁止新增事实：角色、伏笔/);
+  assert.match(result.user, /待复核候选/);
+});
+
+test('PromptBuilderService renders current chapter SceneCard execution block as planning context', async () => {
+  const prisma = {
+    promptTemplate: {
+      async findFirst() {
+        return {
+          systemPrompt: 'system prompt',
+          userTemplate: 'user template',
+        };
+      },
+    },
+  };
+  const service = new PromptBuilderService(prisma as never);
+  const context = {
+    project: { id: 'p1', title: 'Novel', genre: null, tone: null, synopsis: null, outline: null },
+    chapter: { chapterNo: 3, title: 'Archive Night', objective: 'Find the key', conflict: 'Trust breaks', outline: 'Outline', expectedWordCount: 3000 },
+    characters: [],
+    plannedForeshadows: [],
+    previousChapters: [],
+    hardFacts: [],
+    contextPack: {
+      schemaVersion: 1,
+      verifiedContext: { lorebookHits: [], memoryHits: [], structuredHits: [] },
+      planningContext: {
+        sceneCards: [{
+          id: 'scene-1',
+          sceneNo: 1,
+          title: 'Archive Gate',
+          locationName: 'Old archive',
+          participants: ['Lin Che', 'Shen Yan'],
+          purpose: 'Get inside the archive.',
+          conflict: 'The guard hides the ledger key.',
+          emotionalTone: 'cold dread',
+          keyInformation: 'The ledger has a missing page.',
+          result: 'Lin Che gets a false key.',
+          status: 'planned',
+          sourceTrace: { sourceType: 'scene_card', sourceId: 'scene-1', projectId: 'p1', chapterId: 'c3', chapterNo: 3, sceneNo: 1 },
+        }],
+      },
+      userIntent: {},
+      retrievalDiagnostics: {
+        includeLorebook: true,
+        includeMemory: true,
+        diagnostics: { searchMethod: 'disabled', qualityScore: 0.5, qualityStatus: 'ok', memoryAvailableCount: 0, warnings: [] },
+      },
+    },
+  };
+
+  const result = await service.buildChapterPrompt(context as never);
+
+  assert.match(result.user, /【场景执行】/);
+  assert.match(result.user, /SceneCard 是本章写作计划资产/);
+  assert.match(result.user, /sourceType=scene_card/);
+  assert.match(result.user, /sourceId=scene-1/);
+  assert.match(result.user, /Archive Gate/);
+  assert.equal(result.debug.sceneCardCount, 1);
+});
+
 test('ValidationService flags writing rule no appearance deterministically', async () => {
   let createdIssues: Array<Record<string, unknown>> = [];
   const prisma = {
@@ -3070,6 +4962,699 @@ test('RelationshipsService rejects character id and name mismatches', async () =
     }),
     /id\/name mismatch/,
   );
+});
+
+test('ScenesService create update remove validate refs and invalidate recall cache', async () => {
+  const invalidatedProjectIds: string[] = [];
+  const createdRows: Array<Record<string, unknown>> = [];
+  const updatedRows: Array<Record<string, unknown>> = [];
+  const deletedSceneIds: string[] = [];
+  const prisma = {
+    project: { async findUnique() { return { id: 'p1' }; } },
+    volume: {
+      async findFirst(args: { where: Record<string, unknown> }) {
+        return ['v1', 'v2'].includes(args.where.id as string) && args.where.projectId === 'p1' ? { id: args.where.id } : null;
+      },
+    },
+    chapter: {
+      async findFirst(args: { where: Record<string, unknown> }) {
+        if (args.where.id === 'c1' && args.where.projectId === 'p1') return { id: 'c1', volumeId: 'v1' };
+        if (args.where.chapterNo === 2 && args.where.projectId === 'p1') return { id: 'c1' };
+        return null;
+      },
+    },
+    sceneCard: {
+      async create(args: { data: Record<string, unknown> }) {
+        createdRows.push(args.data);
+        return { id: 'scene-1', ...args.data };
+      },
+      async findFirst(args: { where: { id: string; projectId: string } }) {
+        if (args.where.id === 'missing' || args.where.projectId !== 'p1') return null;
+        return { id: args.where.id, projectId: 'p1', volumeId: 'v1', chapterId: 'c1' };
+      },
+      async findMany(args: { where: Record<string, unknown> }) {
+        return [{ id: 'scene-1', ...args.where }];
+      },
+      async update(args: { data: Record<string, unknown> }) {
+        updatedRows.push(args.data);
+        return { id: 'scene-1', projectId: 'p1', ...args.data };
+      },
+      async delete(args: { where: { id: string } }) {
+        deletedSceneIds.push(args.where.id);
+        return { id: args.where.id };
+      },
+    },
+  };
+  const cache = { async deleteProjectRecallResults(projectId: string) { invalidatedProjectIds.push(projectId); } };
+  const service = new ScenesService(prisma as never, cache as never);
+
+  const created = await service.create('p1', {
+    volumeId: 'v1',
+    chapterId: 'c1',
+    sceneNo: 1,
+    title: 'Archive ambush',
+    participants: [' Lin Che ', '', 'Shen Yan'],
+  });
+  const listed = await service.list('p1', { chapterNo: 2 });
+  const updated = await service.update('p1', 'scene-1', { status: 'drafted' });
+  const removed = await service.remove('p1', 'scene-1');
+
+  assert.equal(created.volumeId, 'v1');
+  assert.equal(created.chapterId, 'c1');
+  assert.deepEqual(createdRows[0].participants, ['Lin Che', 'Shen Yan']);
+  assert.equal(listed[0].chapterId, 'c1');
+  assert.equal(updatedRows[0].status, 'drafted');
+  assert.deepEqual(deletedSceneIds, ['scene-1']);
+  assert.deepEqual(removed, { deleted: true, id: 'scene-1' });
+  assert.deepEqual(invalidatedProjectIds, ['p1', 'p1', 'p1']);
+
+  await assert.rejects(
+    () => service.update('p1', 'scene-1', { volumeId: 'v2' }),
+    /does not belong to volumeId/,
+  );
+  await assert.rejects(() => service.create('p1', { volumeId: 'missing-volume', title: 'Bad volume' }), /Volume not found in project/);
+  await assert.rejects(() => service.create('p1', { chapterId: 'missing-chapter', title: 'Bad chapter' }), /Chapter not found in project/);
+  await assert.rejects(() => service.update('p1', 'scene-1', { metadata: null } as never), /metadata must be a JSON object/);
+  await assert.rejects(() => service.update('p1', 'scene-1', { participants: ['Lin Che', 42] } as never), /participants must contain only strings/);
+  assert.deepEqual(await service.list('p1', { chapterNo: 99 }), []);
+  await assert.rejects(() => service.update('other-project', 'scene-1', { status: 'drafted' }), /SceneCard not found/);
+  await assert.rejects(() => service.remove('other-project', 'scene-1'), /SceneCard not found/);
+  await assert.rejects(() => service.remove('p1', 'missing'), /SceneCard not found/);
+
+  const missingProjectService = new ScenesService(
+    {
+      project: { async findUnique() { return null; } },
+    } as never,
+    cache as never,
+  );
+  await assert.rejects(() => missingProjectService.create('missing-project', { title: 'No project' }), /Project not found/);
+});
+
+test('ChapterPatternsService create update remove invalidate recall cache', async () => {
+  const invalidatedProjectIds: string[] = [];
+  const createdRows: Array<Record<string, unknown>> = [];
+  const updatedRows: Array<Record<string, unknown>> = [];
+  const deletedPatternIds: string[] = [];
+  const prisma = {
+    project: { async findUnique() { return { id: 'p1' }; } },
+    chapterPattern: {
+      async create(args: { data: Record<string, unknown> }) {
+        createdRows.push(args.data);
+        return { id: 'pattern-1', ...args.data };
+      },
+      async findFirst(args: { where: { id: string; projectId: string } }) {
+        if (args.where.id === 'missing' || args.where.projectId !== 'p1') return null;
+        return { id: args.where.id, projectId: 'p1' };
+      },
+      async findMany(args: { where: Record<string, unknown> }) {
+        return [{ id: 'pattern-1', ...args.where }];
+      },
+      async update(args: { data: Record<string, unknown> }) {
+        updatedRows.push(args.data);
+        return { id: 'pattern-1', projectId: 'p1', ...args.data };
+      },
+      async delete(args: { where: { id: string } }) {
+        deletedPatternIds.push(args.where.id);
+        return { id: args.where.id };
+      },
+    },
+  };
+  const cache = { async deleteProjectRecallResults(projectId: string) { invalidatedProjectIds.push(projectId); } };
+  const service = new ChapterPatternsService(prisma as never, cache as never);
+
+  const created = await service.create('p1', {
+    patternType: 'reveal',
+    name: 'Secret reveal',
+    applicableScenes: [' reveal ', '', 'trial'],
+    structure: { beats: ['setup', 'turn'] },
+  });
+  const listed = await service.list('p1', { patternType: 'reveal' });
+  const updated = await service.update('p1', 'pattern-1', { pacingAdvice: { target: 'tight' } });
+  const removed = await service.remove('p1', 'pattern-1');
+
+  assert.equal(created.patternType, 'reveal');
+  assert.deepEqual(createdRows[0].applicableScenes, ['reveal', 'trial']);
+  assert.equal(listed[0].patternType, 'reveal');
+  assert.deepEqual(updatedRows[0].pacingAdvice, { target: 'tight' });
+  assert.equal(updated.id, 'pattern-1');
+  assert.deepEqual(deletedPatternIds, ['pattern-1']);
+  assert.deepEqual(removed, { deleted: true, id: 'pattern-1' });
+  assert.deepEqual(invalidatedProjectIds, ['p1', 'p1', 'p1']);
+
+  await assert.rejects(() => service.update('p1', 'missing', { status: 'archived' }), /ChapterPattern not found/);
+  await assert.rejects(() => service.update('other-project', 'pattern-1', { status: 'archived' }), /ChapterPattern not found/);
+  await assert.rejects(() => service.remove('other-project', 'pattern-1'), /ChapterPattern not found/);
+  await assert.rejects(() => service.update('p1', 'pattern-1', { structure: null } as never), /structure must be a JSON object/);
+  await assert.rejects(() => service.update('p1', 'pattern-1', { applicableScenes: ['reveal', 7] } as never), /applicableScenes must contain only strings/);
+
+  const missingProjectService = new ChapterPatternsService(
+    {
+      project: { async findUnique() { return null; } },
+    } as never,
+    cache as never,
+  );
+  await assert.rejects(
+    () => missingProjectService.create('missing-project', { patternType: 'reveal', name: 'No project' }),
+    /Project not found/,
+  );
+});
+
+test('PacingBeatsService resolves chapter refs validates levels and invalidates recall cache', async () => {
+  const invalidatedProjectIds: string[] = [];
+  const createdRows: Array<Record<string, unknown>> = [];
+  const updatedRows: Array<Record<string, unknown>> = [];
+  const deletedBeatIds: string[] = [];
+  const prisma = {
+    project: { async findUnique() { return { id: 'p1' }; } },
+    volume: {
+      async findFirst(args: { where: Record<string, unknown> }) {
+        return args.where.id === 'v1' && args.where.projectId === 'p1' ? { id: 'v1' } : null;
+      },
+    },
+    chapter: {
+      async findFirst(args: { where: Record<string, unknown> }) {
+        if (args.where.id === 'c2' && args.where.projectId === 'p1') return { id: 'c2', chapterNo: 2, volumeId: 'v1' };
+        if (args.where.chapterNo === 2 && args.where.projectId === 'p1') return { id: 'c2', chapterNo: 2, volumeId: 'v1' };
+        return null;
+      },
+    },
+    pacingBeat: {
+      async create(args: { data: Record<string, unknown> }) {
+        createdRows.push(args.data);
+        return { id: 'beat-1', ...args.data };
+      },
+      async findFirst(args: { where: { id: string; projectId: string } }) {
+        if (args.where.id === 'missing' || args.where.projectId !== 'p1') return null;
+        return { id: args.where.id, projectId: 'p1', volumeId: 'v1', chapterId: 'c2', chapterNo: 2 };
+      },
+      async findMany(args: { where: Record<string, unknown> }) {
+        return [{ id: 'beat-1', ...args.where }];
+      },
+      async update(args: { data: Record<string, unknown> }) {
+        updatedRows.push(args.data);
+        return { id: 'beat-1', projectId: 'p1', ...args.data };
+      },
+      async delete(args: { where: { id: string } }) {
+        deletedBeatIds.push(args.where.id);
+        return { id: args.where.id };
+      },
+    },
+  };
+  const cache = { async deleteProjectRecallResults(projectId: string) { invalidatedProjectIds.push(projectId); } };
+  const service = new PacingBeatsService(prisma as never, cache as never);
+
+  const created = await service.create('p1', { chapterNo: 2, beatType: 'setup' });
+  const listed = await service.list('p1', { chapterNo: 2 });
+  const updated = await service.update('p1', 'beat-1', { tensionLevel: 80 });
+  const removed = await service.remove('p1', 'beat-1');
+
+  assert.equal(created.chapterId, 'c2');
+  assert.equal(created.volumeId, 'v1');
+  assert.equal(createdRows[0].emotionalIntensity, 50);
+  assert.equal(createdRows[0].tensionLevel, 50);
+  assert.equal(createdRows[0].payoffLevel, 50);
+  assert.equal(listed[0].chapterNo, 2);
+  assert.equal(updatedRows[0].tensionLevel, 80);
+  assert.equal(updated.id, 'beat-1');
+  assert.deepEqual(deletedBeatIds, ['beat-1']);
+  assert.deepEqual(removed, { deleted: true, id: 'beat-1' });
+  assert.deepEqual(invalidatedProjectIds, ['p1', 'p1', 'p1']);
+
+  await assert.rejects(() => service.create('p1', { beatType: 'bad', emotionalIntensity: 101 }), /between 0 and 100/);
+  await assert.rejects(() => service.update('p1', 'beat-1', { chapterId: 'c2', chapterNo: 3 }), /chapterNo does not match/);
+  await assert.rejects(() => service.create('p1', { volumeId: 'missing-volume', beatType: 'bad-volume' }), /Volume not found in project/);
+  await assert.rejects(() => service.create('p1', { chapterId: 'missing-chapter', beatType: 'bad-chapter' }), /Chapter not found in project/);
+  await assert.rejects(() => service.create('p1', { chapterNo: 99, beatType: 'bad-chapter-no' }), /Chapter number not found in project/);
+  await assert.rejects(() => service.update('p1', 'beat-1', { volumeId: 'missing-volume' }), /Volume not found in project/);
+  await assert.rejects(() => service.update('p1', 'beat-1', { metadata: null } as never), /metadata must be a JSON object/);
+  await assert.rejects(() => service.update('other-project', 'beat-1', { tensionLevel: 60 }), /PacingBeat not found/);
+  await assert.rejects(() => service.remove('other-project', 'beat-1'), /PacingBeat not found/);
+  await assert.rejects(() => service.remove('p1', 'missing'), /PacingBeat not found/);
+
+  const missingProjectService = new PacingBeatsService(
+    {
+      project: { async findUnique() { return null; } },
+    } as never,
+    cache as never,
+  );
+  await assert.rejects(() => missingProjectService.create('missing-project', { beatType: 'No project' }), /Project not found/);
+});
+
+test('QualityReportsService create list update remove validates refs and invalidates recall cache', async () => {
+  const chapterId = '11111111-1111-4111-8111-111111111111';
+  const draftId = '22222222-2222-4222-8222-222222222222';
+  const agentRunId = '33333333-3333-4333-8333-333333333333';
+  const invalidatedProjectIds: string[] = [];
+  const createdRows: Array<Record<string, unknown>> = [];
+  const updatedRows: Array<Record<string, unknown>> = [];
+  const deletedReportIds: string[] = [];
+  const prisma = {
+    project: { async findUnique() { return { id: 'p1' }; } },
+    chapter: {
+      async findFirst(args: { where: Record<string, unknown> }) {
+        return args.where.id === chapterId && args.where.projectId === 'p1' ? { id: chapterId } : null;
+      },
+    },
+    chapterDraft: {
+      async findFirst(args: { where: Record<string, unknown> }) {
+        return args.where.id === draftId ? { id: draftId, chapterId } : null;
+      },
+    },
+    agentRun: {
+      async findFirst(args: { where: Record<string, unknown> }) {
+        return args.where.id === agentRunId && args.where.projectId === 'p1' ? { id: agentRunId } : null;
+      },
+    },
+    qualityReport: {
+      async create(args: { data: Record<string, unknown> }) {
+        createdRows.push(args.data);
+        return { id: 'report-1', ...args.data };
+      },
+      async findMany(args: { where: Record<string, unknown> }) {
+        return [{ id: 'report-1', ...args.where }];
+      },
+      async findFirst(args: { where: { id: string; projectId: string } }) {
+        if (args.where.id === 'missing' || args.where.projectId !== 'p1') return null;
+        return { id: args.where.id, chapterId, draftId, agentRunId };
+      },
+      async update(args: { data: Record<string, unknown> }) {
+        updatedRows.push(args.data);
+        return { id: 'report-1', projectId: 'p1', ...args.data };
+      },
+      async delete(args: { where: { id: string } }) {
+        deletedReportIds.push(args.where.id);
+        return { id: args.where.id };
+      },
+    },
+  };
+  const cache = { async deleteProjectRecallResults(projectId: string) { invalidatedProjectIds.push(projectId); } };
+  const service = new QualityReportsService(prisma as never, cache as never);
+
+  const created = await service.create('p1', {
+    draftId,
+    agentRunId,
+    sourceType: 'generation',
+    sourceId: draftId,
+    reportType: 'generation_quality_gate',
+    scores: { overall: 92 },
+    issues: [],
+    verdict: 'pass',
+    summary: 'ok',
+  });
+  const listed = await service.list('p1', { chapterId, draftId, sourceType: 'generation', verdict: 'pass' });
+  const updated = await service.update('p1', 'report-1', { verdict: 'warn', issues: [{ severity: 'warning', message: 'thin pacing' }] });
+  const removed = await service.remove('p1', 'report-1');
+
+  assert.equal(created.chapterId, chapterId);
+  assert.equal(createdRows[0].draftId, draftId);
+  assert.equal(listed[0].chapterId, chapterId);
+  assert.equal(updatedRows[0].verdict, 'warn');
+  assert.deepEqual(updatedRows[0].issues, [{ severity: 'warning', message: 'thin pacing' }]);
+  assert.deepEqual(removed, { deleted: true, id: 'report-1' });
+  assert.deepEqual(deletedReportIds, ['report-1']);
+  assert.deepEqual(invalidatedProjectIds, ['p1', 'p1', 'p1']);
+
+  await assert.rejects(() => service.create('p1', { sourceType: 'bad', reportType: 'manual', verdict: 'pass' } as never), /sourceType/);
+  await assert.rejects(() => service.create('p1', { sourceType: 'manual', reportType: 'manual', verdict: 'bad' } as never), /verdict/);
+  await assert.rejects(() => service.create('p1', { sourceType: 'manual', reportType: 'manual', verdict: 'pass', scores: null } as never), /scores must be a JSON object/);
+  await assert.rejects(() => service.create('p1', { sourceType: 'manual', reportType: 'manual', verdict: 'pass', issues: {} } as never), /issues must be a JSON array/);
+  await assert.rejects(() => service.update('other-project', 'report-1', { verdict: 'warn' }), /QualityReport not found/);
+  await assert.rejects(() => service.remove('p1', 'missing'), /QualityReport not found/);
+});
+
+test('AiQualityReviewService writes normalized ai_review QualityReport', async () => {
+  const draftId = '22222222-2222-4222-8222-222222222222';
+  const chapterId = '11111111-1111-4111-8111-111111111111';
+  const agentRunId = '33333333-3333-4333-8333-333333333333';
+  const createdReports: Array<{ projectId: string; dto: Record<string, unknown> }> = [];
+  const prisma = {
+    chapterDraft: {
+      async findFirst() {
+        return {
+          id: draftId,
+          versionNo: 2,
+          content: '主角追到雨巷深处，发现旧伏笔留下的铜铃。'.repeat(30),
+          source: 'ai',
+          modelInfo: {},
+          generationContext: {},
+          createdAt: new Date('2026-05-05T00:00:00Z'),
+          chapter: {
+            id: chapterId,
+            chapterNo: 12,
+            title: '雨巷铜铃',
+            objective: '追查铜铃线索',
+            conflict: '守门人阻止主角靠近',
+            revealPoints: '铜铃来自旧案',
+            foreshadowPlan: '回收第 3 章铜铃伏笔',
+            outline: '主角在雨巷追踪旧案线索。',
+            craftBrief: {},
+            expectedWordCount: 3000,
+            volume: null,
+          },
+        };
+      },
+    },
+    project: { async findUnique() { return { id: 'p1', title: '测试项目', genre: '悬疑', theme: '真相', tone: '冷峻', logline: null, synopsis: null, outline: null, creativeProfile: null }; } },
+    validationIssue: { async findMany() { return []; } },
+    writingRule: { async findMany() { return [{ ruleType: 'foreshadow', title: '伏笔要回收', content: '本章必须回应铜铃。', severity: 'warning', entityType: null, entityRef: null }]; } },
+    relationshipEdge: { async findMany() { return []; } },
+    timelineEvent: { async findMany() { return []; } },
+    foreshadowTrack: { async findMany() { return [{ title: '铜铃', detail: '第 3 章埋下', status: 'open', scope: 'arc', firstSeenChapterNo: 3, lastSeenChapterNo: null }]; } },
+    sceneCard: { async findMany() { return []; } },
+    pacingBeat: { async findMany() { return []; } },
+    qualityReport: { async findMany() { return []; } },
+  };
+  const llm = {
+    async chatJson(messages: Array<{ role: string; content: string }>, options: Record<string, unknown>) {
+      assert.equal(options.appStep, 'summary');
+      assert.match(messages[1].content, /铜铃/);
+      return {
+        data: {
+          summary: '伏笔回收明确，但节奏略急。',
+          verdict: 'warn',
+          scores: { overall: 82, plotProgress: 90, characterConsistency: 86, proseStyle: 80, pacing: 68, foreshadowing: 88, worldbuildingConsistency: 84, timelineKnowledge: 81, ruleCompliance: 79 },
+          issues: [{ severity: 'warn', issueType: 'pacing_rush', dimension: 'pacing', message: '雨巷追踪转折过快。', evidence: '追到雨巷深处', suggestion: '增加一处阻碍。' }],
+          strengths: ['铜铃伏笔有回收'],
+        },
+        result: { model: 'mock-review-model', usage: { total_tokens: 100 }, rawPayloadSummary: { id: 'mock' } },
+      };
+    },
+  };
+  const qualityReports = {
+    async create(projectId: string, dto: Record<string, unknown>) {
+      createdReports.push({ projectId, dto });
+      return { id: 'report-1', projectId, ...dto };
+    },
+  };
+  const service = new AiQualityReviewService(prisma as never, llm as never, qualityReports as never);
+
+  const result = await service.reviewAndCreate('p1', { draftId, instruction: '重点看伏笔和节奏', focus: ['foreshadowing', 'pacing'] }, { agentRunId });
+
+  assert.equal(result.reportId, 'report-1');
+  assert.equal(result.verdict, 'warn');
+  assert.equal(result.scores.overall, 82);
+  assert.equal(result.issues[0].severity, 'warning');
+  assert.equal(createdReports[0].projectId, 'p1');
+  assert.equal(createdReports[0].dto.sourceType, 'ai_review');
+  assert.equal(createdReports[0].dto.sourceId, draftId);
+  assert.equal(createdReports[0].dto.reportType, 'ai_chapter_review');
+  assert.equal(createdReports[0].dto.agentRunId, agentRunId);
+  assert.deepEqual((createdReports[0].dto.metadata as Record<string, unknown>).sourceTrace, {
+    sourceType: 'chapter_draft',
+    sourceId: draftId,
+    chapterId,
+    chapterNo: 12,
+    agentRunId,
+  });
+});
+
+test('AiQualityReviewService skips malformed LLM issues instead of creating default warnings', async () => {
+  const createdReports: Array<{ projectId: string; dto: Record<string, unknown> }> = [];
+  const prisma = {
+    chapterDraft: {
+      async findFirst() {
+        return {
+          id: 'draft-malformed',
+          versionNo: 1,
+          content: 'Draft content with enough words for review. '.repeat(80),
+          source: 'ai',
+          modelInfo: {},
+          generationContext: {},
+          createdAt: new Date('2026-05-05T00:00:00Z'),
+          chapter: {
+            id: 'chapter-malformed',
+            chapterNo: 3,
+            title: 'Malformed Review',
+            objective: 'Check malformed issue handling',
+            conflict: null,
+            revealPoints: null,
+            foreshadowPlan: null,
+            outline: null,
+            craftBrief: {},
+            expectedWordCount: null,
+            volume: null,
+          },
+        };
+      },
+    },
+    project: { async findUnique() { return { id: 'p1', title: 'Project', genre: null, theme: null, tone: null, logline: null, synopsis: null, outline: null, creativeProfile: null }; } },
+    validationIssue: { async findMany() { return []; } },
+    writingRule: { async findMany() { return []; } },
+    relationshipEdge: { async findMany() { return []; } },
+    timelineEvent: { async findMany() { return []; } },
+    foreshadowTrack: { async findMany() { return []; } },
+    sceneCard: { async findMany() { return []; } },
+    pacingBeat: { async findMany() { return []; } },
+    qualityReport: { async findMany() { return []; } },
+  };
+  const llm = {
+    async chatJson() {
+      return {
+        data: {
+          summary: 'Only one actionable issue.',
+          scores: { overall: 84 },
+          issues: [null, {}, { severity: 'warn', issueType: 'pacing', dimension: 'pacing', message: 'Valid issue' }],
+        },
+        result: { model: 'mock-review-model' },
+      };
+    },
+  };
+  const qualityReports = {
+    async create(projectId: string, dto: Record<string, unknown>) {
+      createdReports.push({ projectId, dto });
+      return { id: 'report-malformed', projectId, ...dto };
+    },
+  };
+  const service = new AiQualityReviewService(prisma as never, llm as never, qualityReports as never);
+
+  const result = await service.reviewAndCreate('p1', { chapterId: 'chapter-malformed' });
+
+  assert.equal(result.verdict, 'warn');
+  assert.deepEqual(result.issues.map((issue) => issue.message), ['Valid issue']);
+  assert.deepEqual(result.normalizationWarnings, [
+    'issues[0] skipped: missing issue object',
+    'issues[1] skipped: missing non-empty message',
+  ]);
+  assert.deepEqual((createdReports[0].dto.metadata as Record<string, unknown>).normalizationWarnings, result.normalizationWarnings);
+});
+
+test('AiQualityReviewTool requires approval and Act mode before writing report', async () => {
+  let callCount = 0;
+  const tool = new AiQualityReviewTool({
+    async reviewAndCreate() {
+      callCount += 1;
+      return { reportId: 'report-1', projectId: 'p1', chapterId: 'c1', draftId: 'd1', sourceType: 'ai_review', reportType: 'ai_chapter_review', verdict: 'pass', summary: 'ok', scores: { overall: 90 }, issues: [] };
+    },
+  } as never);
+
+  assert.equal(tool.requiresApproval, true);
+  assert.deepEqual(tool.allowedModes, ['act']);
+  assert.deepEqual(tool.sideEffects, ['create_quality_report']);
+  assert.equal(tool.executionTimeoutMs, 300_000);
+  assert.ok(tool.executionTimeoutMs > 240_000);
+  await assert.rejects(() => tool.run({ chapterId: 'c1' }, { agentRunId: 'run1', projectId: 'p1', mode: 'plan', approved: false, outputs: {}, policy: {} }), /Act 模式/);
+  await assert.rejects(() => tool.run({ chapterId: 'c1' }, { agentRunId: 'run1', projectId: 'p1', mode: 'act', approved: false, outputs: {}, policy: {} }), /需要用户审批/);
+
+  const output = await tool.run({ draftId: 'd1' }, { agentRunId: 'run1', projectId: 'p1', mode: 'act', approved: true, outputs: {}, policy: {} });
+  assert.equal(output.reportId, 'report-1');
+  assert.equal(callCount, 1);
+});
+
+test('ChapterAutoRepairService reads warning issues from QualityReport when no issues are provided', async () => {
+  let findManyArgs: { where: Record<string, unknown> } | undefined;
+  const service = new ChapterAutoRepairService({} as never, {} as never) as unknown as {
+    loadQualityReportIssues: (projectId: string, chapterId: string, draftId: string) => Promise<Array<{ severity: string; message: string }>>;
+    prisma: unknown;
+  };
+  Object.assign(service, {
+    prisma: {
+      qualityReport: {
+        async findMany(args: { where: Record<string, unknown> }) {
+          findManyArgs = args;
+          return [
+            {
+              reportType: 'generation_quality_gate',
+              verdict: 'warn',
+              summary: null,
+              issues: [{ severity: 'warn', message: 'Scene card clue missing' }],
+            },
+          ];
+        },
+      },
+    },
+  });
+
+  const issues = await service.loadQualityReportIssues('p1', 'c1', 'd1');
+  assert.equal(findManyArgs?.where.projectId, 'p1');
+  assert.equal(findManyArgs?.where.chapterId, 'c1');
+  assert.equal(findManyArgs?.where.draftId, 'd1');
+  assert.equal(findManyArgs?.where.sourceType, 'generation');
+  assert.equal(findManyArgs?.where.reportType, 'generation_quality_gate');
+  assert.equal(Object.prototype.hasOwnProperty.call(findManyArgs?.where ?? {}, 'OR'), false);
+  assert.deepEqual(issues, [{ severity: 'warning', message: '[generation_quality_gate] Scene card clue missing', suggestion: undefined }]);
+});
+
+test('ChapterAutoRepairService ignores QualityReport fallback when issues are explicitly provided', async () => {
+  let validationIssueCallCount = 0;
+  let qualityReportCallCount = 0;
+  let llmCallCount = 0;
+  const prisma = {
+    chapter: {
+      async findFirst() {
+        return { id: 'c1', chapterNo: 1, title: 'Explicit Issues', objective: null, conflict: null, outline: null };
+      },
+    },
+    chapterDraft: {
+      async findFirst() {
+        return {
+          id: 'd1',
+          chapterId: 'c1',
+          versionNo: 1,
+          content: 'Draft text with no explicit repair issues. '.repeat(10),
+          createdBy: 'u1',
+          generationContext: {},
+        };
+      },
+    },
+    validationIssue: {
+      async findMany() {
+        validationIssueCallCount += 1;
+        return [{ severity: 'error', message: 'Should not be loaded' }];
+      },
+    },
+    qualityReport: {
+      async findMany() {
+        qualityReportCallCount += 1;
+        return [{ sourceType: 'ai_review', reportType: 'ai_chapter_review', verdict: 'fail', issues: [{ severity: 'error', message: 'Should not be loaded' }] }];
+      },
+    },
+  };
+  const llm = {
+    async chat() {
+      llmCallCount += 1;
+      return { text: 'unused' };
+    },
+  };
+  const service = new ChapterAutoRepairService(prisma as never, llm as never);
+
+  const result = await service.run('p1', 'c1', { draftId: 'd1', issues: [], maxRounds: 1 });
+
+  assert.equal(result.skipped, true);
+  assert.equal(result.reason, 'no_repairable_issues');
+  assert.equal(validationIssueCallCount, 0);
+  assert.equal(qualityReportCallCount, 0);
+  assert.equal(llmCallCount, 0);
+});
+
+test('ChapterAutoRepairService run merges QualityReport issues into repair prompt', async () => {
+  let promptText = '';
+  let qualityReportFindArgs: { where: Record<string, unknown> } | undefined;
+  const createdDrafts: Array<Record<string, unknown>> = [];
+  const prisma = {
+    chapter: {
+      async findFirst() {
+        return { id: 'c1', chapterNo: 8, title: '暗巷', objective: '推进追击', conflict: '线索断裂', outline: '主角在暗巷追查线索。' };
+      },
+      async update() {},
+    },
+    chapterDraft: {
+      async findFirst(args: { where: Record<string, unknown> }) {
+        if (args.where.id === 'd1' || args.where.isCurrent) {
+          return {
+            id: 'd1',
+            chapterId: 'c1',
+            versionNo: 1,
+            content: '线索在雨里断开，主角沿着暗巷追逐敌人。'.repeat(8),
+            createdBy: 'u1',
+            generationContext: {},
+          };
+        }
+        return { versionNo: 1 };
+      },
+      async updateMany() {},
+      async create(args: { data: Record<string, unknown> }) {
+        createdDrafts.push(args.data);
+        return { id: 'd2', ...args.data };
+      },
+    },
+    validationIssue: { async findMany() { return []; } },
+    qualityReport: {
+      async findMany(args: { where: Record<string, unknown> }) {
+        qualityReportFindArgs = args;
+        return [{
+          reportType: 'generation_quality_gate',
+          verdict: 'warn',
+          summary: null,
+          issues: [{ severity: 'warning', message: 'Scene card clue missing', suggestion: '补上线索落点。' }],
+        }];
+      },
+    },
+    async $transaction(callback: (tx: unknown) => Promise<unknown>) {
+      return callback(prisma);
+    },
+  };
+  const llm = {
+    async chat(messages: Array<{ role: string; content: string }>) {
+      promptText = messages[1].content;
+      return { text: '线索在雨里断开，主角沿着暗巷追逐敌人，并在墙缝里发现缺失的线索落点。'.repeat(8), model: 'mock', usage: {}, rawPayloadSummary: {} };
+    },
+  };
+  const service = new ChapterAutoRepairService(prisma as never, llm as never);
+
+  const result = await service.run('p1', 'c1', { draftId: 'd1', maxRounds: 1 });
+
+  assert.equal(result.skipped, false);
+  assert.equal(result.repairedIssueCount, 1);
+  assert.equal(qualityReportFindArgs?.where.sourceType, 'generation');
+  assert.equal(qualityReportFindArgs?.where.reportType, 'generation_quality_gate');
+  assert.equal(qualityReportFindArgs?.where.draftId, 'd1');
+  assert.equal(Object.prototype.hasOwnProperty.call(qualityReportFindArgs?.where ?? {}, 'OR'), false);
+  assert.match(promptText, /generation_quality_gate/);
+  assert.match(promptText, /Scene card clue missing/);
+  assert.equal(createdDrafts[0].source, 'agent_auto_repair');
+});
+
+test('Phase4 CRUD DTO validation rejects null JSON and non-string arrays', async () => {
+  const dto = plainToInstance(UpdateChapterPatternDto, {
+    structure: null,
+    applicableScenes: ['reveal', 7],
+  });
+  const qualityDto = plainToInstance(UpdateQualityReportDto, {
+    scores: null,
+    issues: {},
+  });
+
+  const errors = await validate(dto, { whitelist: true });
+  const qualityErrors = await validate(qualityDto, { whitelist: true });
+
+  assert.equal(errors.some((error) => error.property === 'structure'), true);
+  assert.equal(errors.some((error) => error.property === 'applicableScenes'), true);
+  assert.equal(qualityErrors.some((error) => error.property === 'scores'), true);
+  assert.equal(qualityErrors.some((error) => error.property === 'issues'), true);
+});
+
+test('AppModule compiles with phase4 CRUD and phase5 quality modules registered', async () => {
+  const moduleRef = await Test.createTestingModule({ imports: [AppModule] })
+    .overrideProvider(PrismaService)
+    .useValue({})
+    .overrideProvider(NovelCacheService)
+    .useValue({ async deleteProjectRecallResults() {} })
+    .compile();
+
+  assert.ok(moduleRef.get(ScenesService, { strict: false }));
+  assert.ok(moduleRef.get(ChapterPatternsService, { strict: false }));
+  assert.ok(moduleRef.get(PacingBeatsService, { strict: false }));
+  assert.ok(moduleRef.get(QualityReportsService, { strict: false }));
+  assert.ok(moduleRef.get(AiQualityReviewService, { strict: false }));
+  const registry = moduleRef.get(ToolRegistryService, { strict: false });
+  registry.onModuleInit();
+  assert.ok(registry.get('generate_story_bible_preview'));
+  assert.ok(registry.get('validate_story_bible'));
+  assert.ok(registry.get('persist_story_bible'));
+  assert.ok(registry.get('generate_continuity_preview'));
+  assert.ok(registry.get('validate_continuity_changes'));
+  assert.ok(registry.get('persist_continuity_changes'));
+  await moduleRef.close();
 });
 
 async function main() {

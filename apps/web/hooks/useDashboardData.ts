@@ -11,7 +11,9 @@ import {
   RebuildResult,
   ValidationRunResult,
   ChapterDraft,
+  GenerationProfile,
 } from '../types/dashboard';
+import { normalizeGenerationProfile } from './useGenerationProfile';
 
 const API_BASE = process.env.NEXT_PUBLIC_API_BASE_URL ?? 'http://127.0.0.1:3001/api';
 
@@ -112,6 +114,7 @@ export function useDashboardData() {
   const [acceptedMemories, setAcceptedMemories] = useState<ReviewItem[]>([]);
   const [validationIssues, setValidationIssues] = useState<ValidationIssue[]>([]);
   const [volumes, setVolumes] = useState<VolumeSummary[]>([]);
+  const [generationProfile, setGenerationProfile] = useState<GenerationProfile | null>(null);
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState('');
   const [actionMessage, setActionMessage] = useState('');
@@ -140,6 +143,7 @@ export function useDashboardData() {
     const acceptedMemoryQuery = `${query}${query ? '&' : '?'}status=user_confirmed`;
     setLoading(true);
     setError('');
+    setGenerationProfile(null);
     try {
       const dashboardData = await apiFetch<DashboardPayload>(`/projects/${projectId}/memory/dashboard${query}`);
       const optionalFailures: string[] = [];
@@ -155,7 +159,7 @@ export function useDashboardData() {
         }
       };
 
-      const [eventData, stateData, foreshadowData, reviewData, acceptedMemoryData, validationData, volumeData] = await Promise.all([
+      const [eventData, stateData, foreshadowData, reviewData, acceptedMemoryData, validationData, volumeData, generationProfileData] = await Promise.all([
         safeFetch<StoryEventItem[]>('剧情事件', `/projects/${projectId}/story-events${query}`, dashboardData.storyEvents ?? []),
         safeFetch<CharacterStateItem[]>('角色状态', `/projects/${projectId}/character-state-snapshots${query}`, dashboardData.characterStateSnapshots ?? []),
         safeFetch<ForeshadowItem[]>('伏笔轨迹', `/projects/${projectId}/foreshadow-tracks${query}`, dashboardData.foreshadowTracks ?? []),
@@ -163,6 +167,7 @@ export function useDashboardData() {
         safeFetch<ReviewItem[]>('已采纳记忆', `/projects/${projectId}/memory/reviews${acceptedMemoryQuery}`, []),
         safeFetch<ValidationIssue[]>('校验问题', `/projects/${projectId}/validation-issues${query}`, dashboardData.validationIssues ?? []),
         safeFetch<VolumeSummary[]>('卷列表', `/projects/${projectId}/volumes`, dashboardData.volumes ?? []),
+        safeFetch<GenerationProfile | null>('生成配置', `/projects/${projectId}/generation-profile`, null),
       ]);
       const degradedSections = dashboardData.diagnostics?.partialFailures?.map((item) => item.section) ?? [];
 
@@ -174,6 +179,7 @@ export function useDashboardData() {
       setAcceptedMemories(acceptedMemoryData);
       setValidationIssues(validationData);
       setVolumes(volumeData);
+      setGenerationProfile(generationProfileData ? normalizeGenerationProfile(projectId, generationProfileData) : null);
       if (degradedSections.length || optionalFailures.length) {
         setActionMessage(`部分面板暂时不可用：${[...degradedSections, ...optionalFailures].join('、')}。其余数据已正常加载。`);
       }
@@ -360,6 +366,10 @@ export function useDashboardData() {
     const scopedChapterIds = chapterIds?.filter(Boolean) ?? [];
     const canUseCurrentScope = selectedChapterId !== 'all';
     const targetChapterIds = scopedChapterIds.length ? Array.from(new Set(scopedChapterIds)) : canUseCurrentScope ? [selectedChapterId] : [];
+    const activeGenerationProfile = normalizeGenerationProfile(selectedProjectId, generationProfile);
+    const shouldRebuildFacts = activeGenerationProfile.autoSummarize || activeGenerationProfile.autoUpdateCharacterState || activeGenerationProfile.autoUpdateTimeline || activeGenerationProfile.autoValidation;
+    const shouldValidate = activeGenerationProfile.autoValidation;
+    const shouldReviewMemories = activeGenerationProfile.autoSummarize;
 
     const rebuildChapterFacts = async (chapterId: string) => {
       await apiFetch<RebuildResult>(
@@ -404,28 +414,35 @@ export function useDashboardData() {
         }
       }
 
-      setActionMessage('全自动流程：正在根据最新正文重建事实层…');
-      if (targetChapterIds.length) {
-        for (const chapterId of targetChapterIds) {
-          await rebuildChapterFacts(chapterId);
+      if (shouldRebuildFacts) {
+        setActionMessage('全自动流程：正在根据最新正文重建事实层…');
+        if (targetChapterIds.length) {
+          for (const chapterId of targetChapterIds) {
+            await rebuildChapterFacts(chapterId);
+          }
+        } else {
+          await apiFetch<RebuildResult>(`/projects/${selectedProjectId}/memory/rebuild?dryRun=false`, { method: 'POST' });
         }
       } else {
-        await apiFetch<RebuildResult>(`/projects/${selectedProjectId}/memory/rebuild?dryRun=false`, { method: 'POST' });
+        setActionMessage('全自动流程：生成配置已关闭事实层自动更新。');
       }
 
-      setActionMessage('全自动流程：正在执行硬规则校验…');
       const validationScopes = targetChapterIds.length ? targetChapterIds : [undefined];
       let latestValidationResult: ValidationRunResult | null = null;
       const issuesToFix: ValidationIssue[] = [];
-      for (const chapterId of validationScopes) {
-        const query = chapterId ? `?chapterId=${encodeURIComponent(chapterId)}` : '';
-        latestValidationResult = chapterId ? await validateChapterFacts(chapterId) : await apiFetch<ValidationRunResult>(`/projects/${selectedProjectId}/validation/run${query}`, { method: 'POST' });
-        issuesToFix.push(...latestValidationResult.issues);
+      if (shouldValidate) {
+        setActionMessage('全自动流程：正在执行硬规则校验…');
+        for (const chapterId of validationScopes) {
+          const query = chapterId ? `?chapterId=${encodeURIComponent(chapterId)}` : '';
+          latestValidationResult = chapterId ? await validateChapterFacts(chapterId) : await apiFetch<ValidationRunResult>(`/projects/${selectedProjectId}/validation/run${query}`, { method: 'POST' });
+          issuesToFix.push(...latestValidationResult.issues);
+        }
+        setValidationRunResult(latestValidationResult);
+      } else {
+        setValidationRunResult(null);
       }
 
-      setValidationRunResult(latestValidationResult);
-
-      if (issuesToFix.length && targetChapterIds.length === 1) {
+      if (shouldValidate && issuesToFix.length && targetChapterIds.length === 1) {
         const issueChapterId = targetChapterIds[0];
         const issueIds = issuesToFix.map((issue) => issue.id).filter((id): id is string => Boolean(id));
 
@@ -433,8 +450,10 @@ export function useDashboardData() {
         setActionMessage(`全自动流程：AI 正在修复 ${issuesToFix.length} 个校验问题…`);
         await polishChapter(issueChapterId, buildValidationFixInstruction(issuesToFix));
 
-        setActionMessage('全自动流程：修复后正在重建事实层…');
-        await rebuildChapterFacts(issueChapterId);
+        if (shouldRebuildFacts) {
+          setActionMessage('全自动流程：修复后正在重建事实层…');
+          await rebuildChapterFacts(issueChapterId);
+        }
 
         setActionMessage('全自动流程：正在复查修复结果…');
         latestValidationResult = await validateChapterFacts(issueChapterId);
@@ -454,7 +473,14 @@ export function useDashboardData() {
         return;
       }
 
-      setActionMessage('全自动流程：正文已通过校验，AI 正在审核待确认记忆…');
+      if (!shouldReviewMemories) {
+        await loadProjectData(selectedProjectId, selectedChapterId);
+        setDraftRefreshKey((value) => value + 1);
+        setActionMessage('全自动流程已按生成配置完成；自动总结/记忆审核已关闭。');
+        return;
+      }
+
+      setActionMessage(shouldValidate ? '全自动流程：正文已通过校验，AI 正在审核待确认记忆…' : '全自动流程：自动校验已关闭，AI 正在审核待确认记忆…');
       const reviewScopes = targetChapterIds.length ? targetChapterIds : [undefined];
       let reviewedCount = 0;
       let confirmedCount = 0;
@@ -466,13 +492,15 @@ export function useDashboardData() {
         rejectedCount += reviewResult.rejectedCount;
       }
 
-      setActionMessage('全自动流程：记忆审核完成，正在刷新事实层…');
-      if (targetChapterIds.length) {
-        for (const chapterId of targetChapterIds) {
-          await rebuildChapterFacts(chapterId);
+      if (shouldRebuildFacts) {
+        setActionMessage('全自动流程：记忆审核完成，正在刷新事实层…');
+        if (targetChapterIds.length) {
+          for (const chapterId of targetChapterIds) {
+            await rebuildChapterFacts(chapterId);
+          }
+        } else {
+          await apiFetch<RebuildResult>(`/projects/${selectedProjectId}/memory/rebuild?dryRun=false`, { method: 'POST' });
         }
-      } else {
-        await apiFetch<RebuildResult>(`/projects/${selectedProjectId}/memory/rebuild?dryRun=false`, { method: 'POST' });
       }
 
       await loadProjectData(selectedProjectId, selectedChapterId);
@@ -494,6 +522,7 @@ export function useDashboardData() {
     setSelectedChapterId,
     dashboard,
     volumes,
+    generationProfile,
     storyEvents,
     characterStates,
     foreshadowTracks,

@@ -386,6 +386,13 @@ export class GuidedService {
       enrichedSystem += `\n\n## 用户已有的项目背景信息\n${dto.projectContext}`;
     }
 
+    if (dto.currentStep === 'guided_chapter') {
+      const phase4AssetContext = await this.buildGuidedChapterAssetContext(projectId, dto.volumeNo, dto.chapterNo);
+      if (phase4AssetContext) {
+        enrichedSystem += `\n\n## 章节模板与节奏目标（只读计划资产）\n${phase4AssetContext}`;
+      }
+    }
+
     // Build a compressed summary of early conversation when history is long
     const allHistory = dto.chatHistory ?? [];
     const RECENT_WINDOW = 20;
@@ -556,6 +563,83 @@ export class GuidedService {
       neighborChapterContext,
       chapterPositionContext,
     };
+  }
+
+  private async buildGuidedChapterAssetContext(projectId: string, volumeNo?: number, chapterNo?: number): Promise<string | undefined> {
+    const [volume, chapter] = await Promise.all([
+      volumeNo !== undefined
+        ? this.prisma.volume.findFirst({ where: { projectId, volumeNo }, select: { id: true, volumeNo: true, title: true } })
+        : Promise.resolve(null),
+      chapterNo !== undefined
+        ? this.prisma.chapter.findFirst({ where: { projectId, chapterNo }, select: { id: true, volumeId: true, chapterNo: true, title: true } })
+        : Promise.resolve(null),
+    ]);
+    const volumeId = volume?.id ?? chapter?.volumeId ?? undefined;
+    const chapterId = chapter?.id ?? undefined;
+
+    const [patterns, rawPacingTargets] = await Promise.all([
+      this.prisma.chapterPattern.findMany({
+        where: { projectId, status: 'active' },
+        orderBy: [{ patternType: 'asc' }, { updatedAt: 'desc' }],
+        take: 6,
+      }),
+      this.prisma.pacingBeat.findMany({
+        where: this.buildPacingTargetWhere(projectId, volumeId, chapterId, chapterNo),
+        orderBy: [{ updatedAt: 'desc' }],
+        take: 30,
+      }),
+    ]);
+    const pacingTargets = rawPacingTargets
+      .sort((a, b) => this.rankPacingTarget(a, volumeId, chapterId, chapterNo) - this.rankPacingTarget(b, volumeId, chapterId, chapterNo))
+      .slice(0, 10);
+
+    if (!patterns.length && !pacingTargets.length) return undefined;
+
+    const lines = [
+      '说明：以下 ChapterPattern 与 PacingBeat 只用于增强章节细纲和 craftBrief，是计划资产，不是已发生正文事实。',
+      patterns.length ? '### 可用章节模板' : '',
+      ...patterns.map((pattern) => [
+        `- [sourceType=chapter_pattern｜sourceId=${pattern.id}] ${pattern.patternType}｜${pattern.name}`,
+        `  适用场景：${stringArray(pattern.applicableScenes).join('、') || '未限定'}`,
+        `  结构：${formatJsonBrief(pattern.structure, 700) || '{}'}`,
+        `  节奏建议：${formatJsonBrief(pattern.pacingAdvice, 500) || '{}'}`,
+        `  情绪建议：${formatJsonBrief(pattern.emotionalAdvice, 500) || '{}'}`,
+        `  冲突建议：${formatJsonBrief(pattern.conflictAdvice, 500) || '{}'}`,
+      ].join('\n')),
+      pacingTargets.length ? '### 相关节奏目标' : '',
+      ...pacingTargets.map((beat) => [
+        `- [sourceType=pacing_beat｜sourceId=${beat.id}] chapterNo=${beat.chapterNo ?? '全局/卷级'}｜${beat.beatType}`,
+        `  情绪：${beat.emotionalTone ?? '未指定'}｜情绪强度 ${beat.emotionalIntensity}｜张力 ${beat.tensionLevel}｜兑现 ${beat.payoffLevel}`,
+        beat.notes ? `  备注：${beat.notes}` : '',
+      ].filter(Boolean).join('\n')),
+    ].filter(Boolean);
+
+    return lines.join('\n').slice(0, 8000);
+  }
+
+  private buildPacingTargetWhere(projectId: string, volumeId?: string, chapterId?: string, chapterNo?: number): Prisma.PacingBeatWhereInput {
+    return {
+      projectId,
+      OR: [
+        ...(chapterId ? [{ chapterId }] : []),
+        ...(chapterNo !== undefined ? [{ chapterNo }] : []),
+        ...(volumeId ? [{ volumeId, chapterId: null, chapterNo: null }] : []),
+        { volumeId: null, chapterId: null, chapterNo: null },
+      ],
+    };
+  }
+
+  private rankPacingTarget(
+    beat: { volumeId: string | null; chapterId: string | null; chapterNo: number | null; updatedAt?: Date },
+    volumeId?: string,
+    chapterId?: string,
+    chapterNo?: number,
+  ): number {
+    if (chapterId && beat.chapterId === chapterId) return 0;
+    if (chapterNo !== undefined && beat.chapterNo === chapterNo) return 1;
+    if (volumeId && beat.volumeId === volumeId && beat.chapterId === null && beat.chapterNo === null) return 2;
+    if (beat.volumeId === null && beat.chapterId === null && beat.chapterNo === null) return 3;
+    return 4;
   }
 
   private normalizeSingleChapterResult(
@@ -821,6 +905,13 @@ ${schema}
 
     if (dto.projectContext) {
       systemPrompt += `\n\n## 用户已有的项目设定（必须基于这些信息来生成）\n${dto.projectContext}`;
+    }
+
+    if (dto.currentStep === 'guided_chapter') {
+      const phase4AssetContext = await this.buildGuidedChapterAssetContext(projectId, dto.volumeNo, dto.chapterNo);
+      if (phase4AssetContext) {
+        systemPrompt += `\n\n## 章节模板与节奏目标（只读计划资产）\n${phase4AssetContext}`;
+      }
     }
 
     if (dto.chatSummary) {
@@ -1355,6 +1446,19 @@ function asRecord(val: unknown): Record<string, unknown> | undefined {
   return val !== null && typeof val === 'object' && !Array.isArray(val)
     ? val as Record<string, unknown>
     : undefined;
+}
+
+function stringArray(val: unknown): string[] {
+  return Array.isArray(val)
+    ? val.map((item) => (typeof item === 'string' ? item.trim() : '')).filter(Boolean)
+    : [];
+}
+
+function formatJsonBrief(val: unknown, maxLength: number): string | undefined {
+  const record = asRecord(val);
+  if (!record || Object.keys(record).length === 0) return undefined;
+  const text = JSON.stringify(record);
+  return text.length > maxLength ? `${text.slice(0, maxLength)}...` : text;
 }
 
 function asInputJsonObject(val: unknown): Prisma.InputJsonValue {

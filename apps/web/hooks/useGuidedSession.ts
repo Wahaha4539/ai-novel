@@ -54,6 +54,8 @@ type GuidedChatPayload = {
   userMessage: string;
   chatHistory: ChatMessage[];
   projectContext?: string;
+  volumeNo?: number;
+  chapterNo?: number;
 };
 
 type AgentPlanResponse = {
@@ -710,6 +712,8 @@ export function useGuidedSession(projectId: string, options?: UseGuidedSessionOp
           userMessage: payload.userMessage,
           chatHistory: payload.chatHistory,
           projectContext: payload.projectContext,
+          ...(payload.volumeNo !== undefined && { volumeNo: payload.volumeNo }),
+          ...(payload.chapterNo !== undefined && { chapterNo: payload.chapterNo }),
         }),
       },
     );

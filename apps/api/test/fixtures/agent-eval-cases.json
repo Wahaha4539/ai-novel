@@ -70,5 +70,44 @@
     "message": "帮我写下一章。",
     "context": { "session": {} },
     "expected": { "taskType": "chapter_write", "mustUseTools": [], "mustHaveMissingInfo": ["project"], "mustRequireApproval": true, "forbidInventedIds": true }
+  },
+  {
+    "id": "longform_story_bible_expand_013",
+    "message": "帮我扩展灵脉禁制和宗门货币设定，不能覆盖已经确认的剧情，先给 Story Bible 预览和校验，确认后再写入。",
+    "context": { "session": { "currentProjectId": "project_1" } },
+    "expected": {
+      "taskType": "story_bible_expand",
+      "mustUseTools": ["collect_task_context", "generate_story_bible_preview", "validate_story_bible", "persist_story_bible"],
+      "mustContainInstruction": ["灵脉禁制", "宗门货币", "不能覆盖", "Story Bible"],
+      "mustRequireApproval": true,
+      "forbidInventedIds": true,
+      "retrieval": { "mustUseDimensions": ["world_facts", "plot_events", "memory_chunks"], "minWorldFacts": 6, "minWorldEntityTypes": ["faction", "rule", "location", "item", "history_event", "relationship"], "minLockedWorldFacts": 1, "minPlotEvents": 1, "minMemoryChunks": 1, "maxMissingContext": 0 }
+    }
+  },
+  {
+    "id": "longform_relationship_check_014",
+    "message": "帮我检查林烬和沈怀舟的关系线是不是前后矛盾，如果需要修复，先预览关系变更和校验结果，确认后再写入。",
+    "context": { "session": { "currentProjectId": "project_1" } },
+    "expected": {
+      "taskType": "continuity_check",
+      "mustUseTools": ["collect_task_context", "generate_continuity_preview", "validate_continuity_changes", "persist_continuity_changes"],
+      "mustContainInstruction": ["关系线", "前后矛盾", "关系变更", "确认后再写入"],
+      "mustRequireApproval": true,
+      "forbidInventedIds": true,
+      "retrieval": { "mustUseDimensions": ["relationship_graph", "plot_events", "world_facts", "memory_chunks"], "minPlotEvents": 1, "minRelationshipEdges": 1, "minConflictRelationshipEdges": 1, "requiredRelationshipEdgeFields": ["relationType", "weight", "evidenceSources", "timeRange", "conflict"], "minLockedWorldFacts": 1, "minMemoryChunks": 1, "maxMissingContext": 0 }
+    }
+  },
+  {
+    "id": "longform_timeline_repair_015",
+    "message": "第七章旧盟玉佩先被偷走，第九章又被主角拿来对质，时间线可能错了，帮我修复时间线；只能先预览时间线变更和校验，确认后再写入。",
+    "context": { "session": { "currentProjectId": "project_1" } },
+    "expected": {
+      "taskType": "continuity_check",
+      "mustUseTools": ["collect_task_context", "generate_continuity_preview", "validate_continuity_changes", "persist_continuity_changes"],
+      "mustContainInstruction": ["第七章", "第九章", "时间线", "确认后再写入"],
+      "mustRequireApproval": true,
+      "forbidInventedIds": true,
+      "retrieval": { "mustUseDimensions": ["plot_events", "relationship_graph", "world_facts", "memory_chunks"], "minPlotEvents": 2, "minRelationshipEdges": 1, "minMemoryChunks": 1, "maxMissingContext": 0 }
+    }
   }
 ]

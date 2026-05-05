@@ -61,7 +61,7 @@ export class AgentRuntimeService {
       });
 
       const previewOutputs = await this.executor.execute(agentRunId, plan.steps, { mode: 'plan', planVersion: savedPlan.version, approved: false, previewOnly: true, agentContext: context });
-      const previewArtifacts = this.buildPreviewArtifacts(plan.taskType, previewOutputs);
+      const previewArtifacts = this.buildPreviewArtifacts(plan.taskType, previewOutputs, plan.steps);
       this.logger.log('agent.runtime.plan.preview_completed', { agentRunId, planVersion: savedPlan.version, previewStepNos: Object.keys(previewOutputs).map(Number), previewArtifactCount: previewArtifacts.length });
       if (previewArtifacts.length) {
         await this.prisma.agentArtifact.createMany({
@@ -176,7 +176,7 @@ export class AgentRuntimeService {
       });
 
       const previewOutputs = await this.executor.execute(agentRunId, plan.steps, { mode: 'plan', planVersion: savedPlan.version, approved: false, previewOnly: true, agentContext: context });
-      const previewArtifacts = this.buildPreviewArtifacts(plan.taskType, previewOutputs);
+      const previewArtifacts = this.buildPreviewArtifacts(plan.taskType, previewOutputs, plan.steps);
       if (previewArtifacts.length) {
         await this.prisma.agentArtifact.createMany({
           data: previewArtifacts.map((preview) => ({
@@ -489,7 +489,7 @@ export class AgentRuntimeService {
   }
 
   /** Plan 阶段执行只读预览步骤后，把可展示内容提前提升为 Artifact。 */
-  private buildPreviewArtifacts(taskType: string, outputs: Record<number, unknown>): AgentArtifactDraft[] {
+  private buildPreviewArtifacts(taskType: string, outputs: Record<number, unknown>, steps: Pick<AgentPlanSpec, 'steps'>['steps'] = []): AgentArtifactDraft[] {
     if (taskType === 'outline_design') {
       return [
         ...(outputs[2] ? [{ artifactType: 'outline_preview', title: '大纲预览', content: outputs[2] }] : []),
@@ -510,6 +510,24 @@ export class AgentRuntimeService {
 
     if (taskType === 'chapter_write' || taskType === 'chapter_polish') {
       return outputs[2] ? [{ artifactType: 'chapter_context_preview', title: '章节上下文与写入预览', content: outputs[2] }] : [];
+    }
+
+    if (taskType === 'story_bible_expand') {
+      const preview = this.latestOutputByTools(outputs, steps, ['generate_story_bible_preview']);
+      const validation = this.latestOutputByTools(outputs, steps, ['validate_story_bible']);
+      return [
+        ...(preview ? [{ artifactType: 'story_bible_preview', title: 'Story Bible 扩展预览', content: preview }] : []),
+        ...(validation ? [{ artifactType: 'story_bible_validation_report', title: 'Story Bible 校验与写入前 Diff', content: validation }] : []),
+      ];
+    }
+
+    if (taskType === 'continuity_check') {
+      const preview = this.latestOutputByTools(outputs, steps, ['generate_continuity_preview']);
+      const validation = this.latestOutputByTools(outputs, steps, ['validate_continuity_changes']);
+      return [
+        ...(preview ? [{ artifactType: 'continuity_preview', title: '关系/时间线变更预览', content: preview }] : []),
+        ...(validation ? [{ artifactType: 'continuity_validation_report', title: '关系/时间线校验与写入前 Diff', content: validation }] : []),
+      ];
     }
 
     return [];
@@ -560,6 +578,25 @@ export class AgentRuntimeService {
       ];
     }
 
+    if (taskType === 'story_bible_expand') {
+      return [
+        ...(this.latestOutputByTools(outputs, steps, ['generate_story_bible_preview']) ? [{ artifactType: 'story_bible_preview', title: 'Story Bible 扩展预览', content: this.latestOutputByTools(outputs, steps, ['generate_story_bible_preview']) }] : []),
+        ...(this.latestOutputByTools(outputs, steps, ['validate_story_bible']) ? [{ artifactType: 'story_bible_validation_report', title: 'Story Bible 校验与写入前 Diff', content: this.latestOutputByTools(outputs, steps, ['validate_story_bible']) }] : []),
+        ...(this.latestOutputByTools(outputs, steps, ['persist_story_bible']) ? [{ artifactType: 'story_bible_persist_result', title: 'Story Bible 写入结果', content: this.latestOutputByTools(outputs, steps, ['persist_story_bible']) }] : []),
+      ];
+    }
+
+    if (taskType === 'continuity_check') {
+      const preview = this.latestOutputByTools(outputs, steps, ['generate_continuity_preview']);
+      const validation = this.latestOutputByTools(outputs, steps, ['validate_continuity_changes']);
+      const persist = this.latestOutputByTools(outputs, steps, ['persist_continuity_changes']);
+      return [
+        ...(preview ? [{ artifactType: 'continuity_preview', title: '关系/时间线变更预览', content: preview }] : []),
+        ...(validation ? [{ artifactType: 'continuity_validation_report', title: '关系/时间线校验与写入前 Diff', content: validation }] : []),
+        ...(persist ? [{ artifactType: 'continuity_persist_result', title: '关系/时间线写入结果', content: persist }] : []),
+      ];
+    }
+
     if (taskType === 'character_consistency_check') {
       const context = this.latestOutputByTools(outputs, steps, ['collect_task_context']);
       const report = this.latestOutputByTools(outputs, steps, ['character_consistency_check']);
@@ -576,6 +613,11 @@ export class AgentRuntimeService {
         ...(context ? [{ artifactType: 'task_context_preview', title: '剧情一致性上下文预览', content: context }] : []),
         ...(report ? [{ artifactType: 'plot_consistency_report', title: '剧情一致性检查报告', content: report }] : []),
       ];
+    }
+
+    if (taskType === 'ai_quality_review') {
+      const report = this.latestOutputByTools(outputs, steps, ['ai_quality_review']);
+      return report ? [{ artifactType: 'ai_quality_report', title: 'AI 审稿质量报告', content: report }] : [];
     }
 
     if (taskType === 'chapter_write' || taskType === 'multi_chapter_write') {

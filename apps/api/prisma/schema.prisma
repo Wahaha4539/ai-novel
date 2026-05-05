@@ -59,11 +59,16 @@ model Project {
   writingRules          WritingRule[]
   relationshipEdges     RelationshipEdge[]
   timelineEvents        TimelineEvent[]
+  sceneCards            SceneCard[]
+  chapterPatterns       ChapterPattern[]
+  pacingBeats           PacingBeat[]
   validationIssues      ValidationIssue[]
+  qualityReports        QualityReport[]
   generationJobs        GenerationJob[]
   styleProfiles         StyleProfile[]
   modelProfiles         ModelProfile[]
   creativeProfile       ProjectCreativeProfile?
+  generationProfile     GenerationProfile?
   promptTemplates       PromptTemplate[]
   guidedSession         GuidedSession?
   agentRuns             AgentRun[]
@@ -85,6 +90,26 @@ model ProjectCreativeProfile {
   createdAt          DateTime @default(now())
   updatedAt          DateTime @updatedAt
   project            Project  @relation(fields: [projectId], references: [id], onDelete: Cascade)
+}
+
+model GenerationProfile {
+  id                       String   @id @default(uuid()) @db.Uuid
+  projectId                String   @unique @db.Uuid
+  defaultChapterWordCount  Int?
+  autoContinue             Boolean  @default(false)
+  autoSummarize            Boolean  @default(true)
+  autoUpdateCharacterState Boolean  @default(true)
+  autoUpdateTimeline       Boolean  @default(false)
+  autoValidation           Boolean  @default(true)
+  allowNewCharacters       Boolean  @default(false)
+  allowNewLocations        Boolean  @default(true)
+  allowNewForeshadows      Boolean  @default(true)
+  preGenerationChecks      Json     @default("[]")
+  promptBudget             Json     @default("{}")
+  metadata                 Json     @default("{}")
+  createdAt                DateTime @default(now())
+  updatedAt                DateTime @updatedAt
+  project                  Project  @relation(fields: [projectId], references: [id], onDelete: Cascade)
 }
 
 model AgentRun {
@@ -109,6 +134,7 @@ model AgentRun {
   steps       AgentStep[]
   artifacts   AgentArtifact[]
   approvals   AgentApproval[]
+  qualityReports QualityReport[]
 
   @@index([projectId, status, createdAt])
 }
@@ -306,7 +332,10 @@ model Chapter {
   characterStateSnapshots CharacterStateSnapshot[]
   foreshadowTracks  ForeshadowTrack[]
   timelineEvents    TimelineEvent[]
+  sceneCards        SceneCard[]
+  pacingBeats       PacingBeat[]
   validationIssues  ValidationIssue[]
+  qualityReports    QualityReport[]
   generationJobs    GenerationJob[]
 
   @@unique([projectId, chapterNo])
@@ -324,6 +353,7 @@ model ChapterDraft {
   createdBy         String?  @db.Uuid
   createdAt         DateTime @default(now())
   chapter           Chapter  @relation(fields: [chapterId], references: [id], onDelete: Cascade)
+  qualityReports    QualityReport[]
 
   @@unique([chapterId, versionNo])
   @@index([chapterId, isCurrent, versionNo], map: "ChapterDraft_chapter_current_version_idx")
@@ -510,6 +540,80 @@ model TimelineEvent {
   @@index([projectId, locationName], map: "TimelineEvent_project_location_idx")
 }
 
+model SceneCard {
+  id                    String   @id @default(uuid()) @db.Uuid
+  projectId             String   @db.Uuid
+  volumeId              String?  @db.Uuid
+  chapterId             String?  @db.Uuid
+  sceneNo               Int?
+  title                 String   @db.VarChar(255)
+  locationName          String?
+  participants          Json     @default("[]")
+  purpose               String?
+  conflict              String?
+  emotionalTone         String?
+  keyInformation        String?
+  result                String?
+  relatedForeshadowIds  Json     @default("[]")
+  status                String   @default("planned") @db.VarChar(50)
+  metadata              Json     @default("{}")
+  createdAt             DateTime @default(now())
+  updatedAt             DateTime @updatedAt
+  project               Project  @relation(fields: [projectId], references: [id], onDelete: Cascade)
+  volume                Volume?  @relation(fields: [volumeId], references: [id], onDelete: SetNull)
+  chapter               Chapter? @relation(fields: [chapterId], references: [id], onDelete: SetNull)
+
+  @@index([projectId, status, updatedAt], map: "SceneCard_project_status_updated_idx")
+  @@index([projectId, volumeId, chapterId], map: "SceneCard_project_volume_chapter_idx")
+  @@index([projectId, chapterId, sceneNo], map: "SceneCard_project_chapter_scene_idx")
+  @@index([projectId, locationName], map: "SceneCard_project_location_idx")
+  @@unique([chapterId, sceneNo], map: "SceneCard_chapter_sceneNo_key")
+}
+
+model ChapterPattern {
+  id               String   @id @default(uuid()) @db.Uuid
+  projectId        String   @db.Uuid
+  patternType      String   @db.VarChar(80)
+  name             String   @db.VarChar(255)
+  applicableScenes Json     @default("[]")
+  structure        Json     @default("{}")
+  pacingAdvice     Json     @default("{}")
+  emotionalAdvice  Json     @default("{}")
+  conflictAdvice   Json     @default("{}")
+  status           String   @default("active") @db.VarChar(50)
+  metadata         Json     @default("{}")
+  createdAt        DateTime @default(now())
+  updatedAt        DateTime @updatedAt
+  project          Project  @relation(fields: [projectId], references: [id], onDelete: Cascade)
+
+  @@index([projectId, status, updatedAt], map: "ChapterPattern_project_status_updated_idx")
+  @@index([projectId, patternType, status], map: "ChapterPattern_project_pattern_status_idx")
+}
+
+model PacingBeat {
+  id                 String   @id @default(uuid()) @db.Uuid
+  projectId          String   @db.Uuid
+  volumeId           String?  @db.Uuid
+  chapterId          String?  @db.Uuid
+  chapterNo          Int?
+  beatType           String   @db.VarChar(80)
+  emotionalTone      String?
+  emotionalIntensity Int      @default(50)
+  tensionLevel       Int      @default(50)
+  payoffLevel        Int      @default(50)
+  notes              String?
+  metadata           Json     @default("{}")
+  createdAt          DateTime @default(now())
+  updatedAt          DateTime @updatedAt
+  project            Project  @relation(fields: [projectId], references: [id], onDelete: Cascade)
+  volume             Volume?  @relation(fields: [volumeId], references: [id], onDelete: SetNull)
+  chapter            Chapter? @relation(fields: [chapterId], references: [id], onDelete: SetNull)
+
+  @@index([projectId, volumeId, chapterId], map: "PacingBeat_project_volume_chapter_idx")
+  @@index([projectId, chapterNo], map: "PacingBeat_project_chapterNo_idx")
+  @@index([projectId, beatType], map: "PacingBeat_project_beatType_idx")
+}
+
 
 model ValidationIssue {
   id          String              @id @default(uuid()) @db.Uuid
@@ -530,6 +634,34 @@ model ValidationIssue {
 
   @@index([projectId, status, createdAt], map: "ValidationIssue_project_status_created_idx")
   @@index([chapterId, status, createdAt], map: "ValidationIssue_chapter_status_created_idx")
+}
+
+model QualityReport {
+  id          String        @id @default(uuid()) @db.Uuid
+  projectId   String        @db.Uuid
+  chapterId   String?       @db.Uuid
+  draftId     String?       @db.Uuid
+  agentRunId  String?       @db.Uuid
+  sourceType  String        @db.VarChar(50)
+  sourceId    String?       @db.Uuid
+  reportType  String        @db.VarChar(80)
+  scores      Json          @default("{}")
+  issues      Json          @default("[]")
+  verdict     String        @db.VarChar(20)
+  summary     String?
+  metadata    Json          @default("{}")
+  createdAt   DateTime      @default(now())
+  updatedAt   DateTime      @updatedAt
+  project     Project       @relation(fields: [projectId], references: [id], onDelete: Cascade)
+  chapter     Chapter?      @relation(fields: [chapterId], references: [id], onDelete: SetNull)
+  draft       ChapterDraft? @relation(fields: [draftId], references: [id], onDelete: SetNull)
+  agentRun    AgentRun?     @relation(fields: [agentRunId], references: [id], onDelete: SetNull)
+
+  @@index([projectId, createdAt], map: "QualityReport_project_created_idx")
+  @@index([projectId, chapterId, createdAt], map: "QualityReport_project_chapter_created_idx")
+  @@index([projectId, draftId], map: "QualityReport_project_draft_idx")
+  @@index([projectId, agentRunId], map: "QualityReport_project_agentRun_idx")
+  @@index([projectId, sourceType, reportType, verdict], map: "QualityReport_project_type_verdict_idx")
 }
 
 model GenerationJob {
@@ -569,6 +701,8 @@ model Volume {
   updatedAt    DateTime @updatedAt
   project      Project  @relation(fields: [projectId], references: [id], onDelete: Cascade)
   chapters     Chapter[]
+  sceneCards   SceneCard[]
+  pacingBeats  PacingBeat[]
 
   @@unique([projectId, volumeNo])
 }

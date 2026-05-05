@@ -3,7 +3,7 @@ import { ProjectSummary, ChapterSummary, VolumeSummary } from '../types/dashboar
 import { ThemeSwitcher } from './ThemeSwitcher';
 import { VolumeChapterTree } from './VolumeChapterTree';
 
-type ActiveView = 'editor' | 'outline' | 'lore' | 'story-bible' | 'writing-rules' | 'relationships' | 'timeline' | 'character-state' | 'generation-config' | 'projects' | 'volumes' | 'guided' | 'prompts' | 'foreshadow' | 'generate' | 'llm-config';
+type ActiveView = 'editor' | 'outline' | 'lore' | 'story-bible' | 'writing-rules' | 'scene-bank' | 'pacing' | 'chapter-patterns' | 'quality-reports' | 'relationships' | 'timeline' | 'character-state' | 'generation-config' | 'projects' | 'volumes' | 'guided' | 'prompts' | 'foreshadow' | 'generate' | 'llm-config';
 
 interface Props {
   projects: ProjectSummary[];
@@ -20,6 +20,10 @@ interface Props {
   onNavigateToLore: () => void;
   onNavigateToStoryBible: () => void;
   onNavigateToWritingRules: () => void;
+  onNavigateToSceneBank: () => void;
+  onNavigateToPacing: () => void;
+  onNavigateToChapterPatterns: () => void;
+  onNavigateToQualityReports: () => void;
   onNavigateToRelationships: () => void;
   onNavigateToTimeline: () => void;
   onNavigateToCharacterState: () => void;
@@ -49,6 +53,10 @@ export function WorkspaceSidebar({
   onNavigateToLore,
   onNavigateToStoryBible,
   onNavigateToWritingRules,
+  onNavigateToSceneBank,
+  onNavigateToPacing,
+  onNavigateToChapterPatterns,
+  onNavigateToQualityReports,
   onNavigateToRelationships,
   onNavigateToTimeline,
   onNavigateToCharacterState,
@@ -139,6 +147,38 @@ export function WorkspaceSidebar({
                   isActive={activeView === 'writing-rules'}
                   activeColor="#f43f5e"
                   onClick={onNavigateToWritingRules}
+                />
+              </li>
+              <li>
+                <NavButton
+                  label="场景库 (Scenes)"
+                  isActive={activeView === 'scene-bank'}
+                  activeColor="#f97316"
+                  onClick={onNavigateToSceneBank}
+                />
+              </li>
+              <li>
+                <NavButton
+                  label="节奏控制 (Pacing)"
+                  isActive={activeView === 'pacing'}
+                  activeColor="#22c55e"
+                  onClick={onNavigateToPacing}
+                />
+              </li>
+              <li>
+                <NavButton
+                  label="章节模式 (Patterns)"
+                  isActive={activeView === 'chapter-patterns'}
+                  activeColor="#a855f7"
+                  onClick={onNavigateToChapterPatterns}
+                />
+              </li>
+              <li>
+                <NavButton
+                  label="质量报告 (Quality)"
+                  isActive={activeView === 'quality-reports'}
+                  activeColor="#0ea5e9"
+                  onClick={onNavigateToQualityReports}
                 />
               </li>
               <li>

@@ -1,6 +1,7 @@
 import { BadRequestException, Injectable } from '@nestjs/common';
 import { Prisma } from '@prisma/client';
 import { PrismaService } from '../../prisma/prisma.service';
+import { GenerationProfileSnapshot } from '../generation-profile/generation-profile.defaults';
 import { RetrievalHit } from '../memory/retrieval.service';
 import { ChapterContextPack } from './context-pack.types';
 
@@ -14,6 +15,7 @@ export interface ChapterPromptContext {
   previousChapters: Array<{ chapterNo: number; title: string | null; content: string }>;
   hardFacts: string[];
   contextPack: ChapterContextPack;
+  generationProfile?: GenerationProfileSnapshot;
   targetWordCount?: number;
 }
 
@@ -50,7 +52,9 @@ export class PromptBuilderService {
       this.buildCharacterSection(context),
       this.buildChapterSection(context),
       this.buildCraftBriefSection(context),
+      this.buildSceneExecutionSection(context),
       this.buildContextLayerNotice(),
+      this.buildGenerationProfileSection(context),
       this.buildForeshadowSection(context),
       this.buildFactsSection(context),
       this.buildUserIntentSection(context),
@@ -78,9 +82,11 @@ export class PromptBuilderService {
         verifiedContextCount: context.contextPack.verifiedContext.lorebookHits.length + context.contextPack.verifiedContext.memoryHits.length + context.contextPack.verifiedContext.structuredHits.length,
         previousChapterCount: context.previousChapters.length,
         foreshadowCount: context.plannedForeshadows.length,
+        sceneCardCount: context.contextPack.planningContext?.sceneCards.length ?? 0,
         hasVolume: Boolean(context.volume),
         hasStyleProfile: Boolean(context.styleProfile),
         hasCraftBrief: this.hasRecordContent(context.chapter.craftBrief),
+        generationProfile: context.generationProfile ?? context.contextPack.generationProfile,
         craftBriefSource: this.hasRecordContent(context.chapter.craftBrief)
           ? 'chapter.craftBrief'
           : this.extractExecutionCardMarkdown(context.chapter.outline)
@@ -163,6 +169,19 @@ export class PromptBuilderService {
     return '【本章执行卡】\n- 未提供结构化执行卡；请严格依据章节目标、冲突与大纲写作，并在正文中落下具体行动、线索和后果。';
   }
 
+  private buildSceneExecutionSection(data: ChapterPromptContext): string {
+    const sceneCards = data.contextPack.planningContext?.sceneCards ?? [];
+    if (!sceneCards.length) {
+      return '【场景执行】\n- 未提供本章场景卡；请依据本章执行卡和章节目标自行组织场景，不要把未登记场景当成已发生事实。';
+    }
+
+    return [
+      '【场景执行】',
+      '说明：以下 SceneCard 是本章写作计划资产，不是已经发生的正文事实；请按场景顺序落实行动、冲突、线索与结果，并保留可追踪来源。',
+      ...sceneCards.slice(0, 8).map((scene) => this.formatSceneCard(scene)),
+    ].join('\n');
+  }
+
   private buildContextLayerNotice(): string {
     return [
       '【上下文分层说明】',
@@ -170,6 +189,29 @@ export class PromptBuilderService {
       '- 【本章用户意图/新增候选】只代表当前写作要求或本章新增候选，不等同于既有世界事实。',
       '- Retrieval Planner 的查询意图、召回诊断和未命中查询默认不进入正文事实区。',
     ].join('\n');
+  }
+
+  private buildGenerationProfileSection(data: ChapterPromptContext): string {
+    const profile = data.generationProfile ?? data.contextPack.generationProfile;
+    if (!profile) return '【新增事实策略】\n- 允许新增候选：地点、伏笔\n- 禁止新增事实：角色';
+
+    const allowed = [
+      ...(profile.allowNewCharacters ? ['角色'] : []),
+      ...(profile.allowNewLocations ? ['地点'] : []),
+      ...(profile.allowNewForeshadows ? ['伏笔'] : []),
+    ];
+    const forbidden = [
+      ...(!profile.allowNewCharacters ? ['角色'] : []),
+      ...(!profile.allowNewLocations ? ['地点'] : []),
+      ...(!profile.allowNewForeshadows ? ['伏笔'] : []),
+    ];
+
+    return [
+      '【新增事实策略】',
+      `- 允许新增候选：${allowed.length ? allowed.join('、') : '无'}`,
+      `- 禁止新增事实：${forbidden.length ? forbidden.join('、') : '无'}`,
+      forbidden.length ? '- 禁止项不得被写成已验证世界事实；如剧情必须触及，只能作为待复核候选处理。' : '',
+    ].filter(Boolean).join('\n');
   }
 
   private buildForeshadowSection(data: ChapterPromptContext): string {
@@ -218,6 +260,28 @@ export class PromptBuilderService {
   private buildStructuredContextSection(data: ChapterPromptContext): string {
     const hits = data.contextPack.verifiedContext.structuredHits.filter((hit) => !['relationship_edge', 'timeline_event', 'writing_rule'].includes(hit.sourceType));
     return hits.length ? ['【结构化事实召回】', ...hits.map((hit) => this.formatRetrievalHit(hit))].join('\n') : '【结构化事实召回】\n- 无';
+  }
+
+  private formatSceneCard(scene: NonNullable<ChapterContextPack['planningContext']>['sceneCards'][number]): string {
+    const trace = scene.sourceTrace;
+    const traceParts = [
+      `sourceType=${trace.sourceType}`,
+      `sourceId=${trace.sourceId}`,
+      `projectId=${trace.projectId}`,
+      trace.chapterNo !== undefined ? `chapterNo=${trace.chapterNo}` : '',
+      trace.sceneNo !== undefined && trace.sceneNo !== null ? `sceneNo=${trace.sceneNo}` : '',
+    ].filter(Boolean).join('｜');
+    const fields = [
+      scene.locationName ? `地点：${scene.locationName}` : '',
+      scene.participants.length ? `参与者：${scene.participants.join('、')}` : '',
+      scene.purpose ? `目的：${scene.purpose}` : '',
+      scene.conflict ? `冲突：${scene.conflict}` : '',
+      scene.emotionalTone ? `情绪：${scene.emotionalTone}` : '',
+      scene.keyInformation ? `关键信息：${scene.keyInformation}` : '',
+      scene.result ? `结果：${scene.result}` : '',
+      `状态：${scene.status}`,
+    ].filter(Boolean);
+    return [`- [${traceParts}] ${scene.sceneNo ?? '?'}｜${scene.title}`, ...fields.map((field) => `  ${field}`)].join('\n');
   }
 
   private structuredHitsByType(data: ChapterPromptContext, sourceType: RetrievalHit['sourceType']): RetrievalHit[] {

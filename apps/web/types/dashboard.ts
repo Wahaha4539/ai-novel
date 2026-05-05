@@ -100,6 +100,25 @@ export type CreativeProfile = {
   updatedAt?: string;
 };
 
+export type GenerationProfile = {
+  id?: string;
+  projectId: string;
+  defaultChapterWordCount?: number | null;
+  autoContinue: boolean;
+  autoSummarize: boolean;
+  autoUpdateCharacterState: boolean;
+  autoUpdateTimeline: boolean;
+  autoValidation: boolean;
+  allowNewCharacters: boolean;
+  allowNewLocations: boolean;
+  allowNewForeshadows: boolean;
+  preGenerationChecks: unknown[];
+  promptBudget: Record<string, unknown>;
+  metadata: Record<string, unknown>;
+  createdAt?: string;
+  updatedAt?: string;
+};
+
 export type ChapterSummary = {
   id: string;
   volumeId?: string | null;
@@ -192,6 +211,78 @@ export type TimelineEvent = {
   unknownBy: string[];
   eventStatus: string;
   sourceType: string;
+  metadata: Record<string, unknown>;
+  createdAt: string;
+  updatedAt: string;
+};
+
+export type SceneCard = {
+  id: string;
+  projectId: string;
+  volumeId?: string | null;
+  chapterId?: string | null;
+  sceneNo?: number | null;
+  title: string;
+  locationName?: string | null;
+  participants: string[];
+  purpose?: string | null;
+  conflict?: string | null;
+  emotionalTone?: string | null;
+  keyInformation?: string | null;
+  result?: string | null;
+  relatedForeshadowIds: string[];
+  status: string;
+  metadata: Record<string, unknown>;
+  createdAt: string;
+  updatedAt: string;
+};
+
+export type ChapterPattern = {
+  id: string;
+  projectId: string;
+  patternType: string;
+  name: string;
+  applicableScenes: string[];
+  structure: Record<string, unknown>;
+  pacingAdvice: Record<string, unknown>;
+  emotionalAdvice: Record<string, unknown>;
+  conflictAdvice: Record<string, unknown>;
+  status: string;
+  metadata: Record<string, unknown>;
+  createdAt: string;
+  updatedAt: string;
+};
+
+export type PacingBeat = {
+  id: string;
+  projectId: string;
+  volumeId?: string | null;
+  chapterId?: string | null;
+  chapterNo?: number | null;
+  beatType: string;
+  emotionalTone?: string | null;
+  emotionalIntensity: number;
+  tensionLevel: number;
+  payoffLevel: number;
+  notes?: string | null;
+  metadata: Record<string, unknown>;
+  createdAt: string;
+  updatedAt: string;
+};
+
+export type QualityReport = {
+  id: string;
+  projectId: string;
+  chapterId?: string | null;
+  draftId?: string | null;
+  agentRunId?: string | null;
+  sourceType: string;
+  sourceId?: string | null;
+  reportType: string;
+  scores: Record<string, unknown>;
+  issues: unknown[];
+  verdict: 'pass' | 'warn' | 'fail' | (string & {});
+  summary?: string | null;
   metadata: Record<string, unknown>;
   createdAt: string;
   updatedAt: string;

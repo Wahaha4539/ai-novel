@@ -6,8 +6,10 @@ import {
   type GuidedStepSchemaKey,
 } from '../../guided/guided-step-schemas';
 import { LlmGatewayService } from '../../llm/llm-gateway.service';
+import { PrismaService } from '../../../prisma/prisma.service';
 import { BaseTool, ToolContext } from '../base-tool';
 import type { ToolManifestV2 } from '../tool-manifest.types';
+import type { Prisma } from '@prisma/client';
 
 interface GenerateGuidedStepPreviewInput {
   stepKey?: string;
@@ -104,9 +106,12 @@ export class GenerateGuidedStepPreviewTool implements BaseTool<GenerateGuidedSte
     artifactMapping: [{ outputPath: '$', artifactType: 'guided_step_preview', title: '创作引导步骤预览' }],
   };
 
-  constructor(private readonly llm: LlmGatewayService) {}
+  constructor(
+    private readonly llm: LlmGatewayService,
+    private readonly prisma?: PrismaService,
+  ) {}
 
-  async run(args: GenerateGuidedStepPreviewInput, _context: ToolContext): Promise<GuidedStepPreviewOutput> {
+  async run(args: GenerateGuidedStepPreviewInput, context: ToolContext): Promise<GuidedStepPreviewOutput> {
     const stepKey = args.stepKey?.trim();
     if (!stepKey) throw new BadRequestException('缺少 stepKey，无法生成创作引导步骤预览。');
 
@@ -115,6 +120,7 @@ export class GenerateGuidedStepPreviewTool implements BaseTool<GenerateGuidedSte
 
     const stepInstruction = SUPPORTED_STEP_INSTRUCTIONS[stepKey as GuidedStepSchemaKey];
     const inputWarnings = this.buildInputWarnings(stepKey as GuidedStepSchemaKey, args);
+    const projectContext = await this.buildProjectContext(stepKey as GuidedStepSchemaKey, args, context);
 
     const { data } = await this.llm.chatJson<Record<string, unknown>>(
       [
@@ -131,7 +137,7 @@ export class GenerateGuidedStepPreviewTool implements BaseTool<GenerateGuidedSte
             `聊天摘要：${args.chatSummary ?? ''}`,
             `卷号：${args.volumeNo ?? ''}`,
             `章节号：${args.chapterNo ?? ''}`,
-            `项目上下文：\n${JSON.stringify(args.projectContext ?? {}, null, 2).slice(0, 20000)}`,
+            `项目上下文：\n${JSON.stringify(projectContext, null, 2).slice(0, 20000)}`,
           ].join('\n'),
         },
       ],
@@ -152,6 +158,109 @@ export class GenerateGuidedStepPreviewTool implements BaseTool<GenerateGuidedSte
       return GUIDED_SINGLE_CHAPTER_REFINEMENT_SCHEMA;
     }
     return getGuidedStepJsonSchema(stepKey);
+  }
+
+  private async buildProjectContext(stepKey: GuidedStepSchemaKey, args: GenerateGuidedStepPreviewInput, context: ToolContext): Promise<Record<string, unknown>> {
+    const base = args.projectContext ?? {};
+    if (stepKey !== 'guided_chapter' || !this.prisma) return base;
+
+    const phase4Guidance = await this.loadGuidedChapterAssets(context.projectId, args.volumeNo, args.chapterNo);
+    if (!phase4Guidance) return base;
+
+    return {
+      ...base,
+      phase4Guidance,
+    };
+  }
+
+  private async loadGuidedChapterAssets(projectId: string, volumeNo?: number, chapterNo?: number): Promise<Record<string, unknown> | undefined> {
+    const [volume, chapter] = await Promise.all([
+      volumeNo !== undefined
+        ? this.prisma!.volume.findFirst({ where: { projectId, volumeNo }, select: { id: true, volumeNo: true, title: true, objective: true } })
+        : Promise.resolve(null),
+      chapterNo !== undefined
+        ? this.prisma!.chapter.findFirst({ where: { projectId, chapterNo }, select: { id: true, volumeId: true, chapterNo: true, title: true, objective: true } })
+        : Promise.resolve(null),
+    ]);
+    const volumeId = volume?.id ?? chapter?.volumeId ?? undefined;
+    const chapterId = chapter?.id ?? undefined;
+
+    const [patterns, rawPacingTargets] = await Promise.all([
+      this.prisma!.chapterPattern.findMany({
+        where: { projectId, status: 'active' },
+        orderBy: [{ patternType: 'asc' }, { updatedAt: 'desc' }],
+        take: 6,
+      }),
+      this.prisma!.pacingBeat.findMany({
+        where: this.buildPacingTargetWhere(projectId, volumeId, chapterId, chapterNo),
+        orderBy: [{ updatedAt: 'desc' }],
+        take: 30,
+      }),
+    ]);
+    const pacingTargets = rawPacingTargets
+      .sort((a, b) => this.rankPacingTarget(a, volumeId, chapterId, chapterNo) - this.rankPacingTarget(b, volumeId, chapterId, chapterNo))
+      .slice(0, 10);
+
+    if (!patterns.length && !pacingTargets.length) return undefined;
+
+    return {
+      note: 'ChapterPattern 与 PacingBeat 是只读计划资产，用来增强 guided_chapter 的 craftBrief，不代表已发生正文事实。',
+      target: {
+        volumeNo: volume?.volumeNo ?? volumeNo,
+        volumeTitle: volume?.title,
+        chapterNo: chapter?.chapterNo ?? chapterNo,
+        chapterTitle: chapter?.title,
+      },
+      chapterPatterns: patterns.map((pattern) => ({
+        id: pattern.id,
+        patternType: pattern.patternType,
+        name: pattern.name,
+        applicableScenes: this.stringArray(pattern.applicableScenes),
+        structure: pattern.structure,
+        pacingAdvice: pattern.pacingAdvice,
+        emotionalAdvice: pattern.emotionalAdvice,
+        conflictAdvice: pattern.conflictAdvice,
+        sourceTrace: { sourceType: 'chapter_pattern', sourceId: pattern.id, projectId },
+      })),
+      pacingTargets: pacingTargets.map((beat) => ({
+        id: beat.id,
+        volumeId: beat.volumeId,
+        chapterId: beat.chapterId,
+        chapterNo: beat.chapterNo,
+        beatType: beat.beatType,
+        emotionalTone: beat.emotionalTone,
+        emotionalIntensity: beat.emotionalIntensity,
+        tensionLevel: beat.tensionLevel,
+        payoffLevel: beat.payoffLevel,
+        notes: beat.notes,
+        sourceTrace: { sourceType: 'pacing_beat', sourceId: beat.id, projectId, chapterNo: beat.chapterNo ?? undefined },
+      })),
+    };
+  }
+
+  private buildPacingTargetWhere(projectId: string, volumeId?: string, chapterId?: string, chapterNo?: number): Prisma.PacingBeatWhereInput {
+    return {
+      projectId,
+      OR: [
+        ...(chapterId ? [{ chapterId }] : []),
+        ...(chapterNo !== undefined ? [{ chapterNo }] : []),
+        ...(volumeId ? [{ volumeId, chapterId: null, chapterNo: null }] : []),
+        { volumeId: null, chapterId: null, chapterNo: null },
+      ],
+    };
+  }
+
+  private rankPacingTarget(
+    beat: { volumeId: string | null; chapterId: string | null; chapterNo: number | null; updatedAt?: Date },
+    volumeId?: string,
+    chapterId?: string,
+    chapterNo?: number,
+  ): number {
+    if (chapterId && beat.chapterId === chapterId) return 0;
+    if (chapterNo !== undefined && beat.chapterNo === chapterNo) return 1;
+    if (volumeId && beat.volumeId === volumeId && beat.chapterId === null && beat.chapterNo === null) return 2;
+    if (beat.volumeId === null && beat.chapterId === null && beat.chapterNo === null) return 3;
+    return 4;
   }
 
   private buildInputWarnings(stepKey: GuidedStepSchemaKey, args: GenerateGuidedStepPreviewInput): string[] {
@@ -239,5 +348,11 @@ export class GenerateGuidedStepPreviewTool implements BaseTool<GenerateGuidedSte
 
   private array(value: unknown): unknown[] {
     return Array.isArray(value) ? value : [];
+  }
+
+  private stringArray(value: unknown): string[] {
+    return Array.isArray(value)
+      ? value.map((item) => (typeof item === 'string' ? item.trim() : '')).filter(Boolean)
+      : [];
   }
 }

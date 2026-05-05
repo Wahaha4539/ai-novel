@@ -37,6 +37,7 @@ export interface ToolContext {
   approved: boolean;
   userId?: string;
   outputs: Record<number, unknown>;
+  stepTools?: Record<number, string>;
   policy: Record<string, unknown>;
 }
 

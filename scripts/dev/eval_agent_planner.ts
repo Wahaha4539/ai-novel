@@ -587,6 +587,8 @@ function buildRetrievalToolArgs(item: EvalCase): Record<string, unknown> {
     character_consistency_check: ['character_arc', 'relationship_graph', 'memory_chunks'],
     plot_consistency_check: ['plot_facts', 'relationship_graph', 'world_facts', 'memory_chunks'],
     worldbuilding_expand: ['world_facts', 'plot_facts', 'memory_chunks', 'locked_world_facts'],
+    story_bible_expand: ['world_facts', 'plot_facts', 'memory_chunks', 'locked_world_facts'],
+    continuity_check: ['relationship_graph', 'plot_facts', 'world_facts', 'memory_chunks'],
   };
   const args: Record<string, unknown> = { projectId: textOrUndefined(session.currentProjectId) ?? 'project_1', taskType, focus: focusByTask[taskType] ?? ['plot_facts', 'memory_chunks'] };
   const entityRefs: Record<string, unknown> = {};
@@ -597,6 +599,8 @@ function buildRetrievalToolArgs(item: EvalCase): Record<string, unknown> {
     args.focus = ['plot_facts', 'relationship_graph', 'memory_chunks'];
   }
   if (item.id === 'worldbuilding_expand_007') entityRefs.worldSettingRef = '宗门体系';
+  if (item.id === 'longform_story_bible_expand_013') entityRefs.worldSettingRef = '灵脉禁制';
+  if (item.id === 'longform_timeline_repair_015') entityRefs.chapterRange = '前九章';
   if (item.expected.retrieval?.mustIncludeFullDraft) entityRefs.includeFullDrafts = true;
   if (Object.keys(entityRefs).length) args.entityRefs = entityRefs;
   return args;
@@ -637,6 +641,7 @@ function buildEvalContext(item: EvalCase, toolRegistry: EvalToolRegistry): Agent
       currentChapterIndex,
       selectedText: textOrUndefined(session.selectedText),
     },
+    attachments: [],
     project: currentProjectId ? { id: currentProjectId, title: 'Eval 测试项目', defaultWordCount: 3000, status: 'active' } : undefined,
     currentChapter: currentChapterId ? { id: currentChapterId, title: '当前章节', index: currentChapterIndex ?? 1, status: 'draft', draftId: currentDraftId } : undefined,
     recentChapters: [],
@@ -711,6 +716,12 @@ const EVAL_TOOL_DEFINITIONS: EvalToolDefinition[] = [
   { name: 'generate_worldbuilding_preview', description: '生成世界观扩展预览。' },
   { name: 'validate_worldbuilding', description: '校验世界观候选和写入前 diff。' },
   { name: 'persist_worldbuilding', description: '审批后追加写入世界观。', requiresApproval: true, riskLevel: 'medium', sideEffects: ['create_lorebook_entry'] },
+  { name: 'generate_story_bible_preview', description: '生成 Story Bible 设定扩展预览。' },
+  { name: 'validate_story_bible', description: '校验 Story Bible 候选和写入前 diff。' },
+  { name: 'persist_story_bible', description: '审批后写入 Story Bible 设定资产。', requiresApproval: true, riskLevel: 'medium', sideEffects: ['create_lorebook_entries', 'update_lorebook_entries', 'fact_layer_story_bible_write'] },
+  { name: 'generate_continuity_preview', description: '生成关系线和时间线连续性变更预览。' },
+  { name: 'validate_continuity_changes', description: '校验关系线和时间线候选变更。' },
+  { name: 'persist_continuity_changes', description: '审批后写入关系线和时间线连续性变更。', requiresApproval: true, riskLevel: 'medium', sideEffects: ['create_relationship_edge', 'update_relationship_edge', 'delete_relationship_edge', 'create_timeline_event', 'update_timeline_event', 'delete_timeline_event', 'fact_layer_continuity_write'] },
   { name: 'generate_outline_preview', description: '生成大纲拆分预览。' },
   { name: 'validate_outline', description: '校验大纲预览。' },
   { name: 'persist_outline', description: '审批后持久化大纲。', requiresApproval: true, riskLevel: 'medium', sideEffects: ['create_outline'] },
@@ -830,6 +841,30 @@ function createMockPlannerOutput(goal: string, agentContext: Record<string, unkn
       step(3, 'generate_worldbuilding_preview', { context: '{{steps.collect_task_context.output}}', instruction: '补充宗门体系，但不要影响已有剧情。' }),
       step(4, 'validate_worldbuilding', { preview: '{{steps.generate_worldbuilding_preview.output}}' }),
       step(5, 'persist_worldbuilding', { preview: '{{steps.generate_worldbuilding_preview.output}}', validation: '{{steps.validate_worldbuilding.output}}' }),
+    ]);
+  }
+  if (goal.includes('灵脉禁制') || goal.includes('Story Bible')) {
+    return plan('story_bible_expand', goal, true, [
+      step(1, 'collect_task_context', { taskType: 'story_bible_expand', focus: ['灵脉禁制', '宗门货币', 'locked_world_facts'] }),
+      step(2, 'generate_story_bible_preview', { context: '{{steps.collect_task_context.output}}', instruction: goal, focus: ['power_system', 'rule', 'economy'] }),
+      step(3, 'validate_story_bible', { preview: '{{steps.generate_story_bible_preview.output}}', taskContext: '{{steps.collect_task_context.output}}' }),
+      step(4, 'persist_story_bible', { preview: '{{steps.generate_story_bible_preview.output}}', validation: '{{steps.validate_story_bible.output}}' }),
+    ]);
+  }
+  if (goal.includes('关系线') && goal.includes('前后矛盾')) {
+    return plan('continuity_check', goal, true, [
+      step(1, 'collect_task_context', { taskType: 'continuity_check', focus: ['relationship_graph', 'plot_facts', 'world_facts', 'memory_chunks'] }),
+      step(2, 'generate_continuity_preview', { context: '{{steps.collect_task_context.output}}', instruction: goal, focus: ['relationship_graph'] }),
+      step(3, 'validate_continuity_changes', { preview: '{{steps.generate_continuity_preview.output}}', taskContext: '{{steps.collect_task_context.output}}' }),
+      step(4, 'persist_continuity_changes', { preview: '{{steps.generate_continuity_preview.output}}', validation: '{{steps.validate_continuity_changes.output}}' }),
+    ]);
+  }
+  if (goal.includes('时间线') && goal.includes('旧盟玉佩')) {
+    return plan('continuity_check', goal, true, [
+      step(1, 'collect_task_context', { taskType: 'continuity_check', entityRefs: { chapterRange: '前九章' }, focus: ['timeline_events', 'plot_facts', 'relationship_graph', 'memory_chunks'] }),
+      step(2, 'generate_continuity_preview', { context: '{{steps.collect_task_context.output}}', instruction: goal, focus: ['timeline_events'] }),
+      step(3, 'validate_continuity_changes', { preview: '{{steps.generate_continuity_preview.output}}', taskContext: '{{steps.collect_task_context.output}}' }),
+      step(4, 'persist_continuity_changes', { preview: '{{steps.generate_continuity_preview.output}}', validation: '{{steps.validate_continuity_changes.output}}' }),
     ]);
   }
   if (goal.includes('第一卷') && goal.includes('30')) {

@@ -9,7 +9,7 @@ import { ProjectManagementPanel } from '../components/ProjectManagementPanel';
 import { OutlinePanel } from '../components/OutlinePanel';
 import { LorePanel } from '../components/LorePanel';
 import { StoryBiblePanel } from '../components/StoryBiblePanel';
-import { CreativeProfilePanel } from '../components/CreativeProfilePanel';
+import { GenerationConfigPanel } from '../components/GenerationConfigPanel';
 import { VolumePanel } from '../components/VolumePanel';
 import { GuidedWizard } from '../components/guided/GuidedWizard';
 import { PromptManagerPanel } from '../components/PromptManagerPanel';
@@ -20,13 +20,17 @@ import { WritingRulesPanel } from '../components/WritingRulesPanel';
 import { RelationshipMapPanel } from '../components/RelationshipMapPanel';
 import { TimelinePanel } from '../components/TimelinePanel';
 import { CharacterStatePanel } from '../components/CharacterStatePanel';
+import { SceneBankPanel } from '../components/SceneBankPanel';
+import { PacingPanel } from '../components/PacingPanel';
+import { ChapterPatternPanel } from '../components/ChapterPatternPanel';
+import { QualityReportPanel } from '../components/QualityReportPanel';
 import { AgentFloatingOrb } from '../components/agent/AgentFloatingOrb';
 import { AgentPageContext } from '../hooks/useAgentRun';
 
-type ActiveView = 'editor' | 'outline' | 'lore' | 'story-bible' | 'writing-rules' | 'relationships' | 'timeline' | 'character-state' | 'generation-config' | 'projects' | 'volumes' | 'guided' | 'prompts' | 'foreshadow' | 'generate' | 'llm-config';
+type ActiveView = 'editor' | 'outline' | 'lore' | 'story-bible' | 'writing-rules' | 'scene-bank' | 'pacing' | 'chapter-patterns' | 'quality-reports' | 'relationships' | 'timeline' | 'character-state' | 'generation-config' | 'projects' | 'volumes' | 'guided' | 'prompts' | 'foreshadow' | 'generate' | 'llm-config';
 
 const WORKSPACE_STATE_STORAGE_KEY = 'ai-novel:workspace-state';
-const ACTIVE_VIEWS: ActiveView[] = ['editor', 'outline', 'lore', 'story-bible', 'writing-rules', 'relationships', 'timeline', 'character-state', 'generation-config', 'projects', 'volumes', 'guided', 'prompts', 'foreshadow', 'generate', 'llm-config'];
+const ACTIVE_VIEWS: ActiveView[] = ['editor', 'outline', 'lore', 'story-bible', 'writing-rules', 'scene-bank', 'pacing', 'chapter-patterns', 'quality-reports', 'relationships', 'timeline', 'character-state', 'generation-config', 'projects', 'volumes', 'guided', 'prompts', 'foreshadow', 'generate', 'llm-config'];
 
 type WorkspaceState = {
   activeView: ActiveView;
@@ -158,6 +162,22 @@ export default function HomePage() {
     setActiveView('writing-rules');
   }, []);
 
+  const handleNavigateToSceneBank = useCallback(() => {
+    setActiveView('scene-bank');
+  }, []);
+
+  const handleNavigateToPacing = useCallback(() => {
+    setActiveView('pacing');
+  }, []);
+
+  const handleNavigateToChapterPatterns = useCallback(() => {
+    setActiveView('chapter-patterns');
+  }, []);
+
+  const handleNavigateToQualityReports = useCallback(() => {
+    setActiveView('quality-reports');
+  }, []);
+
   const handleNavigateToRelationships = useCallback(() => {
     setActiveView('relationships');
   }, []);
@@ -257,6 +277,10 @@ export default function HomePage() {
         onNavigateToLore={handleNavigateToLore}
         onNavigateToStoryBible={handleNavigateToStoryBible}
         onNavigateToWritingRules={handleNavigateToWritingRules}
+        onNavigateToSceneBank={handleNavigateToSceneBank}
+        onNavigateToPacing={handleNavigateToPacing}
+        onNavigateToChapterPatterns={handleNavigateToChapterPatterns}
+        onNavigateToQualityReports={handleNavigateToQualityReports}
         onNavigateToRelationships={handleNavigateToRelationships}
         onNavigateToTimeline={handleNavigateToTimeline}
         onNavigateToCharacterState={handleNavigateToCharacterState}
@@ -292,6 +316,14 @@ export default function HomePage() {
           <StoryBiblePanel selectedProject={selectedProject} selectedProjectId={data.selectedProjectId} />
         ) : activeView === 'writing-rules' ? (
           <WritingRulesPanel selectedProject={selectedProject} selectedProjectId={data.selectedProjectId} />
+        ) : activeView === 'scene-bank' ? (
+          <SceneBankPanel selectedProject={selectedProject} selectedProjectId={data.selectedProjectId} volumes={data.volumes} chapters={chapters} />
+        ) : activeView === 'pacing' ? (
+          <PacingPanel selectedProject={selectedProject} selectedProjectId={data.selectedProjectId} volumes={data.volumes} chapters={chapters} />
+        ) : activeView === 'chapter-patterns' ? (
+          <ChapterPatternPanel selectedProject={selectedProject} selectedProjectId={data.selectedProjectId} />
+        ) : activeView === 'quality-reports' ? (
+          <QualityReportPanel selectedProject={selectedProject} selectedProjectId={data.selectedProjectId} selectedChapterId={data.selectedChapterId} chapters={chapters} />
         ) : activeView === 'relationships' ? (
           <RelationshipMapPanel selectedProject={selectedProject} selectedProjectId={data.selectedProjectId} />
         ) : activeView === 'timeline' ? (
@@ -305,7 +337,11 @@ export default function HomePage() {
             onRefresh={() => data.loadProjectData(data.selectedProjectId, data.selectedChapterId)}
           />
         ) : activeView === 'generation-config' ? (
-          <CreativeProfilePanel selectedProject={selectedProject} selectedProjectId={data.selectedProjectId} />
+          <GenerationConfigPanel
+            selectedProject={selectedProject}
+            selectedProjectId={data.selectedProjectId}
+            onSaved={() => data.loadProjectData(data.selectedProjectId, data.selectedChapterId)}
+          />
         ) : activeView === 'volumes' ? (
           <VolumePanel selectedProject={selectedProject} selectedProjectId={data.selectedProjectId} chapters={chapters} />
         ) : activeView === 'guided' ? (

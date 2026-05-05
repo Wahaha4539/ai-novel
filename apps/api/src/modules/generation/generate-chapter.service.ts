@@ -1,12 +1,14 @@
 import { BadRequestException, Injectable, NotFoundException } from '@nestjs/common';
 import { Prisma } from '@prisma/client';
+import { NovelCacheService } from '../../common/cache/novel-cache.service';
 import { StructuredLogger } from '../../common/logging/structured-logger';
 import { PrismaService } from '../../prisma/prisma.service';
+import { buildGenerationProfileSnapshot, GenerationProfileSnapshot } from '../generation-profile/generation-profile.defaults';
 import { LlmGatewayService } from '../llm/llm-gateway.service';
 import { RetrievalBundle, RetrievalBundleWithCacheMeta, RetrievalService } from '../memory/retrieval.service';
 import { RetrievalPlan, RetrievalPlannerDiagnostics } from '../memory/retrieval-plan.types';
 import { ValidationService } from '../validation/validation.service';
-import { ChapterContextPack } from './context-pack.types';
+import { ChapterContextPack, SceneExecutionPlan } from './context-pack.types';
 import { PromptBuilderService } from './prompt-builder.service';
 import { RetrievalPlannerService } from './retrieval-planner.service';
 
@@ -46,7 +48,25 @@ export interface GenerateChapterPreflightResult {
   openIssueCount: number;
   openErrorCount: number;
   outlineQuality: OutlineDensityCheckResult;
+  newEntityPolicy: NewEntityPolicyCheckResult;
   currentDraftVersionNo?: number;
+}
+
+export interface NewEntityPolicyCandidate {
+  type: 'character' | 'location' | 'foreshadow';
+  source: string;
+  evidence: string;
+}
+
+export interface NewEntityPolicyCheckResult {
+  valid: boolean;
+  blockMode: boolean;
+  blockers: string[];
+  warnings: string[];
+  candidates: NewEntityPolicyCandidate[];
+  allowNewCharacters: boolean;
+  allowNewLocations: boolean;
+  allowNewForeshadows: boolean;
 }
 
 export interface ExecutionCardCoverageResult {
@@ -109,25 +129,27 @@ export class GenerateChapterService {
     private readonly promptBuilder: PromptBuilderService,
     private readonly retrievalPlanner: RetrievalPlannerService,
     private readonly validation: ValidationService,
+    private readonly cacheService?: NovelCacheService,
   ) {}
 
   /** 同步生成章节正文，并把生成上下文、召回结果和模型信息记录到草稿元数据。 */
   async run(projectId: string, chapterId: string, input: GenerateChapterInput = {}): Promise<GenerateChapterResult> {
     const runStartedAt = Date.now();
     const logContext = { requestId: input.requestId, jobId: input.jobId, projectId, chapterId };
-    const chapter = await this.prisma.chapter.findFirst({ where: { id: chapterId, projectId }, include: { project: { include: { creativeProfile: true } }, volume: true } });
+    const chapter = await this.prisma.chapter.findFirst({ where: { id: chapterId, projectId }, include: { project: { include: { creativeProfile: true, generationProfile: true } }, volume: true } });
     if (!chapter) throw new NotFoundException(`章节不存在或不属于当前项目：${chapterId}`);
 
-    const targetWordCount = input.wordCount ?? chapter.expectedWordCount ?? chapter.project.creativeProfile?.chapterWordCount ?? 3500;
+    const generationProfile = buildGenerationProfileSnapshot(chapter.project.generationProfile);
+    const targetWordCount = this.resolveTargetWordCount(input, chapter, generationProfile);
     if (targetWordCount < 200) throw new BadRequestException('章节目标字数不能低于 200。');
 
     const latest = await this.prisma.chapterDraft.findFirst({ where: { chapterId }, orderBy: { versionNo: 'desc' } });
-    const preflight = await this.runPreflight(projectId, chapter, latest?.versionNo, input);
+    const preflight = await this.runPreflight(projectId, chapter, latest?.versionNo, input, generationProfile);
     if (input.validateBeforeWrite !== false && !preflight.valid) {
       throw new BadRequestException(`生成前检查未通过：${preflight.blockers.join('；')}`);
     }
 
-    const [styleProfile, characters, plannedForeshadows, previousChapters] = await Promise.all([
+    const [styleProfile, characters, plannedForeshadows, sceneCards, previousChapters] = await Promise.all([
       this.loadStyleProfile(projectId, chapter.project.defaultStyleProfileId),
       this.prisma.character.findMany({ where: { projectId }, orderBy: { createdAt: 'asc' }, take: 20 }),
       this.prisma.foreshadowTrack.findMany({
@@ -135,6 +157,7 @@ export class GenerateChapterService {
         orderBy: [{ status: 'asc' }, { createdAt: 'asc' }],
         take: 12,
       }),
+      this.loadSceneCardsForChapter(projectId, chapter.id, chapter.chapterNo),
       this.loadPreviousChapters(projectId, chapter.chapterNo),
     ]);
 
@@ -193,7 +216,18 @@ export class GenerateChapterService {
     if (retrievalBundle.diagnostics.qualityStatus === 'blocked') {
       throw new BadRequestException(`召回质量不足，已阻断生成：${retrievalBundle.diagnostics.warnings.join('；')}`);
     }
-    const contextPack = this.buildContextPack({ chapter, input, queryText, includeLorebook, includeMemory, retrievalBundle, retrievalPlan: retrievalPlanResult.plan, plannerDiagnostics: retrievalPlanResult.diagnostics });
+    const contextPack = this.buildContextPack({
+      chapter,
+      input,
+      queryText,
+      includeLorebook,
+      includeMemory,
+      retrievalBundle,
+      retrievalPlan: retrievalPlanResult.plan,
+      plannerDiagnostics: retrievalPlanResult.diagnostics,
+      generationProfile,
+      sceneCards: this.buildSceneExecutionPlans(sceneCards, chapter),
+    });
 
     const prompt = await this.promptBuilder.buildChapterPrompt({
       project: { id: chapter.project.id, title: chapter.project.title, genre: chapter.project.genre, tone: chapter.project.tone, synopsis: chapter.project.synopsis, outline: chapter.project.outline },
@@ -205,6 +239,7 @@ export class GenerateChapterService {
       previousChapters,
       hardFacts,
       contextPack,
+      generationProfile,
       targetWordCount,
     });
 
@@ -226,7 +261,7 @@ export class GenerateChapterService {
       throw new BadRequestException(`生成后质量门禁未通过：${qualityGate.blockers.join('；')}`);
     }
     const modelInfo = { model: llmResult.model, usage: llmResult.usage, rawPayloadSummary: llmResult.rawPayloadSummary };
-    const retrievalPayload = { contextPack, retrievalPlan: retrievalPlanResult.plan, plannerDiagnostics: retrievalPlanResult.diagnostics, retrievalCache: retrievalBundle.cache, lorebookHits: retrievalBundle.lorebookHits, memoryHits: retrievalBundle.memoryHits, structuredHits: retrievalBundle.structuredHits, rankedHits: retrievalBundle.rankedHits, diagnostics: retrievalBundle.diagnostics, preflight, qualityGate };
+    const retrievalPayload = { contextPack, generationProfile, retrievalPlan: retrievalPlanResult.plan, plannerDiagnostics: retrievalPlanResult.diagnostics, retrievalCache: retrievalBundle.cache, lorebookHits: retrievalBundle.lorebookHits, memoryHits: retrievalBundle.memoryHits, structuredHits: retrievalBundle.structuredHits, rankedHits: retrievalBundle.rankedHits, diagnostics: retrievalBundle.diagnostics, preflight, qualityGate };
 
     const draft = await this.prisma.$transaction(async (tx) => {
       // 版本号必须在事务内重新读取，避免并发生成同一章节时用到过期 latest 导致版本冲突。
@@ -239,14 +274,28 @@ export class GenerateChapterService {
           content,
           source: 'agent_generate_service',
           modelInfo: modelInfo as Prisma.InputJsonValue,
-          generationContext: { agentRunId: input.agentRunId, instruction: input.instruction, targetWordCount, preflight, qualityGate, promptDebug: prompt.debug, retrievalPayload } as unknown as Prisma.InputJsonValue,
+          generationContext: { agentRunId: input.agentRunId, instruction: input.instruction, targetWordCount, generationProfile, preflight, qualityGate, promptDebug: prompt.debug, retrievalPayload } as unknown as Prisma.InputJsonValue,
           isCurrent: true,
           createdBy: input.userId,
         },
       });
+      await tx.qualityReport.create({
+        data: this.buildGenerationQualityReportData({
+          projectId,
+          chapterId,
+          draftId: created.id,
+          agentRunId: input.agentRunId,
+          qualityGate,
+          actualWordCount,
+          targetWordCount,
+          summary: content.slice(0, 160),
+          modelInfo,
+        }),
+      });
       await tx.chapter.update({ where: { id: chapterId }, data: { status: 'drafted', actualWordCount } });
       return created;
     });
+    await this.cacheService?.deleteProjectRecallResults(projectId);
     this.logger.log('generation.draft.persisted', { ...logContext, stage: 'draft_persisted', draftId: draft.id, versionNo: draft.versionNo, actualWordCount, model: llmResult.model, tokenUsage: llmResult.usage, elapsedMs: Date.now() - runStartedAt });
 
     return { draftId: draft.id, chapterId, versionNo: draft.versionNo, actualWordCount, summary: content.slice(0, 160), retrievalPayload, preflight, qualityGate, promptDebug: prompt.debug, modelInfo };
@@ -265,6 +314,8 @@ export class GenerateChapterService {
     retrievalBundle: RetrievalBundle | RetrievalBundleWithCacheMeta;
     retrievalPlan: RetrievalPlan;
     plannerDiagnostics: RetrievalPlannerDiagnostics;
+    generationProfile: GenerationProfileSnapshot;
+    sceneCards?: SceneExecutionPlan[];
   }): ChapterContextPack {
     return {
       schemaVersion: 1,
@@ -273,12 +324,16 @@ export class GenerateChapterService {
         memoryHits: input.retrievalBundle.memoryHits,
         structuredHits: input.retrievalBundle.structuredHits,
       },
+      planningContext: {
+        sceneCards: input.sceneCards ?? [],
+      },
       userIntent: {
         instruction: input.input.instruction?.trim() || undefined,
         chapterObjective: input.chapter.objective,
         chapterConflict: input.chapter.conflict,
         chapterOutline: input.chapter.outline,
       },
+      generationProfile: input.generationProfile,
       retrievalDiagnostics: {
         queryText: input.queryText,
         includeLorebook: input.includeLorebook,
@@ -304,6 +359,68 @@ export class GenerateChapterService {
 
   private mergeCharactersForRetrieval(projectCharacters: string[], plannedCharacters: string[]): string[] {
     return [...new Set([...projectCharacters, ...plannedCharacters].filter(Boolean))].slice(0, 30);
+  }
+
+  private resolveTargetWordCount(
+    input: GenerateChapterInput,
+    chapter: { expectedWordCount: number | null; project: { creativeProfile?: { chapterWordCount: number | null } | null } },
+    generationProfile: GenerationProfileSnapshot,
+  ): number {
+    return input.wordCount ?? chapter.expectedWordCount ?? chapter.project.creativeProfile?.chapterWordCount ?? generationProfile.defaultChapterWordCount ?? 3500;
+  }
+
+  private buildGenerationQualityReportData(input: {
+    projectId: string;
+    chapterId: string;
+    draftId: string;
+    agentRunId?: string;
+    qualityGate: GeneratedDraftQualityGateResult;
+    actualWordCount: number;
+    targetWordCount: number;
+    summary: string;
+    modelInfo: Record<string, unknown>;
+  }): Prisma.QualityReportUncheckedCreateInput {
+    const issues = [
+      ...input.qualityGate.blockers.map((message) => ({
+        severity: 'error',
+        issueType: 'generation_quality_gate_blocker',
+        message,
+      })),
+      ...input.qualityGate.warnings.map((message) => ({
+        severity: 'warning',
+        issueType: 'generation_quality_gate_warning',
+        message,
+      })),
+    ];
+    const verdict = input.qualityGate.blocked ? 'fail' : issues.length > 0 ? 'warn' : 'pass';
+
+    return {
+      projectId: input.projectId,
+      chapterId: input.chapterId,
+      draftId: input.draftId,
+      agentRunId: this.uuidOrUndefined(input.agentRunId),
+      sourceType: 'generation',
+      sourceId: input.draftId,
+      reportType: 'generation_quality_gate',
+      scores: {
+        overall: input.qualityGate.score,
+        actualWordCount: input.actualWordCount,
+        targetWordCount: input.targetWordCount,
+        targetRatio: input.qualityGate.metrics.targetRatio,
+        duplicateParagraphRatio: input.qualityGate.metrics.duplicateParagraphRatio,
+      } as Prisma.InputJsonValue,
+      issues: issues as Prisma.InputJsonValue,
+      verdict,
+      summary: input.qualityGate.blocked
+        ? `Generation quality gate failed with score ${input.qualityGate.score}.`
+        : `Generation quality gate ${verdict} with score ${input.qualityGate.score}.`,
+      metadata: {
+        qualityGate: input.qualityGate,
+        modelInfo: input.modelInfo,
+        summary: input.summary,
+        agentRunId: input.agentRunId,
+      } as unknown as Prisma.InputJsonValue,
+    };
   }
 
   /**
@@ -369,17 +486,20 @@ export class GenerateChapterService {
    */
   private async runPreflight(
     projectId: string,
-    chapter: { id: string; chapterNo: number; objective: string | null; conflict: string | null; outline: string | null; craftBrief?: Prisma.JsonValue | null; status: string },
+    chapter: { id: string; chapterNo: number; objective: string | null; conflict: string | null; outline: string | null; revealPoints?: string | null; foreshadowPlan?: string | null; craftBrief?: Prisma.JsonValue | null; status: string },
     currentDraftVersionNo: number | undefined,
     input: GenerateChapterInput,
+    generationProfile: GenerationProfileSnapshot = buildGenerationProfileSnapshot(),
   ): Promise<GenerateChapterPreflightResult> {
     const openIssues = await this.validation.listByChapter(chapter.id);
     const openErrorCount = openIssues.filter((issue) => issue.severity === 'error').length;
     const outlineQuality = this.assessOutlineDensity(chapter, input);
+    const newEntityPolicy = this.assessNewEntityPolicy(chapter, input, generationProfile);
     const blockers = [
       ...(!input.instruction?.trim() && !chapter.objective?.trim() && !chapter.outline?.trim() ? ['缺少章节目标/大纲/用户指令，无法构建稳定写作目标。'] : []),
       ...(openErrorCount > 0 ? [`当前章节存在 ${openErrorCount} 个未解决 error 级校验问题。`] : []),
       ...outlineQuality.blockers,
+      ...newEntityPolicy.blockers,
     ];
     const warnings = [
       ...(currentDraftVersionNo ? [`当前已有 v${currentDraftVersionNo} 草稿，本次会创建新版本并设为当前版本。`] : []),
@@ -387,8 +507,9 @@ export class GenerateChapterService {
       ...(chapter.status === 'reviewed' ? ['章节已处于 reviewed 状态，请确认确实要生成新草稿。'] : []),
       ...(input.validateBeforeWrite === false ? ['调用方显式关闭生成前阻断，仅记录 preflight 结果。'] : []),
       ...outlineQuality.warnings,
+      ...newEntityPolicy.warnings,
     ];
-    return { valid: blockers.length === 0, blockers, warnings, openIssueCount: openIssues.length, openErrorCount, outlineQuality, currentDraftVersionNo };
+    return { valid: blockers.length === 0, blockers, warnings, openIssueCount: openIssues.length, openErrorCount, outlineQuality, newEntityPolicy, currentDraftVersionNo };
   }
 
   private assessOutlineDensity(
@@ -440,6 +561,89 @@ export class GenerateChapterService {
   private resolveOutlineQualityGateMode(input: GenerateChapterInput): 'warning' | 'blocker' {
     if (input.outlineQualityGate) return input.outlineQualityGate;
     return process.env.OUTLINE_QUALITY_GATE === 'blocker' ? 'blocker' : 'warning';
+  }
+
+  private assessNewEntityPolicy(
+    chapter: { objective: string | null; conflict: string | null; outline: string | null; revealPoints?: string | null; foreshadowPlan?: string | null; craftBrief?: Prisma.JsonValue | null },
+    input: GenerateChapterInput,
+    generationProfile: GenerationProfileSnapshot,
+  ): NewEntityPolicyCheckResult {
+    const candidates = this.collectNewEntityCandidates(chapter, input);
+    const blockedCandidates = candidates.filter((candidate) => {
+      if (candidate.type === 'character') return !generationProfile.allowNewCharacters;
+      if (candidate.type === 'location') return !generationProfile.allowNewLocations;
+      return !generationProfile.allowNewForeshadows;
+    });
+    const blockMode = this.shouldBlockNewEntityPolicy(generationProfile);
+    const messages = blockedCandidates.map((candidate) => `生成配置禁止新增${this.newEntityLabel(candidate.type)}，但${candidate.source}包含新增候选：${candidate.evidence}`);
+
+    return {
+      valid: !blockMode || blockedCandidates.length === 0,
+      blockMode,
+      blockers: blockMode ? messages : [],
+      warnings: blockMode ? [] : messages,
+      candidates,
+      allowNewCharacters: generationProfile.allowNewCharacters,
+      allowNewLocations: generationProfile.allowNewLocations,
+      allowNewForeshadows: generationProfile.allowNewForeshadows,
+    };
+  }
+
+  private collectNewEntityCandidates(
+    chapter: { objective: string | null; conflict: string | null; outline: string | null; revealPoints?: string | null; foreshadowPlan?: string | null; craftBrief?: Prisma.JsonValue | null },
+    input: GenerateChapterInput,
+  ): NewEntityPolicyCandidate[] {
+    const sources = [
+      { source: '用户指令', value: input.instruction },
+      { source: '章节目标', value: chapter.objective },
+      { source: '章节冲突', value: chapter.conflict },
+      { source: '章节大纲', value: chapter.outline },
+      { source: '揭示点', value: chapter.revealPoints },
+      { source: '伏笔计划', value: chapter.foreshadowPlan },
+      { source: '执行卡', value: this.hasRecordContent(chapter.craftBrief) ? JSON.stringify(chapter.craftBrief) : '' },
+    ];
+    const patterns: Array<{ type: NewEntityPolicyCandidate['type']; pattern: RegExp }> = [
+      { type: 'character', pattern: /(?:新增角色|新角色|新增人物|新人物|首次登场|首次出场|引入.{0,12}(?:角色|人物|配角|反派|敌人|同伴))/i },
+      { type: 'location', pattern: /(?:新增地点|新地点|新增场景|新场景|新增地图|新地图|首次到达|进入新.{0,12}(?:地点|场景|城市|宗门|秘境|城镇|村镇))/i },
+      { type: 'foreshadow', pattern: /(?:新增伏笔|新伏笔|埋下伏笔|埋设伏笔|新增线索|新线索|埋下线索|新增悬念|新悬念|新增暗线)/i },
+    ];
+    const candidates: NewEntityPolicyCandidate[] = [];
+    const seen = new Set<string>();
+
+    for (const source of sources) {
+      const value = source.value?.trim();
+      if (!value) continue;
+      for (const item of patterns) {
+        const match = value.match(item.pattern);
+        if (!match) continue;
+        const evidence = this.truncateForLog(value.replace(/\s+/g, ' '), 180) ?? match[0];
+        const key = `${item.type}:${source.source}:${evidence}`;
+        if (seen.has(key)) continue;
+        seen.add(key);
+        candidates.push({ type: item.type, source: source.source, evidence });
+      }
+    }
+
+    return candidates;
+  }
+
+  private shouldBlockNewEntityPolicy(generationProfile: GenerationProfileSnapshot): boolean {
+    return generationProfile.preGenerationChecks.some((item) => {
+      if (typeof item === 'string') {
+        return /^(?:blockedNewEntities|blockNewEntities|newEntityPolicy:blocker)$/i.test(item.trim());
+      }
+      const record = this.asRecord(item);
+      if (!record) return false;
+      const key = String(record.key ?? record.id ?? record.type ?? record.name ?? '');
+      const mode = String(record.mode ?? record.severity ?? record.level ?? '');
+      return /new.?entit/i.test(key) && /block|error|阻断/.test(mode);
+    });
+  }
+
+  private newEntityLabel(type: NewEntityPolicyCandidate['type']): string {
+    if (type === 'character') return '角色';
+    if (type === 'location') return '地点';
+    return '伏笔';
   }
 
   private assessExecutionCardCoverage(
@@ -550,6 +754,74 @@ export class GenerateChapterService {
 
   private text(value: unknown): string | undefined {
     return typeof value === 'string' && value.trim() ? value.trim() : undefined;
+  }
+
+  private uuidOrUndefined(value: string | undefined): string | undefined {
+    if (!value) return undefined;
+    return /^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i.test(value)
+      ? value
+      : undefined;
+  }
+
+  private hasRecordContent(value: unknown): boolean {
+    const record = this.asRecord(value);
+    return Boolean(record && Object.keys(record).length > 0);
+  }
+
+  private async loadSceneCardsForChapter(projectId: string, chapterId: string, chapterNo: number) {
+    return this.prisma.sceneCard.findMany({
+      where: {
+        projectId,
+        chapterId,
+        NOT: { status: 'archived' },
+      },
+      orderBy: [{ sceneNo: 'asc' }, { updatedAt: 'asc' }],
+      take: 12,
+    }).then((items) => items.map((item) => ({ ...item, chapterNo })));
+  }
+
+  private buildSceneExecutionPlans(
+    sceneCards: Array<{
+      id: string;
+      projectId: string;
+      volumeId: string | null;
+      chapterId: string | null;
+      chapterNo: number;
+      sceneNo: number | null;
+      title: string;
+      locationName: string | null;
+      participants: Prisma.JsonValue;
+      purpose: string | null;
+      conflict: string | null;
+      emotionalTone: string | null;
+      keyInformation: string | null;
+      result: string | null;
+      status: string;
+    }>,
+    chapter: { id: string; chapterNo: number },
+  ): SceneExecutionPlan[] {
+    return sceneCards.map((scene) => ({
+      id: scene.id,
+      sceneNo: scene.sceneNo,
+      title: scene.title,
+      locationName: scene.locationName,
+      participants: this.stringArray(scene.participants),
+      purpose: scene.purpose,
+      conflict: scene.conflict,
+      emotionalTone: scene.emotionalTone,
+      keyInformation: scene.keyInformation,
+      result: scene.result,
+      status: scene.status,
+      sourceTrace: {
+        sourceType: 'scene_card',
+        sourceId: scene.id,
+        projectId: scene.projectId,
+        volumeId: scene.volumeId,
+        chapterId: scene.chapterId ?? chapter.id,
+        chapterNo: chapter.chapterNo,
+        sceneNo: scene.sceneNo,
+      },
+    }));
   }
 
   private async loadStyleProfile(projectId: string, defaultStyleProfileId?: string | null) {

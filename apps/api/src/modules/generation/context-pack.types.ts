@@ -1,4 +1,28 @@
 import { RetrievalBundle, RetrievalHit } from '../memory/retrieval.service';
+import { GenerationProfileSnapshot } from '../generation-profile/generation-profile.defaults';
+
+export interface SceneExecutionPlan {
+  id: string;
+  sceneNo: number | null;
+  title: string;
+  locationName?: string | null;
+  participants: string[];
+  purpose?: string | null;
+  conflict?: string | null;
+  emotionalTone?: string | null;
+  keyInformation?: string | null;
+  result?: string | null;
+  status: string;
+  sourceTrace: {
+    sourceType: 'scene_card';
+    sourceId: string;
+    projectId: string;
+    volumeId?: string | null;
+    chapterId?: string | null;
+    chapterNo?: number;
+    sceneNo?: number | null;
+  };
+}
 
 /**
  * 写作 Prompt 的上下文包版本。
@@ -11,12 +35,16 @@ export interface ChapterContextPack {
     memoryHits: RetrievalHit[];
     structuredHits: RetrievalHit[];
   };
+  planningContext?: {
+    sceneCards: SceneExecutionPlan[];
+  };
   userIntent: {
     instruction?: string;
     chapterObjective?: string | null;
     chapterConflict?: string | null;
     chapterOutline?: string | null;
   };
+  generationProfile?: GenerationProfileSnapshot;
   retrievalDiagnostics: {
     queryText?: string | null;
     includeLorebook: boolean;

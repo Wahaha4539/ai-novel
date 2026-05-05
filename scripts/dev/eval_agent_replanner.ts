@@ -339,6 +339,7 @@ function buildEvalContext(item: ReplanEvalCase): AgentContextV2 {
       currentChapterIndex: typeof session.currentChapterIndex === 'number' ? session.currentChapterIndex : undefined,
       selectedText: textOrUndefined(session.selectedText),
     },
+    attachments: [],
     project: currentProjectId ? { id: currentProjectId, title: 'Replan Eval 项目', status: 'active' } : undefined,
     currentChapter: currentChapterId ? { id: currentChapterId, title: '当前章节', index: 1, status: 'draft' } : undefined,
     recentChapters: [],

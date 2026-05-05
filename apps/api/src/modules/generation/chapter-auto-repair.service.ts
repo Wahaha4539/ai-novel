@@ -36,12 +36,13 @@ export class ChapterAutoRepairService {
       : await this.prisma.chapterDraft.findFirst({ where: { chapterId, isCurrent: true }, orderBy: { versionNo: 'desc' } });
     if (!draft) throw new NotFoundException(`章节 ${chapterId} 暂无可修复草稿`);
 
+    const hasExplicitIssues = options.issues !== undefined;
     const providedIssues = this.normalizeIssues(options.issues ?? []);
     const coverageIssues = this.buildCoverageRepairIssues(options.executionCardCoverage)
       .concat(this.buildCoverageRepairIssues(this.readDraftExecutionCardCoverage(draft.generationContext)));
-    const issues = providedIssues.length
+    const issues = hasExplicitIssues
       ? [...providedIssues, ...coverageIssues]
-      : [...await this.loadOpenIssues(projectId, chapterId), ...coverageIssues];
+      : [...await this.loadOpenIssues(projectId, chapterId), ...await this.loadQualityReportIssues(projectId, chapterId, draft.id), ...coverageIssues];
     const repairableIssues = issues.filter((issue) => ['error', 'warning'].includes(issue.severity)).slice(0, 5);
     const originalWordCount = this.countChineseLikeWords(draft.content.trim());
     if (!repairableIssues.length) return { skipped: true, reason: 'no_repairable_issues', draftId: draft.id, chapterId, originalDraftId: draft.id, originalWordCount, repairedWordCount: originalWordCount, repairedIssueCount: 0, maxRounds, summary: draft.content.trim().slice(0, 160) };
@@ -89,12 +90,50 @@ export class ChapterAutoRepairService {
     return rows.map((row) => ({ severity: row.severity, message: row.message, suggestion: row.suggestion ?? undefined }));
   }
 
+  private async loadQualityReportIssues(projectId: string, chapterId: string, draftId: string) {
+    const reports = await this.prisma.qualityReport.findMany({
+      where: {
+        projectId,
+        chapterId,
+        draftId,
+        sourceType: 'generation',
+        reportType: 'generation_quality_gate',
+        verdict: { in: ['warn', 'fail'] },
+      },
+      orderBy: [{ createdAt: 'desc' }],
+      take: 5,
+    });
+
+    return reports.flatMap((report) => {
+      const issues = this.normalizeIssues(Array.isArray(report.issues) ? report.issues : []);
+      if (issues.length > 0) {
+        return issues.map((issue) => ({
+          ...issue,
+          message: `[${report.reportType}] ${issue.message}`,
+        }));
+      }
+      return report.verdict === 'fail' && report.summary
+        ? [{ severity: 'error', message: `[${report.reportType}] ${report.summary}` }]
+        : [];
+    });
+  }
+
   private normalizeIssues(value: unknown[]): Array<{ severity: string; message: string; suggestion?: string }> {
     return value
-      .map((item) => (item && typeof item === 'object' ? (item as Record<string, unknown>) : undefined))
+      .map((item) => {
+        if (typeof item === 'string') return { severity: 'warning', message: item };
+        return item && typeof item === 'object' ? (item as Record<string, unknown>) : undefined;
+      })
       .filter((item): item is Record<string, unknown> => Boolean(item))
-      .map((item) => ({ severity: String(item.severity ?? 'info'), message: String(item.message ?? ''), suggestion: typeof item.suggestion === 'string' ? item.suggestion : undefined }))
+      .map((item) => ({ severity: this.normalizeIssueSeverity(String(item.severity ?? 'info')), message: String(item.message ?? item.summary ?? item.title ?? ''), suggestion: typeof item.suggestion === 'string' ? item.suggestion : undefined }))
       .filter((item) => item.message);
+  }
+
+  private normalizeIssueSeverity(value: string): string {
+    const normalized = value.trim().toLowerCase();
+    if (['error', 'critical', 'fail', 'blocker'].includes(normalized)) return 'error';
+    if (['warning', 'warn'].includes(normalized)) return 'warning';
+    return 'info';
   }
 
   private readDraftExecutionCardCoverage(generationContext: unknown): unknown {

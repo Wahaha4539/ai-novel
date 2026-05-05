@@ -1,4 +1,4 @@
-import { IsArray, IsOptional, IsString, ValidateNested } from 'class-validator';
+import { IsArray, IsInt, IsOptional, IsString, ValidateNested } from 'class-validator';
 import { Type } from 'class-transformer';
 
 class ChatMessageDto {
@@ -25,4 +25,12 @@ export class GuidedChatDto {
   @IsOptional()
   @IsString()
   projectContext?: string;
+
+  @IsOptional()
+  @IsInt()
+  volumeNo?: number;
+
+  @IsOptional()
+  @IsInt()
+  chapterNo?: number;
 }

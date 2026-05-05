@@ -1,22 +1,26 @@
 import { Injectable, OnModuleInit } from '@nestjs/common';
 import { BaseTool } from './base-tool';
 import { ToolManifestForPlanner } from './tool-manifest.types';
+import { AiQualityReviewTool } from './tools/ai-quality-review.tool';
 import { AnalyzeSourceTextTool } from './tools/analyze-source-text.tool';
 import { AutoRepairChapterTool } from './tools/auto-repair-chapter.tool';
 import { BuildImportPreviewTool } from './tools/build-import-preview.tool';
 import { CharacterConsistencyCheckTool } from './tools/character-consistency-check.tool';
 import { CollectChapterContextTool } from './tools/collect-chapter-context.tool';
 import { CollectTaskContextTool } from './tools/collect-task-context.tool';
+import { GenerateContinuityPreviewTool, PersistContinuityChangesTool, ValidateContinuityChangesTool } from './tools/continuity-changes.tool';
 import { EchoReportTool } from './tools/echo-report.tool';
 import { ExtractChapterFactsTool } from './tools/extract-chapter-facts.tool';
 import { FactValidationTool } from './tools/fact-validation.tool';
 import { GenerateGuidedStepPreviewTool } from './tools/generate-guided-step-preview.tool';
 import { GenerateOutlinePreviewTool } from './tools/generate-outline-preview.tool';
+import { GenerateStoryBiblePreviewTool } from './tools/generate-story-bible-preview.tool';
 import { GenerateWorldbuildingPreviewTool } from './tools/generate-worldbuilding-preview.tool';
 import { InspectProjectContextTool } from './tools/inspect-project-context.tool';
 import { PersistGuidedStepResultTool } from './tools/persist-guided-step-result.tool';
 import { PersistOutlineTool } from './tools/persist-outline.tool';
 import { PersistProjectAssetsTool } from './tools/persist-project-assets.tool';
+import { PersistStoryBibleTool } from './tools/persist-story-bible.tool';
 import { PersistWorldbuildingTool } from './tools/persist-worldbuilding.tool';
 import { PlotConsistencyCheckTool } from './tools/plot-consistency-check.tool';
 import { PolishChapterTool } from './tools/polish-chapter.tool';
@@ -30,6 +34,7 @@ import { ResolveCharacterTool } from './tools/resolve-character.tool';
 import { ValidateGuidedStepPreviewTool } from './tools/validate-guided-step-preview.tool';
 import { ValidateImportedAssetsTool } from './tools/validate-imported-assets.tool';
 import { ValidateOutlineTool } from './tools/validate-outline.tool';
+import { ValidateStoryBibleTool } from './tools/validate-story-bible.tool';
 import { ValidateWorldbuildingTool } from './tools/validate-worldbuilding.tool';
 import { WriteChapterTool } from './tools/write-chapter.tool';
 import { WriteChapterSeriesTool } from './tools/write-chapter-series.tool';
@@ -50,12 +55,16 @@ export class ToolRegistryService implements OnModuleInit {
     private readonly plotConsistencyCheckTool: PlotConsistencyCheckTool,
     private readonly collectChapterContextTool: CollectChapterContextTool,
     private readonly collectTaskContextTool: CollectTaskContextTool,
+    private readonly generateContinuityPreviewTool: GenerateContinuityPreviewTool,
+    private readonly validateContinuityChangesTool: ValidateContinuityChangesTool,
+    private readonly persistContinuityChangesTool: PersistContinuityChangesTool,
     private readonly writeChapterTool: WriteChapterTool,
     private readonly writeChapterSeriesTool: WriteChapterSeriesTool,
     private readonly postProcessChapterTool: PostProcessChapterTool,
     private readonly polishChapterTool: PolishChapterTool,
     private readonly factValidationTool: FactValidationTool,
     private readonly autoRepairChapterTool: AutoRepairChapterTool,
+    private readonly aiQualityReviewTool: AiQualityReviewTool,
     private readonly extractChapterFactsTool: ExtractChapterFactsTool,
     private readonly rebuildMemoryTool: RebuildMemoryTool,
     private readonly reviewMemoryTool: ReviewMemoryTool,
@@ -65,9 +74,12 @@ export class ToolRegistryService implements OnModuleInit {
     private readonly persistGuidedStepResultTool: PersistGuidedStepResultTool,
     private readonly generateOutlinePreviewTool: GenerateOutlinePreviewTool,
     private readonly generateWorldbuildingPreviewTool: GenerateWorldbuildingPreviewTool,
+    private readonly generateStoryBiblePreviewTool: GenerateStoryBiblePreviewTool,
     private readonly validateOutlineTool: ValidateOutlineTool,
     private readonly validateWorldbuildingTool: ValidateWorldbuildingTool,
+    private readonly validateStoryBibleTool: ValidateStoryBibleTool,
     private readonly persistWorldbuildingTool: PersistWorldbuildingTool,
+    private readonly persistStoryBibleTool: PersistStoryBibleTool,
     private readonly persistOutlineTool: PersistOutlineTool,
     private readonly readSourceDocumentTool: ReadSourceDocumentTool,
     private readonly analyzeSourceTextTool: AnalyzeSourceTextTool,
@@ -84,12 +96,16 @@ export class ToolRegistryService implements OnModuleInit {
     this.register(this.plotConsistencyCheckTool);
     this.register(this.collectChapterContextTool);
     this.register(this.collectTaskContextTool);
+    this.register(this.generateContinuityPreviewTool);
+    this.register(this.validateContinuityChangesTool);
+    this.register(this.persistContinuityChangesTool);
     this.register(this.writeChapterTool);
     this.register(this.writeChapterSeriesTool);
     this.register(this.postProcessChapterTool);
     this.register(this.polishChapterTool);
     this.register(this.factValidationTool);
     this.register(this.autoRepairChapterTool);
+    this.register(this.aiQualityReviewTool);
     this.register(this.extractChapterFactsTool);
     this.register(this.rebuildMemoryTool);
     this.register(this.reviewMemoryTool);
@@ -99,9 +115,12 @@ export class ToolRegistryService implements OnModuleInit {
     this.register(this.persistGuidedStepResultTool);
     this.register(this.generateOutlinePreviewTool);
     this.register(this.generateWorldbuildingPreviewTool);
+    this.register(this.generateStoryBiblePreviewTool);
     this.register(this.validateOutlineTool);
     this.register(this.validateWorldbuildingTool);
+    this.register(this.validateStoryBibleTool);
     this.register(this.persistWorldbuildingTool);
+    this.register(this.persistStoryBibleTool);
     this.register(this.persistOutlineTool);
     this.register(this.readSourceDocumentTool);
     this.register(this.analyzeSourceTextTool);

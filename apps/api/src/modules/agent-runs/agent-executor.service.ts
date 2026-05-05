@@ -71,6 +71,7 @@ export class AgentExecutorService {
     const mode = options.mode ?? 'act';
     const planVersion = options.planVersion ?? 1;
     const outputs: Record<number, unknown> = options.reuseSucceeded ? await this.loadReusableOutputs(agentRunId, mode, planVersion, steps) : {};
+    const stepTools = Object.fromEntries(steps.map((step) => [step.stepNo, step.tool]));
     const runtimeState = this.deriveRuntimeState(outputs);
     const plannedTools = steps.map((step) => step.tool);
     const executeStartedAt = Date.now();
@@ -122,7 +123,7 @@ export class AgentExecutorService {
       const stepStartedAt = Date.now();
       this.logger.log('agent.step.started', { agentRunId, mode, planVersion, stepNo: step.stepNo, stepName: step.name, tool: step.tool, approved: stepApproved, args: this.summarizeValue(resolvedArgs) });
       try {
-        const context = { agentRunId, projectId: run.projectId, chapterId: run.chapterId ?? undefined, mode, approved: stepApproved, outputs, policy: { confirmation: options.confirmation } };
+        const context = { agentRunId, projectId: run.projectId, chapterId: run.chapterId ?? undefined, mode, approved: stepApproved, outputs, stepTools, policy: { confirmation: options.confirmation } };
         this.policy.assertAllowed(tool, context, plannedTools);
         this.assertSchema(tool.inputSchema, resolvedArgs, `${tool.name}.input`);
         this.assertIdPolicy(tool, resolvedArgs, step.args, options.agentContext);

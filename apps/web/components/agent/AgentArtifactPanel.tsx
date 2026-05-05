@@ -179,6 +179,12 @@ function TypedArtifactPreview({
   if (artifactType === 'lorebook_preview') return <ArraySummary content={content} label="设定" primaryKey="title" secondaryKey="entryType" />;
   if (artifactType === 'worldbuilding_preview') return <WorldbuildingPreviewSummary content={content} onRequestPersistSelection={onRequestWorldbuildingPersistSelection} actionDisabled={actionDisabled} />;
   if (artifactType === 'worldbuilding_persist_result') return <WorldbuildingPersistSummary content={content} />;
+  if (artifactType === 'story_bible_preview') return <StoryBiblePreviewSummary content={content} />;
+  if (artifactType === 'story_bible_validation_report') return <StoryBibleValidationSummary content={content} />;
+  if (artifactType === 'story_bible_persist_result') return <StoryBiblePersistSummary content={content} />;
+  if (artifactType === 'continuity_preview') return <ContinuityPreviewSummary content={content} />;
+  if (artifactType === 'continuity_validation_report') return <ContinuityValidationSummary content={content} />;
+  if (artifactType === 'continuity_persist_result') return <ContinuityPersistSummary content={content} />;
   if (artifactType === 'character_consistency_report') return <CharacterConsistencySummary content={content} />;
   if (artifactType === 'plot_consistency_report') return <PlotConsistencySummary content={content} />;
   if (artifactType === 'task_context_preview') return <TaskContextSummary content={content} />;
@@ -485,6 +491,224 @@ function WorldbuildingPersistSummary({ content }: { content: unknown }) {
           return <div key={index} className="text-xs leading-5" style={{ color }}>{textValue(audit?.title, '未命名设定')} · {action} · {textValue(audit?.reason, '暂无原因')}</div>;
         })}
         {!perEntryAudit.length && <div className="text-xs" style={{ color: 'var(--text-muted)' }}>暂无条目级审计明细。</div>}
+      </div>
+    </div>
+  );
+}
+
+function StoryBiblePreviewSummary({ content }: { content: unknown }) {
+  const data = asRecord(content);
+  const candidates = asArray(data?.candidates);
+  const risks = asArray(data?.risks);
+  const writePlan = asRecord(data?.writePlan);
+  return (
+    <div className="space-y-3">
+      <div className="grid gap-2 md:grid-cols-3">
+        <Metric label="候选设定" value={candidates.length} />
+        <Metric label="写入目标" value={textValue(writePlan?.target, 'LorebookEntry')} />
+        <Metric label="审批前置" value={writePlan?.requiresApprovalBeforePersist === false ? '否' : '是'} tone={writePlan?.requiresApprovalBeforePersist === false ? 'danger' : 'warn'} />
+      </div>
+      <div className="space-y-1">
+        {candidates.slice(0, 8).map((item, index) => {
+          const candidate = asRecord(item);
+          return <div key={index} className="text-xs leading-5" style={{ color: 'var(--text-muted)' }}><b style={{ color: 'var(--text-main)' }}>{textValue(candidate?.title, `设定${index + 1}`)}</b> · {textValue(candidate?.entryType, 'setting')} · {textValue(candidate?.summary ?? candidate?.impactAnalysis, '暂无摘要')}</div>;
+        })}
+        {!candidates.length && <div className="text-xs" style={{ color: 'var(--text-muted)' }}>暂无 Story Bible 候选。</div>}
+      </div>
+      <div className="space-y-1">{risks.slice(0, 4).map((item, index) => <div key={index} className="text-xs leading-5" style={{ color: '#fbbf24' }}>风险：{textValue(item)}</div>)}</div>
+    </div>
+  );
+}
+
+function StoryBibleValidationSummary({ content }: { content: unknown }) {
+  const data = asRecord(content);
+  const accepted = asArray(data?.accepted);
+  const rejected = asArray(data?.rejected);
+  const issues = asArray(data?.issues);
+  const writePreview = asRecord(data?.writePreview);
+  const summary = asRecord(writePreview?.summary);
+  const hasError = issues.some((item) => asRecord(item)?.severity === 'error');
+  return (
+    <div className="space-y-3">
+      <div className="grid gap-2 md:grid-cols-4">
+        <Metric label="状态" value={data?.valid === true ? '可写入' : '需复核'} tone={data?.valid === true ? 'ok' : 'danger'} />
+        <Metric label="已接受" value={accepted.length} tone="ok" />
+        <Metric label="已拒绝" value={rejected.length} tone={rejected.length ? 'danger' : 'ok'} />
+        <Metric label="问题" value={numberValue(data?.issueCount, issues.length)} tone={hasError ? 'danger' : issues.length ? 'warn' : 'ok'} />
+      </div>
+      {summary && (
+        <div className="grid gap-2 md:grid-cols-3">
+          <Metric label="将创建" value={numberValue(summary.createCount)} tone={numberValue(summary.createCount) ? 'ok' : undefined} />
+          <Metric label="将更新" value={numberValue(summary.updateCount)} tone={numberValue(summary.updateCount) ? 'warn' : undefined} />
+          <Metric label="将拒绝" value={numberValue(summary.rejectCount)} tone={numberValue(summary.rejectCount) ? 'danger' : undefined} />
+        </div>
+      )}
+      <div className="space-y-1">
+        {issues.slice(0, 6).map((item, index) => {
+          const issue = asRecord(item);
+          return <div key={index} className="text-xs leading-5" style={{ color: issue?.severity === 'error' ? '#fb7185' : '#fbbf24' }}>[{textValue(issue?.severity)}] {textValue(issue?.message)}</div>;
+        })}
+        {!issues.length && <div className="text-xs" style={{ color: 'var(--text-muted)' }}>暂无阻断问题。</div>}
+      </div>
+    </div>
+  );
+}
+
+function StoryBiblePersistSummary({ content }: { content: unknown }) {
+  const data = asRecord(content);
+  const created = asArray(data?.createdEntries);
+  const updated = asArray(data?.updatedEntries);
+  const skipped = asArray(data?.skippedUnselectedCandidates);
+  const audit = asArray(data?.perEntryAudit);
+  return (
+    <div className="space-y-3">
+      <div className="grid gap-2 md:grid-cols-4">
+        <Metric label="新增" value={numberValue(data?.createdCount, created.length)} tone="ok" />
+        <Metric label="更新" value={numberValue(data?.updatedCount, updated.length)} tone={updated.length ? 'warn' : undefined} />
+        <Metric label="未选跳过" value={numberValue(data?.skippedUnselectedCount, skipped.length)} tone={skipped.length ? 'warn' : undefined} />
+        <Metric label="审批" value={asRecord(data?.approval)?.approved === true ? '已审批' : '未审批'} tone={asRecord(data?.approval)?.approved === true ? 'ok' : 'danger'} />
+      </div>
+      <div className="space-y-1">
+        {audit.slice(0, 8).map((item, index) => {
+          const row = asRecord(item);
+          const action = textValue(row?.action, 'unknown');
+          const color = action === 'created' ? '#86efac' : action === 'updated' ? '#fbbf24' : 'var(--text-muted)';
+          return <div key={index} className="text-xs leading-5" style={{ color }}><b style={{ color: 'var(--text-main)' }}>{textValue(row?.title, '未命名设定')}</b> · {action} · {textValue(row?.reason, '暂无说明')}</div>;
+        })}
+        {!audit.length && <div className="text-xs" style={{ color: 'var(--text-muted)' }}>暂无写入审计明细。</div>}
+      </div>
+    </div>
+  );
+}
+
+function ContinuityPreviewSummary({ content }: { content: unknown }) {
+  const data = asRecord(content);
+  const relationships = asArray(data?.relationshipCandidates);
+  const timeline = asArray(data?.timelineCandidates);
+  const risks = asArray(data?.risks);
+  const writePlan = asRecord(data?.writePlan);
+  return (
+    <div className="space-y-3">
+      <div className="grid gap-2 md:grid-cols-4">
+        <Metric label="关系候选" value={relationships.length} />
+        <Metric label="时间线候选" value={timeline.length} />
+        <Metric label="写入模式" value={textValue(writePlan?.mode, 'preview_only')} />
+        <Metric label="审批前置" value={writePlan?.requiresApprovalBeforePersist === false ? '否' : '是'} tone={writePlan?.requiresApprovalBeforePersist === false ? 'danger' : 'warn'} />
+      </div>
+      <ContinuityCandidateList title="关系变更" items={relationships} kind="relationship" />
+      <ContinuityCandidateList title="时间线变更" items={timeline} kind="timeline" />
+      <div className="space-y-1">{risks.slice(0, 4).map((item, index) => <div key={index} className="text-xs leading-5" style={{ color: '#fbbf24' }}>风险：{textValue(item)}</div>)}</div>
+    </div>
+  );
+}
+
+function ContinuityCandidateList({ title, items, kind }: { title: string; items: unknown[]; kind: 'relationship' | 'timeline' }) {
+  if (!items.length) return <div className="text-xs" style={{ color: 'var(--text-muted)' }}>{title}暂无候选。</div>;
+  return (
+    <div className="space-y-1">
+      <div className="text-xs font-semibold" style={{ color: 'var(--text-main)' }}>{title}</div>
+      {items.slice(0, 8).map((item, index) => {
+        const candidate = asRecord(item);
+        const action = textValue(candidate?.action, 'create');
+        const label = kind === 'relationship'
+          ? `${textValue(candidate?.characterAName, '角色A')} -> ${textValue(candidate?.characterBName, '角色B')} · ${textValue(candidate?.relationType, '关系')}`
+          : `${candidate?.chapterNo ? `第${numberValue(candidate.chapterNo)}章 · ` : ''}${textValue(candidate?.title, '未命名事件')}`;
+        return <div key={index} className="text-xs leading-5" style={{ color: action === 'delete' ? '#fb7185' : action === 'update' ? '#fbbf24' : 'var(--text-muted)' }}><b style={{ color: 'var(--text-main)' }}>{label}</b> · {action} · {textValue(candidate?.impactAnalysis ?? candidate?.conflictRisk, '暂无影响说明')}</div>;
+      })}
+    </div>
+  );
+}
+
+function ContinuityValidationSummary({ content }: { content: unknown }) {
+  const data = asRecord(content);
+  const accepted = asRecord(data?.accepted);
+  const rejected = asRecord(data?.rejected);
+  const relationshipAccepted = asArray(accepted?.relationshipCandidates);
+  const timelineAccepted = asArray(accepted?.timelineCandidates);
+  const relationshipRejected = asArray(rejected?.relationshipCandidates);
+  const timelineRejected = asArray(rejected?.timelineCandidates);
+  const issues = asArray(data?.issues);
+  const writePreview = asRecord(data?.writePreview);
+  const relationshipSummary = asRecord(asRecord(writePreview?.relationshipCandidates)?.summary);
+  const timelineSummary = asRecord(asRecord(writePreview?.timelineCandidates)?.summary);
+  const hasError = issues.some((item) => asRecord(item)?.severity === 'error');
+  return (
+    <div className="space-y-3">
+      <div className="grid gap-2 md:grid-cols-4">
+        <Metric label="状态" value={data?.valid === true ? '可写入' : '需复核'} tone={data?.valid === true ? 'ok' : 'danger'} />
+        <Metric label="关系通过" value={relationshipAccepted.length} tone="ok" />
+        <Metric label="时间线通过" value={timelineAccepted.length} tone="ok" />
+        <Metric label="问题" value={numberValue(data?.issueCount, issues.length)} tone={hasError ? 'danger' : issues.length ? 'warn' : 'ok'} />
+      </div>
+      <div className="grid gap-2 md:grid-cols-2">
+        <ContinuityWriteSummary title="关系 Diff" summary={relationshipSummary} rejectedCount={relationshipRejected.length} />
+        <ContinuityWriteSummary title="时间线 Diff" summary={timelineSummary} rejectedCount={timelineRejected.length} />
+      </div>
+      <div className="space-y-1">
+        {issues.slice(0, 6).map((item, index) => {
+          const issue = asRecord(item);
+          return <div key={index} className="text-xs leading-5" style={{ color: issue?.severity === 'error' ? '#fb7185' : '#fbbf24' }}>[{textValue(issue?.candidateType, 'continuity')}] {textValue(issue?.message)}</div>;
+        })}
+        {!issues.length && <div className="text-xs" style={{ color: 'var(--text-muted)' }}>暂无阻断问题。</div>}
+      </div>
+    </div>
+  );
+}
+
+function ContinuityWriteSummary({ title, summary, rejectedCount }: { title: string; summary: Record<string, unknown> | undefined; rejectedCount: number }) {
+  return (
+    <div className="rounded-lg border p-3" style={{ borderColor: 'var(--border-dim)', background: 'rgba(15,23,42,0.18)' }}>
+      <div className="mb-2 text-xs font-semibold" style={{ color: 'var(--text-main)' }}>{title}</div>
+      <div className="grid gap-2 md:grid-cols-2">
+        <Metric label="创建" value={numberValue(summary?.createCount)} tone={numberValue(summary?.createCount) ? 'ok' : undefined} />
+        <Metric label="更新" value={numberValue(summary?.updateCount)} tone={numberValue(summary?.updateCount) ? 'warn' : undefined} />
+        <Metric label="删除" value={numberValue(summary?.deleteCount)} tone={numberValue(summary?.deleteCount) ? 'danger' : undefined} />
+        <Metric label="拒绝" value={numberValue(summary?.rejectCount, rejectedCount)} tone={numberValue(summary?.rejectCount, rejectedCount) ? 'danger' : undefined} />
+      </div>
+    </div>
+  );
+}
+
+function ContinuityPersistSummary({ content }: { content: unknown }) {
+  const data = asRecord(content);
+  const relationshipResults = asRecord(data?.relationshipResults);
+  const timelineResults = asRecord(data?.timelineResults);
+  const skipped = asRecord(data?.skippedUnselectedCandidates);
+  const skippedRelationships = asArray(skipped?.relationshipCandidates);
+  const skippedTimeline = asArray(skipped?.timelineCandidates);
+  return (
+    <div className="space-y-3">
+      <div className="grid gap-2 md:grid-cols-4">
+        <Metric label="模式" value={data?.dryRun === true ? 'dry-run' : '写入'} tone={data?.dryRun === true ? 'warn' : 'ok'} />
+        <Metric label="关系写入" value={numberValue(relationshipResults?.createdCount) + numberValue(relationshipResults?.updatedCount) + numberValue(relationshipResults?.deletedCount)} tone="ok" />
+        <Metric label="时间线写入" value={numberValue(timelineResults?.createdCount) + numberValue(timelineResults?.updatedCount) + numberValue(timelineResults?.deletedCount)} tone="ok" />
+        <Metric label="未选跳过" value={skippedRelationships.length + skippedTimeline.length} tone={skippedRelationships.length + skippedTimeline.length ? 'warn' : undefined} />
+      </div>
+      <div className="grid gap-2 md:grid-cols-2">
+        <ContinuityPersistSection title="关系" result={relationshipResults} />
+        <ContinuityPersistSection title="时间线" result={timelineResults} />
+      </div>
+    </div>
+  );
+}
+
+function ContinuityPersistSection({ title, result }: { title: string; result: Record<string, unknown> | undefined }) {
+  const created = asArray(result?.created);
+  const updated = asArray(result?.updated);
+  const deleted = asArray(result?.deleted);
+  return (
+    <div className="rounded-lg border p-3" style={{ borderColor: 'var(--border-dim)', background: 'rgba(15,23,42,0.18)' }}>
+      <div className="mb-2 text-xs font-semibold" style={{ color: 'var(--text-main)' }}>{title}</div>
+      <div className="grid gap-2 md:grid-cols-3">
+        <Metric label="创建" value={numberValue(result?.createdCount, created.length)} tone={created.length ? 'ok' : undefined} />
+        <Metric label="更新" value={numberValue(result?.updatedCount, updated.length)} tone={updated.length ? 'warn' : undefined} />
+        <Metric label="删除" value={numberValue(result?.deletedCount, deleted.length)} tone={deleted.length ? 'danger' : undefined} />
+      </div>
+      <div className="mt-2 space-y-1">
+        {[...created, ...updated, ...deleted].slice(0, 5).map((item, index) => {
+          const row = asRecord(item);
+          return <div key={index} className="text-xs leading-5" style={{ color: 'var(--text-muted)' }}>{textValue(row?.label ?? row?.id, '未命名条目')}</div>;
+        })}
       </div>
     </div>
   );
