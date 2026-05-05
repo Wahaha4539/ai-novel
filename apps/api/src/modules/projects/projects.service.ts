@@ -1,7 +1,9 @@
 import { Injectable, NotFoundException } from '@nestjs/common';
+import { Prisma } from '@prisma/client';
 import { NovelCacheService } from '../../common/cache/novel-cache.service';
 import { PrismaService } from '../../prisma/prisma.service';
 import { CreateProjectDto } from './dto/create-project.dto';
+import { UpdateCreativeProfileDto } from './dto/update-creative-profile.dto';
 import { UpdateProjectDto } from './dto/update-project.dto';
 
 @Injectable()
@@ -134,6 +136,23 @@ export class ProjectsService {
     return updated;
   }
 
+  async getCreativeProfile(projectId: string) {
+    await this.assertProjectExists(projectId);
+
+    const profile = await this.prisma.projectCreativeProfile.findUnique({ where: { projectId } });
+    return profile ?? this.buildCreativeProfileDefaults(projectId);
+  }
+
+  async updateCreativeProfile(projectId: string, dto: UpdateCreativeProfileDto) {
+    await this.assertProjectExists(projectId);
+
+    return this.prisma.projectCreativeProfile.upsert({
+      where: { projectId },
+      create: this.buildCreativeProfileData(projectId, dto),
+      update: this.buildCreativeProfilePatch(dto),
+    });
+  }
+
   async remove(projectId: string) {
     const existing = await this.prisma.project.findUnique({
       where: { id: projectId },
@@ -151,6 +170,62 @@ export class ProjectsService {
     await this.cacheService.deleteProjectSnapshot(projectId);
 
     return { deleted: true, id: projectId };
+  }
+
+  private async assertProjectExists(projectId: string) {
+    const existing = await this.prisma.project.findUnique({ where: { id: projectId }, select: { id: true } });
+    if (!existing) {
+      throw new NotFoundException(`项目不存在：${projectId}`);
+    }
+  }
+
+  private buildCreativeProfileData(projectId: string, dto: UpdateCreativeProfileDto): Prisma.ProjectCreativeProfileUncheckedCreateInput {
+    return {
+      projectId,
+      audienceType: dto.audienceType,
+      platformTarget: dto.platformTarget,
+      sellingPoints: dto.sellingPoints ?? [],
+      pacingPreference: dto.pacingPreference,
+      targetWordCount: dto.targetWordCount,
+      chapterWordCount: dto.chapterWordCount,
+      contentRating: dto.contentRating,
+      centralConflict: (dto.centralConflict ?? {}) as Prisma.InputJsonValue,
+      generationDefaults: (dto.generationDefaults ?? {}) as Prisma.InputJsonValue,
+      validationDefaults: (dto.validationDefaults ?? {}) as Prisma.InputJsonValue,
+    };
+  }
+
+  private buildCreativeProfilePatch(dto: UpdateCreativeProfileDto): Prisma.ProjectCreativeProfileUncheckedUpdateInput {
+    return {
+      ...(dto.audienceType !== undefined && { audienceType: dto.audienceType }),
+      ...(dto.platformTarget !== undefined && { platformTarget: dto.platformTarget }),
+      ...(dto.sellingPoints !== undefined && { sellingPoints: dto.sellingPoints ?? [] }),
+      ...(dto.pacingPreference !== undefined && { pacingPreference: dto.pacingPreference }),
+      ...(dto.targetWordCount !== undefined && { targetWordCount: dto.targetWordCount }),
+      ...(dto.chapterWordCount !== undefined && { chapterWordCount: dto.chapterWordCount }),
+      ...(dto.contentRating !== undefined && { contentRating: dto.contentRating }),
+      ...(dto.centralConflict !== undefined && { centralConflict: dto.centralConflict as Prisma.InputJsonValue }),
+      ...(dto.generationDefaults !== undefined && { generationDefaults: dto.generationDefaults as Prisma.InputJsonValue }),
+      ...(dto.validationDefaults !== undefined && { validationDefaults: dto.validationDefaults as Prisma.InputJsonValue }),
+    };
+  }
+
+  private buildCreativeProfileDefaults(projectId: string) {
+    return {
+      projectId,
+      audienceType: null,
+      platformTarget: null,
+      sellingPoints: [],
+      pacingPreference: null,
+      targetWordCount: null,
+      chapterWordCount: null,
+      contentRating: null,
+      centralConflict: {},
+      generationDefaults: {},
+      validationDefaults: {},
+      createdAt: null,
+      updatedAt: null,
+    };
   }
 }
 

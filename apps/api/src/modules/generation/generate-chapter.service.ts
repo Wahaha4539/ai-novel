@@ -115,10 +115,10 @@ export class GenerateChapterService {
   async run(projectId: string, chapterId: string, input: GenerateChapterInput = {}): Promise<GenerateChapterResult> {
     const runStartedAt = Date.now();
     const logContext = { requestId: input.requestId, jobId: input.jobId, projectId, chapterId };
-    const chapter = await this.prisma.chapter.findFirst({ where: { id: chapterId, projectId }, include: { project: true, volume: true } });
+    const chapter = await this.prisma.chapter.findFirst({ where: { id: chapterId, projectId }, include: { project: { include: { creativeProfile: true } }, volume: true } });
     if (!chapter) throw new NotFoundException(`章节不存在或不属于当前项目：${chapterId}`);
 
-    const targetWordCount = input.wordCount ?? chapter.expectedWordCount ?? 3500;
+    const targetWordCount = input.wordCount ?? chapter.expectedWordCount ?? chapter.project.creativeProfile?.chapterWordCount ?? 3500;
     if (targetWordCount < 200) throw new BadRequestException('章节目标字数不能低于 200。');
 
     const latest = await this.prisma.chapterDraft.findFirst({ where: { chapterId }, orderBy: { versionNo: 'desc' } });

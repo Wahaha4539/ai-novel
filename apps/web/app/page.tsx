@@ -8,6 +8,8 @@ import { InspectorPanel } from '../components/InspectorPanel';
 import { ProjectManagementPanel } from '../components/ProjectManagementPanel';
 import { OutlinePanel } from '../components/OutlinePanel';
 import { LorePanel } from '../components/LorePanel';
+import { StoryBiblePanel } from '../components/StoryBiblePanel';
+import { CreativeProfilePanel } from '../components/CreativeProfilePanel';
 import { VolumePanel } from '../components/VolumePanel';
 import { GuidedWizard } from '../components/guided/GuidedWizard';
 import { PromptManagerPanel } from '../components/PromptManagerPanel';
@@ -17,10 +19,10 @@ import { LlmProviderPanel } from '../components/LlmProviderPanel';
 import { AgentFloatingOrb } from '../components/agent/AgentFloatingOrb';
 import { AgentPageContext } from '../hooks/useAgentRun';
 
-type ActiveView = 'editor' | 'outline' | 'lore' | 'projects' | 'volumes' | 'guided' | 'prompts' | 'foreshadow' | 'generate' | 'llm-config';
+type ActiveView = 'editor' | 'outline' | 'lore' | 'story-bible' | 'generation-config' | 'projects' | 'volumes' | 'guided' | 'prompts' | 'foreshadow' | 'generate' | 'llm-config';
 
 const WORKSPACE_STATE_STORAGE_KEY = 'ai-novel:workspace-state';
-const ACTIVE_VIEWS: ActiveView[] = ['editor', 'outline', 'lore', 'projects', 'volumes', 'guided', 'prompts', 'foreshadow', 'generate', 'llm-config'];
+const ACTIVE_VIEWS: ActiveView[] = ['editor', 'outline', 'lore', 'story-bible', 'generation-config', 'projects', 'volumes', 'guided', 'prompts', 'foreshadow', 'generate', 'llm-config'];
 
 type WorkspaceState = {
   activeView: ActiveView;
@@ -144,6 +146,14 @@ export default function HomePage() {
     setActiveView('lore');
   }, []);
 
+  const handleNavigateToStoryBible = useCallback(() => {
+    setActiveView('story-bible');
+  }, []);
+
+  const handleNavigateToGenerationConfig = useCallback(() => {
+    setActiveView('generation-config');
+  }, []);
+
   const handleNavigateToVolumes = useCallback(() => {
     setActiveView('volumes');
   }, []);
@@ -225,6 +235,8 @@ export default function HomePage() {
         onNavigateToProjects={handleNavigateToProjects}
         onNavigateToOutline={handleNavigateToOutline}
         onNavigateToLore={handleNavigateToLore}
+        onNavigateToStoryBible={handleNavigateToStoryBible}
+        onNavigateToGenerationConfig={handleNavigateToGenerationConfig}
         onNavigateToVolumes={handleNavigateToVolumes}
         onNavigateToGuided={handleNavigateToGuided}
         onNavigateToPrompts={handleNavigateToPrompts}
@@ -252,6 +264,10 @@ export default function HomePage() {
           <OutlinePanel selectedProject={selectedProject} />
         ) : activeView === 'lore' ? (
           <LorePanel selectedProject={selectedProject} selectedProjectId={data.selectedProjectId} />
+        ) : activeView === 'story-bible' ? (
+          <StoryBiblePanel selectedProject={selectedProject} selectedProjectId={data.selectedProjectId} />
+        ) : activeView === 'generation-config' ? (
+          <CreativeProfilePanel selectedProject={selectedProject} selectedProjectId={data.selectedProjectId} />
         ) : activeView === 'volumes' ? (
           <VolumePanel selectedProject={selectedProject} selectedProjectId={data.selectedProjectId} chapters={chapters} />
         ) : activeView === 'guided' ? (

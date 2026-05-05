@@ -2,6 +2,7 @@ import { BadRequestException, Injectable } from '@nestjs/common';
 import { Prisma } from '@prisma/client';
 import { NovelCacheService } from '../../../common/cache/novel-cache.service';
 import { PrismaService } from '../../../prisma/prisma.service';
+import { normalizeLorebookEntryType } from '../../lorebook/lorebook-entry-types';
 import { BaseTool, ToolContext } from '../base-tool';
 import type { ToolManifestV2 } from '../tool-manifest.types';
 import type { WorldbuildingPreviewOutput } from './generate-worldbuilding-preview.tool';
@@ -102,7 +103,7 @@ export class PersistWorldbuildingTool implements BaseTool<PersistWorldbuildingIn
       for (const entry of entriesToPersist) {
         if (existingTitles.has(entry.title)) {
           skippedTitles.push(entry.title);
-          auditByTitle.set(entry.title, { title: entry.title, entryType: entry.entryType, selected: true, action: 'skipped_duplicate', reason: '已有同名设定，按只新增不覆盖策略跳过。', sourceStep: 'persist_worldbuilding' });
+          auditByTitle.set(entry.title, { title: entry.title, entryType: normalizeLorebookEntryType(entry.entryType), selected: true, action: 'skipped_duplicate', reason: '已有同名设定，按只新增不覆盖策略跳过。', sourceStep: 'persist_worldbuilding' });
           continue;
         }
 
@@ -110,7 +111,7 @@ export class PersistWorldbuildingTool implements BaseTool<PersistWorldbuildingIn
           data: {
             projectId: context.projectId,
             title: entry.title,
-            entryType: entry.entryType,
+            entryType: normalizeLorebookEntryType(entry.entryType),
             content: entry.content,
             summary: entry.summary,
             tags: entry.tags as Prisma.InputJsonValue,
@@ -122,12 +123,12 @@ export class PersistWorldbuildingTool implements BaseTool<PersistWorldbuildingIn
         // 更新本事务内去重集合，避免同批预览重复标题被连续创建。
         existingTitles.add(entry.title);
         createdEntries.push(created);
-        auditByTitle.set(entry.title, { title: entry.title, entryType: entry.entryType, selected: true, action: 'created', reason: '用户选择且校验通过，已追加为新的世界观设定。', sourceStep: 'persist_worldbuilding' });
+        auditByTitle.set(entry.title, { title: entry.title, entryType: normalizeLorebookEntryType(entry.entryType), selected: true, action: 'created', reason: '用户选择且校验通过，已追加为新的世界观设定。', sourceStep: 'persist_worldbuilding' });
       }
 
       skippedUnselectedTitles.forEach((title) => {
         const entry = entries.find((item) => item.title === title);
-        auditByTitle.set(title, { title, entryType: entry?.entryType ?? 'setting', selected: false, action: 'skipped_unselected', reason: '用户未选择该条目，本次审批写入跳过。', sourceStep: 'persist_worldbuilding' });
+        auditByTitle.set(title, { title, entryType: normalizeLorebookEntryType(entry?.entryType ?? 'setting'), selected: false, action: 'skipped_unselected', reason: '用户未选择该条目，本次审批写入跳过。', sourceStep: 'persist_worldbuilding' });
       });
 
       return {

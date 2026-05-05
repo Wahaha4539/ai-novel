@@ -1,5 +1,7 @@
 # 架构概览
 
+> 2026-05-05 补充：`apps/worker` 已弃用。后续新增能力默认以 `apps/api` 的 Agent-Centric 同步服务、Prisma 数据模型和 `apps/web` 前端为实现边界，不再把 Worker 作为开发或验收依赖。
+
 > 历史说明：本文已按 Agent-Centric Backend Monolith 同步执行架构更新。早期“API 投递任务到 Python Worker”的设计只作为迁移参考，不再代表当前主链路。
 
 当前脚手架采用单仓多应用（monorepo）结构：

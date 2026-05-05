@@ -1,5 +1,6 @@
 import { Injectable, NotFoundException } from '@nestjs/common';
 import { Prisma } from '@prisma/client';
+import { NovelCacheService } from '../../common/cache/novel-cache.service';
 import { PrismaService } from '../../prisma/prisma.service';
 import { LlmGatewayService } from '../llm/llm-gateway.service';
 import { ChapterFirstAppearanceMemoryInput, MemoryWriterService } from '../memory/memory-writer.service';
@@ -76,6 +77,7 @@ export class FactExtractorService {
     private readonly prisma: PrismaService,
     private readonly llm: LlmGatewayService,
     private readonly memoryWriter: MemoryWriterService,
+    private readonly cacheService?: NovelCacheService,
   ) {}
 
   async extractChapterFacts(projectId: string, chapterId: string, draftId?: string): Promise<FactExtractionResult> {
@@ -97,6 +99,9 @@ export class FactExtractorService {
     ]);
     const eventInputs = this.dedupeEvents([...events, ...this.relationshipChangesToEvents(relationshipChanges, chapter)]);
     const firstAppearanceWrite = await this.persistFirstAppearanceCandidates(projectId, chapter, draft.id, firstAppearances);
+    if (firstAppearanceWrite.createdLorebookCandidates > 0) {
+      await this.cacheService?.deleteProjectRecallResults(projectId);
+    }
 
     const created = await this.prisma.$transaction(async (tx) => {
       // 仅替换同一草稿由 Agent 自动抽取的事实，避免删除人工维护或其他草稿来源的事实层数据。
@@ -384,6 +389,14 @@ export class FactExtractorService {
             priority: item.significance === 'key' ? 80 : item.significance === 'major' ? 70 : 50,
             status: item.status === 'pending_review' ? 'pending_review' : 'active',
             sourceType: 'auto_extracted',
+            metadata: {
+              generatedBy: 'agent_fact_extractor',
+              firstSeenChapterNo: chapter.chapterNo,
+              firstSeenDraftId: draftId,
+              evidence: item.evidence ?? '',
+              significance: item.significance,
+              sourceType: 'auto_extracted',
+            } as Prisma.InputJsonValue,
           },
         });
         createdLorebookCandidates += 1;
@@ -420,8 +433,8 @@ export class FactExtractorService {
     if (entityType === 'faction') return 'faction';
     if (entityType === 'location') return 'location';
     if (entityType === 'item') return 'item';
-    if (entityType === 'rule') return 'rule';
-    return 'setting';
+    if (entityType === 'rule') return 'forbidden_rule';
+    return 'world_rule';
   }
 
   private dedupeBy<T>(items: T[], keyOf: (item: T) => string): T[] {

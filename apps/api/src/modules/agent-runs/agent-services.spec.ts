@@ -26,6 +26,7 @@ import { GenerateGuidedStepPreviewTool } from '../agent-tools/tools/generate-gui
 import { ValidateGuidedStepPreviewTool } from '../agent-tools/tools/validate-guided-step-preview.tool';
 import { PersistGuidedStepResultTool } from '../agent-tools/tools/persist-guided-step-result.tool';
 import { BuildImportPreviewTool } from '../agent-tools/tools/build-import-preview.tool';
+import { PersistProjectAssetsTool } from '../agent-tools/tools/persist-project-assets.tool';
 import { GenerateWorldbuildingPreviewTool } from '../agent-tools/tools/generate-worldbuilding-preview.tool';
 import { ValidateWorldbuildingTool } from '../agent-tools/tools/validate-worldbuilding.tool';
 import { PersistWorldbuildingTool } from '../agent-tools/tools/persist-worldbuilding.tool';
@@ -33,6 +34,8 @@ import { RelationshipGraphService } from '../agent-tools/relationship-graph.serv
 import { FactExtractorService } from '../facts/fact-extractor.service';
 import { WriteChapterSeriesTool } from '../agent-tools/tools/write-chapter-series.tool';
 import { RetrievalService } from '../memory/retrieval.service';
+import { LorebookService } from '../lorebook/lorebook.service';
+import { ProjectsService } from '../projects/projects.service';
 
 type TestCase = { name: string; run: () => void | Promise<void> };
 
@@ -1356,6 +1359,80 @@ test('PersistWorldbuildingTool 阻止未通过校验的世界观预览写入', a
   );
 });
 
+test('ProjectsService 读取默认创作定位并 upsert 保存配置', async () => {
+  const upserts: Array<Record<string, unknown>> = [];
+  let findUniqueCount = 0;
+  const prisma = {
+    project: { async findUnique() { return { id: 'p1' }; } },
+    projectCreativeProfile: {
+      async findUnique() {
+        findUniqueCount += 1;
+        return null;
+      },
+      async upsert(args: Record<string, unknown>) {
+        upserts.push(args);
+        return { id: 'profile1', projectId: 'p1', ...((args.update as Record<string, unknown>) ?? (args.create as Record<string, unknown>)) };
+      },
+    },
+  };
+  const service = new ProjectsService(prisma as never, {} as never);
+
+  const created = await service.getCreativeProfile('p1');
+  const updated = await service.updateCreativeProfile('p1', {
+    audienceType: '男频长篇读者',
+    platformTarget: 'Web',
+    sellingPoints: ['升级', '悬疑'],
+    targetWordCount: 1_200_000,
+    centralConflict: { protagonistGoal: '破局' },
+  });
+
+  assert.equal(created.projectId, 'p1');
+  assert.equal(created.audienceType, null);
+  assert.equal(findUniqueCount, 1);
+  assert.equal(upserts.length, 1);
+  assert.equal(updated.audienceType, '男频长篇读者');
+  assert.deepEqual((upserts[0].update as Record<string, unknown>).sellingPoints, ['升级', '悬疑']);
+  assert.deepEqual((upserts[0].update as Record<string, unknown>).centralConflict, { protagonistGoal: '破局' });
+});
+
+test('LorebookService update/delete 写入后清理项目召回缓存', async () => {
+  const invalidatedProjectIds: string[] = [];
+  const updates: Array<Record<string, unknown>> = [];
+  const deletes: string[] = [];
+  const prisma = {
+    project: { async findUnique() { return { id: 'p1' }; } },
+    lorebookEntry: {
+      async findFirst(args: { where: Record<string, unknown> }) {
+        if (args.where.projectId !== 'p1') return null;
+        return { id: 'l1', projectId: 'p1', title: '旧地点', metadata: {} };
+      },
+      async findMany() { return []; },
+      async update(args: { data: Record<string, unknown> }) {
+        updates.push(args.data);
+        return { id: 'l1', projectId: 'p1', ...args.data };
+      },
+      async delete(args: { where: { id: string } }) {
+        deletes.push(args.where.id);
+        return { id: args.where.id };
+      },
+    },
+  };
+  const cache = { async deleteProjectRecallResults(projectId: string) { invalidatedProjectIds.push(projectId); } };
+  const service = new LorebookService(prisma as never, cache as never);
+
+  const updated = await service.update('p1', 'l1', { entryType: 'location', metadata: { region: '北境' }, priority: 80 });
+  const removed = await service.remove('p1', 'l1');
+
+  assert.equal(updated.id, 'l1');
+  assert.deepEqual(updates[0].metadata, { region: '北境' });
+  assert.equal(updates[0].priority, 80);
+  assert.equal(updates[0].entryType, 'location');
+  assert.deepEqual(deletes, ['l1']);
+  assert.deepEqual(invalidatedProjectIds, ['p1', 'p1']);
+  assert.deepEqual(removed, { deleted: true, id: 'l1' });
+  await assert.rejects(() => service.update('other-project', 'l1', { title: '越权' }), /设定条目不存在/);
+});
+
 test('PersistOutlineTool 阻止重复章节编号写入', async () => {
   const tool = new PersistOutlineTool({} as never);
   await assert.rejects(
@@ -1391,6 +1468,116 @@ test('BuildImportPreviewTool normalizes non-string risks', async () => {
   assert.deepEqual(output.risks, ['{"code":"schema","message":"需要复核"}', '42', '保留']);
   assert.equal(tool.executionTimeoutMs, 500_000);
   assert.equal(receivedOptions?.timeoutMs, 450_000);
+});
+
+test('BuildImportPreviewTool normalizes LLM object and array scalar fields', async () => {
+  const llm = {
+    async chatJson() {
+      return {
+        data: {
+          projectProfile: {
+            title: { primary: 'Bridge', alternatives: ['Alt Bridge'] },
+            genre: ['fantasy', 'engineering'],
+            tone: { primary: 'epic', secondary: ['survival'] },
+          },
+          characters: [{ name: { value: 'Lu' }, roleType: ['lead', 'engineer'] }],
+          lorebookEntries: [{ title: { name: 'Sea' }, entryType: ['setting'], content: { summary: 'inverted sea' }, tags: ['sky', { value: 'tide' }] }],
+          volumes: [{ volumeNo: '1', title: { primary: 'First Tide' } }],
+          chapters: [{ chapterNo: '1', volumeNo: '1', title: { primary: 'Escape' }, outline: { summary: 'fix bridge' } }],
+          risks: [],
+        },
+        result: { model: 'mock' },
+      };
+    },
+  };
+  const tool = new BuildImportPreviewTool(llm as never);
+  const output = await tool.run(
+    { analysis: { sourceText: 'source synopsis', length: 15, paragraphs: ['source synopsis'], keywords: ['bridge'] } },
+    { agentRunId: 'run1', projectId: 'p1', mode: 'plan', approved: false, outputs: {}, policy: {} },
+  );
+
+  assert.equal(output.projectProfile.title, 'Bridge');
+  assert.equal(output.projectProfile.genre, 'fantasy、engineering');
+  assert.equal(output.projectProfile.tone, 'epic');
+  assert.equal(output.projectProfile.synopsis, 'source synopsis');
+  assert.deepEqual(output.characters[0], { name: 'Lu', roleType: 'lead、engineer', personalityCore: undefined, motivation: undefined, backstory: undefined });
+  assert.deepEqual(output.lorebookEntries[0], { title: 'Sea', entryType: 'setting', content: 'inverted sea', summary: undefined, tags: ['sky', '{"value":"tide"}'] });
+  assert.equal(output.volumes[0].title, 'First Tide');
+  assert.equal(output.chapters[0].outline, 'fix bridge');
+});
+
+test('PersistProjectAssetsTool normalizes legacy object and array scalar fields before writing', async () => {
+  const projectUpdates: Array<{ data: Record<string, unknown> }> = [];
+  const createdCharacters: Array<Record<string, unknown>> = [];
+  const createdLorebookEntries: Array<Record<string, unknown>> = [];
+  const upsertedVolumes: Array<{ create: Record<string, unknown>; update: Record<string, unknown> }> = [];
+  const createdChapters: Array<Record<string, unknown>> = [];
+  const tx = {
+    project: { async update(args: { data: Record<string, unknown> }) { projectUpdates.push(args); } },
+    character: {
+      async findMany() { return []; },
+      async create(args: { data: Record<string, unknown> }) {
+        createdCharacters.push(args.data);
+        return args.data;
+      },
+    },
+    lorebookEntry: {
+      async findMany() { return []; },
+      async create(args: { data: Record<string, unknown> }) {
+        createdLorebookEntries.push(args.data);
+        return args.data;
+      },
+    },
+    volume: {
+      async upsert(args: { create: Record<string, unknown>; update: Record<string, unknown> }) {
+        upsertedVolumes.push(args);
+        return { id: `v${args.create.volumeNo}` };
+      },
+    },
+    chapter: {
+      async findUnique() { return null; },
+      async create(args: { data: Record<string, unknown> }) {
+        createdChapters.push(args.data);
+        return args.data;
+      },
+    },
+  };
+  const prisma = {
+    async $transaction<T>(fn: (txClient: typeof tx) => Promise<T>) {
+      return fn(tx);
+    },
+  };
+  const cache = { async deleteProjectRecallResults() {} };
+  const tool = new PersistProjectAssetsTool(prisma as never, cache as never);
+  const result = await tool.run(
+    {
+      preview: {
+        projectProfile: {
+          title: { primary: 'Bridge', alternatives: ['Alt Bridge'] } as unknown as string,
+          genre: ['fantasy', 'engineering'] as unknown as string,
+          tone: { primary: 'epic', secondary: ['survival'] } as unknown as string,
+        },
+        characters: [{ name: { value: 'Lu' } as unknown as string, roleType: ['lead', 'engineer'] as unknown as string }],
+        lorebookEntries: [{ title: { name: 'Sea' } as unknown as string, entryType: ['setting'] as unknown as string, content: { summary: 'inverted sea' } as unknown as string }],
+        volumes: [{ volumeNo: '1' as unknown as number, title: { primary: 'First Tide' } as unknown as string }],
+        chapters: [{ chapterNo: '1' as unknown as number, volumeNo: '1' as unknown as number, title: { primary: 'Escape' } as unknown as string, outline: { summary: 'fix bridge' } as unknown as string }],
+        risks: [],
+      },
+    },
+    { agentRunId: 'run1', projectId: 'p1', mode: 'act', approved: true, outputs: {}, policy: {} },
+  );
+
+  assert.equal(projectUpdates[0].data.title, 'Bridge');
+  assert.equal(projectUpdates[0].data.genre, 'fantasy、engineering');
+  assert.equal(projectUpdates[0].data.tone, 'epic');
+  assert.equal(createdCharacters[0].name, 'Lu');
+  assert.equal(createdCharacters[0].roleType, 'lead、engineer');
+  assert.equal(createdLorebookEntries[0].title, 'Sea');
+  assert.equal(createdLorebookEntries[0].content, 'inverted sea');
+  assert.equal(upsertedVolumes[0].create.title, 'First Tide');
+  assert.equal(createdChapters[0].title, 'Escape');
+  assert.equal(createdChapters[0].outline, 'fix bridge');
+  assert.equal(result.characterCreatedCount, 1);
 });
 
 test('Planner 归一化 LLM Plan 时强制使用 act mode', () => {
@@ -1727,7 +1914,9 @@ test('FactExtractorService 抽取事实后同步生成 pending_review 记忆', a
       };
     },
   };
-  const service = new FactExtractorService(prisma as never, llm as never, memoryWriter as never);
+  const invalidatedProjectIds: string[] = [];
+  const cache = { async deleteProjectRecallResults(projectId: string) { invalidatedProjectIds.push(projectId); } };
+  const service = new FactExtractorService(prisma as never, llm as never, memoryWriter as never, cache as never);
 
   const result = await service.extractChapterFacts('p1', 'c1', 'draft1');
 
@@ -1749,6 +1938,10 @@ test('FactExtractorService 抽取事实后同步生成 pending_review 记忆', a
   assert.equal(createdCharacters[0].name, '沈砚');
   assert.equal(createdLorebookEntries[0].title, '地下档案库');
   assert.equal(createdLorebookEntries[0].status, 'pending_review');
+  assert.equal((createdLorebookEntries[0].metadata as Record<string, unknown>).firstSeenChapterNo, 12);
+  assert.equal((createdLorebookEntries[0].metadata as Record<string, unknown>).evidence, '林烬进入地下档案库。');
+  assert.equal((createdLorebookEntries[0].metadata as Record<string, unknown>).significance, 'major');
+  assert.deepEqual(invalidatedProjectIds, ['p1']);
 });
 
 test('RetrievalService 使用 querySpec hash 缓存召回并按开关和 Planner 查询隔离', async () => {
@@ -1760,7 +1953,7 @@ test('RetrievalService 使用 querySpec hash 缓存召回并按开关和 Planner
     lorebookEntry: {
       async findMany() {
         lorebookReadCount += 1;
-        return [{ id: 'l1', title: '雾城', entryType: 'location', summary: '雾城秘钥', content: '雾城秘钥藏在旧档案库。', tags: ['雾城'], priority: 80 }];
+        return [{ id: 'l1', title: '雾城', entryType: 'location', summary: '雾城秘钥', content: '雾城秘钥藏在旧档案库。', tags: ['雾城'], priority: 80, metadata: { region: '北境', dangerLevel: 'high' } }];
       },
     },
     memoryChunk: { async count() { return 0; } },
@@ -1797,6 +1990,10 @@ test('RetrievalService 使用 querySpec hash 缓存召回并按开关和 Planner
   );
 
   assert.equal(first.cache.hit, false);
+  assert.equal(first.lorebookHits[0].metadata.entryType, 'location');
+  assert.equal(first.lorebookHits[0].metadata.priority, 80);
+  assert.equal(first.lorebookHits[0].metadata.region, '北境');
+  assert.equal(first.lorebookHits[0].metadata.dangerLevel, 'high');
   assert.equal(second.cache.hit, true);
   assert.equal(first.cache.querySpecHash, second.cache.querySpecHash);
   assert.equal(withoutLorebook.cache.hit, false);

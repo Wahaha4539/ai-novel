@@ -133,7 +133,7 @@ export interface RetrievalBenchmarkCase {
 @Injectable()
 export class RetrievalService {
   private readonly logger = new StructuredLogger(RetrievalService.name);
-  private static readonly CACHE_VERSION = 1;
+  private static readonly CACHE_VERSION = 2;
 
   constructor(private readonly prisma: PrismaService, private readonly embeddings: EmbeddingGatewayService, private readonly cacheService: NovelCacheService) {}
 
@@ -268,8 +268,9 @@ export class RetrievalService {
 
     return rows
       .map((row) => {
+        const customMetadata = this.asRecord(row.metadata);
         const content = row.summary || row.content;
-        const searchableText = `${row.title}\n${content}\n${JSON.stringify(row.tags)}`;
+        const searchableText = `${row.title}\n${content}\n${JSON.stringify(row.tags)}\n${JSON.stringify(customMetadata)}`;
         const keywordScore = this.scoreText(searchableText, keywords);
         const matchedKeywords = this.matchKeywords(searchableText, keywords);
         const plannerScore = this.scorePlannedQueries(searchableText, context.plannerQueries?.lorebook);
@@ -286,7 +287,7 @@ export class RetrievalService {
           searchMethod,
           reason,
           sourceTrace: this.buildSourceTrace({ sourceType: 'lorebook', sourceId: row.id, projectId, score, searchMethod, reason }),
-          metadata: { entryType: row.entryType, priority: row.priority, searchMethod, matchedKeywords, keywordScore, plannerScore, projectId },
+          metadata: { ...customMetadata, entryType: row.entryType, priority: row.priority, searchMethod, matchedKeywords, keywordScore, plannerScore, projectId },
         };
       })
       .filter((hit) => hit.score > 0.1)

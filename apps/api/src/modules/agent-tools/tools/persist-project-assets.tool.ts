@@ -2,6 +2,7 @@ import { BadRequestException, Injectable } from '@nestjs/common';
 import { Prisma } from '@prisma/client';
 import { NovelCacheService } from '../../../common/cache/novel-cache.service';
 import { PrismaService } from '../../../prisma/prisma.service';
+import { normalizeLorebookEntryType } from '../../lorebook/lorebook-entry-types';
 import { BaseTool, ToolContext } from '../base-tool';
 import { ImportPreviewOutput } from './build-import-preview.tool';
 
@@ -39,7 +40,7 @@ export class PersistProjectAssetsTool implements BaseTool<PersistProjectAssetsIn
 
   async run(args: PersistProjectAssetsInput, context: ToolContext) {
     if (!args.preview) throw new BadRequestException('persist_project_assets 需要 import preview');
-    const preview = args.preview;
+    const preview = this.normalizePreview(args.preview);
     this.assertSafePreview(preview);
 
     const result = await this.prisma.$transaction(async (tx) => {
@@ -76,7 +77,7 @@ export class PersistProjectAssetsTool implements BaseTool<PersistProjectAssetsIn
           lorebookSkippedCount += 1;
           continue;
         }
-        await tx.lorebookEntry.create({ data: { projectId: context.projectId, title: entry.title, entryType: entry.entryType, content: entry.content, summary: entry.summary, tags: (entry.tags ?? []) as Prisma.InputJsonValue, sourceType: 'agent_import' } });
+        await tx.lorebookEntry.create({ data: { projectId: context.projectId, title: entry.title, entryType: normalizeLorebookEntryType(entry.entryType), content: entry.content, summary: entry.summary, tags: (entry.tags ?? []) as Prisma.InputJsonValue, sourceType: 'agent_import' } });
         existingLorebookTitles.add(entry.title);
         lorebookCreatedCount += 1;
       }
@@ -122,6 +123,100 @@ export class PersistProjectAssetsTool implements BaseTool<PersistProjectAssetsIn
   /** 判断本次导入是否改变了召回可见资料；只在确有写入时触发项目级召回缓存失效。 */
   private hasRetrievalRelevantWrites(result: Record<string, unknown>) {
     return ['characterCreatedCount', 'lorebookCreatedCount', 'volumeCount', 'chapterCreatedCount', 'chapterUpdatedCount'].some((key) => Number(result[key]) > 0);
+  }
+
+  private normalizePreview(preview: ImportPreviewOutput): ImportPreviewOutput {
+    return {
+      projectProfile: this.normalizeProjectProfile(preview.projectProfile),
+      characters: (preview.characters ?? [])
+        .map((item) => {
+          const record = item as Record<string, unknown>;
+          return {
+            name: this.scalarText(record.name),
+            roleType: this.optionalScalarText(record.roleType),
+            personalityCore: this.optionalScalarText(record.personalityCore),
+            motivation: this.optionalScalarText(record.motivation),
+            backstory: this.optionalScalarText(record.backstory),
+          };
+        })
+        .filter((item) => item.name),
+      lorebookEntries: (preview.lorebookEntries ?? [])
+        .map((item) => {
+          const record = item as Record<string, unknown>;
+          return {
+            title: this.scalarText(record.title),
+            entryType: normalizeLorebookEntryType(this.optionalScalarText(record.entryType) ?? 'setting'),
+            content: this.scalarText(record.content),
+            summary: this.optionalScalarText(record.summary),
+            tags: Array.isArray(record.tags) ? record.tags.map((tag) => this.scalarText(tag)).filter(Boolean) : [],
+          };
+        })
+        .filter((item) => item.title && item.content),
+      volumes: (preview.volumes ?? []).map((item, index) => {
+        const record = item as Record<string, unknown>;
+        return {
+          volumeNo: Number(record.volumeNo) || index + 1,
+          title: this.scalarText(record.title, `第 ${index + 1} 卷`),
+          synopsis: this.optionalScalarText(record.synopsis),
+          objective: this.optionalScalarText(record.objective),
+          chapterCount: this.optionalNumber(record.chapterCount),
+        };
+      }),
+      chapters: (preview.chapters ?? []).map((item, index) => {
+        const record = item as Record<string, unknown>;
+        return {
+          chapterNo: Number(record.chapterNo) || index + 1,
+          volumeNo: this.optionalNumber(record.volumeNo),
+          title: this.scalarText(record.title, `第 ${index + 1} 章`),
+          objective: this.optionalScalarText(record.objective),
+          conflict: this.optionalScalarText(record.conflict),
+          hook: this.optionalScalarText(record.hook),
+          outline: this.optionalScalarText(record.outline),
+          expectedWordCount: this.optionalNumber(record.expectedWordCount),
+        };
+      }),
+      risks: Array.isArray(preview.risks) ? preview.risks.map((item) => this.scalarText(item)).filter(Boolean) : [],
+    };
+  }
+
+  private normalizeProjectProfile(profile: ImportPreviewOutput['projectProfile'] | undefined): ImportPreviewOutput['projectProfile'] {
+    const record = (profile ?? {}) as Record<string, unknown>;
+    return {
+      title: this.optionalScalarText(record.title),
+      genre: this.optionalScalarText(record.genre),
+      theme: this.optionalScalarText(record.theme),
+      tone: this.optionalScalarText(record.tone),
+      logline: this.optionalScalarText(record.logline),
+      synopsis: this.optionalScalarText(record.synopsis),
+      outline: this.optionalScalarText(record.outline),
+    };
+  }
+
+  private optionalNumber(value: unknown): number | undefined {
+    const parsed = Number(value);
+    return Number.isFinite(parsed) && parsed > 0 ? parsed : undefined;
+  }
+
+  private optionalScalarText(value: unknown): string | undefined {
+    return this.scalarText(value) || undefined;
+  }
+
+  private scalarText(value: unknown, fallback = ''): string {
+    if (typeof value === 'string') return value.trim() || fallback;
+    if (typeof value === 'number' || typeof value === 'boolean') return String(value);
+    if (Array.isArray(value)) {
+      const joined = value.map((item) => this.scalarText(item)).filter(Boolean).join('、');
+      return joined || fallback;
+    }
+    if (value && typeof value === 'object') {
+      const record = value as Record<string, unknown>;
+      for (const key of ['primary', 'title', 'name', 'value', 'text', 'summary', 'description', 'content']) {
+        const extracted = this.scalarText(record[key]);
+        if (extracted) return extracted;
+      }
+      return JSON.stringify(value);
+    }
+    return fallback;
   }
 
   /** 批量导入写库前的最后防线，避免重复卷号/章节号造成 upsert 或章节覆盖语义不明确。 */

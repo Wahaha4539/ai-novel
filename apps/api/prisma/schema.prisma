@@ -60,9 +60,28 @@ model Project {
   generationJobs        GenerationJob[]
   styleProfiles         StyleProfile[]
   modelProfiles         ModelProfile[]
+  creativeProfile       ProjectCreativeProfile?
   promptTemplates       PromptTemplate[]
   guidedSession         GuidedSession?
   agentRuns             AgentRun[]
+}
+
+model ProjectCreativeProfile {
+  id                 String   @id @default(uuid()) @db.Uuid
+  projectId          String   @unique @db.Uuid
+  audienceType       String?  @db.VarChar(80)
+  platformTarget     String?  @db.VarChar(80)
+  sellingPoints      Json     @default("[]")
+  pacingPreference   String?  @db.VarChar(80)
+  targetWordCount    Int?
+  chapterWordCount   Int?
+  contentRating      String?  @db.VarChar(80)
+  centralConflict    Json     @default("{}")
+  generationDefaults Json     @default("{}")
+  validationDefaults Json     @default("{}")
+  createdAt          DateTime @default(now())
+  updatedAt          DateTime @updatedAt
+  project            Project  @relation(fields: [projectId], references: [id], onDelete: Cascade)
 }
 
 model AgentRun {
@@ -248,11 +267,13 @@ model LorebookEntry {
   relatedEntityIds Json     @default("[]")
   status           String   @default("active") @db.VarChar(50)
   sourceType       String   @default("manual") @db.VarChar(50)
+  metadata         Json     @default("{}")
   createdAt        DateTime @default(now())
   updatedAt        DateTime @updatedAt
   project          Project  @relation(fields: [projectId], references: [id], onDelete: Cascade)
 
   @@index([projectId, entryType])
+  @@index([projectId, status], map: "LorebookEntry_project_status_idx")
 }
 
 model Chapter {

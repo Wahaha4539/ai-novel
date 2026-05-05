@@ -3,7 +3,7 @@ import { ProjectSummary, ChapterSummary, VolumeSummary } from '../types/dashboar
 import { ThemeSwitcher } from './ThemeSwitcher';
 import { VolumeChapterTree } from './VolumeChapterTree';
 
-type ActiveView = 'editor' | 'outline' | 'lore' | 'projects' | 'volumes' | 'guided' | 'prompts' | 'foreshadow' | 'generate' | 'llm-config';
+type ActiveView = 'editor' | 'outline' | 'lore' | 'story-bible' | 'generation-config' | 'projects' | 'volumes' | 'guided' | 'prompts' | 'foreshadow' | 'generate' | 'llm-config';
 
 interface Props {
   projects: ProjectSummary[];
@@ -18,6 +18,8 @@ interface Props {
   onNavigateToProjects: () => void;
   onNavigateToOutline: () => void;
   onNavigateToLore: () => void;
+  onNavigateToStoryBible: () => void;
+  onNavigateToGenerationConfig: () => void;
   onNavigateToVolumes: () => void;
   onNavigateToGuided: () => void;
   onNavigateToPrompts: () => void;
@@ -41,6 +43,8 @@ export function WorkspaceSidebar({
   onNavigateToProjects,
   onNavigateToOutline,
   onNavigateToLore,
+  onNavigateToStoryBible,
+  onNavigateToGenerationConfig,
   onNavigateToVolumes,
   onNavigateToGuided,
   onNavigateToPrompts,
@@ -111,6 +115,22 @@ export function WorkspaceSidebar({
                   isActive={activeView === 'lore'}
                   activeColor="#8b5cf6"
                   onClick={onNavigateToLore}
+                />
+              </li>
+              <li>
+                <NavButton
+                  label="世界设定 (Story Bible)"
+                  isActive={activeView === 'story-bible'}
+                  activeColor="#10b981"
+                  onClick={onNavigateToStoryBible}
+                />
+              </li>
+              <li>
+                <NavButton
+                  label="生成配置 (Generation Config)"
+                  isActive={activeView === 'generation-config'}
+                  activeColor="#38bdf8"
+                  onClick={onNavigateToGenerationConfig}
                 />
               </li>
               <li>

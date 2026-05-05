@@ -1,5 +1,6 @@
 import { Body, Controller, Delete, Get, Param, Patch, Post } from '@nestjs/common';
 import { CreateProjectDto } from './dto/create-project.dto';
+import { UpdateCreativeProfileDto } from './dto/update-creative-profile.dto';
 import { UpdateProjectDto } from './dto/update-project.dto';
 import { ProjectsService } from './projects.service';
 
@@ -20,6 +21,16 @@ export class ProjectsController {
   @Get(':projectId')
   getDetail(@Param('projectId') projectId: string) {
     return this.projectsService.getDetail(projectId);
+  }
+
+  @Get(':projectId/creative-profile')
+  getCreativeProfile(@Param('projectId') projectId: string) {
+    return this.projectsService.getCreativeProfile(projectId);
+  }
+
+  @Patch(':projectId/creative-profile')
+  updateCreativeProfile(@Param('projectId') projectId: string, @Body() dto: UpdateCreativeProfileDto) {
+    return this.projectsService.updateCreativeProfile(projectId, dto);
   }
 
   @Patch(':projectId')

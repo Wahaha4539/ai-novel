@@ -10,6 +10,7 @@ interface Props {
 export function WorldviewEditor({ project }: Props) {
   const [content, setContent] = useState(project.synopsis ?? '');
   const [saving, setSaving] = useState(false);
+  const [savingStoryBible, setSavingStoryBible] = useState(false);
   const [saved, setSaved] = useState(false);
   const [error, setError] = useState('');
   const [dirty, setDirty] = useState(false);
@@ -63,6 +64,50 @@ export function WorldviewEditor({ project }: Props) {
   const handleManualSave = () => {
     if (timerRef.current) clearTimeout(timerRef.current);
     saveContent(content);
+  };
+
+  const handleSaveToStoryBible = async () => {
+    const text = content.trim();
+    if (!text) return;
+    setSavingStoryBible(true);
+    setError('');
+    try {
+      const existingRes = await fetch(`${API_BASE}/projects/${project.id}/lorebook?entryType=world_rule&q=${encodeURIComponent('项目世界观')}`, {
+        cache: 'no-store',
+      });
+      if (!existingRes.ok) {
+        const errText = await existingRes.text();
+        throw new Error(errText || `查询失败: ${existingRes.status}`);
+      }
+      const existingEntries = (await existingRes.json()) as Array<{ id: string; title: string }>;
+      const existing = existingEntries.find((entry) => entry.title === '项目世界观');
+      const endpoint = existing ? `${API_BASE}/projects/${project.id}/lorebook/${existing.id}` : `${API_BASE}/projects/${project.id}/lorebook`;
+      const res = await fetch(endpoint, {
+        method: existing ? 'PATCH' : 'POST',
+        headers: { 'content-type': 'application/json' },
+        body: JSON.stringify({
+          title: '项目世界观',
+          entryType: 'world_rule',
+          content: text,
+          summary: text.slice(0, 240),
+          tags: ['worldview', 'synopsis'],
+          priority: 70,
+          status: 'active',
+          metadata: { migratedFrom: 'project.synopsis' },
+        }),
+        cache: 'no-store',
+      });
+      if (!res.ok) {
+        const errText = await res.text();
+        throw new Error(errText || `写入失败: ${res.status}`);
+      }
+      setSaved(true);
+      setTimeout(() => setSaved(false), 2000);
+    } catch (err) {
+      setError(err instanceof Error ? err.message : '写入 Story Bible 失败');
+    } finally {
+      setSavingStoryBible(false);
+    }
   };
 
   const handleKeyDown = (e: React.KeyboardEvent) => {
@@ -121,6 +166,14 @@ export function WorldviewEditor({ project }: Props) {
             style={{ fontSize: '0.7rem', padding: '0.25rem 0.6rem' }}
           >
             {saving ? '保存中…' : '保存'}
+          </button>
+          <button
+            className="btn-secondary"
+            onClick={handleSaveToStoryBible}
+            disabled={savingStoryBible || !content.trim()}
+            style={{ fontSize: '0.7rem', padding: '0.25rem 0.6rem' }}
+          >
+            {savingStoryBible ? '写入中…' : '写入 Story Bible'}
           </button>
         </div>
       </div>

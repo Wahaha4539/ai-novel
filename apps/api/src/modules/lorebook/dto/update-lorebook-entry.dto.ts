@@ -1,18 +1,21 @@
 import { IsArray, IsIn, IsInt, IsObject, IsOptional, IsString, Max, MaxLength, Min } from 'class-validator';
 import { ALLOWED_LOREBOOK_ENTRY_TYPES } from '../lorebook-entry-types';
 
-export class CreateLorebookEntryDto {
+export class UpdateLorebookEntryDto {
+  @IsOptional()
   @IsString()
   @MaxLength(255)
-  title!: string;
+  title?: string;
 
+  @IsOptional()
   @IsString()
   @MaxLength(50)
   @IsIn(ALLOWED_LOREBOOK_ENTRY_TYPES)
-  entryType!: string;
+  entryType?: string;
 
+  @IsOptional()
   @IsString()
-  content!: string;
+  content?: string;
 
   @IsOptional()
   @IsString()

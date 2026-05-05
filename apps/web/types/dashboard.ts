@@ -51,6 +51,55 @@ export type CharacterCard = {
   updatedAt: string;
 };
 
+export type StoryBibleEntryType =
+  | 'world_rule'
+  | 'power_system'
+  | 'faction'
+  | 'faction_relation'
+  | 'location'
+  | 'item'
+  | 'history_event'
+  | 'religion'
+  | 'economy'
+  | 'technology'
+  | 'forbidden_rule'
+  | 'setting';
+
+export type LorebookEntry = {
+  id: string;
+  projectId: string;
+  title: string;
+  entryType: StoryBibleEntryType | (string & {});
+  content: string;
+  summary?: string | null;
+  tags: string[];
+  priority?: number | null;
+  triggerKeywords?: string[];
+  relatedEntityIds?: string[];
+  status: string;
+  sourceType?: string | null;
+  metadata: Record<string, unknown>;
+  createdAt: string;
+  updatedAt: string;
+};
+
+export type CreativeProfile = {
+  id?: string;
+  projectId: string;
+  audienceType?: string | null;
+  platformTarget?: string | null;
+  sellingPoints: string[];
+  pacingPreference?: string | null;
+  targetWordCount?: number | null;
+  chapterWordCount?: number | null;
+  contentRating?: string | null;
+  centralConflict: Record<string, unknown>;
+  generationDefaults: Record<string, unknown>;
+  validationDefaults: Record<string, unknown>;
+  createdAt?: string;
+  updatedAt?: string;
+};
+
 export type ChapterSummary = {
   id: string;
   volumeId?: string | null;
