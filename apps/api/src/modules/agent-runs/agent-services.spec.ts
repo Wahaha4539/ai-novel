@@ -37,6 +37,7 @@ import { GenerateGuidedStepPreviewTool } from '../agent-tools/tools/generate-gui
 import { ValidateGuidedStepPreviewTool } from '../agent-tools/tools/validate-guided-step-preview.tool';
 import { PersistGuidedStepResultTool } from '../agent-tools/tools/persist-guided-step-result.tool';
 import { BuildImportPreviewTool } from '../agent-tools/tools/build-import-preview.tool';
+import { GenerateImportOutlinePreviewTool } from '../agent-tools/tools/generate-import-outline-preview.tool';
 import { MergeImportPreviewsTool } from '../agent-tools/tools/merge-import-previews.tool';
 import { PersistProjectAssetsTool } from '../agent-tools/tools/persist-project-assets.tool';
 import { GenerateWorldbuildingPreviewTool } from '../agent-tools/tools/generate-worldbuilding-preview.tool';
@@ -3546,6 +3547,62 @@ test('PersistOutlineTool 阻止重复章节编号写入', async () => {
     () => tool.run({ preview: { volume: { volumeNo: 1, title: '卷一', synopsis: '卷简介', objective: '卷目标', chapterCount: 2 }, chapters: [{ chapterNo: 1, title: '一', objective: '目标', conflict: '冲突', hook: '钩子', outline: '梗概', expectedWordCount: 2000 }, { chapterNo: 1, title: '重复', objective: '目标', conflict: '冲突', hook: '钩子', outline: '梗概', expectedWordCount: 2000 }], risks: [] } }, { agentRunId: 'run1', projectId: 'p1', mode: 'act', approved: true, outputs: {}, policy: {} }),
     /章节编号重复/,
   );
+});
+
+test('GenerateImportOutlinePreviewTool 只生成导入大纲预览并保持只读', async () => {
+  let promptText = '';
+  let receivedOptions: Record<string, unknown> | undefined;
+  const llm = {
+    async chatJson(messages: Array<{ role: string; content: string }>, options: Record<string, unknown>) {
+      promptText = messages.map((item) => item.content).join('\n\n');
+      receivedOptions = options;
+      return {
+        data: {
+          projectProfile: { outline: { mainline: '雾城档案员追查记忆篡改主线' }, title: '不应输出' },
+          volumes: [{ volumeNo: 1, title: { primary: '灰楼旧灯' }, synopsis: ['发现异常'], objective: { goal: '确认旧案存在' } }],
+          chapters: [
+            { chapterNo: 1, volumeNo: 1, title: { primary: '失踪的页码' }, objective: ['发现缺页'], conflict: { pressure: '馆方阻止' }, hook: true, outline: { summary: '夜查档案库' }, expectedWordCount: 3200 },
+          ],
+          characters: [{ name: '不应出现' }],
+          lorebookEntries: [{ title: '不应出现' }],
+          writingRules: [{ title: '不应出现' }],
+          risks: [{ message: '章节数需复核' }, '  保留风险  '],
+        },
+      };
+    },
+  };
+  const tool = new GenerateImportOutlinePreviewTool(llm as never);
+  const output = await tool.run(
+    {
+      analysis: {
+        sourceText: '雾城档案员发现档案缺页，并追查一场记忆篡改。',
+        length: 24,
+        paragraphs: ['发现档案缺页', '追查记忆篡改'],
+        keywords: ['雾城', '档案'],
+      },
+      instruction: '只生成剧情大纲',
+      projectContext: { title: '雾城旧档' },
+      chapterCount: 1,
+    },
+    { agentRunId: 'run1', projectId: 'p1', mode: 'plan', approved: false, outputs: {}, policy: {} },
+  );
+  const outputRecord = output as unknown as Record<string, unknown>;
+
+  assert.equal(tool.name, 'generate_import_outline_preview');
+  assert.deepEqual(tool.allowedModes, ['plan', 'act']);
+  assert.equal(tool.requiresApproval, false);
+  assert.deepEqual(tool.sideEffects, []);
+  assert.equal(tool.riskLevel, 'low');
+  assert.equal(output.projectProfile.outline, '雾城档案员追查记忆篡改主线');
+  assert.deepEqual(output.volumes[0], { volumeNo: 1, title: '灰楼旧灯', synopsis: '发现异常', objective: '确认旧案存在', chapterCount: 1 });
+  assert.deepEqual(output.chapters[0], { chapterNo: 1, volumeNo: 1, title: '失踪的页码', objective: '发现缺页', conflict: '馆方阻止', hook: 'true', outline: '夜查档案库', expectedWordCount: 3200 });
+  assert.deepEqual(output.risks, ['章节数需复核', '保留风险']);
+  assert.equal(Object.prototype.hasOwnProperty.call(outputRecord, 'characters'), false);
+  assert.equal(Object.prototype.hasOwnProperty.call(outputRecord, 'lorebookEntries'), false);
+  assert.equal(Object.prototype.hasOwnProperty.call(outputRecord, 'writingRules'), false);
+  assert.match(promptText, /mainline progression/);
+  assert.match(promptText, /Do not output characters/);
+  assert.equal(receivedOptions?.appStep, 'agent_import_outline_preview');
 });
 
 test('BuildImportPreviewTool normalizes non-string risks', async () => {

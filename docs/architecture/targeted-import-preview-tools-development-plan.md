@@ -135,7 +135,7 @@
 
 ### TIP-P1-001 新增 generate_import_outline_preview
 
-- 状态：`[ ]`
+- 状态：`[x]`
 - 模块：API
 - 文件：新增 `apps/api/src/modules/agent-tools/tools/generate-import-outline-preview.tool.ts`
 - 任务：根据文档分析和项目上下文生成导入大纲预览。
@@ -145,6 +145,11 @@
   - 不输出角色、世界设定、写作规则。
   - Prompt 专注主线、卷章结构、冲突递进、章节钩子。
 - 验证：`pnpm --dir apps/api run test:agent`
+- 完成记录：
+  - 2026-05-06：新增 `GenerateImportOutlinePreviewTool`，输入包含 `analysis`、`instruction`、`projectContext?`、`chapterCount?`；Tool 只输出 `projectProfile.outline`、`volumes`、`chapters`、`risks`，并通过专用 prompt 聚焦主线推进、卷章结构、冲突递进和章节钩子。
+  - 2026-05-06：补充归一化防御，处理 LLM 返回的对象/数组/数字/布尔字段，限制章节数，保持 `allowedModes=['plan','act']`、`requiresApproval=false`、`sideEffects=[]`、`riskLevel='low'`，不写库且不输出角色、世界设定、写作规则。
+  - 修改文件：`apps/api/src/modules/agent-tools/tools/generate-import-outline-preview.tool.ts`、`apps/api/src/modules/agent-runs/agent-services.spec.ts`、`docs/architecture/targeted-import-preview-tools-development-plan.md`。
+  - 验证结果：`pnpm --dir apps/api run test:agent` 通过，163 项测试通过。
 
 ### TIP-P1-002 新增 generate_import_characters_preview
 
