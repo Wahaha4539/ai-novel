@@ -1584,7 +1584,68 @@ test('AgentRuntime 为文档导入提升 merge_import_previews 输出', () => {
 
   assert.deepEqual(artifacts.map((item) => item.artifactType), ['writing_rules_preview', 'outline_preview', 'import_validation_report']);
   assert.equal(artifacts[0].content, preview.writingRules);
-  assert.deepEqual(artifacts[1].content, { volumes: preview.volumes, chapters: preview.chapters, risks: preview.risks });
+  assert.deepEqual(artifacts[1].content, { outline: '主线', volumes: preview.volumes, chapters: preview.chapters, risks: preview.risks });
+});
+
+test('AgentRuntime 为文档导入提升目标 Tool 输出', () => {
+  const runtime = new AgentRuntimeService({} as never, {} as never, {} as never, {} as never, {} as never, {} as never) as unknown as {
+    buildPreviewArtifacts: (taskType: string, outputs: Record<number, unknown>, steps: Array<{ stepNo: number; tool: string }>) => Array<{ artifactType: string; title: string; content: unknown }>;
+  };
+  const projectProfilePreview = { projectProfile: { title: '雾城旧档', genre: '悬疑' }, risks: ['标题待确认'] };
+  const outlinePreview = { projectProfile: { outline: '旧档案牵出城市记忆篡改。' }, volumes: [{ volumeNo: 1, title: '旧档' }], chapters: [{ chapterNo: 1, title: '缺页' }], risks: ['大纲待确认'] };
+  const charactersPreview = { characters: [{ name: '许知微' }], lorebookEntries: [{ title: '不应展示' }], risks: [] };
+  const worldbuildingPreview = { lorebookEntries: [{ title: '雾城档案馆' }], characters: [{ name: '不应展示' }], risks: [] };
+  const writingRulesPreview = { writingRules: [{ title: '第三人称有限视角' }], risks: [] };
+  const validation = { valid: true };
+  const steps = [
+    { stepNo: 1, tool: 'read_source_document' },
+    { stepNo: 2, tool: 'analyze_source_text' },
+    { stepNo: 3, tool: 'generate_import_project_profile_preview' },
+    { stepNo: 4, tool: 'generate_import_outline_preview' },
+    { stepNo: 5, tool: 'generate_import_characters_preview' },
+    { stepNo: 6, tool: 'generate_import_worldbuilding_preview' },
+    { stepNo: 7, tool: 'generate_import_writing_rules_preview' },
+    { stepNo: 8, tool: 'validate_imported_assets' },
+  ];
+
+  const artifacts = runtime.buildPreviewArtifacts(
+    'project_import_preview',
+    { 3: projectProfilePreview, 4: outlinePreview, 5: charactersPreview, 6: worldbuildingPreview, 7: writingRulesPreview, 8: validation },
+    steps,
+  );
+
+  assert.deepEqual(artifacts.map((item) => item.artifactType), ['project_profile_preview', 'characters_preview', 'lorebook_preview', 'writing_rules_preview', 'outline_preview', 'import_validation_report']);
+  assert.deepEqual(artifacts[0].content, projectProfilePreview.projectProfile);
+  assert.deepEqual(artifacts[1].content, charactersPreview.characters);
+  assert.deepEqual(artifacts[2].content, worldbuildingPreview.lorebookEntries);
+  assert.deepEqual(artifacts[3].content, writingRulesPreview.writingRules);
+  assert.deepEqual(artifacts[4].content, {
+    outline: outlinePreview.projectProfile.outline,
+    volumes: outlinePreview.volumes,
+    chapters: outlinePreview.chapters,
+    risks: ['标题待确认', '大纲待确认'],
+  });
+});
+
+test('AgentRuntime 为目标 Tool 输出只展示用户选择的产物', () => {
+  const runtime = new AgentRuntimeService({} as never, {} as never, {} as never, {} as never, {} as never, {} as never) as unknown as {
+    buildPreviewArtifacts: (taskType: string, outputs: Record<number, unknown>, steps: Array<{ stepNo: number; tool: string }>) => Array<{ artifactType: string; title: string; content: unknown }>;
+  };
+  const outlinePreview = {
+    projectProfile: { title: '不应展示为项目资料', outline: '只看大纲' },
+    characters: [{ name: '不应展示' }],
+    volumes: [{ volumeNo: 1, title: '卷一' }],
+    chapters: [{ chapterNo: 1, title: '第一章' }],
+    risks: [],
+  };
+  const steps = [
+    { stepNo: 1, tool: 'generate_import_outline_preview' },
+  ];
+
+  const artifacts = runtime.buildPreviewArtifacts('project_import_preview', { 1: outlinePreview }, steps);
+
+  assert.deepEqual(artifacts.map((item) => item.artifactType), ['outline_preview']);
+  assert.deepEqual(artifacts[0].content, { outline: '只看大纲', volumes: outlinePreview.volumes, chapters: outlinePreview.chapters, risks: [] });
 });
 
 test('AgentRuntime maps continuity preview/validation/persist artifacts', () => {

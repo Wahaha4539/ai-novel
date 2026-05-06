@@ -261,7 +261,7 @@
 
 ### TIP-P1-008 Runtime Artifact 提升支持分目标输出
 
-- 状态：`[ ]`
+- 状态：`[x]`
 - 模块：API
 - 文件：`apps/api/src/modules/agent-runs/agent-runtime.service.ts`
 - 任务：从目标 Tool 输出和合并输出中生成前端 Artifact。
@@ -272,6 +272,12 @@
   - 写作规则 Tool 输出提升为 `writing_rules_preview`。
   - 只展示用户选择的目标产物。
 - 验证：`pnpm --dir apps/api run test:agent`
+- 完成记录：
+  - 2026-05-06：Runtime 在文档导入预览和执行 Artifact 提升时，继续优先使用 `merge_import_previews`/`build_import_preview` 统一输出；统一输出缺失时，会从 `generate_import_*_preview` 目标 Tool 输出合成受限预览。
+  - 2026-05-06：目标 Tool 输出只按对应目标投影，防止角色、世界设定、写作规则等未选择内容混入其它 Artifact；`project_profile_preview` 去除 `outline`，`outline_preview` 包含 `projectProfile.outline`、volumes、chapters 和 risks。
+  - 2026-05-06：补充 Runtime 测试，覆盖目标 Tool 直接输出提升为 `outline_preview`、`characters_preview`、`lorebook_preview`、`writing_rules_preview`，以及只展示用户选择的目标产物。
+  - 修改文件：`apps/api/src/modules/agent-runs/agent-runtime.service.ts`、`apps/api/src/modules/agent-runs/agent-services.spec.ts`、`docs/architecture/targeted-import-preview-tools-development-plan.md`。
+  - 验证结果：`pnpm --dir apps/api run test:agent` 通过，174 项测试通过。
 
 ### TIP-P1-009 前端 Plan 和 Artifact 展示目标产物来源
 

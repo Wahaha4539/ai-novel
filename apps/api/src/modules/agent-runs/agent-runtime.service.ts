@@ -26,6 +26,16 @@ type ProjectImportPreviewArtifact = {
   risks?: unknown;
 };
 
+type ProjectImportAssetType = 'projectProfile' | 'outline' | 'characters' | 'worldbuilding' | 'writingRules';
+
+const PROJECT_IMPORT_TARGET_TOOL_ASSET_TYPE: Record<string, ProjectImportAssetType> = {
+  generate_import_project_profile_preview: 'projectProfile',
+  generate_import_outline_preview: 'outline',
+  generate_import_characters_preview: 'characters',
+  generate_import_worldbuilding_preview: 'worldbuilding',
+  generate_import_writing_rules_preview: 'writingRules',
+};
+
 /** 编排 AgentRun 状态机：Plan 阶段生成预览，Act 阶段执行已审批工具。 */
 @Injectable()
 export class AgentRuntimeService {
@@ -509,7 +519,8 @@ export class AgentRuntimeService {
     }
 
     if (taskType === 'project_import_preview') {
-      const preview = this.latestOutputByTools(outputs, steps, ['merge_import_previews', 'build_import_preview']) as ProjectImportPreviewArtifact | undefined;
+      const preview = (this.latestOutputByTools(outputs, steps, ['merge_import_previews', 'build_import_preview']) as ProjectImportPreviewArtifact | undefined)
+        ?? this.buildProjectImportPreviewFromTargetOutputs(outputs, steps);
       const validation = this.latestOutputByTools(outputs, steps, ['validate_imported_assets']);
       return this.buildProjectImportArtifacts(preview, validation);
     }
@@ -556,7 +567,8 @@ export class AgentRuntimeService {
     }
 
     if (taskType === 'project_import_preview') {
-      const preview = this.latestOutputByTools(outputs, steps, ['merge_import_previews', 'build_import_preview']) as ProjectImportPreviewArtifact | undefined;
+      const preview = (this.latestOutputByTools(outputs, steps, ['merge_import_previews', 'build_import_preview']) as ProjectImportPreviewArtifact | undefined)
+        ?? this.buildProjectImportPreviewFromTargetOutputs(outputs, steps);
       const validation = this.latestOutputByTools(outputs, steps, ['validate_imported_assets']);
       const persist = this.latestOutputByTools(outputs, steps, ['persist_project_assets']);
       return this.buildProjectImportArtifacts(preview, validation, persist);
@@ -654,17 +666,49 @@ export class AgentRuntimeService {
 
   private buildProjectImportArtifacts(preview?: ProjectImportPreviewArtifact, validation?: unknown, persist?: unknown): AgentArtifactDraft[] {
     return [
-      ...(this.shouldShowImportArtifact(preview, 'projectProfile') ? [{ artifactType: 'project_profile_preview', title: '项目资料预览', content: preview?.projectProfile ?? {} }] : []),
+      ...(this.shouldShowImportArtifact(preview, 'projectProfile') ? [{ artifactType: 'project_profile_preview', title: '项目资料预览', content: this.projectProfileWithoutOutline(preview?.projectProfile) }] : []),
       ...(this.shouldShowImportArtifact(preview, 'characters') ? [{ artifactType: 'characters_preview', title: '角色预览', content: preview?.characters ?? [] }] : []),
       ...(this.shouldShowImportArtifact(preview, 'worldbuilding') ? [{ artifactType: 'lorebook_preview', title: '设定预览', content: preview?.lorebookEntries ?? [] }] : []),
       ...(this.shouldShowImportArtifact(preview, 'writingRules') ? [{ artifactType: 'writing_rules_preview', title: '写作规则预览', content: preview?.writingRules ?? [] }] : []),
-      ...(this.shouldShowImportArtifact(preview, 'outline') ? [{ artifactType: 'outline_preview', title: '卷与章节预览', content: { volumes: preview?.volumes ?? [], chapters: preview?.chapters ?? [], risks: preview?.risks ?? [] } }] : []),
+      ...(this.shouldShowImportArtifact(preview, 'outline') ? [{ artifactType: 'outline_preview', title: '卷与章节预览', content: this.removeUndefinedArgs({ outline: this.asRecord(preview?.projectProfile).outline, volumes: preview?.volumes ?? [], chapters: preview?.chapters ?? [], risks: preview?.risks ?? [] }) }] : []),
       ...(validation ? [{ artifactType: 'import_validation_report', title: '导入校验报告', content: validation }] : []),
       ...(persist ? [{ artifactType: 'import_persist_result', title: '导入写入结果', content: persist }] : []),
     ];
   }
 
-  private shouldShowImportArtifact(preview: ProjectImportPreviewArtifact | undefined, assetType: 'projectProfile' | 'outline' | 'characters' | 'worldbuilding' | 'writingRules') {
+  private projectProfileWithoutOutline(projectProfile: unknown) {
+    const profile = { ...this.asRecord(projectProfile) };
+    delete profile.outline;
+    return profile;
+  }
+
+  private buildProjectImportPreviewFromTargetOutputs(outputs: Record<number, unknown>, steps: Pick<AgentPlanSpec, 'steps'>['steps']): ProjectImportPreviewArtifact | undefined {
+    const previewSteps = steps.filter((step) => PROJECT_IMPORT_TARGET_TOOL_ASSET_TYPE[step.tool] && outputs[step.stepNo] !== undefined).sort((a, b) => a.stepNo - b.stepNo);
+    if (!previewSteps.length) return undefined;
+    const preview: ProjectImportPreviewArtifact = { requestedAssetTypes: [], risks: [] };
+    const requestedAssetTypes: ProjectImportAssetType[] = [];
+    const risks: unknown[] = [];
+    for (const step of previewSteps) {
+      const assetType = PROJECT_IMPORT_TARGET_TOOL_ASSET_TYPE[step.tool];
+      if (!requestedAssetTypes.includes(assetType)) requestedAssetTypes.push(assetType);
+      const output = this.asRecord(outputs[step.stepNo]);
+      if (Array.isArray(output.risks)) risks.push(...output.risks);
+      if (assetType === 'projectProfile') preview.projectProfile = output.projectProfile;
+      if (assetType === 'outline') {
+        preview.projectProfile = { ...this.asRecord(preview.projectProfile), ...this.asRecord(output.projectProfile) };
+        preview.volumes = output.volumes;
+        preview.chapters = output.chapters;
+      }
+      if (assetType === 'characters') preview.characters = output.characters;
+      if (assetType === 'worldbuilding') preview.lorebookEntries = output.lorebookEntries;
+      if (assetType === 'writingRules') preview.writingRules = output.writingRules;
+    }
+    preview.requestedAssetTypes = requestedAssetTypes;
+    preview.risks = risks;
+    return preview;
+  }
+
+  private shouldShowImportArtifact(preview: ProjectImportPreviewArtifact | undefined, assetType: ProjectImportAssetType) {
     if (!preview) return false;
     const requestedAssetTypes = Array.isArray(preview.requestedAssetTypes) ? preview.requestedAssetTypes.map((item) => String(item)) : [];
     return !requestedAssetTypes.length || requestedAssetTypes.includes(assetType);
