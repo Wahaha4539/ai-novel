@@ -281,6 +281,9 @@ function TypedArtifactPreview({
   if (artifactType === 'story_bible_preview') return <StoryBiblePreviewSummary content={content} />;
   if (artifactType === 'story_bible_validation_report') return <StoryBibleValidationSummary content={content} />;
   if (artifactType === 'story_bible_persist_result') return <StoryBiblePersistSummary content={content} />;
+  if (artifactType === 'chapter_craft_brief_preview') return <ChapterCraftBriefPreviewSummary content={content} />;
+  if (artifactType === 'chapter_craft_brief_validation_report') return <ChapterCraftBriefValidationSummary content={content} />;
+  if (artifactType === 'chapter_craft_brief_persist_result') return <ChapterCraftBriefPersistSummary content={content} />;
   if (artifactType === 'continuity_preview') return <ContinuityPreviewSummary content={content} />;
   if (artifactType === 'continuity_validation_report') return <ContinuityValidationSummary content={content} />;
   if (artifactType === 'continuity_persist_result') return <ContinuityPersistSummary content={content} />;
@@ -382,6 +385,202 @@ function OutlineWriteNotice({ fallbackChapterCount, riskCount }: { fallbackChapt
   return (
     <div className="rounded-lg border px-3 py-2 text-xs leading-5" style={{ borderColor: fallbackChapterCount ? 'rgba(251,191,36,0.35)' : 'rgba(20,184,166,0.30)', background: fallbackChapterCount ? 'rgba(251,191,36,0.08)' : 'rgba(20,184,166,0.07)', color: 'var(--text-muted)' }}>
       审批写入会创建或更新 planned 章节的细纲与执行卡；已起草或非 planned 章节会跳过。{fallbackChapterCount ? ` ${fallbackChapterCount} 章来自 fallback，写入前建议人工复核。` : ''}{riskCount ? ` 当前有 ${riskCount} 条风险提示。` : ''}
+    </div>
+  );
+}
+
+function ChapterCraftBriefPreviewSummary({ content }: { content: unknown }) {
+  const data = asRecord(content);
+  const candidates = asArray(data?.candidates);
+  const risks = asArray(data?.risks).map((item) => textValue(item)).filter(Boolean);
+  const assumptions = asArray(data?.assumptions).map((item) => textValue(item)).filter(Boolean);
+  const writePlan = asRecord(data?.writePlan);
+  const existingCount = candidates.filter((item) => asRecord(item)?.hasExistingCraftBrief === true).length;
+  return (
+    <div className="space-y-3">
+      <div className="grid gap-2 md:grid-cols-4">
+        <Metric label="目标章节" value={candidates.length} />
+        <Metric label="已有执行卡" value={existingCount} tone={existingCount ? 'warn' : undefined} />
+        <Metric label="写入目标" value={textValue(writePlan?.target, 'Chapter.craftBrief')} />
+        <Metric label="风险" value={risks.length} tone={risks.length ? 'warn' : 'ok'} />
+      </div>
+      <ChapterCraftBriefNotice />
+      <div className="space-y-2">
+        {candidates.slice(0, 6).map((item, index) => (
+          <ChapterCraftBriefCandidateSummary key={textValue(asRecord(item)?.candidateId, `candidate-${index}`)} candidate={asRecord(item) ?? {}} index={index} />
+        ))}
+        {!candidates.length && <div className="text-xs" style={{ color: 'var(--text-muted)' }}>暂无章节推进卡候选。</div>}
+      </div>
+      <ChapterCraftBriefMessageList title="风险" items={risks} tone="warn" />
+      <ChapterCraftBriefMessageList title="假设" items={assumptions} />
+    </div>
+  );
+}
+
+function ChapterCraftBriefValidationSummary({ content }: { content: unknown }) {
+  const data = asRecord(content);
+  const accepted = asArray(data?.accepted);
+  const rejected = asArray(data?.rejected);
+  const warnings = asArray(data?.warnings).map((item) => textValue(item)).filter(Boolean);
+  const writePreview = asRecord(data?.writePreview);
+  const writeChapters = asArray(writePreview?.chapters);
+  const skipCount = writeChapters.filter((item) => asRecord(item)?.action === 'skip_by_default').length;
+  return (
+    <div className="space-y-3">
+      <div className="grid gap-2 md:grid-cols-4">
+        <Metric label="状态" value={data?.valid === true ? '可写入' : '需复核'} tone={data?.valid === true ? 'ok' : 'danger'} />
+        <Metric label="通过" value={accepted.length} tone="ok" />
+        <Metric label="拒绝" value={rejected.length} tone={rejected.length ? 'danger' : 'ok'} />
+        <Metric label="默认跳过" value={skipCount} tone={skipCount ? 'warn' : 'ok'} />
+      </div>
+      <div className="space-y-2">
+        {writeChapters.slice(0, 8).map((item, index) => {
+          const chapter = asRecord(item);
+          const action = textValue(chapter?.action, 'unknown');
+          const proposed = asRecord(chapter?.proposedFields);
+          const color = action === 'skip_by_default' ? '#fbbf24' : 'var(--text-muted)';
+          return (
+            <div key={textValue(chapter?.candidateId, `write-${index}`)} className="space-y-1 rounded-lg border px-3 py-2" style={{ borderColor: 'var(--border-dim)', background: 'rgba(15,23,42,0.18)' }}>
+              <div className="text-xs leading-5" style={{ color }}>
+                <b style={{ color: 'var(--text-main)' }}>第 {numberValue(chapter?.chapterNo, index + 1)} 章：{textValue(chapter?.title, '未命名章节')}</b> · {textValue(chapter?.status, 'unknown')} · {action}
+                {chapter?.reason ? ` · ${textValue(chapter.reason)}` : ''}
+              </div>
+              <ChapterCraftBriefFields craftBrief={asCraftBriefRecord(proposed?.craftBrief)} />
+            </div>
+          );
+        })}
+        {!writeChapters.length && <div className="text-xs" style={{ color: 'var(--text-muted)' }}>暂无写入预览明细。</div>}
+      </div>
+      <ChapterCraftBriefRejectedList items={rejected} />
+      <ChapterCraftBriefMessageList title="警告" items={warnings} tone="warn" />
+    </div>
+  );
+}
+
+function ChapterCraftBriefPersistSummary({ content }: { content: unknown }) {
+  const data = asRecord(content);
+  const updated = asArray(data?.updatedChapters);
+  const skipped = asArray(data?.skippedChapters);
+  const audit = asArray(data?.perChapterAudit);
+  const approval = asRecord(data?.approval);
+  return (
+    <div className="space-y-3">
+      <div className="grid gap-2 md:grid-cols-4">
+        <Metric label="已更新" value={numberValue(data?.updatedCount, updated.length)} tone="ok" />
+        <Metric label="已跳过" value={numberValue(data?.skippedCount, skipped.length)} tone={skipped.length ? 'warn' : 'ok'} />
+        <Metric label="审批" value={approval?.approved === true ? '已审批' : '未审批'} tone={approval?.approved === true ? 'ok' : 'danger'} />
+        <Metric label="允许已起草" value={approval?.allowDrafted === true ? '是' : '否'} tone={approval?.allowDrafted === true ? 'warn' : 'ok'} />
+      </div>
+      {textValue(data?.approvalMessage, '') && <div className="text-xs leading-5" style={{ color: 'var(--text-muted)' }}>{textValue(data?.approvalMessage)}</div>}
+      <div className="space-y-1">
+        {updated.slice(0, 6).map((item, index) => {
+          const chapter = asRecord(item);
+          return <div key={textValue(chapter?.id, `updated-${index}`)} className="text-xs leading-5" style={{ color: '#86efac' }}>已更新：第 {numberValue(chapter?.chapterNo, index + 1)} 章 · {textValue(chapter?.title, '未命名章节')} · {textValue(chapter?.status, 'planned')}</div>;
+        })}
+        {skipped.slice(0, 6).map((item, index) => {
+          const chapter = asRecord(item);
+          return <div key={textValue(chapter?.candidateId, `skipped-${index}`)} className="text-xs leading-5" style={{ color: '#fbbf24' }}>已跳过：第 {numberValue(chapter?.chapterNo, index + 1)} 章 · {textValue(chapter?.title, '未命名章节')} · {textValue(chapter?.status, 'unknown')} · {textValue(chapter?.reason, '状态不允许默认写入')}</div>;
+        })}
+      </div>
+      <div className="space-y-1" style={{ borderTop: '1px solid var(--border-dim)', paddingTop: '0.75rem' }}>
+        {audit.slice(0, 10).map((item, index) => {
+          const row = asRecord(item);
+          const action = textValue(row?.action, 'unknown');
+          const color = action === 'updated' ? '#86efac' : action === 'skipped_status' ? '#fbbf24' : 'var(--text-muted)';
+          return <div key={textValue(row?.candidateId, `audit-${index}`)} className="text-xs leading-5" style={{ color }}>第 {numberValue(row?.chapterNo, index + 1)} 章 · {textValue(row?.title, '未命名章节')} · {action} · {textValue(row?.reason, '暂无说明')}</div>;
+        })}
+        {!audit.length && <div className="text-xs" style={{ color: 'var(--text-muted)' }}>暂无章节级写入审计。</div>}
+      </div>
+    </div>
+  );
+}
+
+function ChapterCraftBriefCandidateSummary({ candidate, index }: { candidate: Record<string, unknown>; index: number }) {
+  const proposed = asRecord(candidate.proposedFields);
+  const craftBrief = asCraftBriefRecord(proposed?.craftBrief);
+  const risks = asArray(candidate.risks).map((item) => textValue(item)).filter(Boolean);
+  const objective = textValue(proposed?.objective, '');
+  const conflict = textValue(proposed?.conflict, '');
+  const outline = textValue(proposed?.outline, '');
+  return (
+    <div className="space-y-2 rounded-lg border px-3 py-2" style={{ borderColor: 'var(--border-dim)', background: 'rgba(20,184,166,0.06)' }}>
+      <div className="text-xs leading-5" style={{ color: 'var(--text-muted)' }}>
+        <b style={{ color: 'var(--text-main)' }}>第 {numberValue(candidate.chapterNo, index + 1)} 章：{textValue(candidate.title, '未命名章节')}</b>
+        {' '}· {textValue(candidate.status, 'unknown')}{candidate.hasExistingCraftBrief === true ? ' · 已有执行卡' : ''}
+      </div>
+      {(objective || conflict || outline) && (
+        <div className="space-y-1 text-[11px] leading-5" style={{ color: 'var(--text-muted)' }}>
+          {objective && <div>目标：{objective}</div>}
+          {conflict && <div>冲突：{conflict}</div>}
+          {outline && <div>细纲：{outline}</div>}
+        </div>
+      )}
+      <ChapterCraftBriefFields craftBrief={craftBrief} />
+      <ChapterCraftBriefMessageList title="风险" items={risks} tone="warn" />
+    </div>
+  );
+}
+
+function ChapterCraftBriefFields({ craftBrief }: { craftBrief: Record<string, unknown> }) {
+  if (!Object.keys(craftBrief).length) return <div className="text-[11px]" style={{ color: '#fbbf24' }}>缺少 Chapter.craftBrief 字段。</div>;
+  const actionBeats = stringList(craftBrief.actionBeats);
+  const subplotTasks = stringList(craftBrief.subplotTasks);
+  const progressTypes = stringList(craftBrief.progressTypes);
+  const clues = asArray(craftBrief.concreteClues)
+    .map((item) => {
+      const clue = asRecord(item);
+      const name = textValue(clue?.name, '');
+      if (!name) return '';
+      const details = [textValue(clue?.sensoryDetail, ''), textValue(clue?.laterUse, '')].filter(Boolean);
+      return details.length ? `${name}（${details.join(' / ')}）` : name;
+    })
+    .filter(Boolean);
+  return (
+    <div className="space-y-1 text-[11px] leading-5" style={{ color: 'var(--text-muted)' }}>
+      {textValue(craftBrief.visibleGoal, '') && <div><b style={{ color: 'var(--agent-text-label)' }}>可见目标</b>：{textValue(craftBrief.visibleGoal)}</div>}
+      {textValue(craftBrief.coreConflict, '') && <div>核心冲突：{textValue(craftBrief.coreConflict)}</div>}
+      {textValue(craftBrief.mainlineTask, '') && <div>主线任务：{textValue(craftBrief.mainlineTask)}</div>}
+      {subplotTasks.length > 0 && <div>支线推进：{subplotTasks.slice(0, 3).join('；')}</div>}
+      {actionBeats.length > 0 && <div>行动链：{actionBeats.slice(0, 5).join(' -> ')}</div>}
+      {clues.length > 0 && <div>具体线索：{clues.slice(0, 4).join('；')}</div>}
+      {textValue(craftBrief.dialogueSubtext, '') && <div>潜台词：{textValue(craftBrief.dialogueSubtext)}</div>}
+      {textValue(craftBrief.characterShift, '') && <div>人物变化：{textValue(craftBrief.characterShift)}</div>}
+      {textValue(craftBrief.irreversibleConsequence, '') && <div>不可逆后果：{textValue(craftBrief.irreversibleConsequence)}</div>}
+      {textValue(craftBrief.hiddenEmotion, '') && <div>隐藏情绪：{textValue(craftBrief.hiddenEmotion)}</div>}
+      {progressTypes.length > 0 && <div>推进类型：{progressTypes.slice(0, 4).join(' / ')}</div>}
+    </div>
+  );
+}
+
+function ChapterCraftBriefRejectedList({ items }: { items: unknown[] }) {
+  if (!items.length) return null;
+  return (
+    <div className="space-y-1">
+      {items.slice(0, 6).map((item, index) => {
+        const row = asRecord(item);
+        const reasons = asArray(row?.reasons).map((reason) => textValue(reason)).filter(Boolean);
+        return <div key={textValue(row?.candidateId, `rejected-${index}`)} className="text-xs leading-5" style={{ color: '#fb7185' }}>拒绝：第 {numberValue(row?.chapterNo, index + 1)} 章 · {textValue(row?.title, '未命名章节')} · {reasons.join('；') || '未给出原因'}</div>;
+      })}
+    </div>
+  );
+}
+
+function ChapterCraftBriefMessageList({ title, items, tone = 'muted' }: { title: string; items: string[]; tone?: 'muted' | 'warn' }) {
+  if (!items.length) return null;
+  const color = tone === 'warn' ? '#fbbf24' : 'var(--text-muted)';
+  return (
+    <div className="space-y-1">
+      {items.slice(0, 5).map((item, index) => (
+        <div key={`${title}-${index}`} className="text-xs leading-5" style={{ color }}>{title}：{item}</div>
+      ))}
+    </div>
+  );
+}
+
+function ChapterCraftBriefNotice() {
+  return (
+    <div className="rounded-lg border px-3 py-2 text-xs leading-5" style={{ borderColor: 'rgba(20,184,166,0.30)', background: 'rgba(20,184,166,0.07)', color: 'var(--text-muted)' }}>
+      这是章级推进卡预览，只写入 <code>Chapter.craftBrief</code> 和可选规划字段；已起草或非 planned 章节默认会跳过，不会改正文。
     </div>
   );
 }
