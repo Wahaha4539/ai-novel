@@ -189,7 +189,7 @@
 
 ### TIP-P1-004 新增 generate_import_writing_rules_preview
 
-- 状态：`[ ]`
+- 状态：`[x]`
 - 模块：API
 - 文件：新增 `apps/api/src/modules/agent-tools/tools/generate-import-writing-rules-preview.tool.ts`
 - 任务：根据文档分析生成写作规则预览。
@@ -199,6 +199,11 @@
   - Prompt 专注文风、视角、人称、禁写、节奏、结构规范。
   - 不把世界观规则误塞进 lorebook。
 - 验证：`pnpm --dir apps/api run test:agent`
+- 完成记录：
+  - 2026-05-06：新增 `GenerateImportWritingRulesPreviewTool`，输入包含 `analysis`、`instruction?`、`projectContext?`、`maxRules?`；专用 prompt 聚焦文风、视角、人称、禁写、节奏、结构规范和一致性约束。
+  - 2026-05-06：输出只包含 `writingRules` 和 `risks`，归一化 `title/ruleType/content/severity/appliesFromChapterNo/appliesToChapterNo/entityType/entityRef/status`；处理对象/数组/数字/布尔字段，`warn` 映射为 `warning`，不把世界观规则塞进 lorebook，保持只读低风险元数据。
+  - 修改文件：`apps/api/src/modules/agent-tools/tools/generate-import-writing-rules-preview.tool.ts`、`apps/api/src/modules/agent-runs/agent-services.spec.ts`、`docs/architecture/targeted-import-preview-tools-development-plan.md`。
+  - 验证结果：`pnpm --dir apps/api run test:agent` 通过，166 项测试通过。
 
 ### TIP-P1-005 新增 generate_import_project_profile_preview
 
