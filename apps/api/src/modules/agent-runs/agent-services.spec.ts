@@ -8447,6 +8447,74 @@ test('generate_outline_preview LLM timeout 使用确定性 fallback 且补齐 60
   assert.equal(result.risks.some((risk) => /工具 .*执行超时|工具执行超时/.test(risk)), false);
 });
 
+test('generate_outline_preview 为 60 章自动拆分批次生成', async () => {
+  const calls: Array<{ start: number; end: number; options: Record<string, unknown>; prompt: string }> = [];
+  const progress: Array<Record<string, unknown>> = [];
+  const llmUsages: Array<{ model?: string }> = [];
+  const llm = {
+    async chatJson(messages: Array<{ role: string; content: string }>, options: Record<string, unknown>) {
+      const prompt = messages[1]?.content ?? '';
+      const match = prompt.match(/章节范围：第 (\d+)-(\d+) 章/);
+      assert.ok(match, '批次 prompt 应包含本批章节范围');
+      const start = Number(match[1]);
+      const end = Number(match[2]);
+      calls.push({ start, end, options, prompt });
+      return {
+        data: {
+          volume: { volumeNo: 1, title: '第一卷', synopsis: '卷简介', objective: '完成卷主线', chapterCount: 60 },
+          chapters: Array.from({ length: end - start + 1 }, (_item, index) => {
+            const chapterNo = start + index;
+            return {
+              chapterNo,
+              volumeNo: 1,
+              title: `第 ${chapterNo} 章`,
+              objective: `完成第 ${chapterNo} 章目标`,
+              conflict: `第 ${chapterNo} 章阻力`,
+              hook: `第 ${chapterNo} 章钩子`,
+              outline: `第 ${chapterNo} 章场景、行动和结果。`,
+              expectedWordCount: 2600,
+            };
+          }),
+          risks: [],
+        },
+        result: { model: `mock-outline-${calls.length}` },
+      };
+    },
+  };
+  const tool = new GenerateOutlinePreviewTool(llm as never);
+  const result = await tool.run(
+    { instruction: '为第 1 卷生成 60 章细纲', volumeNo: 1, chapterCount: 60 },
+    {
+      agentRunId: 'run1',
+      projectId: 'p1',
+      mode: 'plan',
+      approved: false,
+      outputs: {},
+      policy: {},
+      recordLlmUsage: (usage) => llmUsages.push(usage),
+      async updateProgress(patch) { progress.push(patch as Record<string, unknown>); },
+      async heartbeat(patch) { if (patch) progress.push(patch as Record<string, unknown>); },
+    },
+  );
+
+  assert.equal(calls.length, 5);
+  assert.deepEqual(calls.map((call) => [call.start, call.end]), [[1, 12], [13, 24], [25, 36], [37, 48], [49, 60]]);
+  assert.equal(calls.every((call) => call.options.timeoutMs === 90_000), true);
+  assert.equal(calls.every((call) => call.options.retries === 0), true);
+  assert.equal(calls.every((call) => call.options.maxTokens === 9240), true);
+  assert.match(calls[1].prompt, /本次运行已生成章节短表/);
+  assert.match(calls[1].prompt, /第 12 章钩子/);
+  assert.equal(llmUsages.length, 5);
+  assert.equal(result.chapters.length, 60);
+  assert.equal(result.volume.chapterCount, 60);
+  assert.equal(result.chapters[0].chapterNo, 1);
+  assert.equal(result.chapters[59].chapterNo, 60);
+  assert.equal(result.chapters.every((chapter) => chapter.volumeNo === 1), true);
+  assert.equal(result.chapters.every((chapter) => Boolean(chapter.craftBrief?.visibleGoal)), true);
+  assert.equal(progress.filter((item) => item.phase === 'calling_llm').length, 5);
+  assert.equal(progress.some((item) => item.phase === 'merging_preview'), true);
+});
+
 test('generate_outline_preview 保留 LLM craftBrief 并补齐缺失执行卡字段', async () => {
   const llm = {
     async chatJson() {

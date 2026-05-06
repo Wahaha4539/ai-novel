@@ -4,12 +4,22 @@ import { BaseTool, ToolContext } from '../base-tool';
 import { recordToolLlmUsage } from './import-preview-llm-usage';
 
 const OUTLINE_PREVIEW_LLM_TIMEOUT_MS = 90_000;
+const OUTLINE_PREVIEW_BATCH_THRESHOLD = 15;
+const OUTLINE_PREVIEW_BATCH_SIZE = 12;
 
 interface GenerateOutlinePreviewInput {
   context?: Record<string, unknown>;
   instruction?: string;
   volumeNo?: number;
   chapterCount?: number;
+}
+
+interface OutlinePreviewBatch {
+  batchIndex: number;
+  batchCount: number;
+  startChapterNo: number;
+  endChapterNo: number;
+  chapterCount: number;
 }
 
 export interface ChapterCraftBrief {
@@ -57,19 +67,19 @@ export class GenerateOutlinePreviewTool implements BaseTool<GenerateOutlinePrevi
   async run(args: GenerateOutlinePreviewInput, context: ToolContext): Promise<OutlinePreviewOutput> {
     const volumeNo = args.volumeNo ?? 1;
     const chapterCount = Math.min(80, Math.max(1, args.chapterCount ?? 10));
+    const batches = this.createBatches(chapterCount);
+    if (batches.length > 1) return this.runBatched(args, context, volumeNo, chapterCount, batches);
+    return this.runSingleBatch(args, context, volumeNo, chapterCount);
+  }
+
+  private async runSingleBatch(args: GenerateOutlinePreviewInput, context: ToolContext, volumeNo: number, chapterCount: number): Promise<OutlinePreviewOutput> {
     try {
       await context.updateProgress?.({
         phase: 'calling_llm',
         phaseMessage: '正在生成卷章节预览',
         timeoutMs: OUTLINE_PREVIEW_LLM_TIMEOUT_MS,
       });
-      const response = await this.llm.chatJson<OutlinePreviewOutput>(
-        [
-          { role: 'system', content: this.buildSystemPrompt() },
-          { role: 'user', content: this.buildUserPrompt(args, volumeNo, chapterCount) },
-        ],
-        { appStep: 'planner', maxTokens: this.estimateMaxTokens(chapterCount), timeoutMs: OUTLINE_PREVIEW_LLM_TIMEOUT_MS, retries: 0 },
-      );
+      const response = await this.callOutlineLlm(args, volumeNo, chapterCount);
       recordToolLlmUsage(context, 'planner', response.result);
       await context.updateProgress?.({ phase: 'validating', phaseMessage: '正在校验章节预览', progressCurrent: chapterCount, progressTotal: chapterCount });
       return this.normalize(response.data, volumeNo, chapterCount, args);
@@ -79,27 +89,96 @@ export class GenerateOutlinePreviewTool implements BaseTool<GenerateOutlinePrevi
     }
   }
 
-  private normalize(data: OutlinePreviewOutput, volumeNo: number, chapterCount: number, args: GenerateOutlinePreviewInput): OutlinePreviewOutput {
+  private async runBatched(
+    args: GenerateOutlinePreviewInput,
+    context: ToolContext,
+    volumeNo: number,
+    chapterCount: number,
+    batches: OutlinePreviewBatch[],
+  ): Promise<OutlinePreviewOutput> {
+    const chapters: OutlinePreviewOutput['chapters'] = [];
+    const risks: string[] = [`已按 ${OUTLINE_PREVIEW_BATCH_SIZE} 章以内自动分批生成，共 ${batches.length} 批，避免单次 LLM 请求承载 ${chapterCount} 章。`];
+    let volume: OutlinePreviewOutput['volume'] | undefined;
+    try {
+      for (const batch of batches) {
+        await context.updateProgress?.({
+          phase: 'calling_llm',
+          phaseMessage: `正在生成第 ${batch.startChapterNo}-${batch.endChapterNo} 章细纲`,
+          progressCurrent: batch.batchIndex,
+          progressTotal: batch.batchCount,
+          timeoutMs: OUTLINE_PREVIEW_LLM_TIMEOUT_MS,
+        });
+        const response = await this.callOutlineLlm(args, volumeNo, chapterCount, batch, chapters);
+        recordToolLlmUsage(context, 'planner', response.result);
+        const normalized = this.normalize(response.data, volumeNo, batch.chapterCount, args, {
+          chapterStart: batch.startChapterNo,
+          totalChapterCount: chapterCount,
+        });
+        volume ??= normalized.volume;
+        chapters.push(...normalized.chapters);
+        risks.push(...normalized.risks.map((risk) => `第 ${batch.startChapterNo}-${batch.endChapterNo} 章批次：${risk}`));
+        await context.heartbeat?.({
+          phase: 'merging_preview',
+          phaseMessage: `已合并 ${chapters.length}/${chapterCount} 章细纲`,
+          progressCurrent: batch.batchIndex,
+          progressTotal: batch.batchCount,
+        });
+      }
+      await context.updateProgress?.({ phase: 'validating', phaseMessage: '正在校验批次合并后的章节预览', progressCurrent: chapterCount, progressTotal: chapterCount });
+      return this.finalizeBatchedPreview(volume, chapters, risks, args, volumeNo, chapterCount);
+    } catch (error) {
+      await context.updateProgress?.({ phase: 'fallback_generating', phaseMessage: '模型批次返回不稳定，正在生成确定性章节骨架', progressCurrent: chapters.length, progressTotal: chapterCount });
+      return this.fallback(args, volumeNo, chapterCount, error);
+    }
+  }
+
+  private async callOutlineLlm(
+    args: GenerateOutlinePreviewInput,
+    volumeNo: number,
+    chapterCount: number,
+    batch?: OutlinePreviewBatch,
+    previousChapters: OutlinePreviewOutput['chapters'] = [],
+  ) {
+    return this.llm.chatJson<OutlinePreviewOutput>(
+      [
+        { role: 'system', content: this.buildSystemPrompt() },
+        { role: 'user', content: this.buildUserPrompt(args, volumeNo, chapterCount, batch, previousChapters) },
+      ],
+      { appStep: 'planner', maxTokens: this.estimateMaxTokens(batch?.chapterCount ?? chapterCount), timeoutMs: OUTLINE_PREVIEW_LLM_TIMEOUT_MS, retries: 0 },
+    );
+  }
+
+  private normalize(
+    data: OutlinePreviewOutput,
+    volumeNo: number,
+    chapterCount: number,
+    args: GenerateOutlinePreviewInput,
+    options: { chapterStart?: number; totalChapterCount?: number } = {},
+  ): OutlinePreviewOutput {
     const seed = this.createFallbackSeed(args.context, args.instruction, volumeNo);
+    const chapterStart = options.chapterStart ?? 1;
+    const totalChapterCount = options.totalChapterCount ?? chapterCount;
+    const returnedCount = Array.isArray(data.chapters) ? Math.min(data.chapters.length, chapterCount) : 0;
     const chapters: OutlinePreviewOutput['chapters'] = (data.chapters ?? []).slice(0, chapterCount).map((item, index) => {
+      const chapterNo = chapterStart + index;
       const chapter = {
-        chapterNo: Number(item.chapterNo) || index + 1,
+        chapterNo,
         volumeNo: Number(item.volumeNo) || volumeNo,
-        title: this.text(item.title, `第 ${index + 1} 章`),
+        title: this.text(item.title, `第 ${chapterNo} 章`),
         objective: this.text(item.objective, '推进主线目标'),
         conflict: this.text(item.conflict, '制造角色选择压力'),
         hook: this.text(item.hook, '留下下一章悬念'),
         outline: this.text(item.outline, this.text(item.objective, '待扩写')),
         expectedWordCount: Number(item.expectedWordCount) || 2500,
       };
-      return { ...chapter, craftBrief: this.normalizeCraftBrief(item.craftBrief, chapter, index, chapterCount, seed) };
+      return { ...chapter, craftBrief: this.normalizeCraftBrief(item.craftBrief, chapter, chapterNo - 1, totalChapterCount, seed) };
     });
     while (chapters.length < chapterCount) {
-      chapters.push(this.createFallbackChapter(chapters.length, chapterCount, seed));
+      chapters.push(this.createFallbackChapter(chapterStart + chapters.length - 1, totalChapterCount, seed));
     }
     const risks = [
       ...(data.risks ?? []),
-      ...(chapters.length > (data.chapters?.length ?? 0) ? ['LLM 返回章节数少于目标章节数，已用确定性章节骨架补齐缺口；请在审批前重点复核补齐章节。'] : []),
+      ...(chapters.length > returnedCount ? ['LLM 返回章节数少于目标章节数，已用确定性章节骨架补齐缺口；请在审批前重点复核补齐章节。'] : []),
     ];
     const narrativePlan = this.asRecord(data.volume?.narrativePlan);
     return {
@@ -108,10 +187,37 @@ export class GenerateOutlinePreviewTool implements BaseTool<GenerateOutlinePrevi
         title: this.text(data.volume?.title, seed.volumeTitle),
         synopsis: this.text(data.volume?.synopsis, seed.synopsis),
         objective: this.text(data.volume?.objective, seed.objective),
-        chapterCount: chapters.length,
+        chapterCount: totalChapterCount,
         ...(Object.keys(narrativePlan).length ? { narrativePlan } : {}),
       },
       chapters,
+      risks,
+    };
+  }
+
+  private finalizeBatchedPreview(
+    volume: OutlinePreviewOutput['volume'] | undefined,
+    chapters: OutlinePreviewOutput['chapters'],
+    risks: string[],
+    args: GenerateOutlinePreviewInput,
+    volumeNo: number,
+    chapterCount: number,
+  ): OutlinePreviewOutput {
+    const seed = this.createFallbackSeed(args.context, args.instruction, volumeNo);
+    const normalizedChapters: OutlinePreviewOutput['chapters'] = chapters.slice(0, chapterCount).map((chapter, index) => ({ ...chapter, chapterNo: index + 1, volumeNo }));
+    while (normalizedChapters.length < chapterCount) {
+      normalizedChapters.push({ ...this.createFallbackChapter(normalizedChapters.length, chapterCount, seed), volumeNo });
+    }
+    return {
+      volume: {
+        volumeNo,
+        title: this.text(volume?.title, seed.volumeTitle),
+        synopsis: this.text(volume?.synopsis, seed.synopsis),
+        objective: this.text(volume?.objective, seed.objective),
+        chapterCount,
+        ...(volume?.narrativePlan ? { narrativePlan: volume.narrativePlan } : {}),
+      },
+      chapters: normalizedChapters,
       risks,
     };
   }
@@ -275,7 +381,13 @@ export class GenerateOutlinePreviewTool implements BaseTool<GenerateOutlinePrevi
     ].join('\n');
   }
 
-  private buildUserPrompt(args: GenerateOutlinePreviewInput, volumeNo: number, chapterCount: number): string {
+  private buildUserPrompt(
+    args: GenerateOutlinePreviewInput,
+    volumeNo: number,
+    chapterCount: number,
+    batch?: OutlinePreviewBatch,
+    previousChapters: OutlinePreviewOutput['chapters'] = [],
+  ): string {
     const record = this.asRecord(args.context);
     const project = this.asRecord(record.project);
     const volumes = Array.isArray(record.volumes) ? record.volumes.map((item) => this.asRecord(item)) : [];
@@ -283,11 +395,22 @@ export class GenerateOutlinePreviewTool implements BaseTool<GenerateOutlinePrevi
     const existingChapters = Array.isArray(record.existingChapters) ? record.existingChapters.slice(0, 160) : [];
     const characters = Array.isArray(record.characters) ? record.characters.slice(0, 30) : [];
     const lorebookEntries = Array.isArray(record.lorebookEntries) ? record.lorebookEntries.slice(0, 30) : [];
+    const rangeStart = batch?.startChapterNo ?? 1;
+    const rangeEnd = batch?.endChapterNo ?? chapterCount;
+    const requestChapterCount = batch?.chapterCount ?? chapterCount;
+    const generatedSummary = previousChapters.slice(-12).map((chapter) => ({
+      chapterNo: chapter.chapterNo,
+      title: chapter.title,
+      objective: chapter.objective,
+      hook: chapter.hook,
+      consequence: chapter.craftBrief?.irreversibleConsequence,
+    }));
     return [
       `用户目标：${args.instruction ?? '生成章节细纲'}`,
       `目标卷：第 ${volumeNo} 卷`,
-      `目标章节数：${chapterCount}`,
-      `章节范围：第 1-${chapterCount} 章`,
+      `全卷章节数：${chapterCount}`,
+      `本次请求章节数：${requestChapterCount}`,
+      `章节范围：第 ${rangeStart}-${rangeEnd} 章`,
       '',
       '项目概览：',
       this.safeJson({
@@ -310,18 +433,34 @@ export class GenerateOutlinePreviewTool implements BaseTool<GenerateOutlinePrevi
       '已有章节摘要（避免重复编号、标题和目标）：',
       this.safeJson(existingChapters, 6000),
       '',
+      '本次运行已生成章节短表（保持连续性，避免重复）：',
+      this.safeJson(generatedSummary, 4000),
+      '',
       '角色摘要：',
       this.safeJson(characters, 4000),
       '',
       '设定摘要：',
       this.safeJson(lorebookEntries, 4000),
       '',
-      '请严格按目标章节数返回 chapters。若上下文不足，把风险写入 risks，但仍输出完整章节和 craftBrief。',
+      `请严格只返回第 ${rangeStart}-${rangeEnd} 章，共 ${requestChapterCount} 个 chapters；chapterNo 必须使用全卷绝对章号。`,
+      '若上下文不足，把风险写入 risks，但仍输出完整章节和 craftBrief。',
     ].join('\n');
   }
 
   private estimateMaxTokens(chapterCount: number): number {
     return Math.min(16_000, Math.max(4000, chapterCount * 620 + 1800));
+  }
+
+  private createBatches(chapterCount: number): OutlinePreviewBatch[] {
+    if (chapterCount <= OUTLINE_PREVIEW_BATCH_THRESHOLD) {
+      return [{ batchIndex: 1, batchCount: 1, startChapterNo: 1, endChapterNo: chapterCount, chapterCount }];
+    }
+    const ranges: Array<Omit<OutlinePreviewBatch, 'batchIndex' | 'batchCount'>> = [];
+    for (let startChapterNo = 1; startChapterNo <= chapterCount; startChapterNo += OUTLINE_PREVIEW_BATCH_SIZE) {
+      const endChapterNo = Math.min(chapterCount, startChapterNo + OUTLINE_PREVIEW_BATCH_SIZE - 1);
+      ranges.push({ startChapterNo, endChapterNo, chapterCount: endChapterNo - startChapterNo + 1 });
+    }
+    return ranges.map((range, index) => ({ ...range, batchIndex: index + 1, batchCount: ranges.length }));
   }
 
   private safeJson(value: unknown, limit: number): string {
