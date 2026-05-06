@@ -959,6 +959,15 @@ export class AgentRuntimeService {
       ];
     }
 
+    if (taskType === 'chapter_craft_brief' || taskType === 'chapter_progress_card') {
+      const preview = this.latestOutputByTools(outputs, steps, ['generate_chapter_craft_brief_preview']);
+      const validation = this.latestOutputByTools(outputs, steps, ['validate_chapter_craft_brief']);
+      return [
+        ...(preview ? [{ artifactType: 'chapter_craft_brief_preview', title: '章节推进卡预览', content: preview }] : []),
+        ...(validation ? [{ artifactType: 'chapter_craft_brief_validation_report', title: '章节推进卡校验报告', content: validation }] : []),
+      ];
+    }
+
     if (taskType === 'continuity_check') {
       const preview = this.latestOutputByTools(outputs, steps, ['generate_continuity_preview']);
       const validation = this.latestOutputByTools(outputs, steps, ['validate_continuity_changes']);
@@ -1023,6 +1032,17 @@ export class AgentRuntimeService {
         ...(validation ? [{ artifactType: 'scene_cards_validation_report', title: 'SceneCard Validation Report', content: validation }] : []),
         ...(persist ? [{ artifactType: 'scene_cards_persist_result', title: 'SceneCard Persist Result', content: persist }] : []),
         ...(update ? [{ artifactType: 'scene_card_update_result', title: 'SceneCard Update Result', content: update }] : []),
+      ];
+    }
+
+    if (taskType === 'chapter_craft_brief' || taskType === 'chapter_progress_card') {
+      const preview = this.latestOutputByTools(outputs, steps, ['generate_chapter_craft_brief_preview']);
+      const validation = this.latestOutputByTools(outputs, steps, ['validate_chapter_craft_brief']);
+      const persist = this.latestOutputByTools(outputs, steps, ['persist_chapter_craft_brief']);
+      return [
+        ...(preview ? [{ artifactType: 'chapter_craft_brief_preview', title: '章节推进卡预览', content: preview }] : []),
+        ...(validation ? [{ artifactType: 'chapter_craft_brief_validation_report', title: '章节推进卡校验报告', content: validation }] : []),
+        ...(persist ? [{ artifactType: 'chapter_craft_brief_persist_result', title: '章节推进卡写入结果', content: persist }] : []),
       ];
     }
 

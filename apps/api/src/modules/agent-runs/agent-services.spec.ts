@@ -9520,6 +9520,50 @@ test('Watchdog stale scan ignores steps with unexpired phase timeout', async () 
   ]);
 });
 
+test('AgentRuntime maps chapter craft brief preview and validation artifacts in plan mode', () => {
+  const runtime = new AgentRuntimeService({} as never, {} as never, {} as never, {} as never, {} as never, {} as never) as unknown as {
+    buildPreviewArtifacts: (taskType: string, outputs: Record<number, unknown>, steps: Array<{ stepNo: number; tool: string }>) => Array<{ artifactType: string; title: string; content: unknown }>;
+  };
+  const preview = { candidates: [{ candidateId: 'craft_1', chapterNo: 3, proposedFields: { craftBrief: { visibleGoal: 'Open the sealed archive' } } }] };
+  const validation = { valid: true, accepted: [{ candidateId: 'craft_1', chapterNo: 3, action: 'update' }], writePreview: { chapters: [] } };
+  const artifacts = runtime.buildPreviewArtifacts(
+    'chapter_craft_brief',
+    { 1: { chapterId: 'c3' }, 3: preview, 4: validation },
+    [
+      { stepNo: 1, tool: 'resolve_chapter' },
+      { stepNo: 2, tool: 'collect_chapter_context' },
+      { stepNo: 3, tool: 'generate_chapter_craft_brief_preview' },
+      { stepNo: 4, tool: 'validate_chapter_craft_brief' },
+    ],
+  );
+
+  assert.deepEqual(artifacts.map((item) => item.artifactType), ['chapter_craft_brief_preview', 'chapter_craft_brief_validation_report']);
+  assert.deepEqual(artifacts.map((item) => item.content), [preview, validation]);
+});
+
+test('AgentRuntime maps chapter craft brief preview, validation and persist artifacts in act mode', () => {
+  const runtime = new AgentRuntimeService({} as never, {} as never, {} as never, {} as never, {} as never, {} as never) as unknown as {
+    buildExecutionArtifacts: (taskType: string, outputs: Record<number, unknown>, steps: Array<{ stepNo: number; tool: string }>) => Array<{ artifactType: string; title: string; content: unknown }>;
+  };
+  const preview = { candidates: [{ candidateId: 'craft_1', chapterNo: 3, proposedFields: { craftBrief: { visibleGoal: 'Open the sealed archive' } } }] };
+  const validation = { valid: true, accepted: [{ candidateId: 'craft_1', chapterNo: 3, action: 'update' }], writePreview: { chapters: [] } };
+  const persist = { updatedCount: 1, skippedCount: 0, updatedChapters: [{ id: 'c3', chapterNo: 3, status: 'planned' }] };
+  const artifacts = runtime.buildExecutionArtifacts(
+    'chapter_progress_card',
+    { 1: { chapterId: 'c3' }, 3: preview, 4: validation, 5: persist },
+    [
+      { stepNo: 1, tool: 'resolve_chapter' },
+      { stepNo: 2, tool: 'collect_chapter_context' },
+      { stepNo: 3, tool: 'generate_chapter_craft_brief_preview' },
+      { stepNo: 4, tool: 'validate_chapter_craft_brief' },
+      { stepNo: 5, tool: 'persist_chapter_craft_brief' },
+    ],
+  );
+
+  assert.deepEqual(artifacts.map((item) => item.artifactType), ['chapter_craft_brief_preview', 'chapter_craft_brief_validation_report', 'chapter_craft_brief_persist_result']);
+  assert.deepEqual(artifacts.map((item) => item.content), [preview, validation, persist]);
+});
+
 async function main() {
   for (const item of tests) {
     await item.run();
