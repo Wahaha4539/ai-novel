@@ -109,5 +109,68 @@
       "forbidInventedIds": true,
       "retrieval": { "mustUseDimensions": ["plot_events", "relationship_graph", "world_facts", "memory_chunks"], "minPlotEvents": 2, "minRelationshipEdges": 1, "minMemoryChunks": 1, "maxMissingContext": 0 }
     }
+  },
+  {
+    "id": "targeted_import_single_outline_016",
+    "message": "Targeted import eval: generate only the outline from this source.",
+    "context": { "session": { "currentProjectId": "project_1", "selectedText": "A rebel academy story source.", "requestedAssetTypes": ["outline"], "importPreviewMode": "deep" } },
+    "expected": {
+      "taskType": "project_import_preview",
+      "mustUseTools": ["analyze_source_text", "build_import_brief", "generate_import_outline_preview", "merge_import_previews", "cross_target_consistency_check", "validate_imported_assets", "persist_project_assets"],
+      "mustNotUseTools": ["build_import_preview", "generate_import_project_profile_preview", "generate_import_characters_preview", "generate_import_worldbuilding_preview", "generate_import_writing_rules_preview"],
+      "mustMatchStepArgs": [
+        { "tool": "build_import_brief", "args": { "requestedAssetTypes": ["outline"] } },
+        { "tool": "merge_import_previews", "args": { "requestedAssetTypes": ["outline"] }, "mustHaveKeys": ["outlinePreview"], "mustNotHaveKeys": ["projectProfilePreview", "charactersPreview", "worldbuildingPreview", "writingRulesPreview"] }
+      ],
+      "mustRequireApproval": true,
+      "forbidInventedIds": true
+    }
+  },
+  {
+    "id": "targeted_import_dual_outline_rules_017",
+    "message": "Targeted import eval: generate outline and writing rules from this source.",
+    "context": { "session": { "currentProjectId": "project_1", "selectedText": "A court intrigue story source.", "requestedAssetTypes": ["outline", "writingRules"], "importPreviewMode": "deep" } },
+    "expected": {
+      "taskType": "project_import_preview",
+      "mustUseTools": ["analyze_source_text", "build_import_brief", "generate_import_outline_preview", "generate_import_writing_rules_preview", "merge_import_previews", "cross_target_consistency_check", "validate_imported_assets", "persist_project_assets"],
+      "mustNotUseTools": ["build_import_preview", "generate_import_project_profile_preview", "generate_import_characters_preview", "generate_import_worldbuilding_preview"],
+      "mustMatchStepArgs": [
+        { "tool": "build_import_brief", "args": { "requestedAssetTypes": ["outline", "writingRules"] } },
+        { "tool": "merge_import_previews", "args": { "requestedAssetTypes": ["outline", "writingRules"] }, "mustHaveKeys": ["outlinePreview", "writingRulesPreview"], "mustNotHaveKeys": ["projectProfilePreview", "charactersPreview", "worldbuildingPreview"] }
+      ],
+      "mustRequireApproval": true,
+      "forbidInventedIds": true
+    }
+  },
+  {
+    "id": "targeted_import_full_deep_018",
+    "message": "Targeted import eval: generate the full deep import preview from this source.",
+    "context": { "session": { "currentProjectId": "project_1", "selectedText": "A full novel bible source.", "requestedAssetTypes": ["projectProfile", "outline", "characters", "worldbuilding", "writingRules"], "importPreviewMode": "deep" } },
+    "expected": {
+      "taskType": "project_import_preview",
+      "mustUseTools": ["analyze_source_text", "build_import_brief", "generate_import_project_profile_preview", "generate_import_outline_preview", "generate_import_characters_preview", "generate_import_worldbuilding_preview", "generate_import_writing_rules_preview", "merge_import_previews", "cross_target_consistency_check", "validate_imported_assets", "persist_project_assets"],
+      "mustNotUseTools": ["build_import_preview"],
+      "mustMatchStepArgs": [
+        { "tool": "build_import_brief", "args": { "requestedAssetTypes": ["projectProfile", "outline", "characters", "worldbuilding", "writingRules"] } },
+        { "tool": "merge_import_previews", "args": { "requestedAssetTypes": ["projectProfile", "outline", "characters", "worldbuilding", "writingRules"] }, "mustHaveKeys": ["projectProfilePreview", "outlinePreview", "charactersPreview", "worldbuildingPreview", "writingRulesPreview"] }
+      ],
+      "mustRequireApproval": true,
+      "forbidInventedIds": true
+    }
+  },
+  {
+    "id": "targeted_import_quick_full_019",
+    "message": "Targeted import eval: generate a quick full import preview from this source.",
+    "context": { "session": { "currentProjectId": "project_1", "selectedText": "A quick full import source.", "requestedAssetTypes": ["projectProfile", "outline", "characters", "worldbuilding", "writingRules"], "importPreviewMode": "quick" } },
+    "expected": {
+      "taskType": "project_import_preview",
+      "mustUseTools": ["analyze_source_text", "build_import_preview", "cross_target_consistency_check", "validate_imported_assets", "persist_project_assets"],
+      "mustNotUseTools": ["build_import_brief", "generate_import_project_profile_preview", "generate_import_outline_preview", "generate_import_characters_preview", "generate_import_worldbuilding_preview", "generate_import_writing_rules_preview", "merge_import_previews"],
+      "mustMatchStepArgs": [
+        { "tool": "build_import_preview", "args": { "requestedAssetTypes": ["projectProfile", "outline", "characters", "worldbuilding", "writingRules"] } }
+      ],
+      "mustRequireApproval": true,
+      "forbidInventedIds": true
+    }
   }
 ]

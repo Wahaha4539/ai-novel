@@ -38,6 +38,13 @@ type RetrievalExpectation = {
   requireCharacterEvidenceKeywords?: string[];
 };
 
+type StepArgExpectation = {
+  tool: string;
+  args?: Record<string, unknown>;
+  mustHaveKeys?: string[];
+  mustNotHaveKeys?: string[];
+};
+
 type EvalCase = {
   id: string;
   message: string;
@@ -48,6 +55,7 @@ type EvalCase = {
     mustNotUseTools?: string[];
     mustContainInstruction?: string[];
     mustHaveMissingInfo?: string[];
+    mustMatchStepArgs?: StepArgExpectation[];
     mustRequireApproval?: boolean;
     forbidInventedIds?: boolean;
     retrieval?: RetrievalExpectation;
@@ -328,6 +336,31 @@ function evaluateCase(item: EvalCase, plan: AgentPlanLike): CaseEvaluation {
     if (tools.includes(tool)) {
       checks.toolPlanAccuracy = false;
       failures.push(`不应使用工具 ${tool}`);
+    }
+  }
+  for (const expectation of item.expected.mustMatchStepArgs ?? []) {
+    const step = (plan.steps ?? []).find((item) => item.tool === expectation.tool);
+    if (!step) {
+      checks.requiredParamCompletion = false;
+      failures.push(`missing step args target ${expectation.tool}`);
+      continue;
+    }
+    const args = asRecord(step.args);
+    if (expectation.args && !recordContainsSubset(args, expectation.args)) {
+      checks.requiredParamCompletion = false;
+      failures.push(`step ${expectation.tool} args do not include ${JSON.stringify(expectation.args)}`);
+    }
+    for (const key of expectation.mustHaveKeys ?? []) {
+      if (!hasNestedKey(args, key)) {
+        checks.requiredParamCompletion = false;
+        failures.push(`step ${expectation.tool} args missing key ${key}`);
+      }
+    }
+    for (const key of expectation.mustNotHaveKeys ?? []) {
+      if (hasNestedKey(args, key)) {
+        checks.requiredParamCompletion = false;
+        failures.push(`step ${expectation.tool} args should not include key ${key}`);
+      }
     }
   }
   for (const keyword of item.expected.mustContainInstruction ?? []) if (!planText.includes(keyword)) failures.push(`缺少约束/关键词 ${keyword}`);
@@ -630,6 +663,8 @@ function buildEvalContext(item: EvalCase, toolRegistry: EvalToolRegistry): Agent
   const currentChapterId = textOrUndefined(session.currentChapterId);
   const currentDraftId = textOrUndefined(session.currentDraftId);
   const currentChapterIndex = typeof session.currentChapterIndex === 'number' ? session.currentChapterIndex : undefined;
+  const requestedAssetTypes = importAssetTypesValue(session.requestedAssetTypes);
+  const importPreviewMode = importPreviewModeValue(session.importPreviewMode);
   return {
     schemaVersion: 2,
     userMessage: item.message,
@@ -640,6 +675,8 @@ function buildEvalContext(item: EvalCase, toolRegistry: EvalToolRegistry): Agent
       currentDraftId,
       currentChapterIndex,
       selectedText: textOrUndefined(session.selectedText),
+      ...(requestedAssetTypes.length ? { requestedAssetTypes } : {}),
+      ...(importPreviewMode ? { importPreviewMode } : {}),
     },
     attachments: [],
     project: currentProjectId ? { id: currentProjectId, title: 'Eval 测试项目', defaultWordCount: 3000, status: 'active' } : undefined,
@@ -727,6 +764,14 @@ const EVAL_TOOL_DEFINITIONS: EvalToolDefinition[] = [
   { name: 'persist_outline', description: '审批后持久化大纲。', requiresApproval: true, riskLevel: 'medium', sideEffects: ['create_outline'] },
   { name: 'analyze_source_text', description: '分析导入文案。' },
   { name: 'build_import_preview', description: '构建导入预览。' },
+  { name: 'build_import_brief', description: 'Build a shared import brief before targeted import preview tools.' },
+  { name: 'generate_import_project_profile_preview', description: 'Generate project profile import preview for selected import targets.' },
+  { name: 'generate_import_outline_preview', description: 'Generate outline, volume, and chapter import preview for selected import targets.' },
+  { name: 'generate_import_characters_preview', description: 'Generate character import preview for selected import targets.' },
+  { name: 'generate_import_worldbuilding_preview', description: 'Generate worldbuilding import preview for selected import targets.' },
+  { name: 'generate_import_writing_rules_preview', description: 'Generate writing rules import preview for selected import targets.' },
+  { name: 'merge_import_previews', description: 'Merge selected target import previews into one import preview.' },
+  { name: 'cross_target_consistency_check', description: 'Check merged or fallback import preview consistency before validation.' },
   { name: 'validate_imported_assets', description: '校验导入资产。' },
   { name: 'persist_project_assets', description: '审批后持久化项目资产。', requiresApproval: true, riskLevel: 'medium', sideEffects: ['create_project_assets'] },
   { name: 'write_chapter', description: '审批后生成章节草稿。', requiresApproval: true, riskLevel: 'medium', sideEffects: ['create_chapter_draft'] },
@@ -797,6 +842,12 @@ function createMockPlannerOutput(goal: string, agentContext: Record<string, unkn
   const session = asRecord(agentContext.session);
   const currentChapterId = session.currentChapterId ? '{{context.session.currentChapterId}}' : undefined;
   const currentDraftId = session.currentDraftId ? '{{context.session.currentDraftId}}' : '{{runtime.currentDraftId}}';
+  const requestedAssetTypes = importAssetTypesValue(session.requestedAssetTypes);
+  if (goal.includes('Targeted import eval') && requestedAssetTypes.length) {
+    return plan('project_import_preview', goal, true, [
+      step(1, 'analyze_source_text', { sourceText: '{{context.session.selectedText}}' }),
+    ]);
+  }
   if (goal.includes('第十二章')) {
     return plan('chapter_write', goal, true, [
       step(1, 'resolve_chapter', { projectId: '{{context.session.currentProjectId}}', chapterRef: '第十二章', currentChapterId }),
@@ -991,12 +1042,48 @@ function hasNestedField(record: Record<string, unknown>, pathValue: string): boo
   return current !== undefined && current !== null && current !== '';
 }
 
+function hasNestedKey(record: Record<string, unknown>, pathValue: string): boolean {
+  const parts = pathValue.split('.').filter(Boolean);
+  let current: unknown = record;
+  for (const part of parts) {
+    const currentRecord = asRecord(current);
+    if (!(part in currentRecord)) return false;
+    current = currentRecord[part];
+  }
+  return true;
+}
+
+function recordContainsSubset(actual: unknown, expected: unknown): boolean {
+  if (Array.isArray(expected)) {
+    return Array.isArray(actual)
+      && actual.length === expected.length
+      && expected.every((item, index) => recordContainsSubset(actual[index], item));
+  }
+  if (expected && typeof expected === 'object') {
+    const actualRecord = asRecord(actual);
+    return Object.entries(expected as Record<string, unknown>).every(([key, value]) => (
+      key in actualRecord && recordContainsSubset(actualRecord[key], value)
+    ));
+  }
+  return actual === expected;
+}
+
 function asRecord(value: unknown): Record<string, unknown> {
   return value && typeof value === 'object' && !Array.isArray(value) ? value as Record<string, unknown> : {};
 }
 
 function textOrUndefined(value: unknown): string | undefined {
   return typeof value === 'string' && value.trim() ? value.trim() : undefined;
+}
+
+function importAssetTypesValue(value: unknown): NonNullable<AgentContextV2['session']['requestedAssetTypes']> {
+  const allowed = new Set(['projectProfile', 'outline', 'characters', 'worldbuilding', 'writingRules']);
+  if (!Array.isArray(value)) return [];
+  return value.filter((item): item is NonNullable<AgentContextV2['session']['requestedAssetTypes']>[number] => typeof item === 'string' && allowed.has(item));
+}
+
+function importPreviewModeValue(value: unknown): AgentContextV2['session']['importPreviewMode'] {
+  return value === 'auto' || value === 'quick' || value === 'deep' ? value : undefined;
 }
 
 function roundRate(value: number) {

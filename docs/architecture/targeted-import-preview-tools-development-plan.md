@@ -392,7 +392,7 @@
 
 ### TIP-P3-002 增加质量回归 Eval
 
-- 状态：`[ ]`
+- 状态：`[x]`
 - 模块：API/Test
 - 文件：`apps/api/test/fixtures/agent-eval-cases.json` 或现有 eval 位置
 - 任务：增加导入分目标质量评测用例。
@@ -402,6 +402,11 @@
   - 全套输出不缺写作规则。
   - Planner 不会固定跑全套。
 - 验证：项目现有 Agent eval 命令
+- 完成记录：
+  - 2026-05-06：为 Agent Planner Eval 增加 `mustMatchStepArgs` 断言，支持检查指定 Tool 的参数子集、必需参数键和禁止参数键；eval context 同步透传 `requestedAssetTypes` 与 `importPreviewMode`，live mock 注册分目标导入 Tool、`build_import_brief`、`merge_import_previews` 和 `cross_target_consistency_check`。
+  - 2026-05-06：新增 4 个分目标导入质量回归用例：单目标只生成大纲且不生成未选资产；双目标大纲+写作规则的 merge 结构完整；全套 deep 链路包含写作规则目标 Tool 和 `writingRulesPreview`；quick 全套保留 scoped `build_import_preview` fallback 且不展开分目标 Tool。
+  - 修改文件：`apps/api/test/fixtures/agent-eval-cases.json`、`scripts/dev/eval_agent_planner.ts`、`docs/architecture/targeted-import-preview-tools-development-plan.md`。
+  - 验证结果：`pnpm --dir apps/api run eval:agent` 通过，加载 19 个 Eval 用例；`pnpm --dir apps/api run eval:agent:live` 通过，19/19 用例通过且全部指标 100%；`pnpm --dir apps/api run test:agent` 通过，187 项测试通过；`git diff --check` 通过。
 
 ### TIP-P3-003 文档和操作手册更新
 
