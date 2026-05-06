@@ -113,9 +113,9 @@
 
 ### TIP-P0-006 Planner 支持分目标链路骨架
 
-- 状态：`[ ]`
+- 状态：`[x]`
 - 模块：API
-- 文件：`apps/api/src/modules/agent-runs/agent-planner.service.ts`
+- 文件：`apps/api/src/modules/agent-runs/agent-planner.service.ts`（实现时同步更新 `agent-runtime.service.ts`，原因见完成记录）
 - 任务：更新 Planner prompt 和规范化规则，使其能按 `requestedAssetTypes` 编排目标产物 Tool。
 - 验收：
   - 只选 `outline` 时，不生成 characters/worldbuilding/writingRules 相关 Tool。
@@ -124,6 +124,12 @@
   - `persist_project_assets` 仍为需审批步骤。
   - 专用 Tool 未注册时 fallback 到 `build_import_preview`。
 - 验证：`pnpm --dir apps/api run test:agent`
+- 完成记录：
+  - 2026-05-06：更新 Planner prompt，明确 `context.session.requestedAssetTypes` 是结构化目标产物范围；导入计划优先走 `read_source_document`、`analyze_source_text`、已注册分目标 preview Tool、`merge_import_previews`、`validate_imported_assets`、需审批 `persist_project_assets`，专用 Tool 不存在时 fallback 到 `build_import_preview` 且不扩大目标范围。
+  - 2026-05-06：增强 Planner 规范化层：按结构化目标裁掉未选择的导入目标 Tool；为分目标链路补齐/修正 `merge_import_previews` 后的 `validate_imported_assets` 和需审批 `persist_project_assets`；旧 `build_import_preview` fallback 仍会补齐审批写入步骤。
+  - 2026-05-06：同步更新 Runtime artifact 提升逻辑，把 `merge_import_previews` 输出也作为文档导入预览源；这是任务文件原范围外的必要修正，否则新 Planner 骨架生成的预览不会被提升为可见 Artifact。
+  - 修改文件：`apps/api/src/modules/agent-runs/agent-planner.service.ts`、`apps/api/src/modules/agent-runs/agent-runtime.service.ts`、`apps/api/src/modules/agent-runs/agent-services.spec.ts`、`docs/architecture/targeted-import-preview-tools-development-plan.md`。
+  - 验证结果：`pnpm --dir apps/api run test:agent` 通过，162 项测试通过。
 
 ## 4. P1 目标产物专用生成 Tool
 

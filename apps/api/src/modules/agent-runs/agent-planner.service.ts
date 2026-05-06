@@ -1,6 +1,7 @@
 import { Injectable } from '@nestjs/common';
 import { RuleEngineService } from '../agent-rules/rule-engine.service';
 import { SkillRegistryService } from '../agent-skills/skill-registry.service';
+import { ImportAssetType, IMPORT_ASSET_TYPES } from '../agent-tools/tools/import-preview.types';
 import { ToolRegistryService } from '../agent-tools/tool-registry.service';
 import { LlmGatewayService } from '../llm/llm-gateway.service';
 import { AgentContextV2 } from './agent-context-builder.service';
@@ -56,6 +57,26 @@ interface PlannerOutputDefaults {
   assumptions: string[];
   risks: string[];
 }
+
+const IMPORT_TARGET_TOOL_BY_ASSET_TYPE: Record<ImportAssetType, string> = {
+  projectProfile: 'generate_import_project_profile_preview',
+  outline: 'generate_import_outline_preview',
+  characters: 'generate_import_characters_preview',
+  worldbuilding: 'generate_import_worldbuilding_preview',
+  writingRules: 'generate_import_writing_rules_preview',
+};
+
+const IMPORT_TARGET_ASSET_BY_TOOL = new Map<string, ImportAssetType>(
+  Object.entries(IMPORT_TARGET_TOOL_BY_ASSET_TYPE).map(([assetType, tool]) => [tool, assetType as ImportAssetType]),
+);
+
+const MERGE_PREVIEW_ARG_BY_ASSET_TYPE: Record<ImportAssetType, string> = {
+  projectProfile: 'projectProfilePreview',
+  outline: 'outlinePreview',
+  characters: 'charactersPreview',
+  worldbuilding: 'worldbuildingPreview',
+  writingRules: 'writingRulesPreview',
+};
 
 export class AgentPlannerFailedError extends Error {
   constructor(message: string, readonly diagnostics: Record<string, unknown>) {
@@ -119,6 +140,10 @@ export class AgentPlannerService {
           'Plan 阶段不写正式业务表；运行时会用 mode=plan 只执行无副作用预览步骤，所有真实副作用必须等用户切到 Act 并审批后才允许。',
           '你需要根据 Available Tools 的 whenToUse/whenNotToUse/parameterHints/idPolicy 自主编排步骤和 args。',
           '导入类任务不是固定全量流程。用户指定目标产物时，build_import_preview.args.requestedAssetTypes 必须只包含用户明确要求的资产：projectProfile、outline、characters、worldbuilding、writingRules；例如只要故事大纲就只传 ["outline"]。',
+          '导入类任务如果 agentContext.session.requestedAssetTypes 存在，它是最高优先级的结构化目标产物范围；只能为这些目标产物生成预览，不能因为有上传文档就扩成全套导入。',
+          '导入分目标优先链路：read_source_document -> analyze_source_text -> 按 requestedAssetTypes 调用已注册的 generate_import_*_preview 专用工具 -> merge_import_previews -> validate_imported_assets -> persist_project_assets。',
+          '如果某个 generate_import_*_preview 专用工具未出现在 Available Tools，允许 fallback 到 build_import_preview；fallback 的 requestedAssetTypes 仍必须等于用户选择的目标范围。',
+          '只要导入预览未来可写入，计划中必须包含 persist_project_assets，且它必须是需要审批的写入步骤；validate_imported_assets 必须读取 merge_import_previews 或 build_import_preview 的统一预览输出。',
           '可引用上下文：{{context.session.currentProjectId}}、{{context.session.currentChapterId}}、{{context.project.defaultWordCount}}、{{context.attachments.0}}、{{context.attachments.0.url}}、{{context.session.guided.currentStep}}、{{context.session.guided.currentStepData}}。',
           '如果 agentContext.session.guided.currentStep 存在，说明用户正在创作引导页；当前步骤问答优先选择 guided_step_consultation，当前步骤生成优先选择 guided_step_generate，确认保存/写入优先选择 guided_step_finalize，不要误判成普通章节正文写作。',
           '可引用前序步骤：{{steps.N.output.field}} 或 {{steps.step_id.output.field}}；不要引用当前或未来步骤。',
@@ -199,7 +224,7 @@ export class AgentPlannerService {
     );
 
     try {
-      return { ...this.validateAndNormalizeLlmPlan(data, defaults), plannerDiagnostics: { source: 'llm', model: result.model, usage: result.usage, llmCalls: llmBudget.used, maxLlmCalls: llmBudget.max, schemaVersion: 2 } };
+      return { ...this.validateAndNormalizeLlmPlan(data, defaults, context), plannerDiagnostics: { source: 'llm', model: result.model, usage: result.usage, llmCalls: llmBudget.used, maxLlmCalls: llmBudget.max, schemaVersion: 2 } };
     } catch (error) {
       llmBudget.failures.push(this.failureDetail('schema_validation', error));
       return this.repairLlmPlan(goal, defaults, data, error instanceof Error ? error.message : String(error), llmBudget, context);
@@ -220,6 +245,8 @@ export class AgentPlannerService {
             '必须修复 invalidPlan，使 taskType 来自 availableTaskTypes，steps[].tool 全部来自 registeredTools。',
             'taskType 由 userGoal 语义决定；不要依赖后端关键词分类。',
             '修复导入计划时必须保留用户指定的目标产物范围；build_import_preview.args.requestedAssetTypes 只能包含用户明确要求的资产，不能因为有上传文档就扩成全套导入。',
+            '修复导入分目标计划时，优先使用已注册的 generate_import_*_preview 专用工具；多目标专用预览后必须调用 merge_import_previews，再把合并结果传给 validate_imported_assets。',
+            '如果专用目标工具未注册，使用 build_import_preview fallback，但 requestedAssetTypes 仍必须等于用户选择的目标范围；persist_project_assets 必须作为需审批写入步骤保留。',
             '如果 agentContext.session.guided.currentStep 存在，修复后的 taskType 仍应优先使用 guided_step_consultation、guided_step_generate 或 guided_step_finalize，不要修成 chapter_write。',
             'steps[].mode 是后端计划步骤字段，固定填 act；Plan/Act 运行时模式由后端注入，不由 LLM 决定。',
             '引用前序步骤输出时，完整对象用 {{steps.N.output}}，对象字段用 {{steps.N.output.field}}；不要把对象序列化成字符串。',
@@ -266,10 +293,10 @@ export class AgentPlannerService {
       { appStep: 'agent_planner', maxTokens: 4500, timeoutMs: 90_000, retries: 1, temperature: 0.1 },
     );
 
-    return { ...this.validateAndNormalizeLlmPlan(data, defaults), plannerDiagnostics: { source: 'llm_repair', model: result.model, usage: result.usage, repairedFromError: validationError, llmCalls: llmBudget.used, maxLlmCalls: llmBudget.max, schemaVersion: 2 } };
+    return { ...this.validateAndNormalizeLlmPlan(data, defaults, context), plannerDiagnostics: { source: 'llm_repair', model: result.model, usage: result.usage, repairedFromError: validationError, llmCalls: llmBudget.used, maxLlmCalls: llmBudget.max, schemaVersion: 2 } };
   }
 
-  private validateAndNormalizeLlmPlan(data: unknown, defaults: PlannerOutputDefaults): AgentPlanSpec {
+  private validateAndNormalizeLlmPlan(data: unknown, defaults: PlannerOutputDefaults, context?: AgentContextV2): AgentPlanSpec {
     const record = this.asRecord(data);
     const availableTaskTypes = new Set(this.listTaskTypes());
     const registeredTools = new Set(this.tools.list().map((tool) => tool.name));
@@ -310,11 +337,12 @@ export class AgentPlannerService {
       return onFailure ? { ...normalized, onFailure } : normalized;
     });
 
-    const normalizedSteps = this.enforceProjectImportPersistStep(
+    const normalizedSteps = this.enforceProjectImportPipeline(
       record.taskType,
       this.enforceChapterWriteQualityPipeline(steps, (tool) => toolRequiresApproval.get(tool) ?? false),
       registeredTools,
       (tool) => toolRequiresApproval.get(tool) ?? false,
+      this.explicitImportAssetTypes(context?.session.requestedAssetTypes),
     );
     if (normalizedSteps.length > maxSteps) throw new Error(`规范化后的 Agent Plan steps 数量非法，最多 ${maxSteps} 步`);
     const missingTool = normalizedSteps.find((step) => !registeredTools.has(step.tool));
@@ -374,41 +402,221 @@ export class AgentPlannerService {
   }
 
   /**
-   * 导入计划必须包含审批后的写入步骤。Plan 预览执行时 Executor 会在该步骤前停止；
-   * Act 确认后才会执行 persist_project_assets，避免“确认执行”只重复跑只读预览。
+   * 导入计划必须形成 preview -> validate -> approval-gated persist 骨架。
+   * 预览源优先使用 merge_import_previews；缺少分目标工具时允许 build_import_preview fallback，但不能扩大结构化目标范围。
    */
-  private enforceProjectImportPersistStep(taskType: unknown, steps: AgentPlanStepSpec[], registeredTools: Set<string>, requiresApproval: (tool: string) => boolean): AgentPlanStepSpec[] {
-    if (taskType !== 'project_import_preview' || !registeredTools.has('persist_project_assets')) return steps;
-    const buildStep = steps.find((step) => step.tool === 'build_import_preview');
-    if (!buildStep) return steps;
+  private enforceProjectImportPipeline(taskType: unknown, steps: AgentPlanStepSpec[], registeredTools: Set<string>, requiresApproval: (tool: string) => boolean, contextRequestedAssetTypes: ImportAssetType[]): AgentPlanStepSpec[] {
+    if (taskType !== 'project_import_preview') return steps;
+    let normalized = this.constrainImportTargetsToRequestedAssets(steps, contextRequestedAssetTypes);
+    const requestedAssetTypes = contextRequestedAssetTypes.length ? contextRequestedAssetTypes : this.requestedAssetTypesFromImportSteps(normalized);
 
-    const persistStep = steps.find((step) => step.tool === 'persist_project_assets');
-    const previewRef = `{{steps.${buildStep.stepNo}.output}}`;
-    if (persistStep) {
-      return steps.map((step) =>
-        step.tool === 'persist_project_assets'
-          ? {
-              ...step,
-              requiresApproval: requiresApproval('persist_project_assets'),
-              args: { ...step.args, preview: this.asRecord(step.args).preview ?? previewRef },
-            }
-          : step,
-      );
-    }
+    normalized = this.ensureBuildImportPreviewScope(normalized, requestedAssetTypes);
+    normalized = this.ensureImportPreviewSource(normalized, registeredTools, requiresApproval, requestedAssetTypes);
+    normalized = this.ensureMergeImportPreviewsStep(normalized, registeredTools, requiresApproval, requestedAssetTypes);
 
+    const previewStep = this.findImportPreviewSourceStep(normalized);
+    if (!previewStep) return normalized;
+    normalized = this.ensureValidateImportedAssetsStep(normalized, previewStep, registeredTools, requiresApproval);
+
+    const latestPreviewStep = this.findImportPreviewSourceStep(normalized) ?? previewStep;
+    normalized = this.ensurePersistProjectAssetsStep(normalized, latestPreviewStep, registeredTools, requiresApproval);
+    return normalized;
+  }
+
+  private constrainImportTargetsToRequestedAssets(steps: AgentPlanStepSpec[], requestedAssetTypes: ImportAssetType[]): AgentPlanStepSpec[] {
+    if (!requestedAssetTypes.length) return steps;
+    const requested = new Set(requestedAssetTypes);
+    const filtered = steps
+      .filter((step) => {
+        const assetType = IMPORT_TARGET_ASSET_BY_TOOL.get(step.tool);
+        return !assetType || requested.has(assetType);
+      })
+      .map((step) => {
+        if (step.tool === 'merge_import_previews') {
+          const args: Record<string, unknown> = { ...step.args, requestedAssetTypes };
+          for (const assetType of IMPORT_ASSET_TYPES) {
+            if (!requested.has(assetType)) delete args[MERGE_PREVIEW_ARG_BY_ASSET_TYPE[assetType]];
+          }
+          return { ...step, args };
+        }
+        if (step.tool === 'build_import_preview') return { ...step, args: { ...step.args, requestedAssetTypes } };
+        return step;
+      });
+    return filtered.length === steps.length ? filtered : this.renumberSteps(filtered);
+  }
+
+  private ensureBuildImportPreviewScope(steps: AgentPlanStepSpec[], requestedAssetTypes: ImportAssetType[]): AgentPlanStepSpec[] {
+    if (!requestedAssetTypes.length) return steps;
+    return steps.map((step) => step.tool === 'build_import_preview' ? { ...step, args: { ...step.args, requestedAssetTypes } } : step);
+  }
+
+  private ensureImportPreviewSource(steps: AgentPlanStepSpec[], registeredTools: Set<string>, requiresApproval: (tool: string) => boolean, requestedAssetTypes: ImportAssetType[]): AgentPlanStepSpec[] {
+    if (this.findImportPreviewSourceStep(steps) || !registeredTools.has('build_import_preview')) return steps;
+    if (steps.some((step) => IMPORT_TARGET_ASSET_BY_TOOL.has(step.tool))) return steps;
+    const analysisStep = [...steps].reverse().find((step) => step.tool === 'analyze_source_text');
+    if (!analysisStep) return steps;
+    const args = this.removeUndefinedArgs({
+      analysis: `{{steps.${analysisStep.stepNo}.output}}`,
+      instruction: '{{context.userMessage}}',
+      requestedAssetTypes: requestedAssetTypes.length ? requestedAssetTypes : undefined,
+    });
     return [
       ...steps,
       {
-        id: 'persist_project_assets',
+        id: 'build_import_preview',
         stepNo: steps.length + 1,
-        name: '审批后写入导入资产',
-        purpose: '在用户确认执行后，将本次导入预览写入所选择的项目资产。',
-        tool: 'persist_project_assets',
+        name: '生成导入预览',
+        purpose: '在专用目标预览工具缺失时，按用户选择的目标产物范围生成兼容导入预览。',
+        tool: 'build_import_preview',
         mode: 'act',
-        requiresApproval: requiresApproval('persist_project_assets'),
-        args: { preview: previewRef },
+        requiresApproval: requiresApproval('build_import_preview'),
+        args,
       },
     ];
+  }
+
+  private ensureMergeImportPreviewsStep(steps: AgentPlanStepSpec[], registeredTools: Set<string>, requiresApproval: (tool: string) => boolean, requestedAssetTypes: ImportAssetType[]): AgentPlanStepSpec[] {
+    if (!registeredTools.has('merge_import_previews')) return steps;
+    const targetPreviewSteps = steps.filter((step) => IMPORT_TARGET_ASSET_BY_TOOL.has(step.tool));
+    if (!targetPreviewSteps.length) return steps;
+    const requested = requestedAssetTypes.length ? requestedAssetTypes : [...new Set(targetPreviewSteps.map((step) => IMPORT_TARGET_ASSET_BY_TOOL.get(step.tool)).filter((item): item is ImportAssetType => Boolean(item)))];
+    const mergeArgs = this.buildMergeImportPreviewArgs(steps, requested);
+    const mergeStep = steps.find((step) => step.tool === 'merge_import_previews');
+    if (mergeStep) {
+      const latestTargetStepNo = Math.max(...targetPreviewSteps.map((step) => step.stepNo));
+      if (mergeStep.stepNo <= latestTargetStepNo) {
+        const withoutMerge = this.renumberSteps(steps.filter((step) => step.tool !== 'merge_import_previews'));
+        return this.ensureMergeImportPreviewsStep(withoutMerge, registeredTools, requiresApproval, requested);
+      }
+      return steps.map((step) => step.tool === 'merge_import_previews' ? { ...step, requiresApproval: requiresApproval('merge_import_previews'), args: mergeArgs } : step);
+    }
+    return [
+      ...steps,
+      {
+        id: 'merge_import_previews',
+        stepNo: steps.length + 1,
+        name: '合并目标产物导入预览',
+        purpose: '把本次用户选择的目标产物预览合并为统一导入预览，供校验和审批写入使用。',
+        tool: 'merge_import_previews',
+        mode: 'act',
+        requiresApproval: requiresApproval('merge_import_previews'),
+        args: mergeArgs,
+      },
+    ];
+  }
+
+  private buildMergeImportPreviewArgs(steps: AgentPlanStepSpec[], requestedAssetTypes: ImportAssetType[]) {
+    const args: Record<string, unknown> = { requestedAssetTypes };
+    for (const assetType of requestedAssetTypes) {
+      const tool = IMPORT_TARGET_TOOL_BY_ASSET_TYPE[assetType];
+      const step = [...steps].reverse().find((item) => item.tool === tool);
+      if (step) args[MERGE_PREVIEW_ARG_BY_ASSET_TYPE[assetType]] = `{{steps.${step.stepNo}.output}}`;
+    }
+    return args;
+  }
+
+  private ensureValidateImportedAssetsStep(steps: AgentPlanStepSpec[], previewStep: AgentPlanStepSpec, registeredTools: Set<string>, requiresApproval: (tool: string) => boolean): AgentPlanStepSpec[] {
+    if (!registeredTools.has('validate_imported_assets')) return steps;
+    const previewRef = `{{steps.${previewStep.stepNo}.output}}`;
+    const validateStep = steps.find((step) => step.tool === 'validate_imported_assets');
+    if (validateStep) {
+      if (validateStep.stepNo > previewStep.stepNo) {
+        return steps.map((step) => step.tool === 'validate_imported_assets' ? { ...step, requiresApproval: requiresApproval('validate_imported_assets'), args: { ...step.args, preview: previewRef } } : step);
+      }
+      const withoutValidate = this.renumberSteps(steps.filter((step) => step.tool !== 'validate_imported_assets'));
+      const nextPreviewStep = this.findImportPreviewSourceStep(withoutValidate);
+      return nextPreviewStep ? this.insertStepAfter(withoutValidate, nextPreviewStep.stepNo, this.createPlannedStep('校验导入预览', 'validate_imported_assets', { preview: `{{steps.${nextPreviewStep.stepNo}.output}}` }, requiresApproval)) : withoutValidate;
+    }
+    return this.insertStepAfter(steps, previewStep.stepNo, this.createPlannedStep('校验导入预览', 'validate_imported_assets', { preview: previewRef }, requiresApproval));
+  }
+
+  private ensurePersistProjectAssetsStep(steps: AgentPlanStepSpec[], previewStep: AgentPlanStepSpec, registeredTools: Set<string>, requiresApproval: (tool: string) => boolean): AgentPlanStepSpec[] {
+    if (!registeredTools.has('persist_project_assets')) return steps;
+    const previewRef = `{{steps.${previewStep.stepNo}.output}}`;
+    const persistStep = steps.find((step) => step.tool === 'persist_project_assets');
+    if (persistStep) {
+      return steps.map((step) => step.tool === 'persist_project_assets' ? { ...step, requiresApproval: requiresApproval('persist_project_assets'), args: { ...step.args, preview: previewRef } } : step);
+    }
+    const validateStep = [...steps].reverse().find((step) => step.tool === 'validate_imported_assets');
+    const afterStepNo = validateStep?.stepNo ?? previewStep.stepNo;
+    return this.insertStepAfter(steps, afterStepNo, {
+      id: 'persist_project_assets',
+      stepNo: 0,
+      name: '审批后写入导入资产',
+      purpose: '在用户确认执行后，将本次导入预览写入所选择的项目资产。',
+      tool: 'persist_project_assets',
+      mode: 'act',
+      requiresApproval: requiresApproval('persist_project_assets'),
+      args: { preview: previewRef },
+    });
+  }
+
+  private findImportPreviewSourceStep(steps: AgentPlanStepSpec[]) {
+    const ordered = [...steps].sort((a, b) => b.stepNo - a.stepNo);
+    return ordered.find((step) => step.tool === 'merge_import_previews')
+      ?? ordered.find((step) => step.tool === 'build_import_preview');
+  }
+
+  private requestedAssetTypesFromImportSteps(steps: AgentPlanStepSpec[]): ImportAssetType[] {
+    for (const step of steps) {
+      if (step.tool === 'merge_import_previews' || step.tool === 'build_import_preview') {
+        const explicit = this.explicitImportAssetTypes(this.asRecord(step.args).requestedAssetTypes);
+        if (explicit.length) return explicit;
+      }
+    }
+    return [];
+  }
+
+  private insertStepAfter(steps: AgentPlanStepSpec[], afterStepNo: number, step: AgentPlanStepSpec): AgentPlanStepSpec[] {
+    const insertAt = afterStepNo + 1;
+    const shifted = steps.map((item) =>
+      item.stepNo >= insertAt
+        ? {
+            ...item,
+            stepNo: item.stepNo + 1,
+            args: this.rewriteNumericStepReferences(item.args, insertAt, 1) as Record<string, unknown>,
+            ...(item.runIf ? { runIf: { ...item.runIf, ref: this.rewriteNumericStepReferences(item.runIf.ref, insertAt, 1) as string } } : {}),
+          }
+        : item,
+    );
+    return [...shifted, { ...step, stepNo: insertAt }].sort((a, b) => a.stepNo - b.stepNo);
+  }
+
+  private renumberSteps(steps: AgentPlanStepSpec[]): AgentPlanStepSpec[] {
+    const ordered = [...steps].sort((a, b) => a.stepNo - b.stepNo);
+    const stepNoMap = new Map<number, number>();
+    ordered.forEach((step, index) => stepNoMap.set(step.stepNo, index + 1));
+    return ordered.map((step, index) => ({
+      ...step,
+      stepNo: index + 1,
+      args: this.rewriteNumericStepReferencesByMap(step.args, stepNoMap) as Record<string, unknown>,
+      ...(step.runIf ? { runIf: { ...step.runIf, ref: this.rewriteNumericStepReferencesByMap(step.runIf.ref, stepNoMap) as string } } : {}),
+    }));
+  }
+
+  private rewriteNumericStepReferences(value: unknown, fromStepNo: number, offset: number): unknown {
+    if (typeof value === 'string') {
+      return value.replace(/{{steps\.(\d+)\.output/g, (_match, rawStepNo) => `{{steps.${Number(rawStepNo) >= fromStepNo ? Number(rawStepNo) + offset : Number(rawStepNo)}.output`);
+    }
+    if (Array.isArray(value)) return value.map((item) => this.rewriteNumericStepReferences(item, fromStepNo, offset));
+    if (value && typeof value === 'object') return Object.fromEntries(Object.entries(value).map(([key, item]) => [key, this.rewriteNumericStepReferences(item, fromStepNo, offset)]));
+    return value;
+  }
+
+  private rewriteNumericStepReferencesByMap(value: unknown, stepNoMap: Map<number, number>): unknown {
+    if (typeof value === 'string') {
+      return value.replace(/{{steps\.(\d+)\.output/g, (match, rawStepNo) => {
+        const nextStepNo = stepNoMap.get(Number(rawStepNo));
+        return nextStepNo ? `{{steps.${nextStepNo}.output` : match;
+      });
+    }
+    if (Array.isArray(value)) return value.map((item) => this.rewriteNumericStepReferencesByMap(item, stepNoMap));
+    if (value && typeof value === 'object') return Object.fromEntries(Object.entries(value).map(([key, item]) => [key, this.rewriteNumericStepReferencesByMap(item, stepNoMap)]));
+    return value;
+  }
+
+  private removeUndefinedArgs(args: Record<string, unknown>) {
+    return Object.fromEntries(Object.entries(args).filter(([, value]) => value !== undefined));
   }
 
   /** 统计 Planner 的模型调用次数，避免 JSON 修复循环失控。 */
@@ -499,6 +707,12 @@ export class AgentPlannerService {
   private stringArray(value: unknown, fallback: string[]): string[] {
     const items = Array.isArray(value) ? value.filter((item): item is string => typeof item === 'string' && item.trim().length > 0).map((item) => item.trim()) : [];
     return items.length ? items : fallback;
+  }
+
+  private explicitImportAssetTypes(value: unknown): ImportAssetType[] {
+    if (!Array.isArray(value)) return [];
+    const normalized = value.filter((item): item is ImportAssetType => typeof item === 'string' && IMPORT_ASSET_TYPES.includes(item as ImportAssetType));
+    return [...new Set(normalized)];
   }
 
   /** LLM 可以选择的任务类型白名单；后端只限制边界，不再做语义分类裁决。 */

@@ -509,7 +509,7 @@ export class AgentRuntimeService {
     }
 
     if (taskType === 'project_import_preview') {
-      const preview = this.latestOutputByTools(outputs, steps, ['build_import_preview']) as ProjectImportPreviewArtifact | undefined;
+      const preview = this.latestOutputByTools(outputs, steps, ['merge_import_previews', 'build_import_preview']) as ProjectImportPreviewArtifact | undefined;
       const validation = this.latestOutputByTools(outputs, steps, ['validate_imported_assets']);
       return this.buildProjectImportArtifacts(preview, validation);
     }
@@ -556,7 +556,7 @@ export class AgentRuntimeService {
     }
 
     if (taskType === 'project_import_preview') {
-      const preview = this.latestOutputByTools(outputs, steps, ['build_import_preview']) as ProjectImportPreviewArtifact | undefined;
+      const preview = this.latestOutputByTools(outputs, steps, ['merge_import_previews', 'build_import_preview']) as ProjectImportPreviewArtifact | undefined;
       const validation = this.latestOutputByTools(outputs, steps, ['validate_imported_assets']);
       const persist = this.latestOutputByTools(outputs, steps, ['persist_project_assets']);
       return this.buildProjectImportArtifacts(preview, validation, persist);
