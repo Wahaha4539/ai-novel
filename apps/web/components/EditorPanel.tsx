@@ -348,6 +348,9 @@ function ChapterPlanningBrief({ chapter }: { chapter: ChapterSummary }) {
   const progressTypes = Array.isArray(craftBrief.progressTypes)
     ? craftBrief.progressTypes.filter((item): item is string => typeof item === 'string' && item.trim().length > 0)
     : [];
+  const subplotTasks = Array.isArray(craftBrief.subplotTasks)
+    ? craftBrief.subplotTasks.filter((item): item is string => typeof item === 'string' && item.trim().length > 0)
+    : [];
 
   const hasPlanningData = Boolean(
     chapter.objective?.trim()
@@ -390,8 +393,14 @@ function ChapterPlanningBrief({ chapter }: { chapter: ChapterSummary }) {
         <PlanningField label="大纲" value={chapter.outline} multiline />
         <PlanningField label="可见目标" value={textValue(craftBrief.visibleGoal)} />
         <PlanningField label="隐性情绪" value={textValue(craftBrief.hiddenEmotion)} />
+        <PlanningField label="执行卡冲突" value={textValue(craftBrief.coreConflict)} multiline />
+        <PlanningField label="主线任务" value={textValue(craftBrief.mainlineTask)} />
+        <PlanningField label="支线任务" value={subplotTasks.slice(0, 5).join('；')} multiline />
         <PlanningField label="行动链" value={actionBeats.slice(0, 6).join('；')} multiline />
         <PlanningField label="线索" value={concreteClues.slice(0, 8).join('、')} />
+        <PlanningField label="潜台词" value={textValue(craftBrief.dialogueSubtext)} multiline />
+        <PlanningField label="人物变化" value={textValue(craftBrief.characterShift)} multiline />
+        <PlanningField label="不可逆后果" value={textValue(craftBrief.irreversibleConsequence)} multiline />
         <PlanningField label="推进类型" value={progressTypes.join('、')} />
       </div>
     </section>

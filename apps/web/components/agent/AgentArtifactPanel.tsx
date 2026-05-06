@@ -306,13 +306,18 @@ function OutlinePreviewSummary({ content }: { content: unknown }) {
   const volume = asRecord(data?.volume);
   const volumes = asArray(data?.volumes);
   const chapters = asArray(data?.chapters);
+  const chapterRecords = chapters.map((item) => asRecord(item) ?? {});
   const totalExpectedWordCount = chapters.reduce<number>((sum, item) => sum + numberValue(asRecord(item)?.expectedWordCount), 0);
   const volumeTitle = volume?.title ? textValue(volume.title) : volumes.length ? `${volumes.length} 卷` : '未命名卷';
+  const craftBriefCount = chapterRecords.filter((chapter) => hasCraftBrief(chapter.craftBrief)).length;
+  const risks = asArray(data?.risks);
   return (
     <div className="space-y-3">
-      <div className="grid gap-2 md:grid-cols-3">
+      <div className="grid gap-2 md:grid-cols-4">
         <Metric label="卷" value={volumeTitle} />
         <Metric label="章节数" value={chapters.length} />
+        <Metric label="执行卡覆盖" value={`${craftBriefCount}/${chapters.length}`} tone={craftBriefCount === chapters.length ? 'ok' : craftBriefCount > 0 ? 'warn' : 'danger'} />
+        <Metric label="风险" value={risks.length} tone={risks.length ? 'warn' : 'ok'} />
         <Metric label="总目标字数" value={totalExpectedWordCount} />
       </div>
       <div className="space-y-2">
@@ -320,13 +325,53 @@ function OutlinePreviewSummary({ content }: { content: unknown }) {
           const itemVolume = asRecord(item);
           return <div key={`volume-${index}`} className="text-xs leading-5" style={{ color: 'var(--text-muted)' }}><b style={{ color: 'var(--text-main)' }}>第 {numberValue(itemVolume?.volumeNo, index + 1)} 卷：{textValue(itemVolume?.title, '未命名卷')}</b> — {textValue(itemVolume?.synopsis ?? itemVolume?.objective, '暂无简介')}</div>;
         })}
-        {chapters.slice(0, 5).map((item, index) => {
-          const chapter = asRecord(item);
-          return <div key={index} className="text-xs leading-5" style={{ color: 'var(--text-muted)' }}><b style={{ color: 'var(--text-main)' }}>{numberValue(chapter?.chapterNo, index + 1)}. {textValue(chapter?.title, '未命名章节')}</b> — {textValue(chapter?.objective ?? chapter?.outline, '暂无目标')}</div>;
-        })}
+        {chapterRecords.slice(0, 5).map((chapter, index) => <OutlineChapterSummary key={index} chapter={chapter} index={index} />)}
+        {chapters.length > 5 && <div className="text-xs" style={{ color: 'var(--text-dim)' }}>还有 {chapters.length - 5} 章，完整内容见原始 JSON 或写入后的卷管理。</div>}
       </div>
     </div>
   );
+}
+
+function OutlineChapterSummary({ chapter, index }: { chapter: Record<string, unknown>; index: number }) {
+  const craftBrief = asCraftBriefRecord(chapter.craftBrief);
+  const actionBeats = stringList(craftBrief.actionBeats);
+  const clues = asArray(craftBrief.concreteClues)
+    .map((item) => textValue(asRecord(item)?.name, ''))
+    .filter(Boolean);
+  const hasBrief = Object.keys(craftBrief).length > 0;
+  return (
+    <div className="space-y-1 rounded-lg border px-3 py-2" style={{ borderColor: 'var(--border-dim)', background: hasBrief ? 'rgba(20,184,166,0.06)' : 'rgba(251,191,36,0.06)' }}>
+      <div className="text-xs leading-5" style={{ color: 'var(--text-muted)' }}>
+        <b style={{ color: 'var(--text-main)' }}>{numberValue(chapter.chapterNo, index + 1)}. {textValue(chapter.title, '未命名章节')}</b>
+        {' '}— {textValue(chapter.objective ?? chapter.outline, '暂无目标')}
+      </div>
+      {hasBrief ? (
+        <div className="space-y-1 text-[11px] leading-5" style={{ color: 'var(--text-muted)' }}>
+          <div><b style={{ color: 'var(--agent-text-label)' }}>执行卡</b>：{textValue(craftBrief.visibleGoal ?? craftBrief.mainlineTask, '暂无可见目标')}</div>
+          {textValue(craftBrief.coreConflict, '') && <div>冲突：{textValue(craftBrief.coreConflict)}</div>}
+          {actionBeats.length > 0 && <div>行动链：{actionBeats.slice(0, 3).join(' → ')}</div>}
+          {clues.length > 0 && <div>线索：{clues.slice(0, 3).join('、')}</div>}
+          {textValue(craftBrief.irreversibleConsequence, '') && <div>后果：{textValue(craftBrief.irreversibleConsequence)}</div>}
+        </div>
+      ) : (
+        <div className="text-[11px]" style={{ color: '#fbbf24' }}>缺少章节执行卡，写入前建议补齐或人工复核。</div>
+      )}
+    </div>
+  );
+}
+
+function hasCraftBrief(value: unknown) {
+  return Object.keys(asCraftBriefRecord(value)).length > 0;
+}
+
+function asCraftBriefRecord(value: unknown): Record<string, unknown> {
+  return value && typeof value === 'object' && !Array.isArray(value) ? value as Record<string, unknown> : {};
+}
+
+function stringList(value: unknown): string[] {
+  return Array.isArray(value)
+    ? value.map((item) => (typeof item === 'string' ? item.trim() : '')).filter(Boolean)
+    : [];
 }
 
 function GuidedStepPreviewSummary({ content }: { content: unknown }) {

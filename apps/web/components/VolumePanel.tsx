@@ -436,6 +436,7 @@ function ChapterOutlineSection({
 }) {
   const hasChapters = chapters.length > 0;
   const buttonLabel = expanded ? '收起章节细纲' : `查看章节细纲${expectedCount ? ` (${expectedCount})` : ''}`;
+  const craftBriefCount = chapters.filter((chapter) => Object.keys(asCraftBriefRecord(chapter.craftBrief)).length > 0).length;
 
   return (
     <section className="mt-3 pt-3" style={{ borderTop: '1px solid var(--border-dim)' }}>
@@ -444,7 +445,7 @@ function ChapterOutlineSection({
           <div className="text-xs font-medium" style={{ color: 'var(--text-dim)' }}>章节细纲</div>
           <div className="text-[0.68rem]" style={{ color: 'var(--text-muted)' }}>
             {hasChapters
-              ? `已写入 ${chapters.length} 章，可展开查看目标、冲突和大纲。`
+              ? `已写入 ${chapters.length} 章，执行卡 ${craftBriefCount}/${chapters.length}，可展开查看目标、冲突、行动链和线索。`
               : expectedCount > 0
                 ? `本卷记录 ${expectedCount} 章，但当前列表尚未加载章节明细。`
                 : '本卷还没有章节细纲。'}
@@ -490,8 +491,22 @@ function ChapterOutlineRow({ chapter }: { chapter: ChapterSummary }) {
   const actionBeats = Array.isArray(craftBrief.actionBeats)
     ? craftBrief.actionBeats.filter((item): item is string => typeof item === 'string' && item.trim().length > 0)
     : [];
+  const concreteClues = Array.isArray(craftBrief.concreteClues)
+    ? craftBrief.concreteClues
+        .map((item) => {
+          if (!item || typeof item !== 'object') return '';
+          const record = item as Record<string, unknown>;
+          const name = textValue(record.name);
+          const laterUse = textValue(record.laterUse);
+          return laterUse ? `${name}（${laterUse}）` : name;
+        })
+        .filter(Boolean)
+    : [];
   const visibleGoal = textValue(craftBrief.visibleGoal);
+  const coreConflict = textValue(craftBrief.coreConflict);
+  const mainlineTask = textValue(craftBrief.mainlineTask);
   const consequence = textValue(craftBrief.irreversibleConsequence);
+  const characterShift = textValue(craftBrief.characterShift);
 
   return (
     <article
@@ -523,7 +538,11 @@ function ChapterOutlineRow({ chapter }: { chapter: ChapterSummary }) {
       <ChapterField label="冲突" value={chapter.conflict} />
       <ChapterField label="大纲" value={chapter.outline} multiline />
       {visibleGoal && <ChapterField label="可见目标" value={visibleGoal} />}
+      {mainlineTask && <ChapterField label="主线任务" value={mainlineTask} />}
+      {coreConflict && <ChapterField label="执行卡冲突" value={coreConflict} multiline />}
       {actionBeats.length > 0 && <ChapterField label="行动链" value={actionBeats.slice(0, 5).join('；')} multiline />}
+      {concreteClues.length > 0 && <ChapterField label="线索" value={concreteClues.slice(0, 4).join('；')} multiline />}
+      {characterShift && <ChapterField label="人物变化" value={characterShift} multiline />}
       {consequence && <ChapterField label="后果" value={consequence} multiline />}
     </article>
   );
