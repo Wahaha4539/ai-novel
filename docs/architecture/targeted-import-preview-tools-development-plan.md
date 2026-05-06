@@ -171,7 +171,7 @@
 
 ### TIP-P1-003 新增 generate_import_worldbuilding_preview
 
-- 状态：`[ ]`
+- 状态：`[x]`
 - 模块：API
 - 文件：新增 `apps/api/src/modules/agent-tools/tools/generate-import-worldbuilding-preview.tool.ts`
 - 任务：根据文档分析生成世界设定导入预览。
@@ -181,6 +181,11 @@
   - Prompt 专注地点、势力、规则、历史、能力体系。
   - 能读取项目上下文，避免覆盖 locked facts。
 - 验证：`pnpm --dir apps/api run test:agent`
+- 完成记录：
+  - 2026-05-06：新增 `GenerateImportWorldbuildingPreviewTool`，输入包含 `analysis`、`instruction?`、`projectContext?`、`maxEntries?`；专用 prompt 聚焦地点、势力、规则、历史、能力体系，并显式读取项目上下文中的 existing lorebook 和 locked facts。
+  - 2026-05-06：输出只包含 `lorebookEntries` 和 `risks`，每项归一化 `title/entryType/content/summary/tags`；处理 LLM 返回的对象/数组/数字/布尔字段，保持 `allowedModes=['plan','act']`、`requiresApproval=false`、`sideEffects=[]`、`riskLevel='low'`，不写库且不输出角色、写作规则或大纲字段。
+  - 修改文件：`apps/api/src/modules/agent-tools/tools/generate-import-worldbuilding-preview.tool.ts`、`apps/api/src/modules/agent-runs/agent-services.spec.ts`、`docs/architecture/targeted-import-preview-tools-development-plan.md`。
+  - 验证结果：`pnpm --dir apps/api run test:agent` 通过，165 项测试通过。
 
 ### TIP-P1-004 新增 generate_import_writing_rules_preview
 
