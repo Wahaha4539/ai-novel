@@ -23,6 +23,7 @@ import { GenerateStoryBiblePreviewTool } from './tools/generate-story-bible-prev
 import { GenerateWorldbuildingPreviewTool } from './tools/generate-worldbuilding-preview.tool';
 import { GuidedModule } from '../guided/guided.module';
 import { InspectProjectContextTool } from './tools/inspect-project-context.tool';
+import { MergeImportPreviewsTool } from './tools/merge-import-previews.tool';
 import { PersistOutlineTool } from './tools/persist-outline.tool';
 import { PersistGuidedStepResultTool } from './tools/persist-guided-step-result.tool';
 import { PersistProjectAssetsTool } from './tools/persist-project-assets.tool';
@@ -49,7 +50,7 @@ import { RelationshipGraphService } from './relationship-graph.service';
 
 @Module({
   imports: [PrismaModule, LlmModule, GenerationModule, ValidationModule, MemoryModule, FactsModule, GuidedModule, QualityReportsModule],
-  providers: [ToolRegistryService, RelationshipGraphService, EchoReportTool, ResolveChapterTool, ResolveCharacterTool, CharacterConsistencyCheckTool, PlotConsistencyCheckTool, CollectChapterContextTool, CollectTaskContextTool, GenerateContinuityPreviewTool, ValidateContinuityChangesTool, PersistContinuityChangesTool, WriteChapterTool, WriteChapterSeriesTool, PostProcessChapterTool, PolishChapterTool, FactValidationTool, AutoRepairChapterTool, AiQualityReviewTool, ExtractChapterFactsTool, RebuildMemoryTool, ReviewMemoryTool, InspectProjectContextTool, GenerateGuidedStepPreviewTool, ValidateGuidedStepPreviewTool, PersistGuidedStepResultTool, GenerateOutlinePreviewTool, GenerateWorldbuildingPreviewTool, GenerateStoryBiblePreviewTool, ValidateOutlineTool, ValidateWorldbuildingTool, ValidateStoryBibleTool, PersistWorldbuildingTool, PersistStoryBibleTool, PersistOutlineTool, ReadSourceDocumentTool, AnalyzeSourceTextTool, BuildImportPreviewTool, ValidateImportedAssetsTool, PersistProjectAssetsTool, ReportResultTool],
+  providers: [ToolRegistryService, RelationshipGraphService, EchoReportTool, ResolveChapterTool, ResolveCharacterTool, CharacterConsistencyCheckTool, PlotConsistencyCheckTool, CollectChapterContextTool, CollectTaskContextTool, GenerateContinuityPreviewTool, ValidateContinuityChangesTool, PersistContinuityChangesTool, WriteChapterTool, WriteChapterSeriesTool, PostProcessChapterTool, PolishChapterTool, FactValidationTool, AutoRepairChapterTool, AiQualityReviewTool, ExtractChapterFactsTool, RebuildMemoryTool, ReviewMemoryTool, InspectProjectContextTool, GenerateGuidedStepPreviewTool, ValidateGuidedStepPreviewTool, PersistGuidedStepResultTool, GenerateOutlinePreviewTool, GenerateWorldbuildingPreviewTool, GenerateStoryBiblePreviewTool, ValidateOutlineTool, ValidateWorldbuildingTool, ValidateStoryBibleTool, PersistWorldbuildingTool, PersistStoryBibleTool, PersistOutlineTool, ReadSourceDocumentTool, AnalyzeSourceTextTool, BuildImportPreviewTool, MergeImportPreviewsTool, ValidateImportedAssetsTool, PersistProjectAssetsTool, ReportResultTool],
   exports: [ToolRegistryService],
 })
 export class AgentToolsModule {}

@@ -17,6 +17,7 @@ import { GenerateOutlinePreviewTool } from './tools/generate-outline-preview.too
 import { GenerateStoryBiblePreviewTool } from './tools/generate-story-bible-preview.tool';
 import { GenerateWorldbuildingPreviewTool } from './tools/generate-worldbuilding-preview.tool';
 import { InspectProjectContextTool } from './tools/inspect-project-context.tool';
+import { MergeImportPreviewsTool } from './tools/merge-import-previews.tool';
 import { PersistGuidedStepResultTool } from './tools/persist-guided-step-result.tool';
 import { PersistOutlineTool } from './tools/persist-outline.tool';
 import { PersistProjectAssetsTool } from './tools/persist-project-assets.tool';
@@ -84,6 +85,7 @@ export class ToolRegistryService implements OnModuleInit {
     private readonly readSourceDocumentTool: ReadSourceDocumentTool,
     private readonly analyzeSourceTextTool: AnalyzeSourceTextTool,
     private readonly buildImportPreviewTool: BuildImportPreviewTool,
+    private readonly mergeImportPreviewsTool: MergeImportPreviewsTool,
     private readonly validateImportedAssetsTool: ValidateImportedAssetsTool,
     private readonly persistProjectAssetsTool: PersistProjectAssetsTool,
     private readonly reportResultTool: ReportResultTool,
@@ -125,6 +127,7 @@ export class ToolRegistryService implements OnModuleInit {
     this.register(this.readSourceDocumentTool);
     this.register(this.analyzeSourceTextTool);
     this.register(this.buildImportPreviewTool);
+    this.register(this.mergeImportPreviewsTool);
     this.register(this.validateImportedAssetsTool);
     this.register(this.persistProjectAssetsTool);
     this.register(this.reportResultTool);

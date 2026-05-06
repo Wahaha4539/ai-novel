@@ -49,6 +49,29 @@ export class MergeImportPreviewsTool implements BaseTool<MergeImportPreviewsInpu
     whenNotToUse: ['需要从源文档生成内容时；本工具只做合并和去重，不调用 LLM，不写库。'],
     inputSchema: this.inputSchema,
     outputSchema: this.outputSchema,
+    parameterHints: {
+      requestedAssetTypes: { source: 'user_message', description: '必须与用户选择的目标产物一致；未选择时传空数组，输出也必须为空。' },
+      outlinePreview: { source: 'previous_step', description: '来自 generate_import_outline_preview 或 fallback 导入预览中的大纲字段。' },
+      writingRulesPreview: { source: 'previous_step', description: '来自 generate_import_writing_rules_preview 的写作规则预览。' },
+    },
+    examples: [
+      {
+        user: '根据文档只生成剧情大纲和写作规则',
+        context: { requestedAssetTypes: ['outline', 'writingRules'] },
+        plan: [
+          { tool: 'generate_import_outline_preview', args: { analysis: '{{steps.analyze_source_text.output}}', instruction: '{{context.userMessage}}' } },
+          { tool: 'generate_import_writing_rules_preview', args: { analysis: '{{steps.analyze_source_text.output}}', instruction: '{{context.userMessage}}' } },
+          {
+            tool: 'merge_import_previews',
+            args: {
+              requestedAssetTypes: ['outline', 'writingRules'],
+              outlinePreview: '{{steps.generate_import_outline_preview.output}}',
+              writingRulesPreview: '{{steps.generate_import_writing_rules_preview.output}}',
+            },
+          },
+        ],
+      },
+    ],
     allowedModes: ['plan', 'act'],
     riskLevel: 'low',
     requiresApproval: false,

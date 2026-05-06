@@ -97,7 +97,7 @@
 
 ### TIP-P0-005 注册 merge_import_previews Tool 和 Manifest
 
-- 状态：`[ ]`
+- 状态：`[x]`
 - 模块：API
 - 文件：`apps/api/src/modules/agent-tools/agent-tools.module.ts`、`apps/api/src/modules/agent-tools/tool-registry.service.ts`、`merge-import-previews.tool.ts`
 - 任务：注册 Tool 并补齐 Planner 可读 Manifest。
@@ -106,6 +106,10 @@
   - Manifest 说明它只做合并，不生成、不写库。
   - Planner examples 展示两个目标产物合并的用法。
 - 验证：`pnpm --dir apps/api run test:agent`
+- 完成记录：
+  - 2026-05-06：将 `MergeImportPreviewsTool` 注册进 `AgentToolsModule` 和 `ToolRegistryService`；补充 Manifest 参数提示和双目标合并示例，明确该 Tool 只合并、不生成、不写库；测试覆盖 manifest 声明和 AppModule 注入后的 registry 查询。
+  - 修改文件：`apps/api/src/modules/agent-tools/agent-tools.module.ts`、`apps/api/src/modules/agent-tools/tool-registry.service.ts`、`apps/api/src/modules/agent-tools/tools/merge-import-previews.tool.ts`、`apps/api/src/modules/agent-runs/agent-services.spec.ts`、`docs/architecture/targeted-import-preview-tools-development-plan.md`。
+  - 验证结果：`pnpm --dir apps/api run test:agent` 通过，159 项测试通过。
 
 ### TIP-P0-006 Planner 支持分目标链路骨架
 

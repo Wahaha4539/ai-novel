@@ -3710,6 +3710,16 @@ test('MergeImportPreviewsTool 全套合并并对角色和世界设定去重', as
   assert.ok(output.risks.some((risk) => risk.includes('世界设定存在同名预览')));
 });
 
+test('MergeImportPreviewsTool Manifest 向 Planner 声明只合并不写库', () => {
+  const tool = new MergeImportPreviewsTool();
+  assert.equal(tool.requiresApproval, false);
+  assert.deepEqual(tool.sideEffects, []);
+  assert.deepEqual(tool.allowedModes, ['plan', 'act']);
+  assert.equal(tool.manifest?.riskLevel, 'low');
+  assert.ok(tool.manifest?.whenNotToUse.some((item) => item.includes('不写库')));
+  assert.ok(tool.manifest?.examples?.[0]?.plan.some((step) => step.tool === 'merge_import_previews'));
+});
+
 test('PersistProjectAssetsTool normalizes legacy object and array scalar fields before writing', async () => {
   const projectUpdates: Array<{ data: Record<string, unknown> }> = [];
   const createdCharacters: Array<Record<string, unknown>> = [];
@@ -6557,6 +6567,7 @@ test('AppModule compiles with phase4 CRUD and phase5 quality modules registered'
   assert.ok(registry.get('generate_continuity_preview'));
   assert.ok(registry.get('validate_continuity_changes'));
   assert.ok(registry.get('persist_continuity_changes'));
+  assert.ok(registry.get('merge_import_previews'));
   await moduleRef.close();
 });
 
