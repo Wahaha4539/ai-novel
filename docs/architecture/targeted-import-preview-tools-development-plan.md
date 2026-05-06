@@ -79,7 +79,7 @@
 
 ### TIP-P0-004 新增 merge_import_previews Tool
 
-- 状态：`[ ]`
+- 状态：`[x]`
 - 模块：API
 - 文件：新增 `apps/api/src/modules/agent-tools/tools/merge-import-previews.tool.ts`
 - 任务：把多个目标产物预览合并为统一 `ImportPreviewOutput`。
@@ -90,6 +90,10 @@
   - 角色、世界设定、写作规则同名去重并返回 risks。
   - 大纲只合并 `projectProfile.outline`、`volumes`、`chapters`。
 - 验证：`pnpm --dir apps/api run test:agent`
+- 完成记录：
+  - 2026-05-06：新增 `MergeImportPreviewsTool`，按显式 `requestedAssetTypes` 合并目标预览；未选择目标产物时返回空 `ImportPreviewOutput`；大纲只写 `projectProfile.outline`、`volumes`、`chapters`；角色、世界设定、写作规则按名称/标题去重并写入风险；Tool 元数据为 plan/act 只读、低风险、无需审批、无副作用。
+  - 修改文件：`apps/api/src/modules/agent-tools/tools/merge-import-previews.tool.ts`、`apps/api/src/modules/agent-runs/agent-services.spec.ts`、`docs/architecture/targeted-import-preview-tools-development-plan.md`。
+  - 验证结果：`pnpm --dir apps/api run test:agent` 通过，158 项测试通过。
 
 ### TIP-P0-005 注册 merge_import_previews Tool 和 Manifest
 

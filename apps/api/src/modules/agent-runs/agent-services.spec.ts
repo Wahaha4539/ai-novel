@@ -37,6 +37,7 @@ import { GenerateGuidedStepPreviewTool } from '../agent-tools/tools/generate-gui
 import { ValidateGuidedStepPreviewTool } from '../agent-tools/tools/validate-guided-step-preview.tool';
 import { PersistGuidedStepResultTool } from '../agent-tools/tools/persist-guided-step-result.tool';
 import { BuildImportPreviewTool } from '../agent-tools/tools/build-import-preview.tool';
+import { MergeImportPreviewsTool } from '../agent-tools/tools/merge-import-previews.tool';
 import { PersistProjectAssetsTool } from '../agent-tools/tools/persist-project-assets.tool';
 import { GenerateWorldbuildingPreviewTool } from '../agent-tools/tools/generate-worldbuilding-preview.tool';
 import { ValidateWorldbuildingTool } from '../agent-tools/tools/validate-worldbuilding.tool';
@@ -3617,6 +3618,96 @@ test('BuildImportPreviewTool 只保留 requestedAssetTypes 指定的目标产物
   assert.deepEqual(output.lorebookEntries, []);
   assert.deepEqual(output.writingRules, []);
   assert.equal(output.chapters.length, 1);
+});
+
+test('MergeImportPreviewsTool 未选择目标产物时输出空预览', async () => {
+  const tool = new MergeImportPreviewsTool();
+  const output = await tool.run(
+    {
+      outlinePreview: { projectProfile: { outline: 'main line' }, chapters: [{ chapterNo: 1, title: '一' }] },
+      charactersPreview: { characters: [{ name: 'Lu' }] },
+    },
+    { agentRunId: 'run1', projectId: 'p1', mode: 'plan', approved: false, outputs: {}, policy: {} },
+  );
+
+  assert.deepEqual(output.requestedAssetTypes, []);
+  assert.deepEqual(output.projectProfile, {});
+  assert.deepEqual(output.characters, []);
+  assert.deepEqual(output.chapters, []);
+});
+
+test('MergeImportPreviewsTool 单选大纲只合并 outline/volumes/chapters', async () => {
+  const tool = new MergeImportPreviewsTool();
+  const output = await tool.run(
+    {
+      requestedAssetTypes: ['outline'],
+      projectProfilePreview: { projectProfile: { title: 'Should not leak' } },
+      outlinePreview: {
+        projectProfile: { title: 'Ignore title', outline: 'main line' },
+        volumes: [{ volumeNo: '1', title: { primary: '第一卷' } }],
+        chapters: [{ chapterNo: '1', title: '开局', outline: { summary: '逃离' } }],
+        risks: ['章节数量需复核'],
+      },
+      charactersPreview: { characters: [{ name: 'Lu' }] },
+    },
+    { agentRunId: 'run1', projectId: 'p1', mode: 'plan', approved: false, outputs: {}, policy: {} },
+  );
+
+  assert.deepEqual(output.requestedAssetTypes, ['outline']);
+  assert.equal(output.projectProfile.title, undefined);
+  assert.equal(output.projectProfile.outline, 'main line');
+  assert.equal(output.volumes[0].title, '第一卷');
+  assert.equal(output.chapters[0].outline, '逃离');
+  assert.deepEqual(output.characters, []);
+  assert.deepEqual(output.risks, ['[outline] 章节数量需复核']);
+});
+
+test('MergeImportPreviewsTool 双目标合并并对写作规则去重', async () => {
+  const tool = new MergeImportPreviewsTool();
+  const output = await tool.run(
+    {
+      requestedAssetTypes: ['outline', 'writingRules'],
+      outlinePreview: { projectProfile: { outline: 'main line' }, chapters: [{ chapterNo: 1, title: '开局' }] },
+      writingRulesPreview: {
+        writingRules: [
+          { title: 'No Slang', ruleType: 'style', content: 'avoid memes', severity: 'warn' },
+          { title: 'No Slang', ruleType: 'style', content: 'duplicate' },
+        ],
+      },
+      worldbuildingPreview: { lorebookEntries: [{ title: 'Sea', entryType: 'setting', content: 'inverted sea' }] },
+    },
+    { agentRunId: 'run1', projectId: 'p1', mode: 'plan', approved: false, outputs: {}, policy: {} },
+  );
+
+  assert.deepEqual(output.requestedAssetTypes, ['outline', 'writingRules']);
+  assert.equal(output.writingRules.length, 1);
+  assert.equal(output.writingRules[0].severity, 'warning');
+  assert.deepEqual(output.lorebookEntries, []);
+  assert.ok(output.risks.some((risk) => risk.includes('写作规则存在同名预览')));
+});
+
+test('MergeImportPreviewsTool 全套合并并对角色和世界设定去重', async () => {
+  const tool = new MergeImportPreviewsTool();
+  const output = await tool.run(
+    {
+      requestedAssetTypes: ['projectProfile', 'outline', 'characters', 'worldbuilding', 'writingRules'],
+      projectProfilePreview: { projectProfile: { title: 'Bridge', genre: ['fantasy', 'engineering'], outline: 'ignore outline' } },
+      outlinePreview: { projectProfile: { outline: 'main line' }, volumes: [{ volumeNo: 1, title: '第一卷' }], chapters: [{ chapterNo: 1, title: '开局' }] },
+      charactersPreview: { characters: [{ name: 'Lu' }, { name: 'Lu', roleType: 'duplicate' }] },
+      worldbuildingPreview: { lorebookEntries: [{ title: 'Sea', entryType: 'setting', content: 'inverted sea' }, { title: 'Sea', entryType: 'setting', content: 'duplicate' }] },
+      writingRulesPreview: { writingRules: [{ title: 'No Slang', ruleType: 'style', content: 'avoid memes' }] },
+    },
+    { agentRunId: 'run1', projectId: 'p1', mode: 'plan', approved: false, outputs: {}, policy: {} },
+  );
+
+  assert.equal(output.projectProfile.title, 'Bridge');
+  assert.equal(output.projectProfile.genre, 'fantasy、engineering');
+  assert.equal(output.projectProfile.outline, 'main line');
+  assert.equal(output.characters.length, 1);
+  assert.equal(output.lorebookEntries.length, 1);
+  assert.equal(output.writingRules.length, 1);
+  assert.ok(output.risks.some((risk) => risk.includes('角色存在同名预览')));
+  assert.ok(output.risks.some((risk) => risk.includes('世界设定存在同名预览')));
 });
 
 test('PersistProjectAssetsTool normalizes legacy object and array scalar fields before writing', async () => {
