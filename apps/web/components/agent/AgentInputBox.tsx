@@ -1,7 +1,7 @@
 'use client';
 
 import { ChangeEvent, FormEvent, KeyboardEvent, useEffect, useMemo, useRef, useState } from 'react';
-import type { AgentImportAssetType, AgentImportPreviewMode, AgentPlanPayload } from '../../hooks/useAgentRun';
+import type { AgentImportAssetType, AgentImportPreviewMode, AgentPlanPayload, AgentRunStepRecord } from '../../hooks/useAgentRun';
 import { CREATIVE_DOCUMENT_ACCEPT } from '../../lib/uploadCreativeDocument';
 import type { AgentCreativeDocumentAttachment, AgentCreativeDocumentExtension } from '../../types/agent-attachment';
 
@@ -61,6 +61,10 @@ interface AgentInputBoxProps {
   hasCurrentRun: boolean;
   canAct?: boolean;
   plan?: AgentPlanPayload;
+  runSteps?: AgentRunStepRecord[];
+  activePlanVersion?: number;
+  runStatus?: string;
+  actionMessage?: string;
   currentRunGoal?: string;
   riskSummary?: string[];
   /** 聊天历史记录，按时间正序排列 */
@@ -79,15 +83,20 @@ interface AgentInputBoxProps {
  * 输入：受控 goal 文本、当前 Run/Plan 摘要与外部运行状态；输出：通过回调触发计划生成、聊天确认执行、重新规划或刷新；
  * 副作用：提交表单会调用上层 API 流程，具体执行分支由父组件根据消息意图决定。
  */
-export function AgentInputBox({ goal, loading, canReplan, hasCurrentRun, canAct = false, plan, currentRunGoal, riskSummary = [], chatHistory = [], creativeDocumentAttachments = [], onGoalChange, onSubmit, onReplan, onRefresh, onCreativeDocumentSelect, onCreativeDocumentRemove }: AgentInputBoxProps) {
+export function AgentInputBox({ goal, loading, canReplan, hasCurrentRun, canAct = false, plan, runSteps = [], activePlanVersion = 1, runStatus, actionMessage, currentRunGoal, riskSummary = [], chatHistory = [], creativeDocumentAttachments = [], onGoalChange, onSubmit, onReplan, onRefresh, onCreativeDocumentSelect, onCreativeDocumentRemove }: AgentInputBoxProps) {
   /** 当前输入长度，超过阈值时展示字符计数 */
   const charCount = useMemo(() => goal.length, [goal]);
   const showCounter = charCount >= CHAR_COUNT_THRESHOLD;
-  const planSteps = useMemo(() => plan?.steps?.slice(0, 6) ?? [], [plan]);
+  const planSteps = useMemo(() => plan?.steps ?? [], [plan]);
   const [selectedTargetIds, setSelectedTargetIds] = useState<AgentTargetProductId[]>([]);
   const [importPreviewMode, setImportPreviewMode] = useState<AgentImportPreviewMode>('auto');
   const lastTargetPromptRef = useRef('');
   const inputPlaceholder = canAct ? '可以用自然语言回复是否执行当前计划；我会先让 LLM 判断你的意图…' : '例如：帮我写第 2 卷第一章内容，目标 5000 字…';
+  const isExecutingSteps = loading && Boolean(planSteps.length) && (
+    runStatus === 'acting'
+    || runStatus === 'running'
+    || /执行|调用工具|重试/.test(actionMessage ?? '')
+  );
 
   /** 自动滚动到最新消息 */
   const threadRef = useRef<HTMLDivElement>(null);
@@ -203,14 +212,12 @@ export function AgentInputBox({ goal, loading, canReplan, hasCurrentRun, canAct 
               {currentRunGoal && <div className="agent-chat-plan__goal">任务：{currentRunGoal}</div>}
               <p className="agent-chat-plan__summary">{plan.summary || '计划已生成，请检查步骤与风险后确认是否执行。'}</p>
               {planSteps.length > 0 && (
-                <ol className="agent-chat-plan__steps">
-                  {planSteps.map((step) => (
-                    <li key={step.stepNo}>
-                      <span className="agent-chat-plan__step-no">{step.stepNo}</span>
-                      <span>{step.name || step.tool || '未命名步骤'}</span>
-                    </li>
-                  ))}
-                </ol>
+                <AgentChatStepList
+                  planSteps={planSteps}
+                  runSteps={runSteps}
+                  activePlanVersion={activePlanVersion}
+                  executing={isExecutingSteps}
+                />
               )}
               {riskSummary.length > 0 && (
                 <ul className="agent-chat-plan__risks">
@@ -392,6 +399,84 @@ export function AgentInputBox({ goal, loading, canReplan, hasCurrentRun, canAct 
       </div>
 
     </form>
+  );
+}
+
+type AgentChatPlanStep = NonNullable<AgentPlanPayload['steps']>[number];
+type AgentChatStepState = 'pending' | 'active' | 'done' | 'failed' | 'review';
+
+function findChatStepRecord(records: AgentRunStepRecord[], stepNo: number, planVersion: number) {
+  const matching = records.filter((item) => item.stepNo === stepNo && (item.planVersion ?? 1) === planVersion);
+  return matching.find((item) => item.mode === 'act') ?? matching.find((item) => item.mode === 'plan') ?? matching[0];
+}
+
+function isChatStepDone(status?: string) {
+  return status === 'succeeded' || status === 'skipped';
+}
+
+function isChatStepActive(status?: string) {
+  return status === 'running' || status === 'acting' || status === 'planning';
+}
+
+function isChatStepFailed(status?: string) {
+  return status === 'failed';
+}
+
+function chatStepState(record: AgentRunStepRecord | undefined, step: AgentChatPlanStep, active: boolean): AgentChatStepState {
+  if (isChatStepDone(record?.status)) return 'done';
+  if (isChatStepFailed(record?.status)) return 'failed';
+  if (isChatStepActive(record?.status) || active) return 'active';
+  if (step.requiresApproval) return 'review';
+  return 'pending';
+}
+
+function chatStepStatusText(state: AgentChatStepState, step: AgentChatPlanStep) {
+  if (state === 'done') return '已完成';
+  if (state === 'failed') return '失败';
+  if (state === 'active') return '进行中';
+  if (state === 'review') return step.requiresApproval ? '待审批' : '待复核';
+  return '待执行';
+}
+
+function AgentChatStepList({
+  planSteps,
+  runSteps,
+  activePlanVersion,
+  executing,
+}: {
+  planSteps: AgentChatPlanStep[];
+  runSteps: AgentRunStepRecord[];
+  activePlanVersion: number;
+  executing: boolean;
+}) {
+  const optimisticActiveStepNo = useMemo(() => {
+    if (!executing) return undefined;
+    return planSteps.find((step) => {
+      const record = findChatStepRecord(runSteps, step.stepNo, activePlanVersion);
+      return !isChatStepDone(record?.status) && !isChatStepFailed(record?.status);
+    })?.stepNo;
+  }, [activePlanVersion, executing, planSteps, runSteps]);
+
+  return (
+    <ol className="agent-chat-plan__steps agent-chat-plan__steps--status">
+      {planSteps.map((step) => {
+        const record = findChatStepRecord(runSteps, step.stepNo, activePlanVersion);
+        const state = chatStepState(record, step, step.stepNo === optimisticActiveStepNo);
+        const toolName = step.tool ?? record?.tool ?? record?.toolName;
+        return (
+          <li key={step.stepNo} className={`agent-chat-plan-step agent-chat-plan-step--${state}`}>
+            <span className={`agent-chat-step-status agent-chat-step-status--${state}`} aria-hidden="true">
+              {state === 'active' ? <span className="agent-chat-step-status__spinner" /> : state === 'done' ? '✓' : state === 'failed' ? '!' : step.stepNo}
+            </span>
+            <span className="agent-chat-plan-step__main">
+              <span className="agent-chat-plan-step__title">{step.name || step.tool || '未命名步骤'}</span>
+              {toolName && <span className="agent-chat-plan-step__tool">{toolName}</span>}
+            </span>
+            <span className="agent-chat-plan-step__state">{chatStepStatusText(state, step)}</span>
+          </li>
+        );
+      })}
+    </ol>
   );
 }
 

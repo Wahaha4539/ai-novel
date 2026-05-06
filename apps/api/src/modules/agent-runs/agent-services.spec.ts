@@ -10,7 +10,7 @@ import { BaseTool } from '../agent-tools/base-tool';
 import { ToolRegistryService } from '../agent-tools/tool-registry.service';
 import { RuleEngineService } from '../agent-rules/rule-engine.service';
 import { SkillRegistryService } from '../agent-skills/skill-registry.service';
-import { LlmGatewayService } from '../llm/llm-gateway.service';
+import { LlmGatewayService, LlmTimeoutError } from '../llm/llm-gateway.service';
 import { AgentExecutorService, AgentWaitingReviewError } from './agent-executor.service';
 import { AgentExecutionObservationError } from './agent-observation.types';
 import { AgentReplannerService } from './agent-replanner.service';
@@ -19,6 +19,7 @@ import { AgentPlannerService } from './agent-planner.service';
 import { AgentPolicyService, AgentSecondConfirmationRequiredError } from './agent-policy.service';
 import { AgentTraceService } from './agent-trace.service';
 import { AgentRunsService } from './agent-runs.service';
+import { AgentRunWatchdogService } from './agent-run-watchdog.service';
 import { GenerateChapterService } from '../generation/generate-chapter.service';
 import { GenerationProfileService } from '../generation-profile/generation-profile.service';
 import { UpdateGenerationProfileDto } from '../generation-profile/dto/update-generation-profile.dto';
@@ -28,6 +29,7 @@ import { RetrievalPlannerService } from '../generation/retrieval-planner.service
 import { ValidateOutlineTool } from '../agent-tools/tools/validate-outline.tool';
 import { ValidateImportedAssetsTool } from '../agent-tools/tools/validate-imported-assets.tool';
 import { PersistOutlineTool } from '../agent-tools/tools/persist-outline.tool';
+import { GenerateOutlinePreviewTool } from '../agent-tools/tools/generate-outline-preview.tool';
 import { CollectChapterContextTool } from '../agent-tools/tools/collect-chapter-context.tool';
 import { CollectTaskContextTool } from '../agent-tools/tools/collect-task-context.tool';
 import { InspectProjectContextTool } from '../agent-tools/tools/inspect-project-context.tool';
@@ -53,9 +55,13 @@ import { GenerateStoryBiblePreviewTool } from '../agent-tools/tools/generate-sto
 import { ValidateStoryBibleTool } from '../agent-tools/tools/validate-story-bible.tool';
 import { PersistStoryBibleTool } from '../agent-tools/tools/persist-story-bible.tool';
 import { GenerateContinuityPreviewTool, PersistContinuityChangesTool, ValidateContinuityChangesTool } from '../agent-tools/tools/continuity-changes.tool';
+import { GenerateSceneCardsPreviewTool, ListSceneCardsTool, PersistSceneCardsTool, UpdateSceneCardTool, ValidateSceneCardsTool } from '../agent-tools/tools/scene-card-tools.tool';
 import { RelationshipGraphService } from '../agent-tools/relationship-graph.service';
 import { FactExtractorService } from '../facts/fact-extractor.service';
+import { WriteChapterTool } from '../agent-tools/tools/write-chapter.tool';
+import { PolishChapterTool } from '../agent-tools/tools/polish-chapter.tool';
 import { WriteChapterSeriesTool } from '../agent-tools/tools/write-chapter-series.tool';
+import { AutoRepairChapterTool } from '../agent-tools/tools/auto-repair-chapter.tool';
 import { AiQualityReviewTool } from '../agent-tools/tools/ai-quality-review.tool';
 import { RetrievalService } from '../memory/retrieval.service';
 import { GuidedService } from '../guided/guided.service';
@@ -737,11 +743,16 @@ test('Executor 将二次确认缺失转换为等待复核而不是执行失败',
 
 test('Runtime 遇到等待复核异常时保持 Run 为 waiting_review', async () => {
   const updates: Array<Record<string, unknown>> = [];
+  let currentStatus = 'waiting_approval';
   const prisma = {
     agentPlan: { async findFirst() { return { version: 1, taskType: 'chapter_write', steps: [] }; } },
     agentRun: {
-      async findUnique() { return { id: 'run1', projectId: 'p1', chapterId: null, goal: '测试目标', input: { contextSnapshot: { schemaVersion: 2, session: { currentProjectId: 'p1' } } }, status: 'waiting_approval' }; },
-      async updateMany(args: { data: Record<string, unknown> }) { updates.push(args.data); return { count: 1 }; },
+      async findUnique() { return { id: 'run1', projectId: 'p1', chapterId: null, goal: '测试目标', input: { contextSnapshot: { schemaVersion: 2, session: { currentProjectId: 'p1' } } }, status: currentStatus }; },
+      async updateMany(args: { data: Record<string, unknown> }) {
+        updates.push(args.data);
+        if (typeof args.data.status === 'string') currentStatus = args.data.status;
+        return { count: 1 };
+      },
       async update(args: { data: Record<string, unknown> }) { updates.push(args.data); return { id: 'run1', status: args.data.status, error: args.data.error }; },
     },
   };
@@ -826,14 +837,19 @@ test('Executor Act 阶段复用同版本 Plan 预览输出作为后续步骤输�
 
 test('Trace 使用 mode + planVersion 隔离 Plan 预览、Act 执行和 replan 步骤', async () => {
   const upserts: Array<{ agentRunId: string; stepNo: number; mode: string; planVersion: number }> = [];
-  const updates: Array<{ agentRunId: string; stepNo: number; mode: string; planVersion: number }> = [];
+  const updates: Array<{ agentRunId: string; stepNo: number; mode: string; planVersion: number; status?: string }> = [];
   const prisma = {
+    agentRun: { async updateMany() { return { count: 1 }; } },
     agentStep: {
       async upsert(args: { where: { agentRunId_mode_planVersion_stepNo: { agentRunId: string; stepNo: number; mode: string; planVersion: number } }; create: { mode: string } }) {
         upserts.push(args.where.agentRunId_mode_planVersion_stepNo);
       },
-      async update(args: { where: { agentRunId_mode_planVersion_stepNo: { agentRunId: string; stepNo: number; mode: string; planVersion: number } } }) {
-        updates.push(args.where.agentRunId_mode_planVersion_stepNo);
+      async updateMany(args: { where: { agentRunId: string; stepNo: number; mode: string; planVersion: number; status?: string } }) {
+        updates.push(args.where);
+        return { count: 1 };
+      },
+      async findUnique(args: { where: { agentRunId_mode_planVersion_stepNo: { agentRunId: string; stepNo: number; mode: string; planVersion: number } } }) {
+        return args.where.agentRunId_mode_planVersion_stepNo;
       },
     },
   };
@@ -847,8 +863,8 @@ test('Trace 使用 mode + planVersion 隔离 Plan 预览、Act 执行和 replan 
     { agentRunId: 'run1', stepNo: 2, mode: 'act', planVersion: 2 },
   ]);
   assert.deepEqual(updates, [
-    { agentRunId: 'run1', stepNo: 2, mode: 'plan', planVersion: 2 },
-    { agentRunId: 'run1', stepNo: 2, mode: 'act', planVersion: 2 },
+    { agentRunId: 'run1', stepNo: 2, mode: 'plan', planVersion: 2, status: 'running' },
+    { agentRunId: 'run1', stepNo: 2, mode: 'act', planVersion: 2, status: 'running' },
   ]);
 });
 
@@ -884,6 +900,8 @@ test('Executor records target import tool cost metadata without changing tool ou
   const finished: Array<{ output: unknown; metadata: unknown; mode: string; planVersion: number }> = [];
   const trace = {
     startStep() {},
+    updateStepPhase() {},
+    heartbeatStep() {},
     finishStep(_agentRunId: string, _stepNo: number, output: unknown, mode: string, planVersion: number, metadata: unknown) {
       finished.push({ output, mode, planVersion, metadata });
     },
@@ -1007,6 +1025,8 @@ test('Executor records fallback build_import_preview cost metadata', async () =>
   let metadata: { executionCost: Record<string, unknown> } | undefined;
   const trace = {
     startStep() {},
+    updateStepPhase() {},
+    heartbeatStep() {},
     finishStep(_agentRunId: string, _stepNo: number, _output: unknown, _mode: string, _planVersion: number, value: { executionCost: Record<string, unknown> }) {
       metadata = value;
     },
@@ -1898,6 +1918,7 @@ test('AgentRuntime maps continuity preview and validation artifacts in plan mode
 
 test('GenerateGuidedStepPreviewTool 生成全部 guided 步骤预览且保持只读', async () => {
   const calls: Array<{ messages: Array<{ role: string; content: string }>; options: Record<string, unknown> }> = [];
+  const progress: Array<Record<string, unknown>> = [];
   const responses = [
     { genre: '悬疑', theme: '记忆与真相', tone: '冷静克制', logline: '档案员追查一份不存在的死亡记录。', synopsis: '档案错位牵出旧案。' },
     { pov: '第三人称有限视角', tense: '过去时', proseStyle: '冷静、克制、细节驱动', pacing: '缓慢加压' },
@@ -1914,7 +1935,15 @@ test('GenerateGuidedStepPreviewTool 生成全部 guided 步骤预览且保持只
     },
   };
   const tool = new GenerateGuidedStepPreviewTool(llm as never);
-  const context = { agentRunId: 'run1', projectId: 'p1', mode: 'plan' as const, approved: false, outputs: {}, policy: {} };
+  const context = {
+    agentRunId: 'run1',
+    projectId: 'p1',
+    mode: 'plan' as const,
+    approved: false,
+    outputs: {},
+    policy: {},
+    async updateProgress(patch: unknown) { progress.push(patch as Record<string, unknown>); },
+  };
 
   const setup = await tool.run({ stepKey: 'guided_setup', userHint: '偏悬疑但不要太黑暗', projectContext: { title: '旧档案' } }, context);
   const style = await tool.run({ stepKey: 'guided_style', chatSummary: '用户确认了冷静基调' }, context);
@@ -1939,9 +1968,14 @@ test('GenerateGuidedStepPreviewTool 生成全部 guided 步骤预览且保持只
   assert.equal(tool.riskLevel, 'low');
   assert.ok(tool.allowedModes.includes('plan'));
   assert.match(calls[0].messages[0].content, /"genre"/);
+  assert.equal(calls[0].options.timeoutMs, 120_000);
+  assert.equal(calls[0].options.retries, 1);
   assert.match(calls[1].messages[0].content, /"pov"/);
   assert.match(calls[5].messages[0].content, /"chapters"/);
   assert.match(calls[6].messages[0].content, /"foreshadowTracks"/);
+  assert.equal(tool.executionTimeoutMs, 120_000 * 2 + 5_000 + 60_000);
+  assert.equal(progress.some((item) => item.phase === 'calling_llm' && item.timeoutMs === 120_000 * 2 + 5_000), true);
+  assert.equal(progress.some((item) => item.phase === 'validating'), true);
 });
 
 test('GenerateGuidedStepPreviewTool 对缺少上下文的章节预览返回 warnings', async () => {
@@ -2823,8 +2857,11 @@ test('PersistStoryBibleTool 阻止 Plan、未审批、无效校验、未知选�
 
 test('GenerateContinuityPreviewTool normalizes relationship/timeline candidates and stays read-only', async () => {
   const counters = { relationshipCreate: 0, relationshipUpdate: 0, relationshipDelete: 0, timelineCreate: 0, timelineUpdate: 0, timelineDelete: 0 };
+  const progress: Array<Record<string, unknown>> = [];
+  let receivedOptions: Record<string, unknown> | undefined;
   const llm = {
-    async chatJson() {
+    async chatJson(_messages: unknown, options: Record<string, unknown>) {
+      receivedOptions = options;
       return {
         data: {
           relationships: [{
@@ -2861,7 +2898,15 @@ test('GenerateContinuityPreviewTool normalizes relationship/timeline candidates 
         timelineEvents: [{ id: 'evt-src-1', title: 'Old fire' }],
       },
     },
-    { agentRunId: 'run-cont', projectId: 'p1', mode: 'plan', approved: false, outputs: {}, policy: {} },
+    {
+      agentRunId: 'run-cont',
+      projectId: 'p1',
+      mode: 'plan',
+      approved: false,
+      outputs: {},
+      policy: {},
+      async updateProgress(patch: unknown) { progress.push(patch as Record<string, unknown>); },
+    },
   );
 
   assert.equal(result.relationshipCandidates.length, 1);
@@ -2881,6 +2926,12 @@ test('GenerateContinuityPreviewTool normalizes relationship/timeline candidates 
   assert.deepEqual(counters, { relationshipCreate: 0, relationshipUpdate: 0, relationshipDelete: 0, timelineCreate: 0, timelineUpdate: 0, timelineDelete: 0 });
   assert.equal(tool.requiresApproval, false);
   assert.deepEqual(tool.sideEffects, []);
+  assert.equal(tool.executionTimeoutMs, 120_000 * 2 + 5_000 + 60_000);
+  assert.equal(receivedOptions?.timeoutMs, 120_000);
+  assert.equal(receivedOptions?.retries, 1);
+  assert.equal(progress[0].phase, 'calling_llm');
+  assert.equal(progress[0].timeoutMs, 120_000 * 2 + 5_000);
+  assert.equal(progress.some((item) => item.phase === 'validating'), true);
 });
 
 test('ValidateContinuityChangesTool accepts same-project candidates and rejects cross-project character/chapter mismatches', async () => {
@@ -3508,6 +3559,7 @@ test('PersistContinuityChangesTool writes selected relationship/timeline candida
     },
   };
   const tool = new PersistContinuityChangesTool(prisma as never, cache as never);
+  const progress: Array<Record<string, unknown>> = [];
   const contextFor = (previewOutput: unknown = preview, validationOutput: unknown = validation) => ({
     agentRunId: 'run1',
     projectId: 'p1',
@@ -3516,6 +3568,8 @@ test('PersistContinuityChangesTool writes selected relationship/timeline candida
     outputs: { 2: previewOutput, 3: validationOutput },
     stepTools: { 2: 'generate_continuity_preview', 3: 'validate_continuity_changes' },
     policy: {},
+    async updateProgress(patch: unknown) { progress.push(patch as Record<string, unknown>); },
+    async heartbeat(patch?: unknown) { if (patch) progress.push(patch as Record<string, unknown>); },
   });
 
   const persisted = await tool.run(
@@ -3532,6 +3586,9 @@ test('PersistContinuityChangesTool writes selected relationship/timeline candida
   assert.equal(createdTimeline[0].projectId, 'p1');
   assert.equal(createdTimeline[0].chapterId, chapter1);
   assert.deepEqual(invalidatedProjectIds, ['p1']);
+  assert.equal(progress.some((item) => item.phase === 'validating' && item.timeoutMs === 60_000), true);
+  assert.equal(progress.some((item) => item.phase === 'persisting' && item.timeoutMs === 120_000), true);
+  assert.equal(progress.some((item) => item.phase === 'persisting' && item.progressCurrent === 2), true);
 
   createdRelationships.length = 0;
   createdTimeline.length = 0;
@@ -3846,6 +3903,65 @@ test('PersistOutlineTool 阻止重复章节编号写入', async () => {
     () => tool.run({ preview: { volume: { volumeNo: 1, title: '卷一', synopsis: '卷简介', objective: '卷目标', chapterCount: 2 }, chapters: [{ chapterNo: 1, title: '一', objective: '目标', conflict: '冲突', hook: '钩子', outline: '梗概', expectedWordCount: 2000 }, { chapterNo: 1, title: '重复', objective: '目标', conflict: '冲突', hook: '钩子', outline: '梗概', expectedWordCount: 2000 }], risks: [] } }, { agentRunId: 'run1', projectId: 'p1', mode: 'act', approved: true, outputs: {}, policy: {} }),
     /章节编号重复/,
   );
+});
+
+test('GenerateOutlinePreviewTool keeps 500s outer timeout but bounds LLM call', async () => {
+  let receivedOptions: Record<string, unknown> | undefined;
+  const llmUsages: Array<{ model?: string }> = [];
+  const llm = {
+    async chatJson(_messages: unknown, options: Record<string, unknown>) {
+      receivedOptions = options;
+      return {
+        data: {
+          volume: { title: '盐风峡路', synopsis: '夺取通路权', objective: '建立稳定商路' },
+          chapters: [{ chapterNo: 1, title: '峡口税旗', objective: '拆解垄断', conflict: '浮税盟施压', hook: '盐风暴将至', outline: '工队抵达峡口。', expectedWordCount: 2600 }],
+          risks: [],
+        },
+        result: { model: 'mock-outline-model', usage: { total_tokens: 31 }, elapsedMs: 123, rawPayloadSummary: { id: 'chatcmpl_mock' } },
+      };
+    },
+  };
+  const tool = new GenerateOutlinePreviewTool(llm as never);
+  const output = await tool.run(
+    { instruction: '把第二卷拆成 1 章', volumeNo: 2, chapterCount: 1, context: { project: { title: '逆潮脊梁' } } },
+    { agentRunId: 'run1', projectId: 'p1', mode: 'plan', approved: false, outputs: {}, policy: {}, recordLlmUsage: (usage) => llmUsages.push(usage) },
+  );
+
+  assert.equal(tool.executionTimeoutMs, 500_000);
+  assert.equal(receivedOptions?.timeoutMs, 90_000);
+  assert.equal(receivedOptions?.retries, 0);
+  assert.equal(output.volume.volumeNo, 2);
+  assert.equal(output.chapters.length, 1);
+  assert.equal(llmUsages[0].model, 'mock-outline-model');
+});
+
+test('GenerateOutlinePreviewTool falls back to a complete deterministic preview on LLM failure', async () => {
+  const llm = {
+    async chatJson() {
+      throw new Error('LLM request timed out');
+    },
+  };
+  const tool = new GenerateOutlinePreviewTool(llm as never);
+  const output = await tool.run(
+    {
+      instruction: '帮我生成卷1 的细纲，目标60章节。',
+      volumeNo: 1,
+      chapterCount: 60,
+      context: {
+        project: { title: '逆潮脊梁', outline: '修成逆潮工程，建立共承制度。' },
+        volumes: [{ volumeNo: 1, title: '罪桥初潮', objective: '完成开局灾难、罪名抛出、承重眼暴露与沉舟工队雏形建立。' }],
+      },
+    },
+    { agentRunId: 'run1', projectId: 'p1', mode: 'plan', approved: false, outputs: {}, policy: {} },
+  );
+
+  assert.equal(output.volume.volumeNo, 1);
+  assert.equal(output.volume.title, '罪桥初潮');
+  assert.equal(output.volume.chapterCount, 60);
+  assert.equal(output.chapters.length, 60);
+  assert.equal(output.chapters[0].chapterNo, 1);
+  assert.equal(output.chapters[59].chapterNo, 60);
+  assert.match(output.risks.join('\n'), /确定性章节骨架/);
 });
 
 test('BuildImportBriefTool 生成只读导入简报并规范化字段', async () => {
@@ -4253,7 +4369,7 @@ test('BuildImportPreviewTool normalizes non-string risks', async () => {
   );
 
   assert.deepEqual(output.risks, ['{"code":"schema","message":"需要复核"}', '42', '保留']);
-  assert.equal(tool.executionTimeoutMs, 500_000);
+  assert.equal(tool.executionTimeoutMs, 450_000 * 2 + 5_000 + 60_000);
   assert.equal(receivedOptions?.timeoutMs, 450_000);
 });
 
@@ -5272,6 +5388,8 @@ test('Planner 支持多章写作任务并保持 write_chapter_series 为单步�
 test('WriteChapterSeriesTool 按章节升序连续生成并限制批量数量', async () => {
   const generatedChapterIds: string[] = [];
   const pipelineCalls: string[] = [];
+  const generatedInputs: Array<Record<string, unknown>> = [];
+  const progress: Array<Record<string, unknown>> = [];
   const prisma = {
     chapter: {
       async findMany() {
@@ -5283,8 +5401,10 @@ test('WriteChapterSeriesTool 按章节升序连续生成并限制批量数量', 
     },
   };
   const generateChapter = {
-    async run(_projectId: string, chapterId: string) {
+    async run(_projectId: string, chapterId: string, input: { progress?: { updateProgress?: (patch: Record<string, unknown>) => Promise<void>; heartbeat?: (patch?: Record<string, unknown>) => Promise<void> } }) {
       generatedChapterIds.push(chapterId);
+      generatedInputs.push(input as Record<string, unknown>);
+      await input.progress?.updateProgress?.({ phase: 'calling_llm', phaseMessage: `mock ${chapterId}` });
       return { draftId: `d-${chapterId}`, chapterId, versionNo: 1, actualWordCount: 1200, summary: `summary-${chapterId}` };
     },
   };
@@ -5295,10 +5415,21 @@ test('WriteChapterSeriesTool 按章节升序连续生成并限制批量数量', 
   const memory = { async run(args: Record<string, unknown>) { pipelineCalls.push(`memory:${args.chapterId}:${args.draftId}`); return { createdCount: 1, deletedCount: 0, embeddingAttachedCount: 0, chunks: [] }; } };
   const review = { async run(args: Record<string, unknown>) { pipelineCalls.push(`review:${args.chapterId}`); return { reviewedCount: 0, confirmedCount: 0, rejectedCount: 0, skippedCount: 0, decisions: [] }; } };
   const tool = new WriteChapterSeriesTool(prisma as never, generateChapter as never, polish as never, validation as never, repair as never, facts as never, memory as never, review as never);
+  const context = {
+    agentRunId: 'run1',
+    projectId: 'p1',
+    mode: 'act' as const,
+    approved: true,
+    outputs: {},
+    policy: {},
+    async updateProgress(patch: unknown) { progress.push(patch as Record<string, unknown>); },
+    async heartbeat(patch?: unknown) { if (patch) progress.push(patch as Record<string, unknown>); },
+  };
 
-  const result = await tool.run({ startChapterNo: 3, endChapterNo: 4, instruction: '连续写两章' }, { agentRunId: 'run1', projectId: 'p1', mode: 'act', approved: true, outputs: {}, policy: {} });
+  const result = await tool.run({ startChapterNo: 3, endChapterNo: 4, instruction: '连续写两章' }, context);
 
   assert.deepEqual(generatedChapterIds, ['c3', 'c4']);
+  assert.equal(Boolean(generatedInputs[0].progress), true);
   assert.deepEqual(pipelineCalls, [
     'polish:c3:d-c3',
     'validation:c3',
@@ -5318,21 +5449,24 @@ test('WriteChapterSeriesTool 按章节升序连续生成并限制批量数量', 
   assert.equal(result.failed, 0);
   assert.deepEqual(result.chapters.map((item) => item.draftId), ['p-c3', 'p-c4']);
   assert.ok(result.chapters.every((item) => item.pipeline?.facts && item.pipeline.memory && item.pipeline.memoryReview));
+  assert.equal(progress.some((item) => item.phase === 'preparing_context'), true);
+  assert.equal(progress.some((item) => item.phase === 'writing_chapter' && item.progressTotal === 2), true);
+  assert.equal(progress.some((item) => item.phase === 'calling_llm'), true);
 
   generatedChapterIds.length = 0;
   pipelineCalls.length = 0;
-  const maxChaptersResult = await tool.run({ startChapterNo: 3, maxChapters: 2, instruction: '从第 3 章开始连续写两章', qualityPipeline: 'draft_only' }, { agentRunId: 'run1', projectId: 'p1', mode: 'act', approved: true, outputs: {}, policy: {} });
+  const maxChaptersResult = await tool.run({ startChapterNo: 3, maxChapters: 2, instruction: '从第 3 章开始连续写两章', qualityPipeline: 'draft_only' }, context);
   assert.deepEqual(generatedChapterIds, ['c3', 'c4']);
   assert.deepEqual(pipelineCalls, []);
   assert.equal(maxChaptersResult.total, 2);
   assert.deepEqual(maxChaptersResult.chapters.map((item) => item.chapterNo), [3, 4]);
 
   await assert.rejects(
-    () => tool.run({ startChapterNo: 1, endChapterNo: 6, instruction: '太多章' }, { agentRunId: 'run1', projectId: 'p1', mode: 'act', approved: true, outputs: {}, policy: {} }),
+    () => tool.run({ startChapterNo: 1, endChapterNo: 6, instruction: '太多章' }, context),
     /最多允许 5 章/,
   );
   await assert.rejects(
-    () => tool.run({ maxChapters: 2, instruction: '缺少起始章节' }, { agentRunId: 'run1', projectId: 'p1', mode: 'act', approved: true, outputs: {}, policy: {} }),
+    () => tool.run({ maxChapters: 2, instruction: '缺少起始章节' }, context),
     /需要 chapterNos/,
   );
 });
@@ -6934,6 +7068,134 @@ test('ScenesService create update remove validate refs and invalidate recall cac
   await assert.rejects(() => missingProjectService.create('missing-project', { title: 'No project' }), /Project not found/);
 });
 
+test('SceneCard agent tools preview validate persist and update with approval boundaries', async () => {
+  const context = { agentRunId: 'run-scene', projectId: 'p1', mode: 'plan' as const, approved: false, outputs: {}, policy: {} };
+  const createdRows: Array<Record<string, unknown>> = [];
+  const invalidatedProjectIds: string[] = [];
+  let updateData: Record<string, unknown> | undefined;
+  const prisma = {
+    project: { async findUnique() { return { id: 'p1' }; } },
+    volume: {
+      async findFirst(args: { where: Record<string, unknown> }) {
+        return args.where.projectId === 'p1' && args.where.id === 'v1' ? { id: 'v1' } : null;
+      },
+      async findMany() {
+        return [{ id: 'v1' }];
+      },
+    },
+    chapter: {
+      async findFirst(args: { where: Record<string, unknown> }) {
+        if (args.where.projectId !== 'p1') return null;
+        if (args.where.chapterNo === 3 || args.where.id === 'c1') return { id: 'c1', volumeId: 'v1', chapterNo: 3, title: 'Chapter 3' };
+        return null;
+      },
+      async findMany() {
+        return [{ id: 'c1', volumeId: 'v1', chapterNo: 3, title: 'Chapter 3' }];
+      },
+    },
+    foreshadowTrack: { async findMany() { return []; } },
+    sceneCard: {
+      async findMany(args: { where: Record<string, unknown> }) {
+        if (args.where.chapterId && typeof args.where.chapterId === 'object') return [];
+        return [{
+          id: 'scene-existing',
+          projectId: 'p1',
+          volumeId: 'v1',
+          chapterId: 'c1',
+          sceneNo: 1,
+          title: 'Existing scene',
+          participants: ['Lin'],
+          relatedForeshadowIds: [],
+          status: 'planned',
+          metadata: {},
+        }];
+      },
+      async findFirst(args: { where: Record<string, unknown> }) {
+        if (args.where.NOT) return null;
+        if (args.where.id === 'scene-existing' && args.where.projectId === 'p1') return { id: 'scene-existing', projectId: 'p1', volumeId: 'v1', chapterId: 'c1', sceneNo: 1 };
+        return null;
+      },
+      async create(args: { data: Record<string, unknown> }) {
+        createdRows.push(args.data);
+        return { id: 'scene-created', title: args.data.title, chapterId: args.data.chapterId, sceneNo: args.data.sceneNo };
+      },
+      async update(args: { data: Record<string, unknown> }) {
+        updateData = args.data;
+        return {
+          id: 'scene-existing',
+          projectId: 'p1',
+          volumeId: 'v1',
+          chapterId: 'c1',
+          sceneNo: args.data.sceneNo ?? 2,
+          title: args.data.title ?? 'Existing scene',
+          locationName: null,
+          participants: args.data.participants ?? ['Lin'],
+          purpose: null,
+          conflict: args.data.conflict ?? null,
+          emotionalTone: args.data.emotionalTone ?? null,
+          keyInformation: null,
+          result: null,
+          relatedForeshadowIds: [],
+          status: args.data.status ?? 'planned',
+          metadata: args.data.metadata ?? {},
+        };
+      },
+    },
+    async $transaction(callback: (tx: unknown) => Promise<unknown>) {
+      return callback(prisma);
+    },
+  };
+  const llm = {
+    async chatJson() {
+      return {
+        data: {
+          candidates: [{
+            sceneNo: 2,
+            title: 'Archive confrontation',
+            locationName: 'Archive',
+            participants: ['Lin', 'Shen'],
+            purpose: 'Reveal the missing ledger.',
+            conflict: 'Lin wants proof while Shen hides the clue.',
+            emotionalTone: 'tense',
+            keyInformation: 'The ledger page is torn.',
+            result: 'Lin suspects Shen.',
+            relatedForeshadowIds: [],
+            status: 'planned',
+          }],
+          assumptions: ['Chapter target is resolved.'],
+          risks: [],
+        },
+        result: { text: '{}', model: 'mock', usage: {} },
+      };
+    },
+  };
+  const cache = { async deleteProjectRecallResults(projectId: string) { invalidatedProjectIds.push(projectId); } };
+
+  const listTool = new ListSceneCardsTool(prisma as never);
+  const listed = await listTool.run({ chapterNo: 3 }, context);
+  const previewTool = new GenerateSceneCardsPreviewTool(llm as never, prisma as never);
+  const preview = await previewTool.run({ instruction: 'Split chapter 3.', chapterNo: 3, maxScenes: 1 }, context);
+  const validateTool = new ValidateSceneCardsTool(prisma as never);
+  const validation = await validateTool.run({ preview }, context);
+  const persistTool = new PersistSceneCardsTool(prisma as never, cache as never);
+  const persisted = await persistTool.run({ preview, validation }, { ...context, mode: 'act', approved: true });
+  const updateTool = new UpdateSceneCardTool(prisma as never, cache as never);
+  const updated = await updateTool.run({ sceneId: 'scene-existing', sceneNo: 2, conflict: 'The clue now directly threatens Shen.' }, { ...context, mode: 'act', approved: true });
+
+  assert.equal(listed.scenes[0].id, 'scene-existing');
+  assert.equal(preview.candidates[0].chapterId, 'c1');
+  assert.equal(preview.candidates[0].volumeId, 'v1');
+  assert.equal(validation.valid, true);
+  assert.equal(validation.accepted[0].candidateId, preview.candidates[0].candidateId);
+  assert.equal(persisted.createdCount, 1);
+  assert.equal(createdRows[0].projectId, 'p1');
+  assert.equal(createdRows[0].chapterId, 'c1');
+  assert.equal(updated.scene.sceneNo, 2);
+  assert.equal(updateData?.conflict, 'The clue now directly threatens Shen.');
+  assert.deepEqual(invalidatedProjectIds, ['p1', 'p1']);
+  await assert.rejects(() => persistTool.run({ preview, validation }, { ...context, mode: 'act', approved: false }), /requires explicit user approval/);
+});
+
 test('ChapterPatternsService create update remove invalidate recall cache', async () => {
   const invalidatedProjectIds: string[] = [];
   const createdRows: Array<Record<string, unknown>> = [];
@@ -7452,9 +7714,11 @@ test('AiQualityReviewService skips malformed LLM issues instead of creating defa
 
 test('AiQualityReviewTool requires approval and Act mode before writing report', async () => {
   let callCount = 0;
+  const progress: Array<Record<string, unknown>> = [];
   const tool = new AiQualityReviewTool({
-    async reviewAndCreate() {
+    async reviewAndCreate(_projectId: string, _input: unknown, runtime?: { progress?: { updateProgress?: (patch: Record<string, unknown>) => Promise<void> } }) {
       callCount += 1;
+      await runtime?.progress?.updateProgress?.({ phase: 'calling_llm' });
       return { reportId: 'report-1', projectId: 'p1', chapterId: 'c1', draftId: 'd1', sourceType: 'ai_review', reportType: 'ai_chapter_review', verdict: 'pass', summary: 'ok', scores: { overall: 90 }, issues: [] };
     },
   } as never);
@@ -7467,9 +7731,21 @@ test('AiQualityReviewTool requires approval and Act mode before writing report',
   await assert.rejects(() => tool.run({ chapterId: 'c1' }, { agentRunId: 'run1', projectId: 'p1', mode: 'plan', approved: false, outputs: {}, policy: {} }), /Act 模式/);
   await assert.rejects(() => tool.run({ chapterId: 'c1' }, { agentRunId: 'run1', projectId: 'p1', mode: 'act', approved: false, outputs: {}, policy: {} }), /需要用户审批/);
 
-  const output = await tool.run({ draftId: 'd1' }, { agentRunId: 'run1', projectId: 'p1', mode: 'act', approved: true, outputs: {}, policy: {} });
+  const output = await tool.run(
+    { draftId: 'd1' },
+    {
+      agentRunId: 'run1',
+      projectId: 'p1',
+      mode: 'act',
+      approved: true,
+      outputs: {},
+      policy: {},
+      async updateProgress(patch) { progress.push(patch as Record<string, unknown>); },
+    },
+  );
   assert.equal(output.reportId, 'report-1');
   assert.equal(callCount, 1);
+  assert.equal(progress[0].phase, 'calling_llm');
 });
 
 test('ChapterAutoRepairService reads warning issues from QualityReport when no issues are provided', async () => {
@@ -7560,8 +7836,10 @@ test('ChapterAutoRepairService ignores QualityReport fallback when issues are ex
 
 test('ChapterAutoRepairService run merges QualityReport issues into repair prompt', async () => {
   let promptText = '';
+  let receivedOptions: Record<string, unknown> | undefined;
   let qualityReportFindArgs: { where: Record<string, unknown> } | undefined;
   const createdDrafts: Array<Record<string, unknown>> = [];
+  const progress: Array<Record<string, unknown>> = [];
   const prisma = {
     chapter: {
       async findFirst() {
@@ -7606,17 +7884,27 @@ test('ChapterAutoRepairService run merges QualityReport issues into repair promp
     },
   };
   const llm = {
-    async chat(messages: Array<{ role: string; content: string }>) {
+    async chat(messages: Array<{ role: string; content: string }>, options: Record<string, unknown>) {
       promptText = messages[1].content;
+      receivedOptions = options;
       return { text: '线索在雨里断开，主角沿着暗巷追逐敌人，并在墙缝里发现缺失的线索落点。'.repeat(8), model: 'mock', usage: {}, rawPayloadSummary: {} };
     },
   };
   const service = new ChapterAutoRepairService(prisma as never, llm as never);
 
-  const result = await service.run('p1', 'c1', { draftId: 'd1', maxRounds: 1 });
+  const result = await service.run('p1', 'c1', {
+    draftId: 'd1',
+    maxRounds: 1,
+    progress: {
+      async updateProgress(patch) { progress.push(patch as Record<string, unknown>); },
+      async heartbeat(patch) { if (patch) progress.push(patch as Record<string, unknown>); },
+    },
+  });
 
   assert.equal(result.skipped, false);
   assert.equal(result.repairedIssueCount, 1);
+  assert.equal(receivedOptions?.timeoutMs, 180_000);
+  assert.equal(receivedOptions?.retries, 1);
   assert.equal(qualityReportFindArgs?.where.sourceType, 'generation');
   assert.equal(qualityReportFindArgs?.where.reportType, 'generation_quality_gate');
   assert.equal(qualityReportFindArgs?.where.draftId, 'd1');
@@ -7624,6 +7912,41 @@ test('ChapterAutoRepairService run merges QualityReport issues into repair promp
   assert.match(promptText, /generation_quality_gate/);
   assert.match(promptText, /Scene card clue missing/);
   assert.equal(createdDrafts[0].source, 'agent_auto_repair');
+  assert.equal(progress.some((item) => item.phase === 'calling_llm' && item.timeoutMs === 180_000 * 2 + 5_000), true);
+  assert.equal(progress.some((item) => item.phase === 'persisting' && item.timeoutMs === 60_000), true);
+  assert.equal(progress.some((item) => item.phase === 'persisting' && item.progressCurrent === 1), true);
+});
+
+test('AutoRepairChapterTool propagates progress callbacks into service', async () => {
+  const progress: Array<Record<string, unknown>> = [];
+  let receivedProgress = false;
+  const tool = new AutoRepairChapterTool({
+    async run(_projectId: string, _chapterId: string, options: { progress?: { updateProgress?: (patch: Record<string, unknown>) => Promise<void>; heartbeat?: (patch?: Record<string, unknown>) => Promise<void> } }) {
+      receivedProgress = Boolean(options.progress);
+      await options.progress?.updateProgress?.({ phase: 'calling_llm' });
+      await options.progress?.heartbeat?.({ phase: 'persisting' });
+      return { skipped: false, draftId: 'draft-repair', chapterId: 'c1', repairedWordCount: 1000, repairedIssueCount: 1, maxRounds: 1 };
+    },
+  } as never);
+
+  const result = await tool.run(
+    { chapterId: 'c1', draftId: 'd1', issues: [{ severity: 'warning', message: '补线索' }], maxRounds: 1 },
+    {
+      agentRunId: 'run1',
+      projectId: 'p1',
+      mode: 'act',
+      approved: true,
+      outputs: {},
+      policy: {},
+      async updateProgress(patch) { progress.push(patch as Record<string, unknown>); },
+      async heartbeat(patch) { if (patch) progress.push(patch as Record<string, unknown>); },
+    },
+  );
+
+  assert.equal(tool.executionTimeoutMs, 425_000);
+  assert.equal(receivedProgress, true);
+  assert.equal(result.draftId, 'draft-repair');
+  assert.deepEqual(progress.map((item) => item.phase), ['calling_llm', 'persisting']);
 });
 
 test('Phase4 CRUD DTO validation rejects null JSON and non-string arrays', async () => {
@@ -7666,6 +7989,11 @@ test('AppModule compiles with phase4 CRUD and phase5 quality modules registered'
   assert.ok(registry.get('generate_continuity_preview'));
   assert.ok(registry.get('validate_continuity_changes'));
   assert.ok(registry.get('persist_continuity_changes'));
+  assert.ok(registry.get('list_scene_cards'));
+  assert.ok(registry.get('generate_scene_cards_preview'));
+  assert.ok(registry.get('validate_scene_cards'));
+  assert.ok(registry.get('persist_scene_cards'));
+  assert.ok(registry.get('update_scene_card'));
   assert.ok(registry.get('build_import_brief'));
   assert.ok(registry.get('merge_import_previews'));
   assert.ok(registry.get('cross_target_consistency_check'));
@@ -7684,6 +8012,16 @@ test('AppModule compiles with phase4 CRUD and phase5 quality modules registered'
   assert.equal(consistencyManifest.requiresApproval, false);
   assert.deepEqual(consistencyManifest.sideEffects, []);
   assert.equal(consistencyManifest.riskLevel, 'low');
+  const scenePreviewManifest = manifests.find((item) => item.name === 'generate_scene_cards_preview');
+  assert.ok(scenePreviewManifest);
+  assert.match(scenePreviewManifest.whenToUse.join(' | '), /scene cards|SceneCard/);
+  assert.deepEqual(scenePreviewManifest.allowedModes, ['plan', 'act']);
+  assert.equal(scenePreviewManifest.requiresApproval, false);
+  assert.deepEqual(scenePreviewManifest.sideEffects, []);
+  const scenePersistManifest = manifests.find((item) => item.name === 'persist_scene_cards');
+  assert.ok(scenePersistManifest);
+  assert.equal(scenePersistManifest.requiresApproval, true);
+  assert.equal(scenePersistManifest.riskLevel, 'medium');
   const targetedImportTools = [
     ['generate_import_project_profile_preview', /项目资料|作品资料|书名/],
     ['generate_import_outline_preview', /剧情大纲|卷章结构|章节规划/],
@@ -7900,6 +8238,430 @@ test('AgentRunsService rejects invalid importTargetRegeneration assetType', asyn
     /importTargetRegeneration\.assetType/,
   );
   assert.equal(runtimeCalled, false);
+});
+
+test('Executor 将 LLM timeout 分类为 LLM_TIMEOUT Observation', () => {
+  const executor = new AgentExecutorService({} as never, {} as never, {} as never, {} as never) as unknown as {
+    classifyObservationCode: (message: string, error: unknown) => string;
+  };
+  const error = new LlmTimeoutError('LLM 在 90s 内未返回', 'planner', 90_000);
+  assert.equal(executor.classifyObservationCode(error.message, error), 'LLM_TIMEOUT');
+});
+
+test('generate_outline_preview LLM timeout 使用确定性 fallback 且补齐 60 章', async () => {
+  const progress: Array<Record<string, unknown>> = [];
+  const llm = {
+    async chatJson() {
+      throw new LlmTimeoutError('LLM 在 90s 内未返回', 'planner', 90_000);
+    },
+  };
+  const tool = new GenerateOutlinePreviewTool(llm as never);
+  const result = await tool.run(
+    { instruction: '卷 1 细纲，目标 60 章节', volumeNo: 1, chapterCount: 60 },
+    {
+      agentRunId: 'run1',
+      projectId: 'p1',
+      mode: 'plan',
+      approved: false,
+      outputs: {},
+      policy: {},
+      async updateProgress(patch) { progress.push(patch as Record<string, unknown>); },
+    },
+  );
+
+  assert.equal(result.chapters.length, 60);
+  assert.equal(result.volume.chapterCount, 60);
+  assert.match(result.risks.join('；'), /LLM_TIMEOUT/);
+  assert.equal(progress[0].phase, 'calling_llm');
+  assert.equal(progress[0].timeoutMs, 90_000);
+  assert.equal(progress.some((item) => String(item.phase) === 'fallback_generating'), true);
+  assert.equal(result.risks.some((risk) => /工具 .*执行超时|工具执行超时/.test(risk)), false);
+});
+
+test('Trace updateStepPhase 写入 phase、phaseMessage、timeoutAt 和 heartbeat', async () => {
+  const updates: Array<Record<string, unknown>> = [];
+  const runUpdates: Array<Record<string, unknown>> = [];
+  const prisma = {
+    agentStep: {
+      async updateMany(args: { data: Record<string, unknown> }) {
+        updates.push(args.data);
+        return { count: 1 };
+      },
+    },
+    agentRun: {
+      async updateMany(args: { data: Record<string, unknown> }) {
+        runUpdates.push(args.data);
+        return { count: 1 };
+      },
+    },
+  };
+  const trace = new AgentTraceService(prisma as never);
+
+  await trace.updateStepPhase('run1', 2, { phase: 'calling_llm', phaseMessage: '正在生成卷章节预览', timeoutMs: 90_000 }, 'plan', 1);
+
+  assert.equal(updates[0].phase, 'calling_llm');
+  assert.equal(updates[0].phaseMessage, '正在生成卷章节预览');
+  assert.ok(updates[0].heartbeatAt instanceof Date);
+  assert.ok(updates[0].timeoutAt instanceof Date);
+  assert.equal(runUpdates[0].currentPhase, 'calling_llm');
+});
+
+test('Executor 不再用 Tool executionTimeoutMs 作为外层业务超时', async () => {
+  const finished: unknown[] = [];
+  const prisma = {
+    agentRun: {
+      async findUnique(args?: { select?: { status?: boolean } }) {
+        return args?.select?.status ? { status: 'planning' } : { id: 'run1', projectId: 'p1', chapterId: null, status: 'planning' };
+      },
+    },
+  };
+  const tool = createTool({
+    name: 'slow_preview',
+    allowedModes: ['plan'],
+    requiresApproval: false,
+    riskLevel: 'low',
+    sideEffects: [],
+    executionTimeoutMs: 1,
+    outputSchema: { type: 'object' },
+    async run() {
+      await new Promise((resolve) => setTimeout(resolve, 20));
+      return { ok: true };
+    },
+  });
+  const tools = { get: (name: string) => name === 'slow_preview' ? tool : undefined };
+  const policy = { assertPlanExecutable() {}, assertAllowed() {} };
+  const trace = {
+    startStep() {},
+    updateStepPhase() {},
+    heartbeatStep() {},
+    finishStep(_agentRunId: string, _stepNo: number, output: unknown) { finished.push(output); },
+    failStep() { throw new Error('不应触发外层工具执行超时'); },
+  };
+  const executor = new AgentExecutorService(prisma as never, tools as never, policy as never, trace as never);
+
+  const outputs = await executor.execute('run1', [{ stepNo: 1, name: '慢预览', tool: 'slow_preview', mode: 'act', requiresApproval: false, args: {} }], { mode: 'plan', approved: false });
+
+  assert.deepEqual(outputs[1], { ok: true });
+  assert.deepEqual(finished[0], { ok: true });
+});
+
+test('AgentRunsService /plan 快速返回 planning 并后台启动 runtime.plan', async () => {
+  let runtimeStarted = false;
+  let createdInput: Record<string, unknown> | undefined;
+  const prisma = {
+    agentRun: {
+      async findFirst() { return null; },
+      async create(args: { data: { input: Record<string, unknown> } }) {
+        createdInput = args.data.input;
+        return { id: 'run-async-plan' };
+      },
+    },
+  };
+  const runtime = {
+    async plan() {
+      runtimeStarted = true;
+      await new Promise(() => undefined);
+    },
+  };
+  const service = new AgentRunsService(prisma as never, runtime as never, {} as never);
+
+  const result = await service.createPlan({
+    projectId: '11111111-1111-4111-8111-111111111111',
+    message: '卷 1 细纲，目标 60 章节',
+    context: { currentProjectId: '11111111-1111-4111-8111-111111111111' },
+  });
+
+  assert.equal(result.agentRunId, 'run-async-plan');
+  assert.equal(result.status, 'planning');
+  assert.equal(runtimeStarted, true);
+  assert.equal((createdInput?.context as Record<string, unknown>).currentProjectId, '11111111-1111-4111-8111-111111111111');
+});
+
+test('AgentRuntime Plan 后台完成后可轮询到 waiting_approval 和 outline_preview Artifact', async () => {
+  const updates: Array<Record<string, unknown>> = [];
+  const createdArtifacts: Array<Record<string, unknown>> = [];
+  const artifactBatches: Array<Record<string, unknown>[]> = [];
+  let previewOnly = false;
+  const outlinePreview = {
+    volume: { volumeNo: 1, title: '第一卷', synopsis: '卷简介', objective: '卷目标', chapterCount: 60 },
+    chapters: Array.from({ length: 60 }, (_item, index) => ({ chapterNo: index + 1, title: `第 ${index + 1} 章` })),
+    risks: [],
+  };
+  const plan = {
+    taskType: 'outline_design',
+    summary: '生成第一卷 60 章细纲',
+    assumptions: [],
+    risks: [],
+    requiredApprovals: [],
+    steps: [
+      { stepNo: 1, id: 'inspect', name: '巡检上下文', tool: 'inspect_project_context', mode: 'act' as const, requiresApproval: false, args: {} },
+      { stepNo: 2, id: 'outline', name: '生成大纲预览', tool: 'generate_outline_preview', mode: 'act' as const, requiresApproval: false, args: {} },
+    ],
+    understanding: '生成卷 1 细纲',
+    plannerDiagnostics: { source: 'test' },
+  };
+  const prisma = {
+    agentRun: {
+      async findUnique() { return { id: 'run1', projectId: 'p1', chapterId: null, goal: '卷 1 细纲，目标 60 章节', input: {} }; },
+      async update(args: { data: Record<string, unknown> }) { updates.push(args.data); return { id: 'run1', ...args.data }; },
+      async updateMany(args: { data: Record<string, unknown> }) { updates.push(args.data); return { count: 1 }; },
+    },
+    agentPlan: {
+      async create(args: { data: Record<string, unknown> }) { return { id: 'plan1', version: 1, ...args.data }; },
+    },
+    agentArtifact: {
+      async create(args: { data: Record<string, unknown> }) {
+        createdArtifacts.push(args.data);
+        return { id: `artifact-${createdArtifacts.length}`, ...args.data };
+      },
+      async createMany(args: { data: Record<string, unknown>[] }) {
+        artifactBatches.push(args.data);
+        return { count: args.data.length };
+      },
+      async findMany() {
+        return [
+          ...createdArtifacts.map((artifact, index) => ({ id: `artifact-${index + 1}`, ...artifact })),
+          ...artifactBatches.flat().map((artifact, index) => ({ id: `batch-artifact-${index + 1}`, ...artifact })),
+        ];
+      },
+    },
+  };
+  const planner = { async createPlan() { return plan; } };
+  const contextBuilder = { async buildForPlan() { return { availableTools: [], session: {}, project: {} }; }, createDigest() { return 'digest'; } };
+  const executor = {
+    async execute(_agentRunId: string, _steps: unknown[], options: { previewOnly?: boolean }) {
+      previewOnly = Boolean(options.previewOnly);
+      return { 2: outlinePreview };
+    },
+  };
+  const trace = { async recordDecision() {} };
+  const runtime = new AgentRuntimeService(prisma as never, planner as never, contextBuilder as never, executor as never, {} as never, trace as never);
+
+  const result = await runtime.plan('run1');
+
+  assert.equal(previewOnly, true);
+  assert.equal(updates.some((item) => item.status === 'waiting_approval'), true);
+  assert.equal(artifactBatches.flat().some((artifact) => artifact.artifactType === 'outline_preview'), true);
+  assert.equal(result.artifacts.some((artifact: { artifactType?: string }) => artifact.artifactType === 'outline_preview'), true);
+});
+
+test('AgentRuntime cancel 后迟到执行结果不会覆盖 cancelled', async () => {
+  const updates: Array<Record<string, unknown>> = [];
+  let createManyCalled = false;
+  let findRunCount = 0;
+  const prisma = {
+    agentPlan: { async findFirst() { return { version: 1, taskType: 'chapter_write', steps: [] }; } },
+    agentRun: {
+      async findUnique() {
+        findRunCount += 1;
+        if (findRunCount === 1) return { id: 'run1', projectId: 'p1', chapterId: null, goal: '测试目标', input: { contextSnapshot: { schemaVersion: 2, session: { currentProjectId: 'p1' } } }, status: 'waiting_approval' };
+        return { id: 'run1', status: 'cancelled' };
+      },
+      async updateMany(args: { data: Record<string, unknown> }) {
+        updates.push(args.data);
+        return { count: 1 };
+      },
+    },
+    agentArtifact: {
+      async createMany() {
+        createManyCalled = true;
+      },
+    },
+  };
+  const executor = { async execute() { return { 1: { ok: true } }; } };
+  const runtime = new AgentRuntimeService(prisma as never, {} as never, {} as never, executor as never, {} as never, {} as never);
+
+  const result = await runtime.act('run1');
+
+  assert.equal(result?.status, 'cancelled');
+  assert.equal(createManyCalled, false);
+  assert.equal(updates.some((item) => item.status === 'succeeded'), false);
+});
+
+test('Watchdog 标记 heartbeat 停滞步骤为 TOOL_STUCK_TIMEOUT', async () => {
+  const now = new Date('2026-05-06T00:05:00.000Z');
+  const stepUpdates: Array<Record<string, unknown>> = [];
+  const runUpdates: Array<Record<string, unknown>> = [];
+  const staleStep = {
+    id: 'step1',
+    agentRunId: 'run1',
+    stepNo: 2,
+    mode: 'plan',
+    planVersion: 1,
+    toolName: 'never_return',
+    phase: 'calling_llm',
+    timeoutAt: null,
+    deadlineAt: null,
+    heartbeatAt: new Date('2026-05-06T00:00:00.000Z'),
+  };
+  let stepFindManyCount = 0;
+  const prisma = {
+    agentStep: {
+      async findMany() {
+        stepFindManyCount += 1;
+        return stepFindManyCount === 1 ? [] : [staleStep];
+      },
+      async updateMany(args: { data: Record<string, unknown> }) {
+        stepUpdates.push(args.data);
+        return { count: 1 };
+      },
+    },
+    agentRun: {
+      async findMany() { return []; },
+      async updateMany(args: { data: Record<string, unknown> }) {
+        runUpdates.push(args.data);
+        return { count: 1 };
+      },
+    },
+  };
+  const watchdog = new AgentRunWatchdogService(prisma as never);
+
+  await watchdog.scanOnce(now);
+
+  assert.equal(stepUpdates[0].errorCode, 'TOOL_STUCK_TIMEOUT');
+  assert.equal(runUpdates[0].status, 'failed');
+  assert.match(String(runUpdates[0].error), /步骤卡住/);
+});
+
+test('Watchdog 标记 phase timeout 为 TOOL_PHASE_TIMEOUT', async () => {
+  const now = new Date('2026-05-06T00:02:00.000Z');
+  const stepUpdates: Array<Record<string, unknown>> = [];
+  const timedOutStep = {
+    id: 'step1',
+    agentRunId: 'run1',
+    stepNo: 2,
+    mode: 'plan',
+    planVersion: 1,
+    toolName: 'generate_outline_preview',
+    phase: 'calling_llm',
+    timeoutAt: new Date('2026-05-06T00:01:30.000Z'),
+    deadlineAt: null,
+    heartbeatAt: new Date('2026-05-06T00:01:00.000Z'),
+  };
+  let stepFindManyCount = 0;
+  const prisma = {
+    agentStep: {
+      async findMany() {
+        stepFindManyCount += 1;
+        return stepFindManyCount === 1 ? [timedOutStep] : [];
+      },
+      async updateMany(args: { data: Record<string, unknown> }) {
+        stepUpdates.push(args.data);
+        return { count: 1 };
+      },
+    },
+    agentRun: {
+      async findMany() { return []; },
+      async updateMany() { return { count: 1 }; },
+    },
+  };
+  const watchdog = new AgentRunWatchdogService(prisma as never);
+
+  await watchdog.scanOnce(now);
+
+  assert.equal(stepUpdates[0].errorCode, 'TOOL_PHASE_TIMEOUT');
+});
+
+test('P3 import outline preview reports calling_llm with retry-aware phase timeout', async () => {
+  const progress: Array<Record<string, unknown>> = [];
+  let receivedOptions: Record<string, unknown> | undefined;
+  const llm = {
+    async chatJson(_messages: unknown, options: Record<string, unknown>) {
+      receivedOptions = options;
+      return {
+        data: {
+          projectProfile: { outline: 'outline' },
+          volumes: [{ volumeNo: 1, title: 'Volume 1' }],
+          chapters: [{ chapterNo: 1, volumeNo: 1, title: 'Chapter 1', outline: 'Beat 1' }],
+          risks: [],
+        },
+        result: { model: 'mock-import-outline' },
+      };
+    },
+  };
+  const tool = new GenerateImportOutlinePreviewTool(llm as never);
+
+  await tool.run(
+    {
+      analysis: { sourceText: 'source', length: 6, paragraphs: ['source'], keywords: ['source'] },
+      instruction: 'outline only',
+      chapterCount: 1,
+    },
+    {
+      agentRunId: 'run1',
+      projectId: 'p1',
+      mode: 'plan',
+      approved: false,
+      outputs: {},
+      policy: {},
+      async updateProgress(patch) { progress.push(patch as Record<string, unknown>); },
+    },
+  );
+
+  assert.equal(receivedOptions?.timeoutMs, 220_000);
+  assert.equal(receivedOptions?.retries, 1);
+  assert.equal(progress[0].phase, 'calling_llm');
+  assert.equal(progress[0].timeoutMs, 445_000);
+  assert.equal(progress.some((item) => item.phase === 'validating'), true);
+});
+
+test('P3 write and polish chapter tools propagate progress callbacks into services', async () => {
+  const progress: Array<Record<string, unknown>> = [];
+  const progressContext = {
+    agentRunId: 'run1',
+    projectId: 'p1',
+    mode: 'act' as const,
+    approved: true,
+    outputs: {},
+    policy: {},
+    async updateProgress(patch: unknown) { progress.push(patch as Record<string, unknown>); },
+    async heartbeat(patch?: unknown) { if (patch) progress.push(patch as Record<string, unknown>); },
+  };
+  const writeTool = new WriteChapterTool({
+    async run(_projectId: string, _chapterId: string, input: { progress?: { updateProgress?: (patch: Record<string, unknown>) => Promise<void>; heartbeat?: (patch?: Record<string, unknown>) => Promise<void> } }) {
+      await input.progress?.updateProgress?.({ phase: 'calling_llm' });
+      await input.progress?.heartbeat?.({ phase: 'persisting' });
+      return { draftId: 'draft-write', chapterId: 'chapter1', versionNo: 1, actualWordCount: 100, summary: 'ok' };
+    },
+  } as never);
+  const polishTool = new PolishChapterTool({
+    async run(_projectId: string, _chapterId: string, _instruction?: string, _sourceDraftId?: string, options?: { progress?: { updateProgress?: (patch: Record<string, unknown>) => Promise<void>; heartbeat?: (patch?: Record<string, unknown>) => Promise<void> } }) {
+      await options?.progress?.updateProgress?.({ phase: 'calling_llm' });
+      await options?.progress?.heartbeat?.({ phase: 'persisting' });
+      return { draftId: 'draft-polish', chapterId: 'chapter1', originalDraftId: 'draft0', originalWordCount: 100, polishedWordCount: 105, changed: true, summary: 'ok' };
+    },
+  } as never);
+
+  await writeTool.run({ chapterId: 'chapter1', instruction: 'write' }, progressContext);
+  await polishTool.run({ chapterId: 'chapter1', instruction: 'polish' }, progressContext);
+
+  assert.equal(progress.filter((item) => item.phase === 'calling_llm').length, 2);
+  assert.equal(progress.filter((item) => item.phase === 'persisting').length, 2);
+});
+
+test('Watchdog stale scan ignores steps with unexpired phase timeout', async () => {
+  const now = new Date('2026-05-06T00:05:00.000Z');
+  const stepFindManyArgs: Array<{ where?: Record<string, unknown> }> = [];
+  const prisma = {
+    agentStep: {
+      async findMany(args: { where?: Record<string, unknown> }) {
+        stepFindManyArgs.push(args);
+        return [];
+      },
+      async updateMany() { throw new Error('watchdog should not fail any step'); },
+    },
+    agentRun: {
+      async findMany() { return []; },
+      async updateMany() { throw new Error('watchdog should not fail any run'); },
+    },
+  };
+  const watchdog = new AgentRunWatchdogService(prisma as never);
+
+  await watchdog.scanOnce(now);
+
+  assert.deepEqual(stepFindManyArgs[1].where?.AND, [
+    { OR: [{ timeoutAt: null }, { timeoutAt: { lt: now } }] },
+  ]);
 });
 
 async function main() {

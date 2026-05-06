@@ -39,6 +39,7 @@ import { RebuildMemoryTool } from './tools/rebuild-memory.tool';
 import { ReviewMemoryTool } from './tools/review-memory.tool';
 import { ResolveChapterTool } from './tools/resolve-chapter.tool';
 import { ResolveCharacterTool } from './tools/resolve-character.tool';
+import { GenerateSceneCardsPreviewTool, ListSceneCardsTool, PersistSceneCardsTool, UpdateSceneCardTool, ValidateSceneCardsTool } from './tools/scene-card-tools.tool';
 import { ValidateGuidedStepPreviewTool } from './tools/validate-guided-step-preview.tool';
 import { ValidateImportedAssetsTool } from './tools/validate-imported-assets.tool';
 import { ValidateOutlineTool } from './tools/validate-outline.tool';
@@ -89,6 +90,11 @@ export class ToolRegistryService implements OnModuleInit {
     private readonly persistWorldbuildingTool: PersistWorldbuildingTool,
     private readonly persistStoryBibleTool: PersistStoryBibleTool,
     private readonly persistOutlineTool: PersistOutlineTool,
+    private readonly listSceneCardsTool: ListSceneCardsTool,
+    private readonly generateSceneCardsPreviewTool: GenerateSceneCardsPreviewTool,
+    private readonly validateSceneCardsTool: ValidateSceneCardsTool,
+    private readonly persistSceneCardsTool: PersistSceneCardsTool,
+    private readonly updateSceneCardTool: UpdateSceneCardTool,
     private readonly readSourceDocumentTool: ReadSourceDocumentTool,
     private readonly analyzeSourceTextTool: AnalyzeSourceTextTool,
     private readonly buildImportBriefTool: BuildImportBriefTool,
@@ -138,6 +144,11 @@ export class ToolRegistryService implements OnModuleInit {
     this.register(this.persistWorldbuildingTool);
     this.register(this.persistStoryBibleTool);
     this.register(this.persistOutlineTool);
+    this.register(this.listSceneCardsTool);
+    this.register(this.generateSceneCardsPreviewTool);
+    this.register(this.validateSceneCardsTool);
+    this.register(this.persistSceneCardsTool);
+    this.register(this.updateSceneCardTool);
     this.register(this.readSourceDocumentTool);
     this.register(this.analyzeSourceTextTool);
     this.register(this.buildImportBriefTool);

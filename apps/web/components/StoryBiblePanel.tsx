@@ -2,7 +2,9 @@ import React, { useEffect, useMemo, useState } from 'react';
 import { LorebookEntry, ProjectSummary, StoryBibleEntryType } from '../types/dashboard';
 import { LorebookFormData, useLorebookActions } from '../hooks/useLorebookActions';
 
-const STORY_BIBLE_TABS: Array<{ key: StoryBibleEntryType; label: string; color: string }> = [
+type StoryBibleTabKey = StoryBibleEntryType | 'all';
+
+const ENTRY_TYPE_TABS: Array<{ key: StoryBibleEntryType; label: string; color: string }> = [
   { key: 'world_rule', label: '世界观', color: '#10b981' },
   { key: 'power_system', label: '力量体系', color: '#0ea5e9' },
   { key: 'faction', label: '势力组织', color: '#f59e0b' },
@@ -15,6 +17,11 @@ const STORY_BIBLE_TABS: Array<{ key: StoryBibleEntryType; label: string; color: 
   { key: 'technology', label: '科技工艺', color: '#06b6d4' },
   { key: 'forbidden_rule', label: '规则禁忌', color: '#ef4444' },
   { key: 'setting', label: '通用设定', color: '#94a3b8' },
+];
+
+const STORY_BIBLE_TABS: Array<{ key: StoryBibleTabKey; label: string; color: string }> = [
+  { key: 'all', label: '全部', color: '#38bdf8' },
+  ...ENTRY_TYPE_TABS,
 ];
 
 const EMPTY_FORM: LorebookFormData = {
@@ -34,7 +41,7 @@ interface Props {
 }
 
 export function StoryBiblePanel({ selectedProject, selectedProjectId }: Props) {
-  const [activeType, setActiveType] = useState<StoryBibleEntryType>('world_rule');
+  const [activeType, setActiveType] = useState<StoryBibleTabKey>('all');
   const [editingEntry, setEditingEntry] = useState<LorebookEntry | null>(null);
   const [form, setForm] = useState<LorebookFormData>(EMPTY_FORM);
   const [metadataText, setMetadataText] = useState('{}');
@@ -42,14 +49,27 @@ export function StoryBiblePanel({ selectedProject, selectedProjectId }: Props) {
   const { entries, loading, formLoading, error, setError, loadEntries, createEntry, updateEntry, deleteEntry } = useLorebookActions(selectedProjectId);
 
   const activeTab = useMemo(() => STORY_BIBLE_TABS.find((tab) => tab.key === activeType) ?? STORY_BIBLE_TABS[0], [activeType]);
+  const filteredEntries = useMemo(
+    () => activeType === 'all' ? entries : entries.filter((entry) => normalizeEntryTypeForForm(entry.entryType) === activeType),
+    [activeType, entries],
+  );
+  const entryCounts = useMemo(() => {
+    const counts = new Map<StoryBibleTabKey, number>([['all', entries.length]]);
+    for (const tab of ENTRY_TYPE_TABS) counts.set(tab.key, 0);
+    for (const entry of entries) {
+      const key = normalizeEntryTypeForForm(entry.entryType);
+      counts.set(key, (counts.get(key) ?? 0) + 1);
+    }
+    return counts;
+  }, [entries]);
 
   useEffect(() => {
     if (selectedProjectId) {
-      void loadEntries(activeType);
+      void loadEntries();
     }
-  }, [activeType, loadEntries, selectedProjectId]);
+  }, [loadEntries, selectedProjectId]);
 
-  const resetForm = (entryType = activeType) => {
+  const resetForm = (entryType: StoryBibleEntryType = activeType === 'all' ? 'world_rule' : activeType) => {
     setEditingEntry(null);
     setForm({ ...EMPTY_FORM, entryType });
     setMetadataText('{}');
@@ -61,7 +81,7 @@ export function StoryBiblePanel({ selectedProject, selectedProjectId }: Props) {
     setEditingEntry(entry);
     setForm({
       title: entry.title,
-      entryType: activeType,
+      entryType: normalizeEntryTypeForForm(entry.entryType),
       content: entry.content,
       summary: entry.summary ?? '',
       tags: entry.tags ?? [],
@@ -102,14 +122,14 @@ export function StoryBiblePanel({ selectedProject, selectedProjectId }: Props) {
       summary: form.summary?.trim() || undefined,
       tags: normalizeTags(form.tags),
       priority: Number(form.priority) || 50,
-      entryType: activeType,
+      entryType: form.entryType,
       metadata,
     };
 
     const ok = editingEntry ? await updateEntry(editingEntry.id, payload) : await createEntry(payload);
     if (!ok) return;
-    await loadEntries(activeType);
-    resetForm(activeType);
+    await loadEntries();
+    resetForm(activeType === 'all' ? form.entryType : activeType);
   };
 
   const handleDelete = async (entry: LorebookEntry) => {
@@ -117,8 +137,8 @@ export function StoryBiblePanel({ selectedProject, selectedProjectId }: Props) {
     if (!ok) return;
     const deleted = await deleteEntry(entry.id);
     if (deleted) {
-      await loadEntries(activeType);
-      if (editingEntry?.id === entry.id) resetForm(activeType);
+      await loadEntries();
+      if (editingEntry?.id === entry.id) resetForm(activeType === 'all' ? 'world_rule' : activeType);
     }
   };
 
@@ -135,8 +155,9 @@ export function StoryBiblePanel({ selectedProject, selectedProjectId }: Props) {
 
       <div className="flex shrink-0" style={{ borderBottom: '1px solid var(--border-dim)', padding: '0 2rem', background: 'var(--bg-card)', overflowX: 'auto' }}>
         {STORY_BIBLE_TABS.map((tab) => (
-          <button key={tab.key} onClick={() => { setActiveType(tab.key); resetForm(tab.key); }} style={{ padding: '0.65rem 1rem', fontSize: '0.8rem', fontWeight: activeType === tab.key ? 700 : 500, color: activeType === tab.key ? tab.color : 'var(--text-dim)', background: 'transparent', border: 'none', borderBottom: activeType === tab.key ? `2px solid ${tab.color}` : '2px solid transparent', cursor: 'pointer', whiteSpace: 'nowrap', marginBottom: '-1px' }}>
+          <button key={tab.key} onClick={() => { setActiveType(tab.key); resetForm(tab.key === 'all' ? 'world_rule' : tab.key); }} style={{ padding: '0.65rem 1rem', fontSize: '0.8rem', fontWeight: activeType === tab.key ? 700 : 500, color: activeType === tab.key ? tab.color : 'var(--text-dim)', background: 'transparent', border: 'none', borderBottom: activeType === tab.key ? `2px solid ${tab.color}` : '2px solid transparent', cursor: 'pointer', whiteSpace: 'nowrap', marginBottom: '-1px' }}>
             {tab.label}
+            <span style={{ marginLeft: '0.35rem', opacity: 0.65 }}>{entryCounts.get(tab.key) ?? 0}</span>
           </button>
         ))}
       </div>
@@ -146,18 +167,18 @@ export function StoryBiblePanel({ selectedProject, selectedProjectId }: Props) {
           <div className="flex items-center justify-between shrink-0 p-4" style={{ borderBottom: '1px solid var(--border-dim)' }}>
             <div>
               <h2 className="text-base font-bold text-heading">{activeTab.label}</h2>
-              <p className="text-xs" style={{ color: 'var(--text-dim)' }}>{entries.length} 条</p>
+              <p className="text-xs" style={{ color: 'var(--text-dim)' }}>{filteredEntries.length} 条</p>
             </div>
-            <button className="btn-secondary" onClick={() => resetForm(activeType)} disabled={formLoading}>新建</button>
+            <button className="btn-secondary" onClick={() => resetForm(activeType === 'all' ? 'world_rule' : activeType)} disabled={formLoading}>新建</button>
           </div>
           <div className="flex-1 min-h-0" style={{ overflowY: 'auto' }}>
             {loading ? (
               <div className="p-4 text-sm" style={{ color: 'var(--text-dim)' }}>加载中…</div>
-            ) : entries.length === 0 ? (
+            ) : filteredEntries.length === 0 ? (
               <div className="p-4 text-sm" style={{ color: 'var(--text-dim)' }}>暂无条目</div>
             ) : (
               <div className="space-y-2 p-3">
-                {entries.map((entry) => (
+                {filteredEntries.map((entry) => (
                   <button key={entry.id} onClick={() => openEdit(entry)} className="w-full text-left" style={{ border: `1px solid ${editingEntry?.id === entry.id ? activeTab.color : 'var(--border-dim)'}`, background: editingEntry?.id === entry.id ? `${activeTab.color}12` : 'var(--bg-card)', borderRadius: '0.5rem', padding: '0.8rem', cursor: 'pointer' }}>
                     <div className="flex items-center justify-between gap-3">
                       <strong className="text-sm truncate" style={{ color: 'var(--text-main)' }}>{entry.title}</strong>
@@ -178,6 +199,13 @@ export function StoryBiblePanel({ selectedProject, selectedProjectId }: Props) {
             {editingEntry && <button className="btn-danger" onClick={() => handleDelete(editingEntry)} disabled={formLoading}>删除</button>}
           </div>
           <div className="flex-1 min-h-0 p-4 space-y-3" style={{ overflowY: 'auto' }}>
+            <label className="block text-xs font-bold" style={{ color: 'var(--text-muted)' }}>分类</label>
+            <select className="input-field" value={form.entryType} onChange={(event) => updateField('entryType', event.target.value as StoryBibleEntryType)}>
+              {ENTRY_TYPE_TABS.map((tab) => (
+                <option key={tab.key} value={tab.key}>{tab.label}</option>
+              ))}
+            </select>
+
             <label className="block text-xs font-bold" style={{ color: 'var(--text-muted)' }}>标题</label>
             <input className="input-field" value={form.title} onChange={(event) => updateField('title', event.target.value)} />
 
@@ -212,7 +240,7 @@ export function StoryBiblePanel({ selectedProject, selectedProjectId }: Props) {
             {(localError || error) && <div className="text-xs" style={{ color: 'var(--status-err)', background: 'var(--status-err-bg)', borderRadius: '0.5rem', padding: '0.6rem' }}>{localError || error}</div>}
           </div>
           <div className="flex justify-end gap-3 shrink-0 p-4" style={{ borderTop: '1px solid var(--border-dim)' }}>
-            <button className="btn-secondary" onClick={() => resetForm(activeType)} disabled={formLoading}>重置</button>
+            <button className="btn-secondary" onClick={() => resetForm(activeType === 'all' ? 'world_rule' : activeType)} disabled={formLoading}>重置</button>
             <button className="btn" onClick={handleSubmit} disabled={formLoading}>{formLoading ? '保存中…' : '保存'}</button>
           </div>
         </section>
@@ -223,6 +251,19 @@ export function StoryBiblePanel({ selectedProject, selectedProjectId }: Props) {
 
 function normalizeTags(tags?: string[]) {
   return Array.from(new Set((tags ?? []).map((tag) => tag.trim()).filter(Boolean)));
+}
+
+function normalizeEntryTypeForForm(value: string): StoryBibleEntryType {
+  if (ENTRY_TYPE_TABS.some((tab) => tab.key === value)) return value as StoryBibleEntryType;
+  const normalized = value.trim().replace(/[^a-zA-Z0-9]/g, '').toLowerCase();
+  if (normalized === 'worldrule') return 'world_rule';
+  if (normalized === 'powersystem') return 'power_system';
+  if (normalized === 'factionrelation' || normalized === 'relationship') return 'faction_relation';
+  if (normalized === 'historyevent' || normalized === 'history') return 'history_event';
+  if (normalized === 'forbiddenrule' || normalized === 'rule') return 'forbidden_rule';
+  if (normalized === 'place') return 'location';
+  if (normalized === 'organization' || normalized === 'organisation') return 'faction';
+  return 'setting';
 }
 
 function parseJsonObject(value: string): Record<string, unknown> {

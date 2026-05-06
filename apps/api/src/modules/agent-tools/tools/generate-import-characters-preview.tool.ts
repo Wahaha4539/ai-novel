@@ -14,6 +14,10 @@ interface GenerateImportCharactersPreviewInput {
   projectContext?: Record<string, unknown>;
 }
 
+const IMPORT_CHARACTERS_PREVIEW_LLM_TIMEOUT_MS = 220_000;
+const IMPORT_CHARACTERS_PREVIEW_LLM_RETRIES = 1;
+const IMPORT_CHARACTERS_PREVIEW_PHASE_TIMEOUT_MS = IMPORT_CHARACTERS_PREVIEW_LLM_TIMEOUT_MS * (IMPORT_CHARACTERS_PREVIEW_LLM_RETRIES + 1) + 5_000;
+
 export interface GenerateImportCharactersPreviewOutput {
   characters: ImportPreviewOutput['characters'];
   risks: string[];
@@ -70,12 +74,19 @@ export class GenerateImportCharactersPreviewTool implements BaseTool<GenerateImp
   riskLevel: 'low' = 'low';
   requiresApproval = false;
   sideEffects: string[] = [];
-  executionTimeoutMs = 240_000;
+  executionTimeoutMs = IMPORT_CHARACTERS_PREVIEW_PHASE_TIMEOUT_MS + 60_000;
 
   constructor(private readonly llm: LlmGatewayService) {}
 
   async run(args: GenerateImportCharactersPreviewInput, context: ToolContext): Promise<GenerateImportCharactersPreviewOutput> {
     const analysis = this.normalizeAnalysis(args.analysis);
+    await context.updateProgress?.({
+      phase: 'calling_llm',
+      phaseMessage: '正在生成导入角色预览',
+      progressCurrent: 0,
+      progressTotal: 1,
+      timeoutMs: IMPORT_CHARACTERS_PREVIEW_PHASE_TIMEOUT_MS,
+    });
     const response = await this.llm.chatJson<GenerateImportCharactersPreviewOutput>(
       [
         {
@@ -100,10 +111,11 @@ export class GenerateImportCharactersPreviewTool implements BaseTool<GenerateImp
           ].join('\n\n'),
         },
       ],
-      { appStep: 'agent_import_characters_preview', maxTokens: 7000, timeoutMs: 220_000, retries: 1, temperature: 0.2 },
+      { appStep: 'agent_import_characters_preview', maxTokens: 7000, timeoutMs: IMPORT_CHARACTERS_PREVIEW_LLM_TIMEOUT_MS, retries: IMPORT_CHARACTERS_PREVIEW_LLM_RETRIES, temperature: 0.2 },
     );
 
     recordToolLlmUsage(context, 'agent_import_characters_preview', response.result);
+    await context.updateProgress?.({ phase: 'validating', phaseMessage: '正在校验导入角色预览', progressCurrent: 1, progressTotal: 1 });
     return this.normalize(response.data);
   }
 

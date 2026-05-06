@@ -23,8 +23,8 @@ export class PolishChapterTool implements BaseTool<PolishChapterInput, PolishCha
   riskLevel: 'medium' = 'medium';
   requiresApproval = true;
   sideEffects = ['create_chapter_draft', 'update_chapter_word_count'];
-  /** 润色长章节在慢模型上可能超过 4 分钟，外层 Tool 按用户配置放宽到 500s。 */
-  executionTimeoutMs = 500_000;
+  /** Step deadline is an observability guard; LLM timeout is owned by PolishChapterService. */
+  executionTimeoutMs = 1_000_000;
   manifest: ToolManifestV2 = {
     name: this.name,
     displayName: '润色/修改章节草稿',
@@ -46,6 +46,11 @@ export class PolishChapterTool implements BaseTool<PolishChapterInput, PolishCha
   run(args: PolishChapterInput, context: ToolContext): Promise<PolishChapterResult> {
     const chapterId = args.chapterId ?? context.chapterId;
     if (!chapterId) throw new BadRequestException('polish_chapter 需要 chapterId');
-    return this.polishChapter.run(context.projectId, chapterId, args.instruction, args.draftId);
+    return this.polishChapter.run(context.projectId, chapterId, args.instruction, args.draftId, {
+      progress: {
+        updateProgress: context.updateProgress,
+        heartbeat: context.heartbeat,
+      },
+    });
   }
 }

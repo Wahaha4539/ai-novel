@@ -1,6 +1,6 @@
 # AI Novel
 
-AI Novel 是一个面向长篇小说创作的 **Agent-Centric 创作工作台**。当前主链路已经收敛为 **Web + API 单体同步执行**：前端提供项目、卷章、大纲、设定、LLM 配置与 Agent 工作台；后端 NestJS API 内置 Agent Runtime、Planner、Tool、章节生成、事实校验、记忆重建与 pgvector 召回能力。
+AI Novel 是一个面向长篇小说创作的 **Agent-Centric 创作工作台**。当前主链路已经收敛为 **Web + API 单体执行模型**：前端提供项目、卷章、大纲、设定、LLM 配置与 Agent 工作台；后端 NestJS API 内置 Agent Runtime、Planner、Tool、章节生成、事实校验、记忆重建与 pgvector 召回能力。AgentRun 的长规划任务采用后台执行 + 前端轮询，避免 `/api/agent-runs/plan` 被长 LLM 预览阻塞。
 
 > 当前核心功能 **不需要启动 Python Worker**。`apps/worker` 仅保留为历史 pipeline 参考。
 
@@ -268,6 +268,7 @@ curl.exe http://127.0.0.1:18319/v1/embeddings `
 - `202604220001_init/migration.sql`：初始化核心表、枚举和 `pgcrypto` 扩展。
 - `20260427004500_memory_pgvector_quality/migration.sql`：启用 `vector` 扩展、增加 `MemoryChunk.embeddingVector`、创建 HNSW 向量索引。
 - `20260427002100_add_agent_trace_tables/migration.sql`：Agent Run / Plan / Step / Artifact / Approval 等追踪表。
+- `202605060002_agent_run_progress_timeout/migration.sql`：为 AgentRun/AgentStep 增加 phase、heartbeat、timeout/deadline、错误码和防 stuck 观测字段。
 
 ---
 
@@ -558,6 +559,10 @@ Agent 执行约束：
 - Act 阶段必须经过用户确认。
 - 内部 ID 不允许由 LLM 编造；章节、角色等引用会通过 Resolver 工具解析。
 - Tool 失败会记录结构化 Observation，并由 Replanner 尝试最小修复或要求用户澄清。
+- `/api/agent-runs/plan` 会快速返回 `agentRunId/status=planning`，前端通过轮询 `GET /api/agent-runs/:id` 展示 Plan、Step、Artifact、phase、heartbeat、timeout/deadline 和错误码。
+- 长 LLM Tool 应使用 Tool 内部 `timeoutMs` 和明确错误语义，例如 `LLM_TIMEOUT`；Executor 不再用统一外层 Tool 超时作为常规业务失败来源。
+- 导入预览、章节生成、批量写作、章节润色、自动修复、AI 审稿、创作引导、连续性治理、世界观/Story Bible/SceneCard 预览等长任务会写入 `calling_llm`、`validating`、`persisting` 等 phase，便于 Timeline 轮询展示真实进度。
+- API 内置 AgentRun Watchdog 会处理真正卡死的 Step/Run，例如 `TOOL_PHASE_TIMEOUT`、`TOOL_STUCK_TIMEOUT`、`RUN_DEADLINE_EXCEEDED`，并防止 cancelled/failed 的 Run 被后台迟到结果覆盖。
 
 ---
 

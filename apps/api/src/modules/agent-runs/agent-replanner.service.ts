@@ -166,6 +166,9 @@ export class AgentReplannerService {
       'inspect_project_context',
       'generate_story_bible_preview',
       'validate_story_bible',
+      'generate_scene_cards_preview',
+      'validate_scene_cards',
+      'list_scene_cards',
       'generate_continuity_preview',
       'validate_continuity_changes',
     ].includes(tool);
@@ -436,6 +439,21 @@ export class AgentReplannerService {
         validateTool: 'validate_continuity_changes',
         contextFocus: ['relationship_graph', 'timeline_events', 'world_facts', 'memory_chunks'],
         reason: 'persist_continuity_changes is missing continuity preview or validation output. Replan may only insert read-only collect_task_context, generate_continuity_preview, and validate_continuity_changes steps before retrying; it must not add writes or bypass approval.',
+      };
+    }
+    if (tool === 'persist_scene_cards') {
+      return {
+        taskType: 'scene_card_planning',
+        collectStepId: 'collect_scene_card_context_for_failed_persist',
+        collectName: 'Collect SceneCard context',
+        previewStepId: 'generate_scene_cards_preview_for_failed_persist',
+        previewName: 'Regenerate SceneCard preview',
+        previewTool: 'generate_scene_cards_preview',
+        validateStepId: 'validate_scene_cards_for_failed_persist',
+        validateName: 'Validate SceneCard preview',
+        validateTool: 'validate_scene_cards',
+        contextFocus: ['outline', 'characters', 'pacing', 'scene_cards'],
+        reason: 'persist_scene_cards is missing preview or validation output. Replan may only insert read-only collect_task_context, generate_scene_cards_preview, and validate_scene_cards steps before retrying; it must not add writes or bypass approval.',
       };
     }
     return undefined;

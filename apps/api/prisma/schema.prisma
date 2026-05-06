@@ -125,6 +125,12 @@ model AgentRun {
   output      Json?
   error       String?
   policy      Json?
+  currentStepNo Int?
+  currentTool   String?  @db.VarChar(100)
+  currentPhase  String?  @db.VarChar(80)
+  heartbeatAt   DateTime?
+  leaseExpiresAt DateTime?
+  deadlineAt    DateTime?
   createdBy   String?  @db.Uuid
   createdAt   DateTime @default(now())
   updatedAt   DateTime @updatedAt
@@ -172,7 +178,16 @@ model AgentStep {
   output      Json?
   metadata    Json     @default("{}")
   error       String?
+  phase       String?  @db.VarChar(80)
+  phaseMessage String?
+  progressCurrent Int?
+  progressTotal Int?
   startedAt   DateTime?
+  heartbeatAt DateTime?
+  timeoutAt   DateTime?
+  deadlineAt  DateTime?
+  errorCode   String?  @db.VarChar(80)
+  errorDetail Json?
   finishedAt  DateTime?
   createdAt   DateTime @default(now())
 

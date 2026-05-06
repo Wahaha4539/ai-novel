@@ -3,14 +3,8 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { useAgentRun } from '../../hooks/useAgentRun';
 import { getCreativeDocumentExtension, uploadCreativeDocument } from '../../lib/uploadCreativeDocument';
-import { AgentApprovalDialog } from './AgentApprovalDialog';
 import { AgentInputBox, type AgentInputSubmitOptions, type ChatMessage, type CreativeDocumentAttachmentItem } from './AgentInputBox';
-import { AgentPlanPanel } from './AgentPlanPanel';
-import { AgentTimelinePanel } from './AgentTimelinePanel';
-import { AgentArtifactPanel } from './AgentArtifactPanel';
-import { AgentAuditPanel } from './AgentAuditPanel';
-import { AgentResultPanel } from './AgentResultPanel';
-import { AgentObservationPanel } from './AgentObservationPanel';
+import { AgentMissionWindow } from './AgentMissionWindow';
 import { AgentRunHistoryPanel } from './AgentRunHistoryPanel';
 import { PROJECT_IMPORT_ASSET_LABELS, StatusBadge, approvalRiskSummary, latestPlan, latestPlanVersion, type ProjectImportAssetType } from './AgentSharedWidgets';
 
@@ -18,6 +12,10 @@ interface AgentWorkspaceProps {
   projectId: string;
   selectedChapterId?: string;
   onRefresh?: () => void | Promise<void>;
+}
+
+function areSameStepNos(left: number[], right: number[]) {
+  return left.length === right.length && left.every((stepNo, index) => stepNo === right[index]);
 }
 
 /**
@@ -34,12 +32,12 @@ export function AgentWorkspace({ projectId, selectedChapterId, onRefresh }: Agen
   const [creativeDocumentAttachments, setCreativeDocumentAttachments] = useState<CreativeDocumentAttachmentItem[]>([]);
   const msgIdCounter = useRef(0);
   const attachmentIdCounter = useRef(0);
-  const plan = latestPlan(currentRun);
-  const activePlanVersion = latestPlanVersion(currentRun);
+  const plan = useMemo(() => latestPlan(currentRun), [currentRun]);
+  const activePlanVersion = useMemo(() => latestPlanVersion(currentRun), [currentRun]);
   const approvalStepNos = useMemo(() => plan?.requiredApprovals?.flatMap((item) => item.target?.stepNos ?? []) ?? [], [plan]);
   const canAct = !!currentRun && (currentRun.status === 'waiting_approval' || currentRun.status === 'waiting_review');
   const canRetry = !!currentRun && currentRun.status === 'failed';
-  const canReplan = !!currentRun && currentRun.status !== 'acting' && currentRun.status !== 'running';
+  const canReplan = !!currentRun && !['planning', 'acting', 'running'].includes(currentRun.status);
   const riskSummary = useMemo(() => approvalRiskSummary(plan, approvedStepNos), [plan, approvedStepNos]);
   const uploadedCreativeDocumentAttachments = useMemo(
     () => creativeDocumentAttachments.flatMap((item) => (item.status === 'uploaded' && item.attachment ? [item.attachment] : [])),
@@ -55,7 +53,9 @@ export function AgentWorkspace({ projectId, selectedChapterId, onRefresh }: Agen
   const pageContext = useMemo(() => ({ currentProjectId: projectId, currentChapterId: selectedChapterId, sourcePage: 'agent_workspace' }), [projectId, selectedChapterId]);
 
   useEffect(() => { void listByProject(projectId); }, [listByProject, projectId]);
-  useEffect(() => { setApprovedStepNos(approvalStepNos); }, [approvalStepNos]);
+  useEffect(() => {
+    setApprovedStepNos((current) => (areSameStepNos(current, approvalStepNos) ? current : approvalStepNos));
+  }, [approvalStepNos]);
 
   const handleAct = useCallback(async () => { if (!currentRun) return; await act(currentRun.id, approvedScope); await onRefresh?.(); }, [currentRun, act, approvedScope, onRefresh]);
 
@@ -177,46 +177,84 @@ export function AgentWorkspace({ projectId, selectedChapterId, onRefresh }: Agen
   }, [startNewSession]);
 
   return (
-    <div className="h-full overflow-hidden" style={{ background: 'radial-gradient(circle at 20% 0%, rgba(6,182,212,0.13), transparent 32%), radial-gradient(circle at 90% 10%, rgba(245,158,11,0.10), transparent 26%), var(--bg-primary)' }}>
-      <div className="h-full overflow-y-auto px-8 py-7">
-        <header className="mb-7 grid gap-4 lg:grid-cols-[1.2fr_0.8fr]">
-          <div className="panel p-6" style={{ borderColor: 'rgba(6,182,212,0.22)', background: 'linear-gradient(135deg, rgba(5,10,18,0.78), rgba(15,23,42,0.48))' }}>
-            <div className="text-xs font-bold mb-3" style={{ color: '#67e8f9', letterSpacing: '0.24em', textTransform: 'uppercase' }}>AGENT OPS CONSOLE</div>
-            <h1 className="text-3xl font-black mb-3" style={{ color: 'var(--text-main)' }}>创作 Agent 工作台</h1>
-            <p className="text-sm leading-7" style={{ color: 'var(--text-muted)' }}>用自然语言提出章节写作、大纲设计或文案拆解任务。Agent 会先生成可审阅计划，只有确认后才执行写入类工具。</p>
+    <div className="agent-workspace-stage">
+      <div className="agent-workspace-window">
+        <header className="agent-workspace-window__header">
+          <div>
+            <div className="agent-workspace-window__eyebrow">Agent Ops Console</div>
+            <h1>创作 Agent 工作台</h1>
+            <p>每个任务都会沉淀为规划、待办、执行和总结，写入类步骤仍保留确认边界。</p>
           </div>
-          <div className="panel p-5 flex flex-col justify-between" style={{ background: 'rgba(0,0,0,0.22)' }}>
-            <div className="text-xs font-bold mb-3" style={{ color: 'var(--text-dim)', letterSpacing: '0.16em' }}>CURRENT RUN</div>
+          <div className="agent-workspace-window__meta">
             <StatusBadge status={currentRun?.status ?? 'idle'} />
-            <div className="mt-4 text-xs break-all" style={{ color: 'var(--text-dim)' }}>Run ID：{currentRun?.id ?? '尚未创建'}</div>
-            <button type="button" className="agent-new-session-btn mt-4 w-fit" onClick={handleNewSession} disabled={loading} title="清空当前聊天上下文并开始新会话">
+            <span>Run ID：{currentRun?.id ?? '尚未创建'}</span>
+            <span>上下文：项目 {projectId.slice(0, 8)}{selectedChapterId ? ` · 章节 ${selectedChapterId.slice(0, 8)}` : ' · 全书范围'}</span>
+            <button type="button" className="agent-new-session-btn" onClick={handleNewSession} disabled={loading} title="清空当前聊天上下文并开始新会话">
               <span aria-hidden="true">＋</span>
-              新增会话
+              新会话
             </button>
-            {actionMessage && <div className="mt-3 text-sm" style={{ color: '#ccfbf1' }}>{actionMessage}</div>}
-            {error && <div className="mt-3 text-sm" style={{ color: 'var(--status-err)' }}>{error}</div>}
-            <div className="mt-4 rounded-xl border px-3 py-2 text-xs leading-5" style={{ borderColor: 'var(--agent-border)', color: 'var(--text-dim)', background: 'var(--agent-glass)' }}>
-              当前上下文：项目 {projectId.slice(0, 8)}{selectedChapterId ? ` · 当前章节 ${selectedChapterId.slice(0, 8)}` : ' · 未选中章节'}
-            </div>
           </div>
         </header>
 
-        <section className="grid gap-5 xl:grid-cols-[430px_1fr]">
-          <div className="space-y-5">
-            <AgentInputBox goal={goal} loading={loading} canReplan={canReplan} hasCurrentRun={!!currentRun} canAct={canAct} plan={plan} currentRunGoal={currentRun?.goal} riskSummary={riskSummary} chatHistory={chatHistory} creativeDocumentAttachments={creativeDocumentAttachments} onGoalChange={setGoal} onSubmit={handleSubmit} onReplan={handleReplan} onRefresh={async () => { if (currentRun) await refresh(currentRun.id); }} onCreativeDocumentSelect={handleCreativeDocumentSelect} onCreativeDocumentRemove={handleCreativeDocumentRemove} />
-            <AgentRunHistoryPanel runs={runHistory} currentRunId={currentRun?.id} loading={loading} onRefresh={async () => { await listByProject(projectId); }} onSelect={async (id) => { await refresh(id); await loadAudit(id); }} />
+        {(actionMessage || error) && (
+          <div className={`agent-workspace-window__notice ${error ? 'agent-workspace-window__notice--error' : ''}`}>
+            {error || actionMessage}
           </div>
-          <div className="space-y-5">
-            <AgentPlanPanel run={currentRun} plan={plan} />
-            <AgentObservationPanel run={currentRun} loading={loading} onAnswerClarification={handleClarification} />
-            <div className="grid gap-5 lg:grid-cols-2">
-              <AgentTimelinePanel steps={currentRun?.steps ?? []} plan={plan} planVersion={activePlanVersion} approvedStepNos={approvedStepNos} onToggleApproval={(stepNo) => setApprovedStepNos((current) => (current.includes(stepNo) ? current.filter((item) => item !== stepNo) : [...current, stepNo].sort((a, b) => a - b)))} />
-              <AgentArtifactPanel run={currentRun} query={artifactQuery} onQueryChange={setArtifactQuery} onRequestWorldbuildingPersistSelection={handleWorldbuildingPersistSelection} onRequestImportTargetRegeneration={handleImportTargetRegeneration} actionDisabled={loading} />
-            </div>
-            <AgentAuditPanel events={auditEvents} />
-            <AgentApprovalDialog canAct={canAct} canRetry={canRetry} loading={loading} status={currentRun?.status} hasCurrentRun={!!currentRun} plan={plan} riskSummary={riskSummary} onCancel={async () => { if (currentRun) await cancel(currentRun.id); }} onRetry={handleRetry} onAct={handleAct} />
-            <AgentResultPanel output={currentRun?.output} error={currentRun?.error} />
-          </div>
+        )}
+
+        <section className="agent-workspace-window__body">
+          <aside className="agent-workspace-window__chat">
+            <AgentInputBox
+              goal={goal}
+              loading={loading}
+              canReplan={canReplan}
+              hasCurrentRun={!!currentRun}
+              canAct={canAct}
+              plan={plan}
+              runSteps={currentRun?.steps ?? []}
+              activePlanVersion={activePlanVersion}
+              runStatus={currentRun?.status}
+              actionMessage={actionMessage}
+              currentRunGoal={currentRun?.goal}
+              riskSummary={riskSummary}
+              chatHistory={chatHistory}
+              creativeDocumentAttachments={creativeDocumentAttachments}
+              onGoalChange={setGoal}
+              onSubmit={handleSubmit}
+              onReplan={handleReplan}
+              onRefresh={async () => { if (currentRun) await refresh(currentRun.id); }}
+              onCreativeDocumentSelect={handleCreativeDocumentSelect}
+              onCreativeDocumentRemove={handleCreativeDocumentRemove}
+            />
+            <AgentRunHistoryPanel
+              runs={runHistory}
+              currentRunId={currentRun?.id}
+              loading={loading}
+              onRefresh={async () => { await listByProject(projectId); }}
+              onSelect={async (id) => { await refresh(id); await loadAudit(id); }}
+            />
+          </aside>
+
+          <AgentMissionWindow
+            currentRun={currentRun}
+            plan={plan}
+            activePlanVersion={activePlanVersion}
+            approvedStepNos={approvedStepNos}
+            canAct={canAct}
+            canRetry={canRetry}
+            loading={loading}
+            riskSummary={riskSummary}
+            artifactQuery={artifactQuery}
+            auditEvents={auditEvents}
+            onToggleApproval={(stepNo) => setApprovedStepNos((current) => (current.includes(stepNo) ? current.filter((item) => item !== stepNo) : [...current, stepNo].sort((a, b) => a - b)))}
+            onArtifactQueryChange={setArtifactQuery}
+            onCancel={async () => { if (currentRun) await cancel(currentRun.id); }}
+            onRetry={handleRetry}
+            onAct={handleAct}
+            onAnswerClarification={handleClarification}
+            onRequestWorldbuildingPersistSelection={handleWorldbuildingPersistSelection}
+            onRequestImportTargetRegeneration={handleImportTargetRegeneration}
+          />
         </section>
       </div>
     </div>

@@ -1,16 +1,10 @@
 'use client';
 
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
-import { type AgentPageContext, useAgentRun } from '../../hooks/useAgentRun';
+import { type AgentPageContext, type AgentRunStepRecord, useAgentRun } from '../../hooks/useAgentRun';
 import { getCreativeDocumentExtension, uploadCreativeDocument } from '../../lib/uploadCreativeDocument';
 import { AgentInputBox, type AgentInputSubmitOptions, type ChatMessage, type CreativeDocumentAttachmentItem } from './AgentInputBox';
-import { AgentApprovalDialog } from './AgentApprovalDialog';
-import { AgentPlanPanel } from './AgentPlanPanel';
-import { AgentTimelinePanel } from './AgentTimelinePanel';
-import { AgentArtifactPanel } from './AgentArtifactPanel';
-import { AgentAuditPanel } from './AgentAuditPanel';
-import { AgentResultPanel } from './AgentResultPanel';
-import { AgentObservationPanel } from './AgentObservationPanel';
+import { AgentMissionWindow } from './AgentMissionWindow';
 import { AgentRunHistoryPanel } from './AgentRunHistoryPanel';
 import { PROJECT_IMPORT_ASSET_LABELS, StatusBadge, approvalRiskSummary, latestPlan, latestPlanVersion, type ProjectImportAssetType } from './AgentSharedWidgets';
 
@@ -31,10 +25,14 @@ interface AgentFloatingPanelProps {
 
 /** Tab 配置 */
 const TABS: { key: PanelTab; label: string }[] = [
-  { key: 'task', label: '📝 任务' },
-  { key: 'detail', label: '⚙️ 详情' },
-  { key: 'history', label: '📋 历史' },
+  { key: 'task', label: '任务' },
+  { key: 'detail', label: '执行窗口' },
+  { key: 'history', label: '历史' },
 ];
+
+function areSameStepNos(left: number[], right: number[]) {
+  return left.length === right.length && left.every((stepNo, index) => stepNo === right[index]);
+}
 
 /**
  * Agent 悬浮详情面板。
@@ -69,8 +67,8 @@ export function AgentFloatingPanel({
   const msgIdCounter = useRef(0);
   const attachmentIdCounter = useRef(0);
 
-  const plan = latestPlan(currentRun);
-  const activePlanVersion = latestPlanVersion(currentRun);
+  const plan = useMemo(() => latestPlan(currentRun), [currentRun]);
+  const activePlanVersion = useMemo(() => latestPlanVersion(currentRun), [currentRun]);
   const approvalStepNos = useMemo(
     () => plan?.requiredApprovals?.flatMap((item) => item.target?.stepNos ?? []) ?? [],
     [plan],
@@ -79,7 +77,7 @@ export function AgentFloatingPanel({
   // 审批/执行/重试条件
   const canAct = !!currentRun && (currentRun.status === 'waiting_approval' || currentRun.status === 'waiting_review');
   const canRetry = !!currentRun && currentRun.status === 'failed';
-  const canReplan = !!currentRun && currentRun.status !== 'acting' && currentRun.status !== 'running';
+  const canReplan = !!currentRun && !['planning', 'acting', 'running'].includes(currentRun.status);
   const riskSummary = useMemo(() => approvalRiskSummary(plan, approvedStepNos), [plan, approvedStepNos]);
   const uploadedCreativeDocumentAttachments = useMemo(
     () => creativeDocumentAttachments.flatMap((item) => (item.status === 'uploaded' && item.attachment ? [item.attachment] : [])),
@@ -108,7 +106,7 @@ export function AgentFloatingPanel({
 
   // 默认勾选计划要求审批的步骤
   useEffect(() => {
-    setApprovedStepNos(approvalStepNos);
+    setApprovedStepNos((current) => (areSameStepNos(current, approvalStepNos) ? current : approvalStepNos));
   }, [approvalStepNos]);
 
   // ── 事件处理 ──
@@ -165,7 +163,7 @@ export function AgentFloatingPanel({
     }
     setActiveTab('detail');
     // Act 模式：计划生成后自动审批执行全部步骤，跳过人工审批环节。
-    if (agentMode === 'act' && run?.id) {
+    if (agentMode === 'act' && run?.id && (run.status === 'waiting_approval' || run.status === 'waiting_review')) {
       const allStepNos = run.plans
         ?.flatMap((p) => (p.plan?.steps ?? p.steps ?? []).map((s) => s.stepNo))
         .filter((n): n is number => typeof n === 'number') ?? [];
@@ -280,7 +278,7 @@ export function AgentFloatingPanel({
   // ── 面板定位 ──
   // 根据圆球位置决定面板在左上/左下/右上/右下弹出
   const panelStyle = useMemo(() => {
-    const panelWidth = 500;
+    const panelWidth = Math.min(860, Math.max(420, window.innerWidth - 32));
     const panelMargin = 16;
     const orbCenterX = orbPosition.x + 30;
     const orbCenterY = orbPosition.y + 30;
@@ -314,7 +312,6 @@ export function AgentFloatingPanel({
         {/* 头部 */}
         <div className="agent-float-panel__header">
           <div className="agent-float-panel__title">
-            <span>🧠</span>
             Agent 工作台
             <StatusBadge status={currentRun?.status ?? 'idle'} />
           </div>
@@ -369,6 +366,10 @@ export function AgentFloatingPanel({
               hasCurrentRun={!!currentRun}
               canAct={canAct}
               plan={plan}
+              runSteps={currentRun?.steps ?? []}
+              activePlanVersion={activePlanVersion}
+              runStatus={currentRun?.status}
+              actionMessage={actionMessage}
               currentRunGoal={currentRun?.goal}
               riskSummary={riskSummary}
               chatHistory={chatHistory}
@@ -429,6 +430,10 @@ export function AgentFloatingPanel({
 function TaskTabContent(props: {
   goal: string; loading: boolean; canReplan: boolean; hasCurrentRun: boolean;
   canAct?: boolean; plan?: ReturnType<typeof latestPlan>; currentRunGoal?: string; riskSummary?: string[];
+  runSteps?: AgentRunStepRecord[];
+  activePlanVersion?: number;
+  runStatus?: string;
+  actionMessage?: string;
   chatHistory?: ChatMessage[];
   creativeDocumentAttachments?: CreativeDocumentAttachmentItem[];
   onGoalChange: (v: string) => void; onSubmit: (options?: AgentInputSubmitOptions) => void | Promise<void>;
@@ -463,39 +468,26 @@ function DetailTabContent(props: {
   onRequestImportTargetRegeneration: (assetType: ProjectImportAssetType) => void | Promise<void>;
 }) {
   return (
-    <div className="space-y-4">
-      <AgentPlanPanel run={props.currentRun} plan={props.plan} />
-      <AgentObservationPanel run={props.currentRun} loading={props.loading} onAnswerClarification={props.onAnswerClarification} />
-      <AgentTimelinePanel
-        steps={props.currentRun?.steps ?? []}
-        plan={props.plan}
-        planVersion={props.activePlanVersion}
-        approvedStepNos={props.approvedStepNos}
-        onToggleApproval={props.onToggleApproval}
-      />
-      <AgentApprovalDialog
-        canAct={props.canAct}
-        canRetry={props.canRetry}
-        loading={props.loading}
-        status={props.currentRun?.status}
-        hasCurrentRun={!!props.currentRun}
-        plan={props.plan}
-        riskSummary={props.riskSummary}
-        onCancel={props.onCancel}
-        onRetry={props.onRetry}
-        onAct={props.onAct}
-      />
-      <AgentArtifactPanel
-        run={props.currentRun}
-        query={props.artifactQuery}
-        onQueryChange={props.onArtifactQueryChange}
-        onRequestWorldbuildingPersistSelection={props.onRequestWorldbuildingPersistSelection}
-        onRequestImportTargetRegeneration={props.onRequestImportTargetRegeneration}
-        actionDisabled={props.loading}
-      />
-      <AgentAuditPanel events={props.auditEvents} />
-      <AgentResultPanel output={props.currentRun?.output} error={props.currentRun?.error} />
-    </div>
+    <AgentMissionWindow
+      currentRun={props.currentRun}
+      plan={props.plan}
+      activePlanVersion={props.activePlanVersion}
+      approvedStepNos={props.approvedStepNos}
+      canAct={props.canAct}
+      canRetry={props.canRetry}
+      loading={props.loading}
+      riskSummary={props.riskSummary}
+      artifactQuery={props.artifactQuery}
+      auditEvents={props.auditEvents}
+      onToggleApproval={props.onToggleApproval}
+      onArtifactQueryChange={props.onArtifactQueryChange}
+      onCancel={props.onCancel}
+      onRetry={props.onRetry}
+      onAct={props.onAct}
+      onAnswerClarification={props.onAnswerClarification}
+      onRequestWorldbuildingPersistSelection={props.onRequestWorldbuildingPersistSelection}
+      onRequestImportTargetRegeneration={props.onRequestImportTargetRegeneration}
+    />
   );
 }
 

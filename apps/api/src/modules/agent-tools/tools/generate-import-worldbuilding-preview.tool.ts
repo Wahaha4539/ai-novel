@@ -15,6 +15,10 @@ interface GenerateImportWorldbuildingPreviewInput {
   maxEntries?: number;
 }
 
+const IMPORT_WORLDBUILDING_PREVIEW_LLM_TIMEOUT_MS = 220_000;
+const IMPORT_WORLDBUILDING_PREVIEW_LLM_RETRIES = 1;
+const IMPORT_WORLDBUILDING_PREVIEW_PHASE_TIMEOUT_MS = IMPORT_WORLDBUILDING_PREVIEW_LLM_TIMEOUT_MS * (IMPORT_WORLDBUILDING_PREVIEW_LLM_RETRIES + 1) + 5_000;
+
 export interface GenerateImportWorldbuildingPreviewOutput {
   lorebookEntries: ImportPreviewOutput['lorebookEntries'];
   risks: string[];
@@ -73,13 +77,20 @@ export class GenerateImportWorldbuildingPreviewTool implements BaseTool<Generate
   riskLevel: 'low' = 'low';
   requiresApproval = false;
   sideEffects: string[] = [];
-  executionTimeoutMs = 240_000;
+  executionTimeoutMs = IMPORT_WORLDBUILDING_PREVIEW_PHASE_TIMEOUT_MS + 60_000;
 
   constructor(private readonly llm: LlmGatewayService) {}
 
   async run(args: GenerateImportWorldbuildingPreviewInput, context: ToolContext): Promise<GenerateImportWorldbuildingPreviewOutput> {
     const analysis = this.normalizeAnalysis(args.analysis);
     const maxEntries = this.normalizeMaxEntries(args.maxEntries);
+    await context.updateProgress?.({
+      phase: 'calling_llm',
+      phaseMessage: '正在生成导入世界观预览',
+      progressCurrent: 0,
+      progressTotal: maxEntries,
+      timeoutMs: IMPORT_WORLDBUILDING_PREVIEW_PHASE_TIMEOUT_MS,
+    });
     const response = await this.llm.chatJson<GenerateImportWorldbuildingPreviewOutput>(
       [
         {
@@ -106,10 +117,11 @@ export class GenerateImportWorldbuildingPreviewTool implements BaseTool<Generate
           ].join('\n\n'),
         },
       ],
-      { appStep: 'agent_import_worldbuilding_preview', maxTokens: Math.min(8000, maxEntries * 520 + 1600), timeoutMs: 220_000, retries: 1, temperature: 0.2 },
+      { appStep: 'agent_import_worldbuilding_preview', maxTokens: Math.min(8000, maxEntries * 520 + 1600), timeoutMs: IMPORT_WORLDBUILDING_PREVIEW_LLM_TIMEOUT_MS, retries: IMPORT_WORLDBUILDING_PREVIEW_LLM_RETRIES, temperature: 0.2 },
     );
 
     recordToolLlmUsage(context, 'agent_import_worldbuilding_preview', response.result);
+    await context.updateProgress?.({ phase: 'validating', phaseMessage: '正在校验导入世界观预览', progressCurrent: maxEntries, progressTotal: maxEntries });
     return this.normalize(response.data, maxEntries);
   }
 

@@ -24,12 +24,23 @@ export class AutoRepairChapterTool implements BaseTool<AutoRepairChapterInput, C
   riskLevel: 'medium' = 'medium';
   requiresApproval = true;
   sideEffects = ['create_chapter_draft_if_repaired', 'update_chapter_word_count'];
+  executionTimeoutMs = 425_000;
 
   constructor(private readonly autoRepair: ChapterAutoRepairService) {}
 
   run(args: AutoRepairChapterInput, context: ToolContext): Promise<ChapterAutoRepairResult> {
     const chapterId = args.chapterId ?? context.chapterId;
     if (!chapterId) throw new BadRequestException('auto_repair_chapter 需要 chapterId');
-    return this.autoRepair.run(context.projectId, chapterId, { draftId: args.draftId, issues: args.issues, instruction: args.instruction, userId: context.userId, maxRounds: args.maxRounds });
+    return this.autoRepair.run(context.projectId, chapterId, {
+      draftId: args.draftId,
+      issues: args.issues,
+      instruction: args.instruction,
+      userId: context.userId,
+      maxRounds: args.maxRounds,
+      progress: {
+        updateProgress: context.updateProgress,
+        heartbeat: context.heartbeat,
+      },
+    });
   }
 }

@@ -14,6 +14,10 @@ interface GenerateImportProjectProfilePreviewInput {
   projectContext?: Record<string, unknown>;
 }
 
+const IMPORT_PROJECT_PROFILE_PREVIEW_LLM_TIMEOUT_MS = 180_000;
+const IMPORT_PROJECT_PROFILE_PREVIEW_LLM_RETRIES = 1;
+const IMPORT_PROJECT_PROFILE_PREVIEW_PHASE_TIMEOUT_MS = IMPORT_PROJECT_PROFILE_PREVIEW_LLM_TIMEOUT_MS * (IMPORT_PROJECT_PROFILE_PREVIEW_LLM_RETRIES + 1) + 5_000;
+
 export interface GenerateImportProjectProfilePreviewOutput {
   projectProfile: Omit<ImportPreviewOutput['projectProfile'], 'outline'>;
   risks: string[];
@@ -70,12 +74,19 @@ export class GenerateImportProjectProfilePreviewTool implements BaseTool<Generat
   riskLevel: 'low' = 'low';
   requiresApproval = false;
   sideEffects: string[] = [];
-  executionTimeoutMs = 240_000;
+  executionTimeoutMs = IMPORT_PROJECT_PROFILE_PREVIEW_PHASE_TIMEOUT_MS + 60_000;
 
   constructor(private readonly llm: LlmGatewayService) {}
 
   async run(args: GenerateImportProjectProfilePreviewInput, context: ToolContext): Promise<GenerateImportProjectProfilePreviewOutput> {
     const analysis = this.normalizeAnalysis(args.analysis);
+    await context.updateProgress?.({
+      phase: 'calling_llm',
+      phaseMessage: '正在生成导入项目资料预览',
+      progressCurrent: 0,
+      progressTotal: 1,
+      timeoutMs: IMPORT_PROJECT_PROFILE_PREVIEW_PHASE_TIMEOUT_MS,
+    });
     const response = await this.llm.chatJson<GenerateImportProjectProfilePreviewOutput>(
       [
         {
@@ -101,10 +112,11 @@ export class GenerateImportProjectProfilePreviewTool implements BaseTool<Generat
           ].join('\n\n'),
         },
       ],
-      { appStep: 'agent_import_project_profile_preview', maxTokens: 4000, timeoutMs: 180_000, retries: 1, temperature: 0.2 },
+      { appStep: 'agent_import_project_profile_preview', maxTokens: 4000, timeoutMs: IMPORT_PROJECT_PROFILE_PREVIEW_LLM_TIMEOUT_MS, retries: IMPORT_PROJECT_PROFILE_PREVIEW_LLM_RETRIES, temperature: 0.2 },
     );
 
     recordToolLlmUsage(context, 'agent_import_project_profile_preview', response.result);
+    await context.updateProgress?.({ phase: 'validating', phaseMessage: '正在校验导入项目资料预览', progressCurrent: 1, progressTotal: 1 });
     return this.normalize(response.data, analysis.sourceText);
   }
 

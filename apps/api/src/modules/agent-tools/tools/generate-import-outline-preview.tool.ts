@@ -15,6 +15,10 @@ interface GenerateImportOutlinePreviewInput {
   chapterCount?: number;
 }
 
+const IMPORT_OUTLINE_PREVIEW_LLM_TIMEOUT_MS = 220_000;
+const IMPORT_OUTLINE_PREVIEW_LLM_RETRIES = 1;
+const IMPORT_OUTLINE_PREVIEW_PHASE_TIMEOUT_MS = IMPORT_OUTLINE_PREVIEW_LLM_TIMEOUT_MS * (IMPORT_OUTLINE_PREVIEW_LLM_RETRIES + 1) + 5_000;
+
 export interface GenerateImportOutlinePreviewOutput {
   projectProfile: Pick<ImportPreviewOutput['projectProfile'], 'outline'>;
   volumes: ImportPreviewOutput['volumes'];
@@ -77,13 +81,20 @@ export class GenerateImportOutlinePreviewTool implements BaseTool<GenerateImport
   riskLevel: 'low' = 'low';
   requiresApproval = false;
   sideEffects: string[] = [];
-  executionTimeoutMs = 240_000;
+  executionTimeoutMs = IMPORT_OUTLINE_PREVIEW_PHASE_TIMEOUT_MS + 60_000;
 
   constructor(private readonly llm: LlmGatewayService) {}
 
   async run(args: GenerateImportOutlinePreviewInput, context: ToolContext): Promise<GenerateImportOutlinePreviewOutput> {
     const analysis = this.normalizeAnalysis(args.analysis);
     const chapterCount = this.normalizeChapterCount(args.chapterCount, analysis);
+    await context.updateProgress?.({
+      phase: 'calling_llm',
+      phaseMessage: '正在生成导入大纲预览',
+      progressCurrent: 0,
+      progressTotal: chapterCount,
+      timeoutMs: IMPORT_OUTLINE_PREVIEW_PHASE_TIMEOUT_MS,
+    });
     const response = await this.llm.chatJson<GenerateImportOutlinePreviewOutput>(
       [
         {
@@ -109,10 +120,11 @@ export class GenerateImportOutlinePreviewTool implements BaseTool<GenerateImport
           ].join('\n\n'),
         },
       ],
-      { appStep: 'agent_import_outline_preview', maxTokens: Math.min(9000, chapterCount * 360 + 1800), timeoutMs: 220_000, retries: 1, temperature: 0.2 },
+      { appStep: 'agent_import_outline_preview', maxTokens: Math.min(9000, chapterCount * 360 + 1800), timeoutMs: IMPORT_OUTLINE_PREVIEW_LLM_TIMEOUT_MS, retries: IMPORT_OUTLINE_PREVIEW_LLM_RETRIES, temperature: 0.2 },
     );
 
     recordToolLlmUsage(context, 'agent_import_outline_preview', response.result);
+    await context.updateProgress?.({ phase: 'validating', phaseMessage: '正在校验导入大纲预览', progressCurrent: chapterCount, progressTotal: chapterCount });
     return this.normalize(response.data, chapterCount, analysis.sourceText);
   }
 

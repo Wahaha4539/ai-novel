@@ -23,7 +23,26 @@ export interface GenerateChapterInput {
   userId?: string;
   requestId?: string;
   jobId?: string;
+  progress?: ChapterGenerationProgressReporter;
 }
+
+interface ChapterGenerationProgressPatch {
+  phase?: string;
+  phaseMessage?: string;
+  progressCurrent?: number;
+  progressTotal?: number;
+  timeoutMs?: number;
+  deadlineMs?: number;
+}
+
+interface ChapterGenerationProgressReporter {
+  updateProgress?: (patch: ChapterGenerationProgressPatch) => Promise<void>;
+  heartbeat?: (patch?: ChapterGenerationProgressPatch) => Promise<void>;
+}
+
+const GENERATE_CHAPTER_LLM_TIMEOUT_MS = 450_000;
+const GENERATE_CHAPTER_LLM_RETRIES = 1;
+const GENERATE_CHAPTER_LLM_PHASE_TIMEOUT_MS = GENERATE_CHAPTER_LLM_TIMEOUT_MS * (GENERATE_CHAPTER_LLM_RETRIES + 1) + 5_000;
 
 export interface OutlineDensityCheckResult {
   valid: boolean;
@@ -155,6 +174,7 @@ export class GenerateChapterService {
   async run(projectId: string, chapterId: string, input: GenerateChapterInput = {}): Promise<GenerateChapterResult> {
     const runStartedAt = Date.now();
     const logContext = { requestId: input.requestId, jobId: input.jobId, projectId, chapterId };
+    await input.progress?.updateProgress?.({ phase: 'preparing_context', phaseMessage: '正在读取章节与项目上下文' });
     const chapter = await this.prisma.chapter.findFirst({ where: { id: chapterId, projectId }, include: { project: { include: { creativeProfile: true, generationProfile: true } }, volume: true } });
     if (!chapter) throw new NotFoundException(`章节不存在或不属于当前项目：${chapterId}`);
 
@@ -163,11 +183,13 @@ export class GenerateChapterService {
     if (targetWordCount < 200) throw new BadRequestException('章节目标字数不能低于 200。');
 
     const latest = await this.prisma.chapterDraft.findFirst({ where: { chapterId }, orderBy: { versionNo: 'desc' } });
+    await input.progress?.heartbeat?.({ phase: 'preflight', phaseMessage: '正在进行章节生成前检查' });
     const preflight = await this.runPreflight(projectId, chapter, latest?.versionNo, input, generationProfile);
     if (input.validateBeforeWrite !== false && !preflight.valid) {
       throw new BadRequestException(`生成前检查未通过：${preflight.blockers.join('；')}`);
     }
 
+    await input.progress?.heartbeat?.({ phase: 'retrieving_context', phaseMessage: '正在召回章节写作上下文' });
     const [styleProfile, characters, plannedForeshadows, sceneCards, previousChapters] = await Promise.all([
       this.loadStyleProfile(projectId, chapter.project.defaultStyleProfileId),
       this.prisma.character.findMany({ where: { projectId }, orderBy: { createdAt: 'asc' }, take: 20 }),
@@ -263,18 +285,26 @@ export class GenerateChapterService {
     });
 
     const llmStartedAt = Date.now();
+    await input.progress?.updateProgress?.({
+      phase: 'calling_llm',
+      phaseMessage: '正在生成章节正文',
+      progressCurrent: 0,
+      progressTotal: 1,
+      timeoutMs: GENERATE_CHAPTER_LLM_PHASE_TIMEOUT_MS,
+    });
     const llmResult = await this.llm.chat(
       [
         { role: 'system', content: prompt.system },
         { role: 'user', content: prompt.user },
       ],
-      { appStep: 'generate', maxTokens: Math.min(10_000, Math.max(1800, Math.ceil(targetWordCount * 1.8))), timeoutMs: 450_000, retries: 1, temperature: 0.45 },
+      { appStep: 'generate', maxTokens: Math.min(10_000, Math.max(1800, Math.ceil(targetWordCount * 1.8))), timeoutMs: GENERATE_CHAPTER_LLM_TIMEOUT_MS, retries: GENERATE_CHAPTER_LLM_RETRIES, temperature: 0.45 },
     );
     this.logger.log('generation.llm.completed', { ...logContext, stage: 'generating_draft', model: llmResult.model, tokenUsage: llmResult.usage, elapsedMs: Date.now() - llmStartedAt });
     const content = this.stripWrapperTags(llmResult.text);
     if (!content) throw new BadRequestException('write_chapter 生成正文为空');
 
     const actualWordCount = this.countChineseLikeWords(content);
+    await input.progress?.heartbeat?.({ phase: 'validating', phaseMessage: '正在校验生成章节质量', progressCurrent: 1, progressTotal: 1 });
     const qualityGate = this.assessGeneratedDraftQuality(content, actualWordCount, targetWordCount, chapter, contextPack.planningContext?.sceneCards ?? []);
     if (qualityGate.blocked) {
       throw new BadRequestException(`生成后质量门禁未通过：${qualityGate.blockers.join('；')}`);
@@ -282,6 +312,7 @@ export class GenerateChapterService {
     const modelInfo = { model: llmResult.model, usage: llmResult.usage, rawPayloadSummary: llmResult.rawPayloadSummary };
     const retrievalPayload = { contextPack, generationProfile, retrievalPlan: retrievalPlanResult.plan, plannerDiagnostics: retrievalPlanResult.diagnostics, retrievalCache: retrievalBundle.cache, lorebookHits: retrievalBundle.lorebookHits, memoryHits: retrievalBundle.memoryHits, structuredHits: retrievalBundle.structuredHits, rankedHits: retrievalBundle.rankedHits, diagnostics: retrievalBundle.diagnostics, preflight, qualityGate };
 
+    await input.progress?.updateProgress?.({ phase: 'persisting', phaseMessage: '正在写入章节草稿与质量报告', progressCurrent: 0, progressTotal: 1, timeoutMs: 60_000 });
     const draft = await this.prisma.$transaction(async (tx) => {
       // 版本号必须在事务内重新读取，避免并发生成同一章节时用到过期 latest 导致版本冲突。
       const latestInTransaction = await tx.chapterDraft.findFirst({ where: { chapterId }, orderBy: { versionNo: 'desc' } });
@@ -315,6 +346,7 @@ export class GenerateChapterService {
       return created;
     });
     await this.cacheService?.deleteProjectRecallResults(projectId);
+    await input.progress?.heartbeat?.({ phase: 'persisting', phaseMessage: '章节草稿写入完成', progressCurrent: 1, progressTotal: 1 });
     this.logger.log('generation.draft.persisted', { ...logContext, stage: 'draft_persisted', draftId: draft.id, versionNo: draft.versionNo, actualWordCount, model: llmResult.model, tokenUsage: llmResult.usage, elapsedMs: Date.now() - runStartedAt });
 
     return { draftId: draft.id, chapterId, versionNo: draft.versionNo, actualWordCount, summary: content.slice(0, 160), retrievalPayload, preflight, qualityGate, promptDebug: prompt.debug, modelInfo };

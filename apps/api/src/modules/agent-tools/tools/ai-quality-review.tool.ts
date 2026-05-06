@@ -89,7 +89,14 @@ export class AiQualityReviewTool implements BaseTool<AiQualityReviewToolInput, A
     return this.aiQualityReview.reviewAndCreate(
       context.projectId,
       { chapterId, draftId, instruction: args.instruction, focus: args.focus },
-      { agentRunId: context.agentRunId, userId: context.userId },
+      {
+        agentRunId: context.agentRunId,
+        userId: context.userId,
+        progress: {
+          updateProgress: context.updateProgress,
+          heartbeat: context.heartbeat,
+        },
+      },
     );
   }
 }

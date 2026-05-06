@@ -1,7 +1,7 @@
 import { BadRequestException, Injectable, NotFoundException } from '@nestjs/common';
 import { PrismaService } from '../../prisma/prisma.service';
 import { StructuredLogger } from '../../common/logging/structured-logger';
-import { ToolJsonSchema, ToolLlmUsage, ToolSchemaType } from '../agent-tools/base-tool';
+import { ToolContext, ToolJsonSchema, ToolLlmUsage, ToolProgressPatch, ToolSchemaType } from '../agent-tools/base-tool';
 import { ToolRegistryService } from '../agent-tools/tool-registry.service';
 import { AgentContextV2 } from './agent-context-builder.service';
 import { AgentExecutionObservationError, AgentObservation, AgentObservationErrorCode } from './agent-observation.types';
@@ -31,6 +31,13 @@ export class AgentCancelledError extends Error {
   constructor(message: string) {
     super(message);
     this.name = 'AgentCancelledError';
+  }
+}
+
+export class AgentRunStateChangedError extends Error {
+  constructor(message: string, readonly status: string) {
+    super(message);
+    this.name = 'AgentRunStateChangedError';
   }
 }
 
@@ -70,6 +77,7 @@ interface RuntimeReferenceState {
 @Injectable()
 export class AgentExecutorService {
   private readonly logger = new StructuredLogger(AgentExecutorService.name);
+  private readonly defaultStepDeadlineMs = 600_000;
 
   constructor(
     private readonly prisma: PrismaService,
@@ -109,7 +117,7 @@ export class AgentExecutorService {
     this.policy.assertPlanExecutable(steps);
 
     for (const step of steps) {
-      await this.assertRunNotCancelled(agentRunId);
+      await this.assertRunNotTerminal(agentRunId);
       const tool = this.tools.get(step.tool);
       if (!tool) throw new BadRequestException(`未注册工具：${step.tool}`);
 
@@ -138,12 +146,13 @@ export class AgentExecutorService {
       }
 
       const resolvedArgs = this.resolveValue(step.args, outputs, runtimeState, options.agentContext, steps, step.stepNo) as Record<string, unknown>;
-      await this.trace.startStep(agentRunId, step.stepNo, { stepType: 'tool', name: step.name, toolName: step.tool, mode, planVersion, input: resolvedArgs });
+      const stepDeadlineMs = tool.executionTimeoutMs ?? this.defaultStepDeadlineMs;
+      await this.trace.startStep(agentRunId, step.stepNo, { stepType: 'tool', name: step.name, toolName: step.tool, mode, planVersion, input: resolvedArgs, deadlineMs: stepDeadlineMs });
       const stepStartedAt = Date.now();
       const llmCalls: ToolLlmUsage[] = [];
       this.logger.log('agent.step.started', { agentRunId, mode, planVersion, stepNo: step.stepNo, stepName: step.name, tool: step.tool, approved: stepApproved, args: this.summarizeValue(resolvedArgs) });
       try {
-        const context = {
+        const context: ToolContext = {
           agentRunId,
           projectId: run.projectId,
           chapterId: run.chapterId ?? undefined,
@@ -153,13 +162,14 @@ export class AgentExecutorService {
           stepTools,
           policy: { confirmation: options.confirmation },
           recordLlmUsage: (usage: ToolLlmUsage) => llmCalls.push(this.normalizeToolLlmUsage(usage)),
+          updateProgress: (patch: ToolProgressPatch) => this.trace.updateStepPhase(agentRunId, step.stepNo, patch, mode, planVersion),
+          heartbeat: (patch?: ToolProgressPatch) => this.trace.heartbeatStep(agentRunId, step.stepNo, patch, mode, planVersion),
         };
         this.policy.assertAllowed(tool, context, plannedTools);
         this.assertSchema(tool.inputSchema, resolvedArgs, `${tool.name}.input`);
         this.assertIdPolicy(tool, resolvedArgs, step.args, options.agentContext);
-        // 长文生成/润色的底层 LLM 超时可达 180s，允许 Tool 声明更合理的外层执行超时。
-        const toolTimeoutMs = tool.executionTimeoutMs ?? 120_000;
-        const output = await this.withTimeout(tool.run(resolvedArgs, context), toolTimeoutMs, `工具 ${tool.name} 执行超时`);
+        const output = await tool.run(resolvedArgs, context);
+        await this.assertRunNotTerminal(agentRunId);
         this.assertSchema(tool.outputSchema, output, `${tool.name}.output`);
         outputs[step.stepNo] = output;
         this.updateRuntimeState(runtimeState, output);
@@ -168,6 +178,10 @@ export class AgentExecutorService {
         await this.trace.finishStep(agentRunId, step.stepNo, output, mode, planVersion, { executionCost });
         this.logger.log('agent.step.succeeded', { agentRunId, mode, planVersion, stepNo: step.stepNo, tool: step.tool, elapsedMs, model: executionCost.model, tokenUsage: executionCost.tokenUsage, llmCallCount: executionCost.llmCallCount, executionCost, output: this.summarizeValue(output), runtimeState });
       } catch (error) {
+        if (error instanceof AgentCancelledError || error instanceof AgentRunStateChangedError) {
+          this.logger.warn('agent.step.aborted_after_run_state_change', { agentRunId, mode, planVersion, stepNo: step.stepNo, tool: tool.name, message: error.message });
+          throw error;
+        }
         if (error instanceof AgentSecondConfirmationRequiredError) {
           // 二次确认缺失是“等待用户复核”的暂停点，不应被记录成业务执行失败。
           const elapsedMs = Date.now() - stepStartedAt;
@@ -226,18 +240,13 @@ export class AgentExecutorService {
     }
   }
 
-  private withTimeout<T>(promise: Promise<T>, timeoutMs: number, message: string): Promise<T> {
-    let timer: NodeJS.Timeout | undefined;
-    const timeout = new Promise<never>((_, reject) => {
-      timer = setTimeout(() => reject(new BadRequestException(message)), timeoutMs);
-    });
-    return Promise.race([promise, timeout]).finally(() => timer && clearTimeout(timer));
-  }
-
-  /** 每个步骤前读取最新 Run 状态，让用户取消请求能尽快阻止后续 Tool 写入。 */
-  private async assertRunNotCancelled(agentRunId: string) {
+  /** 每个步骤前后读取最新 Run 状态，避免取消/失败后被后台迟到结果覆盖。 */
+  private async assertRunNotTerminal(agentRunId: string) {
     const run = await this.prisma.agentRun.findUnique({ where: { id: agentRunId }, select: { status: true } });
     if (run?.status === 'cancelled') throw new AgentCancelledError('AgentRun 已取消，停止执行后续步骤');
+    if (run?.status && ['failed', 'succeeded'].includes(run.status)) {
+      throw new AgentRunStateChangedError(`AgentRun 已进入终态 ${run.status}，停止写入迟到结果`, run.status);
+    }
   }
 
   /** 将 Tool/Policy 异常结构化写入 AgentStep，便于前端和排障脚本直接展示失败原因。 */
@@ -276,6 +285,13 @@ export class AgentExecutorService {
   }
 
   private classifyObservationCode(message: string, error: unknown): AgentObservationErrorCode {
+    const structuredCode = this.extractStructuredErrorCode(error);
+    if (structuredCode === 'LLM_TIMEOUT') return 'LLM_TIMEOUT';
+    if (structuredCode === 'LLM_PROVIDER_ERROR') return 'LLM_PROVIDER_ERROR';
+    if (structuredCode === 'LLM_JSON_INVALID') return 'LLM_JSON_INVALID';
+    if (structuredCode === 'TOOL_PHASE_TIMEOUT') return 'TOOL_PHASE_TIMEOUT';
+    if (structuredCode === 'TOOL_STUCK_TIMEOUT') return 'TOOL_STUCK_TIMEOUT';
+    if (structuredCode === 'RUN_DEADLINE_EXCEEDED') return 'RUN_DEADLINE_EXCEEDED';
     if (/是必填字段/.test(message)) return 'MISSING_REQUIRED_ARGUMENT';
     if (/Tool Schema|类型不符合|不是允许的字段|格式不符合|不在允许枚举值|长度不能|不能小于|不能大于|必须是整数/.test(message)) return 'SCHEMA_VALIDATION_FAILED';
     // 自然语言直接进入 *.Id 字段属于可由 resolver 修复的参数问题，不能归为不可重试的策略阻断。
@@ -286,8 +302,19 @@ export class AgentExecutorService {
     if (/歧义|多个候选|不确定|AMBIGUOUS/i.test(message)) return 'AMBIGUOUS_ENTITY';
     if (/需要用户审批|需要显式审批/.test(message)) return 'APPROVAL_REQUIRED';
     if (/Policy|禁止|不允许|不能使用自然语言|伪造 ID/.test(message)) return 'POLICY_BLOCKED';
+    if (/LLM JSON 解析失败/.test(message)) return 'LLM_JSON_INVALID';
+    if (/LLM 请求失败|缺少 LLM API Key|LLM 返回内容为空/.test(message)) return 'LLM_PROVIDER_ERROR';
     if (/超时/.test(message)) return 'TOOL_TIMEOUT';
     return error instanceof BadRequestException ? 'VALIDATION_FAILED' : 'TOOL_INTERNAL_ERROR';
+  }
+
+  private extractStructuredErrorCode(error: unknown): string | undefined {
+    if (!error || typeof error !== 'object') return undefined;
+    const record = error as Record<string, unknown>;
+    if (typeof record.code === 'string') return record.code;
+    const response = record.response;
+    if (response && typeof response === 'object' && typeof (response as Record<string, unknown>).code === 'string') return (response as Record<string, unknown>).code as string;
+    return undefined;
   }
 
   private extractMissingFields(message: string): string[] | undefined {
@@ -302,7 +329,7 @@ export class AgentExecutorService {
   }
 
   private isRetryableObservation(code: AgentObservationErrorCode): boolean {
-    return ['MISSING_REQUIRED_ARGUMENT', 'SCHEMA_VALIDATION_FAILED', 'ENTITY_NOT_FOUND', 'AMBIGUOUS_ENTITY', 'TOOL_TIMEOUT', 'VALIDATION_FAILED'].includes(code);
+    return ['MISSING_REQUIRED_ARGUMENT', 'SCHEMA_VALIDATION_FAILED', 'ENTITY_NOT_FOUND', 'AMBIGUOUS_ENTITY', 'TOOL_TIMEOUT', 'LLM_TIMEOUT', 'LLM_PROVIDER_ERROR', 'LLM_JSON_INVALID', 'TOOL_PHASE_TIMEOUT', 'TOOL_STUCK_TIMEOUT', 'VALIDATION_FAILED'].includes(code);
   }
 
   private normalizeToolLlmUsage(usage: ToolLlmUsage): ToolLlmUsage {

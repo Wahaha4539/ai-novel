@@ -1,6 +1,7 @@
 import { BadRequestException, Injectable, NotFoundException } from '@nestjs/common';
 import { Prisma } from '@prisma/client';
 import { PrismaService } from '../../prisma/prisma.service';
+import { StructuredLogger } from '../../common/logging/structured-logger';
 import { AgentCreativeDocumentAttachmentDto, AgentCreativeDocumentExtensionDto, CreateAgentPlanContextDto, CreateAgentPlanDto, ImportAssetTypeDto, ImportPreviewModeDto, ReplanAgentRunDto, SubmitAgentClarificationChoiceDto } from './dto/create-agent-plan.dto';
 import { ExecuteAgentRunDto } from './dto/execute-agent-run.dto';
 import { InterpretAgentMessageDto } from './dto/interpret-agent-message.dto';
@@ -9,6 +10,8 @@ import { AgentRuntimeService } from './agent-runtime.service';
 
 @Injectable()
 export class AgentRunsService {
+  private readonly logger = new StructuredLogger(AgentRunsService.name);
+
   constructor(private readonly prisma: PrismaService, private readonly runtime: AgentRuntimeService, private readonly messageIntent: AgentMessageIntentService) {}
 
   private readonly creativeDocumentExtensions = new Set<AgentCreativeDocumentExtensionDto>(['md', 'txt', 'docx', 'pdf']);
@@ -264,11 +267,24 @@ export class AgentRunsService {
 
     // DTO 类实例没有 JSON index signature，显式转为普通对象再写入 Prisma Json 字段。
     const input = { projectId: dto.projectId, message: dto.message, context, attachments, ...(clientRequestId ? { clientRequestId } : {}) };
+    const now = new Date();
     const run = await this.prisma.agentRun.create({
-      data: { projectId: dto.projectId, chapterId: context.currentChapterId, agentType: 'CreativeAgent', status: 'planning', mode: 'plan', goal: dto.message, input: input as unknown as Prisma.InputJsonValue },
+      data: {
+        projectId: dto.projectId,
+        chapterId: context.currentChapterId,
+        agentType: 'CreativeAgent',
+        status: 'planning',
+        mode: 'plan',
+        goal: dto.message,
+        input: input as unknown as Prisma.InputJsonValue,
+        heartbeatAt: now,
+        deadlineAt: new Date(now.getTime() + 15 * 60_000),
+      },
     });
-    const result = await this.runtime.plan(run.id);
-    return { agentRunId: run.id, status: 'waiting_approval', ...result };
+    void this.runtime.plan(run.id).catch((error) => {
+      this.logger.error('agent.run.plan.background_failed', error, { agentRunId: run.id });
+    });
+    return { agentRunId: run.id, id: run.id, status: 'planning' };
   }
 
   get(id: string) {
@@ -367,6 +383,10 @@ export class AgentRunsService {
     const run = await this.prisma.agentRun.findUnique({ where: { id } });
     if (!run) throw new NotFoundException(`AgentRun 不存在：${id}`);
     if (['succeeded', 'failed', 'cancelled'].includes(run.status)) throw new BadRequestException(`当前状态 ${run.status} 不能取消`);
-    return this.prisma.agentRun.update({ where: { id }, data: { status: 'cancelled' } });
+    await this.prisma.agentStep.updateMany({
+      where: { agentRunId: id, status: 'running' },
+      data: { status: 'cancelled', errorCode: 'CANCELLED', error: 'AgentRun 已取消', finishedAt: new Date() },
+    });
+    return this.prisma.agentRun.update({ where: { id }, data: { status: 'cancelled', currentPhase: null, leaseExpiresAt: null, error: 'AgentRun 已取消' } });
   }
 }

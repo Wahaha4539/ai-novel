@@ -10,6 +10,7 @@ import { AgentMessageIntentService } from './agent-message-intent.service';
 import { AgentPlannerService } from './agent-planner.service';
 import { AgentPolicyService } from './agent-policy.service';
 import { AgentReplannerService } from './agent-replanner.service';
+import { AgentRunWatchdogService } from './agent-run-watchdog.service';
 import { AgentRunsController } from './agent-runs.controller';
 import { AgentRunsService } from './agent-runs.service';
 import { AgentRuntimeService } from './agent-runtime.service';
@@ -18,6 +19,6 @@ import { AgentTraceService } from './agent-trace.service';
 @Module({
   imports: [PrismaModule, AgentToolsModule, AgentSkillsModule, AgentRulesModule, LlmModule],
   controllers: [AgentRunsController],
-  providers: [AgentRunsService, AgentRuntimeService, AgentPlannerService, AgentReplannerService, AgentContextBuilderService, AgentMessageIntentService, AgentExecutorService, AgentPolicyService, AgentTraceService],
+  providers: [AgentRunsService, AgentRuntimeService, AgentPlannerService, AgentReplannerService, AgentContextBuilderService, AgentMessageIntentService, AgentExecutorService, AgentPolicyService, AgentTraceService, AgentRunWatchdogService],
 })
 export class AgentRunsModule {}

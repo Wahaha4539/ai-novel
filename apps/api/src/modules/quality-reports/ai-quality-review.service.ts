@@ -14,7 +14,26 @@ export interface AiQualityReviewInput {
 export interface AiQualityReviewRuntime {
   agentRunId?: string;
   userId?: string;
+  progress?: AiQualityReviewProgressReporter;
 }
+
+interface AiQualityReviewProgressPatch {
+  phase?: string;
+  phaseMessage?: string;
+  progressCurrent?: number;
+  progressTotal?: number;
+  timeoutMs?: number;
+  deadlineMs?: number;
+}
+
+interface AiQualityReviewProgressReporter {
+  updateProgress?: (patch: AiQualityReviewProgressPatch) => Promise<void>;
+  heartbeat?: (patch?: AiQualityReviewProgressPatch) => Promise<void>;
+}
+
+const AI_QUALITY_REVIEW_LLM_TIMEOUT_MS = 120_000;
+const AI_QUALITY_REVIEW_LLM_RETRIES = 1;
+const AI_QUALITY_REVIEW_LLM_PHASE_TIMEOUT_MS = AI_QUALITY_REVIEW_LLM_TIMEOUT_MS * (AI_QUALITY_REVIEW_LLM_RETRIES + 1) + 5_000;
 
 export interface AiQualityReviewResult {
   reportId: string;
@@ -106,14 +125,24 @@ export class AiQualityReviewService {
   ) {}
 
   async reviewAndCreate(projectId: string, input: AiQualityReviewInput, runtime: AiQualityReviewRuntime = {}): Promise<AiQualityReviewResult> {
+    await runtime.progress?.updateProgress?.({ phase: 'preparing_context', phaseMessage: '正在读取 AI 审稿草稿' });
     const draft = await this.resolveDraft(projectId, input);
     const reviewIdentity = this.buildReviewIdentity(draft.id, input);
     const duplicate = await this.findDuplicateReview(projectId, draft, reviewIdentity);
     if (duplicate) {
+      await runtime.progress?.heartbeat?.({ phase: 'validating', phaseMessage: '复用已有 AI 审稿报告', progressCurrent: 1, progressTotal: 1 });
       return this.toResultFromExistingReport(projectId, draft, duplicate);
     }
 
+    await runtime.progress?.heartbeat?.({ phase: 'preparing_context', phaseMessage: '正在读取 AI 审稿上下文' });
     const context = await this.loadReviewContext(projectId, draft.chapter.id, draft.chapter.chapterNo);
+    await runtime.progress?.updateProgress?.({
+      phase: 'calling_llm',
+      phaseMessage: '正在进行 AI 审稿',
+      progressCurrent: 0,
+      progressTotal: 1,
+      timeoutMs: AI_QUALITY_REVIEW_LLM_PHASE_TIMEOUT_MS,
+    });
     const { data, result } = await this.llm.chatJson<unknown>(
       [
         {
@@ -149,10 +178,12 @@ export class AiQualityReviewService {
           }),
         },
       ],
-      { appStep: 'summary', temperature: 0.1, maxTokens: 1800, timeoutMs: 120_000, retries: 1 },
+      { appStep: 'summary', temperature: 0.1, maxTokens: 1800, timeoutMs: AI_QUALITY_REVIEW_LLM_TIMEOUT_MS, retries: AI_QUALITY_REVIEW_LLM_RETRIES },
     );
 
     const normalized = this.normalizeReview(data);
+    await runtime.progress?.heartbeat?.({ phase: 'validating', phaseMessage: '正在校验 AI 审稿结果', progressCurrent: 1, progressTotal: 1 });
+    await runtime.progress?.updateProgress?.({ phase: 'persisting', phaseMessage: '正在写入质量报告', progressCurrent: 0, progressTotal: 1, timeoutMs: 60_000 });
     const report = await this.qualityReports.create(projectId, {
       chapterId: draft.chapter.id,
       draftId: draft.id,
@@ -194,6 +225,7 @@ export class AiQualityReviewService {
         normalizationWarnings: normalized.normalizationWarnings,
       },
     });
+    await runtime.progress?.heartbeat?.({ phase: 'persisting', phaseMessage: '质量报告写入完成', progressCurrent: 1, progressTotal: 1 });
 
     return {
       reportId: report.id,

@@ -1,4 +1,4 @@
-import { useCallback, useRef, useState } from 'react';
+import { useCallback, useEffect, useRef, useState } from 'react';
 import type { AgentCreativeDocumentAttachment } from '../types/agent-attachment';
 
 const API_BASE = process.env.NEXT_PUBLIC_API_BASE_URL ?? 'http://127.0.0.1:3001/api';
@@ -36,13 +36,33 @@ export interface AgentRunStepRecord {
   stepNo: number;
   name?: string;
   tool?: string;
+  toolName?: string;
   mode?: string;
   status?: string;
   input?: unknown;
   output?: unknown;
   error?: unknown;
+  phase?: string | null;
+  phaseMessage?: string | null;
+  progressCurrent?: number | null;
+  progressTotal?: number | null;
   startedAt?: string;
+  heartbeatAt?: string;
+  timeoutAt?: string | null;
+  deadlineAt?: string | null;
+  errorCode?: string | null;
+  errorDetail?: unknown;
   finishedAt?: string;
+  metadata?: {
+    executionCost?: {
+      model?: string;
+      models?: string[];
+      elapsedMs?: number;
+      llmCallCount?: number;
+      tokenUsage?: unknown;
+      llmCalls?: Array<{ model?: string; appStep?: string; elapsedMs?: number }>;
+    };
+  };
 }
 
 export interface AgentRunArtifact {
@@ -50,6 +70,8 @@ export interface AgentRunArtifact {
   artifactType?: string;
   title?: string;
   content?: unknown;
+  status?: string;
+  sourceStepNo?: number;
   createdAt?: string;
 }
 
@@ -129,6 +151,12 @@ export interface AgentRun {
   input?: unknown;
   output?: unknown;
   error?: unknown;
+  currentStepNo?: number | null;
+  currentTool?: string | null;
+  currentPhase?: string | null;
+  heartbeatAt?: string | null;
+  leaseExpiresAt?: string | null;
+  deadlineAt?: string | null;
   plans?: AgentPlanRecord[];
   steps?: AgentRunStepRecord[];
   artifacts?: AgentRunArtifact[];
@@ -190,6 +218,8 @@ export type AgentImportPreviewMode = 'auto' | 'quick' | 'deep';
 
 const IMPORT_ASSET_TYPES = new Set<AgentImportAssetType>(['projectProfile', 'outline', 'characters', 'worldbuilding', 'writingRules']);
 const IMPORT_PREVIEW_MODES = new Set<AgentImportPreviewMode>(['auto', 'quick', 'deep']);
+const POLLING_INTERVAL_MS = 1500;
+const POLLING_STOP_STATUSES = new Set<AgentRunStatus>(['succeeded', 'failed', 'cancelled', 'waiting_approval', 'waiting_review']);
 
 export interface AgentPageContext {
   currentProjectId?: string;
@@ -258,6 +288,13 @@ export function useAgentRun() {
   const [error, setError] = useState('');
   const [actionMessage, setActionMessage] = useState('');
   const createPlanRequestIdsRef = useRef(new Map<string, string>());
+  const pollingRef = useRef<ReturnType<typeof setInterval> | null>(null);
+
+  const stopPolling = useCallback(() => {
+    if (!pollingRef.current) return;
+    clearInterval(pollingRef.current);
+    pollingRef.current = null;
+  }, []);
 
   const listByProject = useCallback(async (projectId: string) => {
     setLoading(true);
@@ -281,6 +318,27 @@ export function useAgentRun() {
     return events;
   }, []);
 
+  const startPolling = useCallback((agentRunId: string) => {
+    stopPolling();
+    const tick = async () => {
+      try {
+        const run = await apiFetch<AgentRun>(`/agent-runs/${agentRunId}`);
+        setCurrentRun(run);
+        if (POLLING_STOP_STATUSES.has(run.status)) {
+          stopPolling();
+          await loadAudit(agentRunId);
+        }
+      } catch (pollError) {
+        setError(pollError instanceof Error ? pollError.message : '轮询 AgentRun 失败');
+        stopPolling();
+      }
+    };
+    void tick();
+    pollingRef.current = setInterval(() => void tick(), POLLING_INTERVAL_MS);
+  }, [loadAudit, stopPolling]);
+
+  useEffect(() => stopPolling, [stopPolling]);
+
   const createPlan = useCallback(async (projectId: string, message: string, pageContextOrChapterId?: string | AgentPageContext, attachments?: AgentCreativeDocumentAttachment[]) => {
     setLoading(true);
     setError('');
@@ -298,7 +356,7 @@ export function useAgentRun() {
       createPlanRequestIdsRef.current.set(fingerprint, clientRequestId);
     }
     try {
-      const run = await apiFetch<AgentRun>('/agent-runs/plan', {
+      const run = await apiFetch<AgentRun & { agentRunId?: string }>('/agent-runs/plan', {
         method: 'POST',
         body: JSON.stringify({
           projectId,
@@ -321,8 +379,9 @@ export function useAgentRun() {
       const fullRun = agentRunId ? await apiFetch<AgentRun>(`/agent-runs/${agentRunId}`) : run;
       setCurrentRun(fullRun);
       if (agentRunId) await loadAudit(agentRunId);
+      if (agentRunId && !POLLING_STOP_STATUSES.has(fullRun.status)) startPolling(agentRunId);
       await listByProject(projectId);
-      setActionMessage('计划已生成，请检查风险和步骤后确认执行。');
+      setActionMessage(POLLING_STOP_STATUSES.has(fullRun.status) ? '计划已生成，请检查风险和步骤后确认执行。' : '已开始规划，正在轮询执行进度。');
       return fullRun;
     } catch (planError) {
       const messageText = planError instanceof Error ? planError.message : '生成计划失败';
@@ -332,24 +391,25 @@ export function useAgentRun() {
     } finally {
       setLoading(false);
     }
-  }, [listByProject, loadAudit]);
+  }, [listByProject, loadAudit, startPolling]);
 
-  const refresh = useCallback(async (agentRunId: string) => {
-    setLoading(true);
+  const refresh = useCallback(async (agentRunId: string, options?: { silent?: boolean; skipAudit?: boolean }) => {
+    if (!options?.silent) setLoading(true);
     setError('');
     try {
       const run = await apiFetch<AgentRun>(`/agent-runs/${agentRunId}`);
       setCurrentRun(run);
-      await loadAudit(agentRunId);
+      if (!options?.skipAudit) await loadAudit(agentRunId);
+      if (!POLLING_STOP_STATUSES.has(run.status)) startPolling(agentRunId);
       return run;
     } catch (refreshError) {
       const messageText = refreshError instanceof Error ? refreshError.message : '刷新 AgentRun 失败';
       setError(messageText);
       throw refreshError;
     } finally {
-      setLoading(false);
+      if (!options?.silent) setLoading(false);
     }
-  }, [loadAudit]);
+  }, [loadAudit, startPolling]);
 
   const act = useCallback(async (agentRunId: string, approvedStepNos?: number[]) => {
     setLoading(true);
@@ -364,6 +424,7 @@ export function useAgentRun() {
       const fullRun = await apiFetch<AgentRun>(`/agent-runs/${agentRunId}`);
       setCurrentRun(fullRun);
       await loadAudit(agentRunId);
+      if (!POLLING_STOP_STATUSES.has(fullRun.status)) startPolling(agentRunId);
       setActionMessage(fullRun.status === 'succeeded' ? 'Agent 执行完成。' : `Agent 当前状态：${fullRun.status}`);
       return fullRun;
     } catch (actError) {
@@ -374,7 +435,7 @@ export function useAgentRun() {
     } finally {
       setLoading(false);
     }
-  }, [loadAudit]);
+  }, [loadAudit, startPolling]);
 
   const interpretMessage = useCallback(async (agentRunId: string, message: string) => {
     setLoading(true);
@@ -410,6 +471,7 @@ export function useAgentRun() {
       const fullRun = await apiFetch<AgentRun>(`/agent-runs/${agentRunId}`);
       setCurrentRun(fullRun);
       await loadAudit(agentRunId);
+      if (!POLLING_STOP_STATUSES.has(fullRun.status)) startPolling(agentRunId);
       setActionMessage(fullRun.status === 'succeeded' ? 'Agent 重试执行完成。' : `Agent 当前状态：${fullRun.status}`);
       return fullRun;
     } catch (retryError) {
@@ -420,7 +482,7 @@ export function useAgentRun() {
     } finally {
       setLoading(false);
     }
-  }, [loadAudit]);
+  }, [loadAudit, startPolling]);
 
   const replan = useCallback(async (agentRunId: string, message?: string, options?: AgentRunReplanOptions) => {
     setLoading(true);
@@ -433,6 +495,7 @@ export function useAgentRun() {
       });
       setCurrentRun(run);
       await loadAudit(agentRunId);
+      if (!POLLING_STOP_STATUSES.has(run.status)) startPolling(agentRunId);
       setActionMessage('重新规划已完成，请重新检查计划与预览。');
       return run;
     } catch (replanError) {
@@ -443,7 +506,7 @@ export function useAgentRun() {
     } finally {
       setLoading(false);
     }
-  }, [loadAudit]);
+  }, [loadAudit, startPolling]);
 
   const answerClarification = useCallback(async (agentRunId: string, choice: ReplanClarificationChoice) => {
     const label = choice.label ?? choice.id ?? '未命名候选';
@@ -457,6 +520,7 @@ export function useAgentRun() {
       });
       setCurrentRun(run);
       await loadAudit(agentRunId);
+      if (!POLLING_STOP_STATUSES.has(run.status)) startPolling(agentRunId);
       setActionMessage('澄清选择已写入上下文，新计划已生成，请重新审批后执行。');
       return run;
     } catch (clarificationError) {
@@ -467,7 +531,7 @@ export function useAgentRun() {
     } finally {
       setLoading(false);
     }
-  }, [loadAudit]);
+  }, [loadAudit, startPolling]);
 
   const cancel = useCallback(async (agentRunId: string) => {
     setLoading(true);
@@ -475,6 +539,7 @@ export function useAgentRun() {
     setActionMessage('正在取消 AgentRun…');
     try {
       const run = await apiFetch<AgentRun>(`/agent-runs/${agentRunId}/cancel`, { method: 'POST' });
+      stopPolling();
       setCurrentRun(run);
       await loadAudit(agentRunId);
       setActionMessage('AgentRun 已取消。');
@@ -486,7 +551,7 @@ export function useAgentRun() {
     } finally {
       setLoading(false);
     }
-  }, [loadAudit]);
+  }, [loadAudit, stopPolling]);
 
   /**
    * 开启一个新的前端会话。
@@ -494,12 +559,13 @@ export function useAgentRun() {
    */
   const startNewSession = useCallback(() => {
     setCurrentRun(null);
+    stopPolling();
     setAuditEvents([]);
     setError('');
     setActionMessage('已开启新会话，可以输入新的创作指令。');
     // 新会话应摆脱上一次提交的幂等指纹，避免相同文本被误认为同一轮请求。
     createPlanRequestIdsRef.current.clear();
-  }, []);
+  }, [stopPolling]);
 
   return { currentRun, runHistory, auditEvents, loading, error, actionMessage, createPlan, refresh, interpretMessage, act, retry, replan, answerClarification, cancel, listByProject, loadAudit, setCurrentRun, startNewSession };
 }

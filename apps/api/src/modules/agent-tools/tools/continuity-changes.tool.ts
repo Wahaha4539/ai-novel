@@ -195,6 +195,10 @@ interface PersistContinuityChangesOutput {
   approvalMessage: string;
 }
 
+const CONTINUITY_PREVIEW_LLM_TIMEOUT_MS = 120_000;
+const CONTINUITY_PREVIEW_LLM_RETRIES = 1;
+const CONTINUITY_PREVIEW_PHASE_TIMEOUT_MS = CONTINUITY_PREVIEW_LLM_TIMEOUT_MS * (CONTINUITY_PREVIEW_LLM_RETRIES + 1) + 5_000;
+
 interface ContinuityPersistSectionResult {
   createdCount: number;
   updatedCount: number;
@@ -532,6 +536,7 @@ export class GenerateContinuityPreviewTool extends ContinuityToolSupport impleme
   riskLevel: 'low' = 'low';
   requiresApproval = false;
   sideEffects: string[] = [];
+  executionTimeoutMs = CONTINUITY_PREVIEW_PHASE_TIMEOUT_MS + 60_000;
   manifest: ToolManifestV2 = {
     name: this.name,
     displayName: 'Generate Continuity Preview',
@@ -583,6 +588,11 @@ export class GenerateContinuityPreviewTool extends ContinuityToolSupport impleme
     const maxTimelineCandidates = Math.min(20, Math.max(0, Number(args.maxTimelineCandidates ?? 5) || 5));
     const focus = this.stringArray(args.focus);
     const instruction = this.text(args.instruction, 'Plan continuity relationship/timeline changes.');
+    await context.updateProgress?.({
+      phase: 'calling_llm',
+      phaseMessage: '正在生成连续性变更预览',
+      timeoutMs: CONTINUITY_PREVIEW_PHASE_TIMEOUT_MS,
+    });
     const { data } = await this.llm.chatJson<Partial<ContinuityPreviewOutput> & { relationships?: unknown; timeline?: unknown; timelineEvents?: unknown }>(
       [
         {
@@ -600,9 +610,15 @@ Project context:
 ${JSON.stringify(args.context ?? {}, null, 2).slice(0, 28000)}`,
         },
       ],
-      { appStep: 'planner', maxTokens: Math.min(10000, (maxRelationshipCandidates + maxTimelineCandidates) * 800 + 1600), timeoutMs: 120_000, retries: 1 },
+      { appStep: 'planner', maxTokens: Math.min(10000, (maxRelationshipCandidates + maxTimelineCandidates) * 800 + 1600), timeoutMs: CONTINUITY_PREVIEW_LLM_TIMEOUT_MS, retries: CONTINUITY_PREVIEW_LLM_RETRIES },
     );
 
+    await context.updateProgress?.({
+      phase: 'validating',
+      phaseMessage: '正在校验连续性变更预览',
+      progressCurrent: maxRelationshipCandidates + maxTimelineCandidates,
+      progressTotal: Math.max(1, maxRelationshipCandidates + maxTimelineCandidates),
+    });
     return this.normalize(data, args, context, maxRelationshipCandidates, maxTimelineCandidates);
   }
 
@@ -1259,6 +1275,7 @@ export class PersistContinuityChangesTool extends ContinuityToolSupport implemen
     'delete_timeline_events',
     'fact_layer_continuity_write',
   ];
+  executionTimeoutMs = 300_000;
   manifest: ToolManifestV2 = {
     name: this.name,
     displayName: 'Persist Continuity Changes',
@@ -1319,6 +1336,13 @@ export class PersistContinuityChangesTool extends ContinuityToolSupport implemen
     this.assertExecutableInput(args, context);
     const relationshipCandidates = this.getRelationshipCandidates(args.preview);
     const timelineCandidates = this.getTimelineCandidates(args.preview);
+    await context.updateProgress?.({
+      phase: 'validating',
+      phaseMessage: '正在复核待写入的连续性变更',
+      progressCurrent: 0,
+      progressTotal: Math.max(1, relationshipCandidates.length + timelineCandidates.length),
+      timeoutMs: 60_000,
+    });
     this.assertExplicitSelectionsKnown(args, relationshipCandidates, timelineCandidates);
     const selectedRelationships = this.selectRelationshipCandidates(args, relationshipCandidates);
     const selectedTimeline = this.selectTimelineCandidates(args, timelineCandidates);
@@ -1327,6 +1351,14 @@ export class PersistContinuityChangesTool extends ContinuityToolSupport implemen
     const writePreview = this.selectedWritePreview(args.validation as ValidateContinuityChangesOutput, selectedRelationships, selectedTimeline);
 
     const persistedAt = new Date().toISOString();
+    const selectedTotal = selectedRelationships.length + selectedTimeline.length;
+    await context.updateProgress?.({
+      phase: 'persisting',
+      phaseMessage: args.dryRun === true ? '正在演练连续性变更写入' : '正在写入连续性变更',
+      progressCurrent: 0,
+      progressTotal: Math.max(1, selectedTotal),
+      timeoutMs: 120_000,
+    });
     const result = await this.prisma.$transaction(async (tx) => {
       const relationshipDecisions = await this.buildRelationshipDecisions(tx, selectedRelationships, context.projectId);
       const timelineDecisions = await this.buildTimelineDecisions(tx, selectedTimeline, context.projectId);
@@ -1351,6 +1383,12 @@ export class PersistContinuityChangesTool extends ContinuityToolSupport implemen
       await this.cacheService.deleteProjectRecallResults(context.projectId);
     }
 
+    await context.heartbeat?.({
+      phase: 'persisting',
+      phaseMessage: args.dryRun === true ? '连续性变更演练完成' : '连续性变更写入完成',
+      progressCurrent: Math.max(1, selectedTotal),
+      progressTotal: Math.max(1, selectedTotal),
+    });
     return {
       dryRun: args.dryRun === true,
       relationshipResults: result.relationshipResults,

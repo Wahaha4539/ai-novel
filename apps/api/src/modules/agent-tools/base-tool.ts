@@ -37,6 +37,15 @@ export interface ToolLlmUsage {
   elapsedMs?: number;
 }
 
+export interface ToolProgressPatch {
+  phase?: string;
+  phaseMessage?: string;
+  progressCurrent?: number;
+  progressTotal?: number;
+  timeoutMs?: number;
+  deadlineMs?: number;
+}
+
 export interface ToolContext {
   agentRunId: string;
   projectId: string;
@@ -48,6 +57,9 @@ export interface ToolContext {
   stepTools?: Record<number, string>;
   policy: Record<string, unknown>;
   recordLlmUsage?: (usage: ToolLlmUsage) => void;
+  updateProgress?: (patch: ToolProgressPatch) => Promise<void>;
+  heartbeat?: (patch?: ToolProgressPatch) => Promise<void>;
+  signal?: AbortSignal;
 }
 
 export interface BaseTool<TInput = unknown, TOutput = unknown> {

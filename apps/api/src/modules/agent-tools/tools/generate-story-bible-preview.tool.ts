@@ -11,6 +11,10 @@ interface GenerateStoryBiblePreviewInput {
   maxCandidates?: number;
 }
 
+const STORY_BIBLE_PREVIEW_LLM_TIMEOUT_MS = 120_000;
+const STORY_BIBLE_PREVIEW_LLM_RETRIES = 1;
+const STORY_BIBLE_PREVIEW_PHASE_TIMEOUT_MS = STORY_BIBLE_PREVIEW_LLM_TIMEOUT_MS * (STORY_BIBLE_PREVIEW_LLM_RETRIES + 1) + 5_000;
+
 export interface StoryBibleSourceTrace {
   sourceKind: 'planned_story_bible_asset';
   originTool: 'generate_story_bible_preview';
@@ -141,6 +145,13 @@ export class GenerateStoryBiblePreviewTool implements BaseTool<GenerateStoryBibl
     const maxCandidates = Math.min(20, Math.max(1, Number(args.maxCandidates) || 5));
     const focus = this.stringArray(args.focus);
     const instruction = this.text(args.instruction, 'Plan Story Bible assets.');
+    await context.updateProgress?.({
+      phase: 'calling_llm',
+      phaseMessage: '正在生成 Story Bible 预览',
+      progressCurrent: 0,
+      progressTotal: maxCandidates,
+      timeoutMs: STORY_BIBLE_PREVIEW_PHASE_TIMEOUT_MS,
+    });
 
     const { data } = await this.llm.chatJson<Partial<StoryBiblePreviewOutput> & { entries?: unknown }>(
       [
@@ -158,8 +169,9 @@ Project context:
 ${JSON.stringify(args.context ?? {}, null, 2).slice(0, 24000)}`,
         },
       ],
-      { appStep: 'planner', maxTokens: Math.min(8000, maxCandidates * 800 + 1400), timeoutMs: 120_000, retries: 1 },
+      { appStep: 'planner', maxTokens: Math.min(8000, maxCandidates * 800 + 1400), timeoutMs: STORY_BIBLE_PREVIEW_LLM_TIMEOUT_MS, retries: STORY_BIBLE_PREVIEW_LLM_RETRIES },
     );
+    await context.updateProgress?.({ phase: 'validating', phaseMessage: '正在校验 Story Bible 预览', progressCurrent: maxCandidates, progressTotal: maxCandidates });
 
     return this.normalize(data, args, context, maxCandidates);
   }

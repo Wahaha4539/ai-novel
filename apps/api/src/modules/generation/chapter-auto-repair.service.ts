@@ -3,6 +3,20 @@ import { Prisma } from '@prisma/client';
 import { PrismaService } from '../../prisma/prisma.service';
 import { LlmGatewayService } from '../llm/llm-gateway.service';
 
+interface ChapterAutoRepairProgressPatch {
+  phase?: string;
+  phaseMessage?: string;
+  progressCurrent?: number;
+  progressTotal?: number;
+  timeoutMs?: number;
+  deadlineMs?: number;
+}
+
+interface ChapterAutoRepairProgressReporter {
+  updateProgress?: (patch: ChapterAutoRepairProgressPatch) => Promise<void>;
+  heartbeat?: (patch?: ChapterAutoRepairProgressPatch) => Promise<void>;
+}
+
 export interface ChapterAutoRepairResult {
   skipped: boolean;
   reason?: string;
@@ -16,6 +30,10 @@ export interface ChapterAutoRepairResult {
   summary?: string;
 }
 
+const CHAPTER_AUTO_REPAIR_LLM_TIMEOUT_MS = 180_000;
+const CHAPTER_AUTO_REPAIR_LLM_RETRIES = 1;
+const CHAPTER_AUTO_REPAIR_PHASE_TIMEOUT_MS = CHAPTER_AUTO_REPAIR_LLM_TIMEOUT_MS * (CHAPTER_AUTO_REPAIR_LLM_RETRIES + 1) + 5_000;
+
 /**
  * 有界自动修复服务：针对当前章节的开放校验问题最多执行一轮 LLM 改写。
  * 输入章节和可选问题；输出修复结果；副作用是必要时创建新的当前草稿版本并同步章节字数。
@@ -25,8 +43,9 @@ export class ChapterAutoRepairService {
   constructor(private readonly prisma: PrismaService, private readonly llm: LlmGatewayService) {}
 
   /** 最多一轮自动修复，避免 Agent 在校验/改写之间无限循环消耗。 */
-  async run(projectId: string, chapterId: string, options: { draftId?: string; issues?: unknown[]; executionCardCoverage?: unknown; instruction?: string; userId?: string; maxRounds?: number } = {}): Promise<ChapterAutoRepairResult> {
+  async run(projectId: string, chapterId: string, options: { draftId?: string; issues?: unknown[]; executionCardCoverage?: unknown; instruction?: string; userId?: string; maxRounds?: number; progress?: ChapterAutoRepairProgressReporter } = {}): Promise<ChapterAutoRepairResult> {
     const maxRounds = Math.min(1, Math.max(0, options.maxRounds ?? 1));
+    await options.progress?.updateProgress?.({ phase: 'preparing_context', phaseMessage: '正在读取自动修复上下文', timeoutMs: 60_000 });
     const chapter = await this.prisma.chapter.findFirst({ where: { id: chapterId, projectId } });
     if (!chapter) throw new NotFoundException(`章节不存在或不属于当前项目：${chapterId}`);
     if (maxRounds < 1) return { skipped: true, reason: 'max_rounds_zero', chapterId, repairedIssueCount: 0, maxRounds };
@@ -45,23 +64,37 @@ export class ChapterAutoRepairService {
       : [...await this.loadOpenIssues(projectId, chapterId), ...await this.loadQualityReportIssues(projectId, chapterId, draft.id), ...coverageIssues];
     const repairableIssues = issues.filter((issue) => ['error', 'warning'].includes(issue.severity)).slice(0, 5);
     const originalWordCount = this.countChineseLikeWords(draft.content.trim());
-    if (!repairableIssues.length) return { skipped: true, reason: 'no_repairable_issues', draftId: draft.id, chapterId, originalDraftId: draft.id, originalWordCount, repairedWordCount: originalWordCount, repairedIssueCount: 0, maxRounds, summary: draft.content.trim().slice(0, 160) };
+    if (!repairableIssues.length) {
+      await options.progress?.heartbeat?.({ phase: 'validating', phaseMessage: '没有可自动修复的问题', progressCurrent: 1, progressTotal: 1 });
+      return { skipped: true, reason: 'no_repairable_issues', draftId: draft.id, chapterId, originalDraftId: draft.id, originalWordCount, repairedWordCount: originalWordCount, repairedIssueCount: 0, maxRounds, summary: draft.content.trim().slice(0, 160) };
+    }
 
     const originalText = draft.content.trim();
     if (this.countChineseLikeWords(originalText) < 50) throw new BadRequestException('草稿内容过短，无法自动修复。');
 
+    await options.progress?.updateProgress?.({
+      phase: 'calling_llm',
+      phaseMessage: '正在自动修复章节草稿',
+      progressCurrent: 0,
+      progressTotal: repairableIssues.length,
+      timeoutMs: CHAPTER_AUTO_REPAIR_PHASE_TIMEOUT_MS,
+    });
     const llmResult = await this.llm.chat(
       [
         { role: 'system', content: '你是小说章节自动修复 Agent。你只能依据给定校验问题对正文做最小必要改写，不得新增重大剧情、角色或设定。只输出修复后的正文。' },
         { role: 'user', content: this.buildRepairPrompt(chapter, originalText, repairableIssues, options.instruction) },
       ],
-      { appStep: 'polish', maxTokens: Math.min(9000, Math.max(1800, Math.ceil(originalText.length * 1.35))), timeoutMs: 180_000, retries: 1, temperature: 0.25 },
+      { appStep: 'polish', maxTokens: Math.min(9000, Math.max(1800, Math.ceil(originalText.length * 1.35))), timeoutMs: CHAPTER_AUTO_REPAIR_LLM_TIMEOUT_MS, retries: CHAPTER_AUTO_REPAIR_LLM_RETRIES, temperature: 0.25 },
     );
     const repairedText = this.stripWrapperTags(llmResult.text);
     if (!repairedText) throw new BadRequestException('自动修复返回正文为空');
-    if (repairedText === draft.content) return { skipped: true, reason: 'llm_no_change', draftId: draft.id, chapterId, originalDraftId: draft.id, originalWordCount, repairedWordCount: originalWordCount, repairedIssueCount: repairableIssues.length, maxRounds, summary: originalText.slice(0, 160) };
+    if (repairedText === draft.content) {
+      await options.progress?.heartbeat?.({ phase: 'validating', phaseMessage: '自动修复未产生正文变更', progressCurrent: repairableIssues.length, progressTotal: repairableIssues.length });
+      return { skipped: true, reason: 'llm_no_change', draftId: draft.id, chapterId, originalDraftId: draft.id, originalWordCount, repairedWordCount: originalWordCount, repairedIssueCount: repairableIssues.length, maxRounds, summary: originalText.slice(0, 160) };
+    }
 
     const repairedWordCount = this.countChineseLikeWords(repairedText);
+    await options.progress?.updateProgress?.({ phase: 'persisting', phaseMessage: '正在写入自动修复草稿', progressCurrent: 0, progressTotal: 1, timeoutMs: 60_000 });
     const finalDraft = await this.prisma.$transaction(async (tx) => {
       // 自动修复写入新草稿时重新读取最新版本，避免与其他写稿 Tool 并发导致 versionNo 冲突。
       const latestInTransaction = await tx.chapterDraft.findFirst({ where: { chapterId }, orderBy: { versionNo: 'desc' } });
@@ -82,6 +115,7 @@ export class ChapterAutoRepairService {
       return created;
     });
 
+    await options.progress?.heartbeat?.({ phase: 'persisting', phaseMessage: '自动修复草稿写入完成', progressCurrent: 1, progressTotal: 1 });
     return { skipped: false, draftId: finalDraft.id, chapterId, originalDraftId: draft.id, originalWordCount, repairedWordCount, repairedIssueCount: repairableIssues.length, maxRounds, summary: repairedText.slice(0, 160) };
   }
 

@@ -28,6 +28,9 @@ export interface GuidedStepPreviewOutput {
 }
 
 const GUIDED_STEP_KEYS = Object.keys(GUIDED_STEP_JSON_SCHEMAS) as GuidedStepSchemaKey[];
+const GUIDED_STEP_PREVIEW_LLM_TIMEOUT_MS = 120_000;
+const GUIDED_STEP_PREVIEW_LLM_RETRIES = 1;
+const GUIDED_STEP_PREVIEW_PHASE_TIMEOUT_MS = GUIDED_STEP_PREVIEW_LLM_TIMEOUT_MS * (GUIDED_STEP_PREVIEW_LLM_RETRIES + 1) + 5_000;
 
 const SUPPORTED_STEP_INSTRUCTIONS: Record<GuidedStepSchemaKey, string> = {
   guided_setup: '生成小说基础设定，字段覆盖 genre/theme/tone/logline/synopsis。',
@@ -73,6 +76,7 @@ export class GenerateGuidedStepPreviewTool implements BaseTool<GenerateGuidedSte
   riskLevel: 'low' = 'low';
   requiresApproval = false;
   sideEffects: string[] = [];
+  executionTimeoutMs = GUIDED_STEP_PREVIEW_PHASE_TIMEOUT_MS + 60_000;
   manifest: ToolManifestV2 = {
     name: this.name,
     displayName: '生成创作引导步骤预览',
@@ -120,8 +124,14 @@ export class GenerateGuidedStepPreviewTool implements BaseTool<GenerateGuidedSte
 
     const stepInstruction = SUPPORTED_STEP_INSTRUCTIONS[stepKey as GuidedStepSchemaKey];
     const inputWarnings = this.buildInputWarnings(stepKey as GuidedStepSchemaKey, args);
+    await context.updateProgress?.({ phase: 'preparing_context', phaseMessage: '正在整理创作引导上下文', timeoutMs: 60_000 });
     const projectContext = await this.buildProjectContext(stepKey as GuidedStepSchemaKey, args, context);
 
+    await context.updateProgress?.({
+      phase: 'calling_llm',
+      phaseMessage: '正在生成创作引导步骤预览',
+      timeoutMs: GUIDED_STEP_PREVIEW_PHASE_TIMEOUT_MS,
+    });
     const { data } = await this.llm.chatJson<Record<string, unknown>>(
       [
         {
@@ -141,9 +151,10 @@ export class GenerateGuidedStepPreviewTool implements BaseTool<GenerateGuidedSte
           ].join('\n'),
         },
       ],
-      { appStep: 'planner', maxTokens: 8000, timeoutMs: 120_000, retries: 1 },
+      { appStep: 'planner', maxTokens: 8000, timeoutMs: GUIDED_STEP_PREVIEW_LLM_TIMEOUT_MS, retries: GUIDED_STEP_PREVIEW_LLM_RETRIES },
     );
 
+    await context.updateProgress?.({ phase: 'validating', phaseMessage: '正在校验创作引导步骤预览', progressCurrent: 1, progressTotal: 1 });
     const normalized = this.normalizeStructuredData(data);
     return {
       stepKey,

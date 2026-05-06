@@ -139,6 +139,13 @@ export class WriteChapterSeriesTool implements BaseTool<WriteChapterSeriesInput,
 
   async run(args: WriteChapterSeriesInput, context: ToolContext): Promise<WriteChapterSeriesResult> {
     const chapterNos = this.resolveChapterNos(args);
+    await context.updateProgress?.({
+      phase: 'preparing_context',
+      phaseMessage: '正在读取批量写作章节',
+      progressCurrent: 0,
+      progressTotal: chapterNos.length,
+      timeoutMs: 60_000,
+    });
     const chapters = await this.loadChapters(context.projectId, chapterNos);
     const byNo = new Map(chapters.map((chapter) => [chapter.chapterNo, chapter]));
     const missingNos = chapterNos.filter((chapterNo) => !byNo.has(chapterNo));
@@ -146,9 +153,15 @@ export class WriteChapterSeriesTool implements BaseTool<WriteChapterSeriesInput,
 
     const results: WriteChapterSeriesItem[] = [];
     let stoppedEarly = false;
-    for (const chapterNo of chapterNos) {
+    for (const [index, chapterNo] of chapterNos.entries()) {
       const chapter = byNo.get(chapterNo)!;
       try {
+        await context.heartbeat?.({
+          phase: 'writing_chapter',
+          phaseMessage: `正在连续生成第 ${chapter.chapterNo} 章`,
+          progressCurrent: index,
+          progressTotal: chapterNos.length,
+        });
         // 严格串行生成：前一章草稿落库后，后一章的 PromptBuilder 才能召回最新前文。
         const generated = await this.generateSingleChapter(context, chapter.id, args);
         const pipeline: WriteChapterQualityPipelineOutput = { generated };
@@ -157,8 +170,20 @@ export class WriteChapterSeriesTool implements BaseTool<WriteChapterSeriesInput,
           currentDraftId = await this.runFullQualityPipeline(context, chapter.id, currentDraftId, pipeline);
         }
         results.push(this.toSuccessItem(chapter, generated, currentDraftId, pipeline));
+        await context.heartbeat?.({
+          phase: 'writing_chapter',
+          phaseMessage: `第 ${chapter.chapterNo} 章连续生成完成`,
+          progressCurrent: index + 1,
+          progressTotal: chapterNos.length,
+        });
       } catch (error) {
         results.push({ chapterId: chapter.id, chapterNo: chapter.chapterNo, title: chapter.title, status: 'failed', error: error instanceof Error ? error.message : String(error) });
+        await context.heartbeat?.({
+          phase: 'writing_chapter',
+          phaseMessage: `第 ${chapter.chapterNo} 章连续生成失败`,
+          progressCurrent: index + 1,
+          progressTotal: chapterNos.length,
+        });
         if (!args.continueOnError) {
           stoppedEarly = true;
           break;
@@ -216,6 +241,10 @@ export class WriteChapterSeriesTool implements BaseTool<WriteChapterSeriesInput,
       includeMemory: true,
       agentRunId: context.agentRunId,
       userId: context.userId,
+      progress: {
+        updateProgress: context.updateProgress,
+        heartbeat: context.heartbeat,
+      },
     });
   }
 
@@ -223,24 +252,33 @@ export class WriteChapterSeriesTool implements BaseTool<WriteChapterSeriesInput,
   private async runFullQualityPipeline(context: ToolContext, chapterId: string, initialDraftId: string, pipeline: WriteChapterQualityPipelineOutput) {
     let currentDraftId = initialDraftId;
 
+    await context.heartbeat?.({ phase: 'polishing', phaseMessage: '正在执行连续写作润色链路' });
     pipeline.firstPolish = await this.polishChapterTool.run({ chapterId, draftId: currentDraftId, instruction: '在不改变剧情事实的前提下润色章节正文，统一文风、清理生硬表达，并保留章节目标和关键事件。' }, context);
     currentDraftId = this.readDraftId(pipeline.firstPolish) ?? currentDraftId;
 
+    await context.heartbeat?.({ phase: 'validating', phaseMessage: '正在执行连续写作事实校验' });
     pipeline.firstValidation = await this.factValidationTool.run({ chapterId }, context);
+    await context.heartbeat?.({ phase: 'repairing', phaseMessage: '正在执行连续写作自动修复' });
     pipeline.firstAutoRepair = await this.autoRepairChapterTool.run({ chapterId, draftId: currentDraftId, issues: this.readIssues(pipeline.firstValidation), instruction: '根据事实校验问题做最小必要修复，不新增重大剧情、角色或设定。', maxRounds: 1 }, context);
     currentDraftId = this.readDraftId(pipeline.firstAutoRepair) ?? currentDraftId;
 
     // 仅当初次校验确实写入问题时，才执行第二轮轻量润色/校验/修复，保持与单章计划的有界修复策略一致。
     if (this.numberValue(pipeline.firstValidation.createdCount) > 0) {
+      await context.heartbeat?.({ phase: 'polishing', phaseMessage: '正在执行连续写作二次润色' });
       pipeline.secondPolish = await this.polishChapterTool.run({ chapterId, draftId: currentDraftId, instruction: '仅在初次校验发现问题后，对修复后的章节做第二轮轻量润色，保持剧情事实不变。' }, context);
       currentDraftId = this.readDraftId(pipeline.secondPolish) ?? currentDraftId;
+      await context.heartbeat?.({ phase: 'validating', phaseMessage: '正在执行连续写作二次校验' });
       pipeline.secondValidation = await this.factValidationTool.run({ chapterId }, context);
+      await context.heartbeat?.({ phase: 'repairing', phaseMessage: '正在执行连续写作二次修复' });
       pipeline.secondAutoRepair = await this.autoRepairChapterTool.run({ chapterId, draftId: currentDraftId, issues: this.readIssues(pipeline.secondValidation), instruction: '根据二次事实校验问题做最后一轮有界修复；若无可修复问题则跳过。', maxRounds: 1 }, context);
       currentDraftId = this.readDraftId(pipeline.secondAutoRepair) ?? currentDraftId;
     }
 
+    await context.heartbeat?.({ phase: 'persisting', phaseMessage: '正在抽取连续写作章节事实' });
     pipeline.facts = await this.extractChapterFactsTool.run({ chapterId, draftId: currentDraftId }, context);
+    await context.heartbeat?.({ phase: 'persisting', phaseMessage: '正在重建连续写作章节记忆' });
     pipeline.memory = await this.rebuildMemoryTool.run({ chapterId, draftId: currentDraftId }, context);
+    await context.heartbeat?.({ phase: 'validating', phaseMessage: '正在复核连续写作章节记忆' });
     pipeline.memoryReview = await this.reviewMemoryTool.run({ chapterId }, context);
     return currentDraftId;
   }

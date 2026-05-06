@@ -73,8 +73,17 @@ export default function HomePage() {
   const [workspaceStateRestored, setWorkspaceStateRestored] = useState(false);
   const loadProjectDataRef = useRef(data.loadProjectData);
 
+  const projectListItem = data.projects.find((item) => item.id === data.selectedProjectId);
   const dashboardProject = data.dashboard?.project?.id === data.selectedProjectId ? data.dashboard.project : undefined;
-  const selectedProject = dashboardProject ?? data.projects.find((item) => item.id === data.selectedProjectId);
+  const selectedProject = dashboardProject && projectListItem
+    ? {
+        ...projectListItem,
+        ...dashboardProject,
+        synopsis: dashboardProject.synopsis ?? projectListItem.synopsis,
+        outline: dashboardProject.outline ?? projectListItem.outline,
+        stats: { ...(projectListItem.stats ?? {}), ...(dashboardProject.stats ?? {}) },
+      }
+    : dashboardProject ?? projectListItem;
   const chapters = data.dashboard?.chapters ?? [];
   const toastMessage = data.error || data.actionMessage;
 
@@ -242,6 +251,14 @@ export default function HomePage() {
     await data.loadProjects();
   }, [data]);
 
+  const refreshSelectedProjectData = useCallback(async () => {
+    if (!data.selectedProjectId) return;
+    await Promise.all([
+      data.loadProjects(),
+      data.loadProjectData(data.selectedProjectId, data.selectedChapterId),
+    ]);
+  }, [data]);
+
   const handleGuidedCreate = useCallback((projectId: string) => {
     data.setSelectedProjectId(projectId);
     data.setSelectedChapterId('all');
@@ -390,7 +407,7 @@ export default function HomePage() {
           <AgentWorkspace
             projectId={data.selectedProjectId}
             selectedChapterId={data.selectedChapterId !== 'all' ? data.selectedChapterId : undefined}
-            onRefresh={() => data.loadProjectData(data.selectedProjectId, data.selectedChapterId)}
+            onRefresh={refreshSelectedProjectData}
           />
         ) : (
           <EditorPanel
@@ -452,7 +469,7 @@ export default function HomePage() {
           projectId={data.selectedProjectId}
           selectedChapterId={data.selectedChapterId !== 'all' ? data.selectedChapterId : undefined}
           pageContext={activeView === 'guided' ? guidedAgentContext : undefined}
-          onRefresh={() => data.loadProjectData(data.selectedProjectId, data.selectedChapterId)}
+          onRefresh={refreshSelectedProjectData}
         />
       )}
 

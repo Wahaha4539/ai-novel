@@ -3,7 +3,7 @@ import { Prisma } from '@prisma/client';
 import { PrismaService } from '../../prisma/prisma.service';
 import { StructuredLogger } from '../../common/logging/structured-logger';
 import { AgentContextBuilderService, AgentContextV2 } from './agent-context-builder.service';
-import { AgentCancelledError, AgentExecutorService, AgentWaitingReviewError } from './agent-executor.service';
+import { AgentCancelledError, AgentExecutorService, AgentRunStateChangedError, AgentWaitingReviewError } from './agent-executor.service';
 import { AgentExecutionObservationError, AgentObservation, ReplanAttemptStats, ReplanPatch } from './agent-observation.types';
 import { AgentPlannerFailedError, AgentPlannerService, AgentPlanSpec } from './agent-planner.service';
 import { AgentReplannerService } from './agent-replanner.service';
@@ -84,6 +84,18 @@ export class AgentRuntimeService {
     const startedAt = Date.now();
     this.logger.log('agent.runtime.plan.started', { agentRunId, projectId: run.projectId, chapterId: run.chapterId, goalLength: run.goal.length });
     try {
+      const leaseStartedAt = new Date();
+      const lease = await this.prisma.agentRun.updateMany({
+        where: { id: agentRunId, status: 'planning' },
+        data: {
+          mode: 'plan',
+          error: null,
+          heartbeatAt: leaseStartedAt,
+          leaseExpiresAt: new Date(leaseStartedAt.getTime() + 120_000),
+          deadlineAt: new Date(leaseStartedAt.getTime() + 15 * 60_000),
+        },
+      });
+      if (lease.count !== 1) throw new AgentRunStateChangedError('AgentRun 当前状态已不再允许执行 Plan', run.status);
       const context = await this.contextBuilder.buildForPlan(run);
       const contextDigest = this.contextBuilder.createDigest(context);
       await this.persistContextSnapshot(agentRunId, run.input, context, contextDigest);
@@ -123,11 +135,32 @@ export class AgentRuntimeService {
         });
       }
 
-      await this.prisma.agentRun.update({ where: { id: agentRunId }, data: { status: 'waiting_approval', taskType: plan.taskType, output: { planId: savedPlan.id } } });
       const artifacts = await this.prisma.agentArtifact.findMany({ where: { agentRunId }, orderBy: { createdAt: 'asc' } });
+      const completed = await this.prisma.agentRun.updateMany({
+        where: { id: agentRunId, status: 'planning' },
+        data: {
+          status: 'waiting_approval',
+          taskType: plan.taskType,
+          output: { planId: savedPlan.id },
+          currentStepNo: null,
+          currentTool: null,
+          currentPhase: null,
+          leaseExpiresAt: null,
+        },
+      });
+      if (completed.count !== 1) {
+        const current = await this.prisma.agentRun.findUnique({ where: { id: agentRunId } });
+        this.logger.warn('agent.runtime.plan.late_completion_ignored', { agentRunId, currentStatus: current?.status, planVersion: savedPlan.version });
+        return { plan: savedPlan, artifacts: artifacts.length ? artifacts : [artifact], currentRun: current };
+      }
       this.logger.log('agent.runtime.plan.completed', { agentRunId, planVersion: savedPlan.version, elapsedMs: Date.now() - startedAt, artifactCount: artifacts.length });
       return { plan: savedPlan, artifacts: artifacts.length ? artifacts : [artifact] };
     } catch (error) {
+      if (error instanceof AgentCancelledError || error instanceof AgentRunStateChangedError) {
+        const current = await this.prisma.agentRun.findUnique({ where: { id: agentRunId } });
+        this.logger.warn('agent.runtime.plan.aborted_after_run_state_change', { agentRunId, elapsedMs: Date.now() - startedAt, message: error.message, currentStatus: current?.status });
+        return { plan: null, artifacts: [], currentRun: current };
+      }
       await this.recordPlannerFailure(agentRunId, error);
       this.logger.error('agent.runtime.plan.failed', error, { agentRunId, elapsedMs: Date.now() - startedAt });
       throw error;
@@ -146,7 +179,18 @@ export class AgentRuntimeService {
     this.logger.log('agent.runtime.act.started', { agentRunId, projectId: run.projectId, planVersion: latestPlan.version, taskType: latestPlan.taskType, approvedStepNos, confirmHighRisk: confirmation?.confirmHighRisk, confirmedRiskIds: confirmation?.confirmedRiskIds });
     try {
       // 通过条件更新获取轻量执行租约，避免两个 /act 或 /retry 请求并发执行同一份计划。
-      const lease = await this.prisma.agentRun.updateMany({ where: { id: agentRunId, status: { in: ['waiting_approval', 'waiting_review', 'failed'] } }, data: { status: 'acting', mode: 'act', error: null } });
+      const leaseStartedAt = new Date();
+      const lease = await this.prisma.agentRun.updateMany({
+        where: { id: agentRunId, status: { in: ['waiting_approval', 'waiting_review', 'failed'] } },
+        data: {
+          status: 'acting',
+          mode: 'act',
+          error: null,
+          heartbeatAt: leaseStartedAt,
+          leaseExpiresAt: new Date(leaseStartedAt.getTime() + 120_000),
+          deadlineAt: new Date(leaseStartedAt.getTime() + 30 * 60_000),
+        },
+      });
       if (lease.count !== 1) throw new Error('AgentRun 当前状态不允许进入 Act，可能正在执行或已结束');
       this.logger.log('agent.runtime.act.lease_acquired', { agentRunId, planVersion: latestPlan.version });
       context = await this.loadContextForExecution(run);
@@ -166,23 +210,44 @@ export class AgentRuntimeService {
           })),
         });
       }
-      const updated = await this.prisma.agentRun.update({ where: { id: agentRunId }, data: { status: 'succeeded', output: { outputs } as unknown as Prisma.InputJsonValue } });
-      this.logger.log('agent.runtime.act.completed', { agentRunId, planVersion: latestPlan.version, elapsedMs: Date.now() - startedAt, status: updated.status });
+      const completed = await this.prisma.agentRun.updateMany({
+        where: { id: agentRunId, status: 'acting' },
+        data: {
+          status: 'succeeded',
+          output: { outputs } as unknown as Prisma.InputJsonValue,
+          currentStepNo: null,
+          currentTool: null,
+          currentPhase: null,
+          leaseExpiresAt: null,
+        },
+      });
+      const updated = await this.findRunOrThrow(agentRunId);
+      if (completed.count !== 1) {
+        this.logger.warn('agent.runtime.act.late_completion_ignored', { agentRunId, planVersion: latestPlan.version, currentStatus: updated?.status });
+        return updated;
+      }
+      this.logger.log('agent.runtime.act.completed', { agentRunId, planVersion: latestPlan.version, elapsedMs: Date.now() - startedAt, status: updated?.status });
       return updated;
     } catch (error) {
+      if (error instanceof AgentRunStateChangedError) {
+        this.logger.warn('agent.runtime.act.aborted_after_run_state_change', { agentRunId, planVersion: latestPlan.version, elapsedMs: Date.now() - startedAt, message: error.message, status: error.status });
+        return this.findRunOrThrow(agentRunId);
+      }
       if (error instanceof AgentCancelledError) {
         this.logger.warn('agent.runtime.act.cancelled', { agentRunId, planVersion: latestPlan.version, elapsedMs: Date.now() - startedAt, message: error.message });
-        return this.prisma.agentRun.update({ where: { id: agentRunId }, data: { status: 'cancelled', error: error.message } });
+        await this.prisma.agentRun.updateMany({ where: { id: agentRunId, status: { notIn: ['failed', 'succeeded'] } }, data: { status: 'cancelled', error: error.message, currentPhase: null, leaseExpiresAt: null } });
+        return this.findRunOrThrow(agentRunId);
       }
       if (error instanceof AgentWaitingReviewError) {
         this.logger.warn('agent.runtime.act.waiting_review', { agentRunId, planVersion: latestPlan.version, elapsedMs: Date.now() - startedAt, message: error.message });
-        return this.prisma.agentRun.update({ where: { id: agentRunId }, data: { status: 'waiting_review', error: error.message } });
+        await this.prisma.agentRun.updateMany({ where: { id: agentRunId, status: 'acting' }, data: { status: 'waiting_review', error: error.message, currentPhase: null, leaseExpiresAt: null } });
+        return this.findRunOrThrow(agentRunId);
       }
       if (error instanceof AgentExecutionObservationError) {
         this.logger.warn('agent.runtime.act.observation_created', { agentRunId, planVersion: latestPlan.version, elapsedMs: Date.now() - startedAt, observation: error.observation });
         return this.handleExecutionObservation(agentRunId, run, latestPlan, spec.steps, context ?? await this.loadContextForExecution(run), error);
       }
-      await this.prisma.agentRun.updateMany({ where: { id: agentRunId, status: { not: 'cancelled' } }, data: { status: 'failed', error: error instanceof Error ? error.message : String(error) } });
+      await this.prisma.agentRun.updateMany({ where: { id: agentRunId, status: 'acting' }, data: { status: 'failed', error: error instanceof Error ? error.message : String(error), currentPhase: null, leaseExpiresAt: null } });
       this.logger.error('agent.runtime.act.failed', error, { agentRunId, planVersion: latestPlan.version, elapsedMs: Date.now() - startedAt });
       throw error;
     }
@@ -505,7 +570,10 @@ export class AgentRuntimeService {
         status: 'final',
       },
     });
-    await this.prisma.agentRun.update({ where: { id: agentRunId }, data: { status: 'failed', error: message, output: { plannerDiagnostics: diagnostics } as unknown as Prisma.InputJsonValue } });
+    await this.prisma.agentRun.updateMany({
+      where: { id: agentRunId, status: { in: ['planning', 'acting'] } },
+      data: { status: 'failed', error: message, output: { plannerDiagnostics: diagnostics } as unknown as Prisma.InputJsonValue, currentPhase: null, leaseExpiresAt: null },
+    });
   }
 
   /**
@@ -537,12 +605,26 @@ export class AgentRuntimeService {
         },
       });
       await this.trace.recordDecision(agentRunId, { name: 'Observation/Replan 自动修复计划', mode: 'act', planVersion: nextVersion, input: { observation }, output: { patch, stepCount: patchedSteps.length } });
-      return this.prisma.agentRun.update({ where: { id: agentRunId }, data: { status: 'waiting_approval', error: null, output: { planId: savedPlan.id, latestObservation: observation, replanPatch: patch, replanStats } as unknown as Prisma.InputJsonValue } });
+      await this.prisma.agentRun.updateMany({
+        where: { id: agentRunId, status: 'acting' },
+        data: { status: 'waiting_approval', error: null, output: { planId: savedPlan.id, latestObservation: observation, replanPatch: patch, replanStats } as unknown as Prisma.InputJsonValue, currentPhase: null, leaseExpiresAt: null },
+      });
+      return this.findRunOrThrow(agentRunId);
     }
 
     const status = patch.action === 'ask_user' ? 'waiting_review' : 'failed';
     await this.trace.recordDecision(agentRunId, { name: 'Observation/Replan 诊断', mode: 'act', planVersion: latestPlan.version, status: patch.action === 'ask_user' ? 'succeeded' : 'failed', input: { observation }, output: { patch }, error: patch.action === 'fail_with_reason' ? patch.reason : undefined });
-    return this.prisma.agentRun.update({ where: { id: agentRunId }, data: { status, error: patch.questionForUser ?? patch.reason, output: { latestObservation: observation, replanPatch: patch, replanStats } as unknown as Prisma.InputJsonValue } });
+    await this.prisma.agentRun.updateMany({
+      where: { id: agentRunId, status: 'acting' },
+      data: { status, error: patch.questionForUser ?? patch.reason, output: { latestObservation: observation, replanPatch: patch, replanStats } as unknown as Prisma.InputJsonValue, currentPhase: null, leaseExpiresAt: null },
+    });
+    return this.findRunOrThrow(agentRunId);
+  }
+
+  private async findRunOrThrow(agentRunId: string) {
+    const run = await this.prisma.agentRun.findUnique({ where: { id: agentRunId } });
+    if (!run) throw new Error(`AgentRun 不存在：${agentRunId}`);
+    return run;
   }
 
   /** 读取历史 Observation Artifact，计算自动 Replan 的总轮数和同类错误轮数。 */
@@ -866,6 +948,17 @@ export class AgentRuntimeService {
       ];
     }
 
+    if (taskType === 'scene_card_planning') {
+      const list = this.latestOutputByTools(outputs, steps, ['list_scene_cards']);
+      const preview = this.latestOutputByTools(outputs, steps, ['generate_scene_cards_preview']);
+      const validation = this.latestOutputByTools(outputs, steps, ['validate_scene_cards']);
+      return [
+        ...(list ? [{ artifactType: 'scene_cards_list', title: 'SceneCard List', content: list }] : []),
+        ...(preview ? [{ artifactType: 'scene_cards_preview', title: 'SceneCard Preview', content: preview }] : []),
+        ...(validation ? [{ artifactType: 'scene_cards_validation_report', title: 'SceneCard Validation Report', content: validation }] : []),
+      ];
+    }
+
     if (taskType === 'continuity_check') {
       const preview = this.latestOutputByTools(outputs, steps, ['generate_continuity_preview']);
       const validation = this.latestOutputByTools(outputs, steps, ['validate_continuity_changes']);
@@ -915,6 +1008,21 @@ export class AgentRuntimeService {
         ...(this.latestOutputByTools(outputs, steps, ['generate_story_bible_preview']) ? [{ artifactType: 'story_bible_preview', title: 'Story Bible 扩展预览', content: this.latestOutputByTools(outputs, steps, ['generate_story_bible_preview']) }] : []),
         ...(this.latestOutputByTools(outputs, steps, ['validate_story_bible']) ? [{ artifactType: 'story_bible_validation_report', title: 'Story Bible 校验与写入前 Diff', content: this.latestOutputByTools(outputs, steps, ['validate_story_bible']) }] : []),
         ...(this.latestOutputByTools(outputs, steps, ['persist_story_bible']) ? [{ artifactType: 'story_bible_persist_result', title: 'Story Bible 写入结果', content: this.latestOutputByTools(outputs, steps, ['persist_story_bible']) }] : []),
+      ];
+    }
+
+    if (taskType === 'scene_card_planning') {
+      const list = this.latestOutputByTools(outputs, steps, ['list_scene_cards']);
+      const preview = this.latestOutputByTools(outputs, steps, ['generate_scene_cards_preview']);
+      const validation = this.latestOutputByTools(outputs, steps, ['validate_scene_cards']);
+      const persist = this.latestOutputByTools(outputs, steps, ['persist_scene_cards']);
+      const update = this.latestOutputByTools(outputs, steps, ['update_scene_card']);
+      return [
+        ...(list ? [{ artifactType: 'scene_cards_list', title: 'SceneCard List', content: list }] : []),
+        ...(preview ? [{ artifactType: 'scene_cards_preview', title: 'SceneCard Preview', content: preview }] : []),
+        ...(validation ? [{ artifactType: 'scene_cards_validation_report', title: 'SceneCard Validation Report', content: validation }] : []),
+        ...(persist ? [{ artifactType: 'scene_cards_persist_result', title: 'SceneCard Persist Result', content: persist }] : []),
+        ...(update ? [{ artifactType: 'scene_card_update_result', title: 'SceneCard Update Result', content: update }] : []),
       ];
     }
 

@@ -12,6 +12,10 @@ interface BuildImportPreviewInput {
   requestedAssetTypes?: unknown;
 }
 
+const BUILD_IMPORT_PREVIEW_LLM_TIMEOUT_MS = 450_000;
+const BUILD_IMPORT_PREVIEW_LLM_RETRIES = 1;
+const BUILD_IMPORT_PREVIEW_PHASE_TIMEOUT_MS = BUILD_IMPORT_PREVIEW_LLM_TIMEOUT_MS * (BUILD_IMPORT_PREVIEW_LLM_RETRIES + 1) + 5_000;
+
 @Injectable()
 export class BuildImportPreviewTool implements BaseTool<BuildImportPreviewInput, ImportPreviewOutput> {
   name = 'build_import_preview';
@@ -63,7 +67,7 @@ export class BuildImportPreviewTool implements BaseTool<BuildImportPreviewInput,
   riskLevel: 'low' = 'low';
   requiresApproval = false;
   sideEffects: string[] = [];
-  executionTimeoutMs = 500_000;
+  executionTimeoutMs = BUILD_IMPORT_PREVIEW_PHASE_TIMEOUT_MS + 60_000;
 
   constructor(private readonly llm: LlmGatewayService) {}
 
@@ -71,6 +75,13 @@ export class BuildImportPreviewTool implements BaseTool<BuildImportPreviewInput,
     const requestedAssetTypes = normalizeImportAssetTypes(args.requestedAssetTypes, args.instruction);
     const analysis = args.analysis;
     const sourceText = analysis?.sourceText ?? args.instruction ?? '';
+    await context.updateProgress?.({
+      phase: 'calling_llm',
+      phaseMessage: '正在生成导入预览',
+      progressCurrent: 0,
+      progressTotal: Math.max(1, requestedAssetTypes.length),
+      timeoutMs: BUILD_IMPORT_PREVIEW_PHASE_TIMEOUT_MS,
+    });
     const response = await this.llm.chatJson<ImportPreviewOutput>(
       [
         {
@@ -92,9 +103,10 @@ export class BuildImportPreviewTool implements BaseTool<BuildImportPreviewInput,
           ].join('\n'),
         },
       ],
-      { appStep: 'planner', maxTokens: 8000, timeoutMs: 450_000, retries: 1 },
+      { appStep: 'planner', maxTokens: 8000, timeoutMs: BUILD_IMPORT_PREVIEW_LLM_TIMEOUT_MS, retries: BUILD_IMPORT_PREVIEW_LLM_RETRIES },
     );
     recordToolLlmUsage(context, 'planner', response.result);
+    await context.updateProgress?.({ phase: 'validating', phaseMessage: '正在校验导入预览', progressCurrent: Math.max(1, requestedAssetTypes.length), progressTotal: Math.max(1, requestedAssetTypes.length) });
     return this.normalize(response.data, sourceText, requestedAssetTypes);
   }
 

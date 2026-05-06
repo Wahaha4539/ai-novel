@@ -182,6 +182,7 @@ export class AgentPlannerService {
               character_consistency_check: '检查人设是否崩、角色动机/对话是否符合设定。',
               worldbuilding_expand: '扩展世界观、宗门、城市、能力体系，且不覆盖已确认剧情。',
               story_bible_expand: '批量扩展 Story Bible 设定资产；必须先 generate_story_bible_preview，再 validate_story_bible，写入步骤 persist_story_bible 必须等待审批。',
+              scene_card_planning: 'Plan or update SceneCard assets for chapters; new cards should use list_scene_cards/collect_task_context as needed, then generate_scene_cards_preview, validate_scene_cards, and approved persist_scene_cards. Direct edits to existing cards should list_scene_cards first, then approved update_scene_card.',
               plot_consistency_check: '检查剧情、大纲、事实是否冲突。',
               continuity_check: '检查 Story Bible、角色关系、时间线、写作约束之间的连续性问题；关系/时间线写入必须先 collect_task_context，再 generate_continuity_preview、validate_continuity_changes，persist_continuity_changes 只能作为需审批写入步骤。',
               ai_quality_review: '对章节草稿做 AI 审稿并写入 QualityReport，输出剧情推进、人设、文风、节奏、伏笔、世界观/时间线/规则等维度评分；必须审批后执行。',

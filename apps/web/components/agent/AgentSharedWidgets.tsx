@@ -76,11 +76,46 @@ export const PROJECT_IMPORT_ASSET_LABELS: Record<string, string> = {
 };
 
 export const PROJECT_IMPORT_TARGET_SOURCES = [
-  { assetType: 'projectProfile', label: PROJECT_IMPORT_ASSET_LABELS.projectProfile, tool: 'generate_import_project_profile_preview', artifactType: 'project_profile_preview' },
-  { assetType: 'outline', label: PROJECT_IMPORT_ASSET_LABELS.outline, tool: 'generate_import_outline_preview', artifactType: 'outline_preview' },
-  { assetType: 'characters', label: PROJECT_IMPORT_ASSET_LABELS.characters, tool: 'generate_import_characters_preview', artifactType: 'characters_preview' },
-  { assetType: 'worldbuilding', label: PROJECT_IMPORT_ASSET_LABELS.worldbuilding, tool: 'generate_import_worldbuilding_preview', artifactType: 'lorebook_preview' },
-  { assetType: 'writingRules', label: PROJECT_IMPORT_ASSET_LABELS.writingRules, tool: 'generate_import_writing_rules_preview', artifactType: 'writing_rules_preview' },
+  {
+    assetType: 'projectProfile',
+    label: PROJECT_IMPORT_ASSET_LABELS.projectProfile,
+    tool: 'generate_import_project_profile_preview',
+    artifactType: 'project_profile_preview',
+    purpose: '生成作品标题、类型、主题、简介和长梗概。',
+    frontendSurface: '项目资料 / 项目概览',
+  },
+  {
+    assetType: 'outline',
+    label: PROJECT_IMPORT_ASSET_LABELS.outline,
+    tool: 'generate_import_outline_preview',
+    artifactType: 'outline_preview',
+    purpose: '生成卷结构、章节规划、冲突、钩子和字数建议。',
+    frontendSurface: '剧情大纲 / 卷与章节列表',
+  },
+  {
+    assetType: 'characters',
+    label: PROJECT_IMPORT_ASSET_LABELS.characters,
+    tool: 'generate_import_characters_preview',
+    artifactType: 'characters_preview',
+    purpose: '生成角色档案、动机、背景、关系和人物定位。',
+    frontendSurface: '角色与人设面板',
+  },
+  {
+    assetType: 'worldbuilding',
+    label: PROJECT_IMPORT_ASSET_LABELS.worldbuilding,
+    tool: 'generate_import_worldbuilding_preview',
+    artifactType: 'lorebook_preview',
+    purpose: '生成地点、势力、规则、物件等世界设定条目。',
+    frontendSurface: '故事圣经 / 世界设定',
+  },
+  {
+    assetType: 'writingRules',
+    label: PROJECT_IMPORT_ASSET_LABELS.writingRules,
+    tool: 'generate_import_writing_rules_preview',
+    artifactType: 'writing_rules_preview',
+    purpose: '生成叙事视角、文风、节奏、禁忌和一致性规则。',
+    frontendSurface: '写作规则面板',
+  },
 ] as const;
 
 export type ProjectImportAssetType = (typeof PROJECT_IMPORT_TARGET_SOURCES)[number]['assetType'];
@@ -90,6 +125,8 @@ export interface ProjectImportTargetSource {
   label: string;
   tool: string;
   artifactType: string;
+  purpose: string;
+  frontendSurface: string;
 }
 
 const PROJECT_IMPORT_TARGET_SOURCE_BY_TOOL = new Map<string, (typeof PROJECT_IMPORT_TARGET_SOURCES)[number]>(
@@ -116,6 +153,153 @@ const WRITE_TOOL_LABELS: Record<string, string> = {
   persist_continuity_changes: '连续性资料',
   persist_guided_step_result: '创作引导结果',
 };
+
+export interface AgentToolUiExplanation {
+  label: string;
+  purpose: string;
+  output: string;
+  frontendSurface: string;
+  artifactTypes?: string[];
+  usesLlm?: boolean;
+}
+
+const PROJECT_IMPORT_TARGET_TOOL_EXPLANATIONS: Record<string, AgentToolUiExplanation> = Object.fromEntries(
+  PROJECT_IMPORT_TARGET_SOURCES.map((source) => [
+    source.tool,
+    {
+      label: source.label,
+      purpose: source.purpose,
+      output: `${source.label}预览`,
+      frontendSurface: source.frontendSurface,
+      artifactTypes: [source.artifactType],
+      usesLlm: true,
+    },
+  ]),
+);
+
+const AGENT_TOOL_UI_EXPLANATIONS: Record<string, AgentToolUiExplanation> = {
+  inspect_project_context: {
+    label: '读取项目上下文',
+    purpose: '读取当前项目、章节和已有资料，避免生成内容脱离现有设定。',
+    output: '项目上下文快照',
+    frontendSurface: '作为后续步骤的上下文，不直接写入页面模块',
+    usesLlm: false,
+  },
+  read_source_document: {
+    label: '读取上传文档',
+    purpose: '拉取并解析用户上传的创意文档或资料文件。',
+    output: '源文档文本',
+    frontendSurface: '附件内容 / 后续生成输入',
+    usesLlm: false,
+  },
+  analyze_source_text: {
+    label: '分析源文档',
+    purpose: '提取文档段落、关键词和基础结构，给后续生成步骤做输入。',
+    output: '文档分析结果',
+    frontendSurface: '内部分析结果，不直接作为业务模块展示',
+    usesLlm: false,
+  },
+  build_import_brief: {
+    label: '生成导入简报',
+    purpose: '把源文档压缩成多个目标产物可共用的全局理解。',
+    output: '导入全局简报',
+    frontendSurface: 'Tool Calls 展开详情 / 后续生成输入',
+    artifactTypes: ['import_brief'],
+    usesLlm: true,
+  },
+  ...PROJECT_IMPORT_TARGET_TOOL_EXPLANATIONS,
+  build_import_preview: {
+    label: '生成导入预览',
+    purpose: 'Quick 模式下用一次生成完成所选项目资产预览。',
+    output: '所选目标产物的综合预览',
+    frontendSurface: '项目资料、剧情大纲、角色、故事圣经、写作规则等预览卡',
+    artifactTypes: ['project_profile_preview', 'outline_preview', 'characters_preview', 'lorebook_preview', 'writing_rules_preview'],
+    usesLlm: true,
+  },
+  merge_import_previews: {
+    label: '合并导入预览',
+    purpose: '把分目标生成的预览合并成统一导入预览，供校验和写入使用。',
+    output: '统一导入预览',
+    frontendSurface: '产物预览集合 / 后续校验输入',
+    usesLlm: false,
+  },
+  cross_target_consistency_check: {
+    label: '跨目标一致性检查',
+    purpose: '检查大纲、角色、设定和写作规则之间是否互相冲突。',
+    output: '一致性检查结果',
+    frontendSurface: '执行详情 / 校验提示',
+    usesLlm: false,
+  },
+  validate_imported_assets: {
+    label: '校验导入资产',
+    purpose: '检查预览内容是否可写入，并估算会新增、跳过或更新哪些资产。',
+    output: '导入校验报告',
+    frontendSurface: '产物预览中的校验报告',
+    artifactTypes: ['import_validation_report'],
+    usesLlm: false,
+  },
+  persist_project_assets: {
+    label: '写入项目资产',
+    purpose: '在用户确认后，把已校验的导入预览写入正式业务表。',
+    output: '写入结果',
+    frontendSurface: '项目资料、剧情大纲、角色、故事圣经、写作规则正式页面',
+    artifactTypes: ['import_persist_result'],
+    usesLlm: false,
+  },
+  generate_outline_preview: {
+    label: '生成大纲预览',
+    purpose: '生成或改写项目大纲、卷和章节规划。',
+    output: '大纲预览',
+    frontendSurface: '剧情大纲 / 卷与章节列表',
+    artifactTypes: ['outline_preview'],
+    usesLlm: true,
+  },
+  persist_outline: {
+    label: '写入大纲',
+    purpose: '把已确认的大纲预览写入项目卷章结构。',
+    output: '大纲写入结果',
+    frontendSurface: '剧情大纲 / 卷与章节列表',
+    artifactTypes: ['outline_persist_result'],
+    usesLlm: false,
+  },
+  write_chapter: {
+    label: '写章节草稿',
+    purpose: '根据章节目标、上下文和记忆资料生成正文草稿。',
+    output: '章节草稿',
+    frontendSurface: '章节编辑器 / 草稿版本',
+    artifactTypes: ['chapter_draft_result'],
+    usesLlm: true,
+  },
+  polish_chapter: {
+    label: '润色章节',
+    purpose: '在保留剧情事实的前提下改善表达、节奏和文风。',
+    output: '润色结果',
+    frontendSurface: '章节编辑器 / 草稿版本',
+    artifactTypes: ['chapter_polish_result'],
+    usesLlm: true,
+  },
+  collect_chapter_context: {
+    label: '收集章节上下文',
+    purpose: '收集章节写作所需的大纲、角色、设定、记忆和历史草稿。',
+    output: '章节上下文包',
+    frontendSurface: '作为写作输入，不直接写入页面模块',
+    artifactTypes: ['chapter_context_preview'],
+    usesLlm: false,
+  },
+  collect_task_context: {
+    label: '收集任务上下文',
+    purpose: '为检查、修复或生成任务收集相关项目资料。',
+    output: '任务上下文包',
+    frontendSurface: '执行详情 / 后续步骤输入',
+    artifactTypes: ['task_context_preview'],
+    usesLlm: false,
+  },
+};
+
+export function agentToolUiExplanation(tool?: string): AgentToolUiExplanation | undefined {
+  if (!tool) return undefined;
+  return AGENT_TOOL_UI_EXPLANATIONS[tool];
+}
 
 export interface AgentPlanWriteInfo {
   requiredStepNos: number[];

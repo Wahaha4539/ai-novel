@@ -10,6 +10,10 @@ interface GenerateWorldbuildingPreviewInput {
   maxEntries?: number;
 }
 
+const WORLDBUILDING_PREVIEW_LLM_TIMEOUT_MS = 120_000;
+const WORLDBUILDING_PREVIEW_LLM_RETRIES = 1;
+const WORLDBUILDING_PREVIEW_PHASE_TIMEOUT_MS = WORLDBUILDING_PREVIEW_LLM_TIMEOUT_MS * (WORLDBUILDING_PREVIEW_LLM_RETRIES + 1) + 5_000;
+
 export interface WorldbuildingPreviewEntry {
   title: string;
   entryType: string;
@@ -99,8 +103,15 @@ export class GenerateWorldbuildingPreviewTool implements BaseTool<GenerateWorldb
   constructor(private readonly llm: LlmGatewayService) {}
 
   /** 调用 LLM 生成结构化世界观预览，并将不稳定字段归一化为前端可审阅格式。 */
-  async run(args: GenerateWorldbuildingPreviewInput, _context: ToolContext): Promise<WorldbuildingPreviewOutput> {
+  async run(args: GenerateWorldbuildingPreviewInput, context: ToolContext): Promise<WorldbuildingPreviewOutput> {
     const maxEntries = Math.min(20, Math.max(1, Number(args.maxEntries) || 5));
+    await context.updateProgress?.({
+      phase: 'calling_llm',
+      phaseMessage: '正在生成世界观扩展预览',
+      progressCurrent: 0,
+      progressTotal: maxEntries,
+      timeoutMs: WORLDBUILDING_PREVIEW_PHASE_TIMEOUT_MS,
+    });
     const { data } = await this.llm.chatJson<WorldbuildingPreviewOutput>(
       [
         {
@@ -113,8 +124,9 @@ export class GenerateWorldbuildingPreviewTool implements BaseTool<GenerateWorldb
           content: `用户目标：${args.instruction ?? '扩展世界观'}\n关注点：${this.stringArray(args.focus).join(', ') || '通用世界观'}\n最多条目：${maxEntries}\n项目上下文：\n${JSON.stringify(args.context ?? {}, null, 2).slice(0, 24000)}`,
         },
       ],
-      { appStep: 'planner', maxTokens: Math.min(8000, maxEntries * 700 + 1200), timeoutMs: 120_000, retries: 1 },
+      { appStep: 'planner', maxTokens: Math.min(8000, maxEntries * 700 + 1200), timeoutMs: WORLDBUILDING_PREVIEW_LLM_TIMEOUT_MS, retries: WORLDBUILDING_PREVIEW_LLM_RETRIES },
     );
+    await context.updateProgress?.({ phase: 'validating', phaseMessage: '正在校验世界观扩展预览', progressCurrent: maxEntries, progressTotal: maxEntries });
     return this.normalize(data, maxEntries);
   }
 
