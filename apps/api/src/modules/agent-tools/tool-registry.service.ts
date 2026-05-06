@@ -15,6 +15,7 @@ import { EchoReportTool } from './tools/echo-report.tool';
 import { ExtractChapterFactsTool } from './tools/extract-chapter-facts.tool';
 import { FactValidationTool } from './tools/fact-validation.tool';
 import { GenerateGuidedStepPreviewTool } from './tools/generate-guided-step-preview.tool';
+import { GenerateChapterCraftBriefPreviewTool, PersistChapterCraftBriefTool, ValidateChapterCraftBriefTool } from './tools/chapter-craft-brief-tools.tool';
 import { GenerateImportCharactersPreviewTool } from './tools/generate-import-characters-preview.tool';
 import { GenerateImportOutlinePreviewTool } from './tools/generate-import-outline-preview.tool';
 import { GenerateImportProjectProfilePreviewTool } from './tools/generate-import-project-profile-preview.tool';
@@ -90,6 +91,9 @@ export class ToolRegistryService implements OnModuleInit {
     private readonly persistWorldbuildingTool: PersistWorldbuildingTool,
     private readonly persistStoryBibleTool: PersistStoryBibleTool,
     private readonly persistOutlineTool: PersistOutlineTool,
+    private readonly generateChapterCraftBriefPreviewTool: GenerateChapterCraftBriefPreviewTool,
+    private readonly validateChapterCraftBriefTool: ValidateChapterCraftBriefTool,
+    private readonly persistChapterCraftBriefTool: PersistChapterCraftBriefTool,
     private readonly listSceneCardsTool: ListSceneCardsTool,
     private readonly generateSceneCardsPreviewTool: GenerateSceneCardsPreviewTool,
     private readonly validateSceneCardsTool: ValidateSceneCardsTool,
@@ -144,6 +148,9 @@ export class ToolRegistryService implements OnModuleInit {
     this.register(this.persistWorldbuildingTool);
     this.register(this.persistStoryBibleTool);
     this.register(this.persistOutlineTool);
+    this.register(this.generateChapterCraftBriefPreviewTool);
+    this.register(this.validateChapterCraftBriefTool);
+    this.register(this.persistChapterCraftBriefTool);
     this.register(this.listSceneCardsTool);
     this.register(this.generateSceneCardsPreviewTool);
     this.register(this.validateSceneCardsTool);

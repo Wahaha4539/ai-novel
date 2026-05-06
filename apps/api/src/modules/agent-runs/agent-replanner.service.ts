@@ -168,6 +168,8 @@ export class AgentReplannerService {
       'validate_story_bible',
       'generate_scene_cards_preview',
       'validate_scene_cards',
+      'generate_chapter_craft_brief_preview',
+      'validate_chapter_craft_brief',
       'list_scene_cards',
       'generate_continuity_preview',
       'validate_continuity_changes',

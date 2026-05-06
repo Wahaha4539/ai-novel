@@ -3416,6 +3416,8 @@ test('Read-only preview validate and analysis tools never call Prisma write meth
   const collectTool = new CollectTaskContextTool(prisma as never);
   const inspectTool = new InspectProjectContextTool(prisma as never);
   const guidedPreviewTool = new GenerateGuidedStepPreviewTool(llm as never, prisma as never);
+  const craftBriefPreviewTool = new GenerateChapterCraftBriefPreviewTool(llm as never, prisma as never);
+  const craftBriefValidationTool = new ValidateChapterCraftBriefTool(prisma as never);
 
   const storyPreview = await storyPreviewTool.run({ instruction: 'Plan archive rules.' }, context);
   await storyValidationTool.run({ preview: storyPreview }, context);
@@ -3426,12 +3428,13 @@ test('Read-only preview validate and analysis tools never call Prisma write meth
   await guidedPreviewTool.run({ stepKey: 'guided_chapter', volumeNo: 1, chapterNo: 1, projectContext: { seed: true } }, context);
 
   assert.deepEqual(writeCalls, []);
-  for (const tool of [storyPreviewTool, storyValidationTool, continuityPreviewTool, continuityValidationTool, collectTool, inspectTool, guidedPreviewTool]) {
+  for (const tool of [storyPreviewTool, storyValidationTool, continuityPreviewTool, continuityValidationTool, collectTool, inspectTool, guidedPreviewTool, craftBriefPreviewTool, craftBriefValidationTool]) {
     assert.equal(tool.requiresApproval, false);
     assert.deepEqual(tool.sideEffects, []);
   }
   assert.equal(new PersistStoryBibleTool(prisma as never, { async deleteProjectRecallResults() {} } as never).requiresApproval, true);
   assert.equal(new PersistContinuityChangesTool(prisma as never, { async deleteProjectRecallResults() {} } as never).requiresApproval, true);
+  assert.equal(new PersistChapterCraftBriefTool(prisma as never, { async deleteChapterContext() {}, async deleteProjectRecallResults() {} } as never).requiresApproval, true);
 });
 
 test('PersistContinuityChangesTool rejects plan/unapproved/invalid/unknown selection/sourceTrace mismatch', async () => {
@@ -5416,6 +5419,85 @@ test('Planner prompt 将长章节细纲引导到 outline_design 而非正文写�
   assert.match(promptPayload.taskTypeGuidance.outline_design, /generate_outline_preview/);
   assert.match(promptPayload.taskTypeGuidance.outline_design, /自动分批/);
   assert.match(JSON.stringify(promptPayload.availableTools), /执行卡预览/);
+});
+
+test('Planner routes chapter progress card requests to craft brief tools and keeps SceneCard boundary', async () => {
+  const capturedMessages: Array<Array<{ role: string; content: string }>> = [];
+  const toolList = [
+    createTool({ name: 'resolve_chapter', requiresApproval: false, riskLevel: 'low', sideEffects: [] }),
+    createTool({ name: 'collect_chapter_context', requiresApproval: false, riskLevel: 'low', sideEffects: [] }),
+    createTool({ name: 'generate_chapter_craft_brief_preview', description: 'Generate Chapter.craftBrief progress card previews.', requiresApproval: false, riskLevel: 'low', sideEffects: [] }),
+    createTool({ name: 'validate_chapter_craft_brief', description: 'Validate Chapter.craftBrief previews.', requiresApproval: false, riskLevel: 'low', sideEffects: [] }),
+    createTool({ name: 'persist_chapter_craft_brief', description: 'Persist approved Chapter.craftBrief previews.', requiresApproval: true, riskLevel: 'high', sideEffects: ['update_chapter_craft_brief'] }),
+    createTool({ name: 'generate_scene_cards_preview', description: 'Generate SceneCard previews.', requiresApproval: false, riskLevel: 'low', sideEffects: [] }),
+    createTool({ name: 'validate_scene_cards', requiresApproval: false, riskLevel: 'low', sideEffects: [] }),
+  ];
+  const tools = {
+    list: () => toolList,
+    listManifestsForPlanner: () => toolList.map((tool) => ({
+      name: tool.name,
+      displayName: tool.name,
+      description: tool.description,
+      whenToUse: tool.name === 'generate_chapter_craft_brief_preview' ? ['章节推进卡', '推进卡', '执行卡', 'craftBrief', '行动链'] : tool.name === 'generate_scene_cards_preview' ? ['拆成场景', '场景卡', 'SceneCard'] : [],
+      whenNotToUse: tool.name === 'generate_scene_cards_preview' ? ['Chapter.craftBrief progress cards'] : [],
+      allowedModes: tool.allowedModes,
+      riskLevel: tool.riskLevel,
+      requiresApproval: tool.requiresApproval,
+      sideEffects: tool.sideEffects,
+    })),
+  } as unknown as ToolRegistryService;
+  const llm = {
+    async chatJson(messages: Array<{ role: string; content: string }>) {
+      capturedMessages.push(messages);
+      const payload = JSON.parse(messages[1].content);
+      if (String(payload.userGoal).includes('拆成')) {
+        return {
+          data: {
+            taskType: 'scene_card_planning',
+            summary: 'Split chapter into scene cards.',
+            assumptions: [],
+            risks: [],
+            steps: [
+              { stepNo: 1, name: 'Resolve chapter', tool: 'resolve_chapter', mode: 'act', requiresApproval: false, args: { chapterRef: '第 3 章' } },
+              { stepNo: 2, name: 'Generate scene cards', tool: 'generate_scene_cards_preview', mode: 'act', requiresApproval: false, args: { chapterId: '{{steps.1.output.chapterId}}', maxScenes: 5 } },
+              { stepNo: 3, name: 'Validate scene cards', tool: 'validate_scene_cards', mode: 'act', requiresApproval: false, args: { preview: '{{steps.2.output}}' } },
+            ],
+          },
+          result: { model: 'planner-mock' },
+        };
+      }
+      return {
+        data: {
+          taskType: 'chapter_craft_brief',
+          summary: 'Generate chapter progress card.',
+          assumptions: [],
+          risks: [],
+          steps: [
+            { stepNo: 1, name: 'Resolve chapter', tool: 'resolve_chapter', mode: 'act', requiresApproval: false, args: { chapterRef: '第 3 章' } },
+            { stepNo: 2, name: 'Collect context', tool: 'collect_chapter_context', mode: 'act', requiresApproval: false, args: { chapterId: '{{steps.1.output.chapterId}}' } },
+            { stepNo: 3, name: 'Generate craft brief', tool: 'generate_chapter_craft_brief_preview', mode: 'act', requiresApproval: false, args: { chapterId: '{{steps.1.output.chapterId}}', context: '{{steps.2.output}}', instruction: '{{context.userMessage}}' } },
+            { stepNo: 4, name: 'Validate craft brief', tool: 'validate_chapter_craft_brief', mode: 'act', requiresApproval: false, args: { preview: '{{steps.3.output}}' } },
+            { stepNo: 5, name: 'Persist after approval', tool: 'persist_chapter_craft_brief', mode: 'act', requiresApproval: true, args: { preview: '{{steps.3.output}}', validation: '{{steps.4.output}}' } },
+          ],
+        },
+        result: { model: 'planner-mock' },
+      };
+    },
+  };
+  const planner = new AgentPlannerService(new SkillRegistryService(), tools, new RuleEngineService(), llm as never);
+
+  const craftPlan = await planner.createPlan('给第 3 章生成章节推进卡');
+  const scenePlan = await planner.createPlan('把第 3 章拆成 5 个场景');
+  const craftPromptPayload = JSON.parse(capturedMessages[0][1].content);
+
+  assert.equal(craftPlan.taskType, 'chapter_craft_brief');
+  assert.deepEqual(craftPlan.steps.map((step) => step.tool), ['resolve_chapter', 'collect_chapter_context', 'generate_chapter_craft_brief_preview', 'validate_chapter_craft_brief', 'persist_chapter_craft_brief']);
+  assert.equal(craftPlan.steps[4].requiresApproval, true);
+  assert.equal(scenePlan.taskType, 'scene_card_planning');
+  assert.deepEqual(scenePlan.steps.map((step) => step.tool), ['resolve_chapter', 'generate_scene_cards_preview', 'validate_scene_cards']);
+  assert.match(craftPromptPayload.taskTypeGuidance.chapter_craft_brief, /generate_chapter_craft_brief_preview/);
+  assert.match(craftPromptPayload.taskTypeGuidance.chapter_craft_brief, /chapter_write/);
+  assert.match(craftPromptPayload.taskTypeGuidance.scene_card_planning, /not for Chapter\.craftBrief/);
 });
 
 test('Planner 接受创作引导 guided taskType', () => {
