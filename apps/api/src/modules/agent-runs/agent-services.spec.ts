@@ -55,7 +55,7 @@ import { GenerateStoryBiblePreviewTool } from '../agent-tools/tools/generate-sto
 import { ValidateStoryBibleTool } from '../agent-tools/tools/validate-story-bible.tool';
 import { PersistStoryBibleTool } from '../agent-tools/tools/persist-story-bible.tool';
 import { GenerateContinuityPreviewTool, PersistContinuityChangesTool, ValidateContinuityChangesTool } from '../agent-tools/tools/continuity-changes.tool';
-import { GenerateChapterCraftBriefPreviewTool } from '../agent-tools/tools/chapter-craft-brief-tools.tool';
+import { GenerateChapterCraftBriefPreviewTool, ValidateChapterCraftBriefTool } from '../agent-tools/tools/chapter-craft-brief-tools.tool';
 import { GenerateSceneCardsPreviewTool, ListSceneCardsTool, PersistSceneCardsTool, UpdateSceneCardTool, ValidateSceneCardsTool } from '../agent-tools/tools/scene-card-tools.tool';
 import { RelationshipGraphService } from '../agent-tools/relationship-graph.service';
 import { FactExtractorService } from '../facts/fact-extractor.service';
@@ -7428,6 +7428,103 @@ test('GenerateChapterCraftBriefPreviewTool falls back to baseline craftBrief on 
   assert.ok(preview.candidates[0].proposedFields.craftBrief.actionBeats.length >= 3);
   assert.ok(preview.candidates[0].proposedFields.craftBrief.concreteClues.length >= 1);
   assert.match(preview.risks.join(' | '), /LLM_TIMEOUT/);
+});
+
+test('ValidateChapterCraftBriefTool checks field completeness and drafted skip preview', async () => {
+  const context = { agentRunId: 'run-craft-validate', projectId: 'p1', mode: 'plan' as const, approved: false, outputs: {}, policy: {} };
+  const sourceTrace = {
+    sourceKind: 'chapter_craft_brief' as const,
+    originTool: 'generate_chapter_craft_brief_preview' as const,
+    agentRunId: context.agentRunId,
+    candidateIndex: 0,
+    instruction: 'progress card',
+    chapterNo: 3,
+    contextSources: [],
+  };
+  const completeCraftBrief = {
+    visibleGoal: 'Find the ledger.',
+    hiddenEmotion: 'He hides fear behind procedure.',
+    coreConflict: 'The archivist blocks access.',
+    mainlineTask: 'Enter the archive and identify the ledger.',
+    subplotTasks: ['Test an ally.'],
+    actionBeats: ['Ask for access.', 'Spot the rival.', 'Force a choice.'],
+    concreteClues: [{ name: 'salt thread', sensoryDetail: 'Grit on the thumb.', laterUse: 'Links to the bridge file.' }],
+    dialogueSubtext: 'Humidity talk hides a threat.',
+    characterShift: 'He distrusts the archive.',
+    irreversibleConsequence: 'The rival sees the clue and can frame him.',
+    progressTypes: ['info'],
+  };
+  const preview = {
+    candidates: [
+      {
+        candidateId: 'ccb_3_ok',
+        chapterId: 'c3',
+        chapterNo: 3,
+        title: 'Archive pressure',
+        status: 'planned',
+        hasExistingCraftBrief: false,
+        proposedFields: { objective: 'Find the ledger.', conflict: 'The archivist blocks access.', outline: 'Archive confrontation.', craftBrief: completeCraftBrief },
+        risks: [],
+        sourceTrace,
+      },
+      {
+        candidateId: 'ccb_4_drafted',
+        chapterId: 'c4',
+        chapterNo: 4,
+        title: 'Drafted chapter',
+        status: 'drafted',
+        hasExistingCraftBrief: true,
+        proposedFields: { craftBrief: completeCraftBrief },
+        risks: ['Chapter is drafted.'],
+        sourceTrace: { ...sourceTrace, candidateIndex: 1, chapterNo: 4 },
+      },
+    ],
+    assumptions: [],
+    risks: [],
+    writePlan: { mode: 'preview_only' as const, target: 'Chapter.craftBrief' as const, requiresValidation: true as const, requiresApprovalBeforePersist: true as const },
+  };
+  const prisma = {
+    project: { async findUnique() { return { id: 'p1' }; } },
+    chapter: {
+      async findMany() {
+        return [
+          { id: 'c3', chapterNo: 3, title: 'Archive pressure', status: 'planned' },
+          { id: 'c4', chapterNo: 4, title: 'Drafted chapter', status: 'drafted' },
+        ];
+      },
+    },
+  };
+
+  const tool = new ValidateChapterCraftBriefTool(prisma as never);
+  const result = await tool.run({ preview }, context);
+
+  assert.equal(result.valid, true);
+  assert.deepEqual(result.accepted.map((item) => item.action), ['update', 'skip_by_default']);
+  assert.equal(result.writePreview.chapters[0].action, 'update');
+  assert.equal(result.writePreview.chapters[1].action, 'skip_by_default');
+  assert.match(result.warnings.join(' | '), /skip it by default/);
+
+  const badPreview = {
+    ...preview,
+    candidates: [{
+      ...preview.candidates[0],
+      proposedFields: {
+        craftBrief: {
+          ...completeCraftBrief,
+          visibleGoal: '',
+          actionBeats: ['Ask once.'],
+          concreteClues: [],
+          irreversibleConsequence: '',
+        },
+      },
+    }],
+  };
+  const rejected = await tool.run({ preview: badPreview }, context);
+  assert.equal(rejected.valid, false);
+  assert.match(rejected.rejected[0].reasons.join(' | '), /visibleGoal/);
+  assert.match(rejected.rejected[0].reasons.join(' | '), /actionBeats/);
+  assert.match(rejected.rejected[0].reasons.join(' | '), /concreteClues/);
+  assert.match(rejected.rejected[0].reasons.join(' | '), /irreversibleConsequence/);
 });
 
 test('SceneCard agent tools preview validate persist and update with approval boundaries', async () => {

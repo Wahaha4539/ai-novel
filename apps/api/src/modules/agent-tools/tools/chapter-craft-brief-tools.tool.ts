@@ -75,6 +75,46 @@ export interface GenerateChapterCraftBriefPreviewOutput {
   };
 }
 
+interface ValidateChapterCraftBriefInput {
+  preview?: GenerateChapterCraftBriefPreviewOutput;
+  taskContext?: Record<string, unknown>;
+}
+
+export interface ValidateChapterCraftBriefOutput {
+  valid: boolean;
+  accepted: Array<{
+    candidateId: string;
+    chapterId: string;
+    chapterNo: number;
+    title: string;
+    status: string;
+    action: 'update' | 'skip_by_default';
+    sourceTrace: ChapterCraftBriefSourceTrace;
+  }>;
+  rejected: Array<{
+    candidateId: string;
+    chapterNo?: number;
+    title: string;
+    reasons: string[];
+  }>;
+  warnings: string[];
+  writePreview: {
+    target: 'Chapter.craftBrief';
+    requiresApprovalBeforePersist: true;
+    chapters: Array<{
+      candidateId: string;
+      chapterId: string;
+      chapterNo: number;
+      title: string;
+      status: string;
+      action: 'update' | 'skip_by_default';
+      reason?: string;
+      proposedFields: ChapterCraftBriefCandidate['proposedFields'];
+      sourceTrace: ChapterCraftBriefSourceTrace;
+    }>;
+  };
+}
+
 type ChapterTarget = {
   id: string;
   volumeId: string | null;
@@ -335,6 +375,139 @@ ${JSON.stringify(args.context ?? {}, null, 2).slice(0, 24000)}`,
   }
 }
 
+@Injectable()
+export class ValidateChapterCraftBriefTool implements BaseTool<ValidateChapterCraftBriefInput, ValidateChapterCraftBriefOutput> {
+  name = 'validate_chapter_craft_brief';
+  description = 'Validate Chapter.craftBrief preview candidates before approved persistence.';
+  inputSchema = {
+    type: 'object' as const,
+    required: ['preview'],
+    additionalProperties: false,
+    properties: {
+      preview: { type: 'object' as const },
+      taskContext: { type: 'object' as const },
+    },
+  };
+  outputSchema = {
+    type: 'object' as const,
+    required: ['valid', 'accepted', 'rejected', 'warnings', 'writePreview'],
+    properties: {
+      valid: { type: 'boolean' as const },
+      accepted: { type: 'array' as const },
+      rejected: { type: 'array' as const },
+      warnings: { type: 'array' as const, items: { type: 'string' as const } },
+      writePreview: { type: 'object' as const },
+    },
+  };
+  allowedModes: Array<'plan' | 'act'> = ['plan', 'act'];
+  riskLevel: 'low' = 'low';
+  requiresApproval = false;
+  sideEffects: string[] = [];
+  manifest: ToolManifestV2 = {
+    name: this.name,
+    displayName: 'Validate Chapter Craft Brief',
+    description: 'Checks Chapter.craftBrief preview completeness, action-chain density, tangible clues, irreversible consequence, source trace, and default skip behavior for drafted/non-planned chapters.',
+    whenToUse: [
+      'generate_chapter_craft_brief_preview has produced candidates.',
+      'The next step may persist Chapter.craftBrief and needs an approval-ready write preview.',
+      'The agent needs to catch missing actionBeats, concreteClues, dialogue subtext, character shift, or irreversible consequence before saving.',
+    ],
+    whenNotToUse: [
+      'There is no Chapter.craftBrief preview output.',
+      'The user is asking for SceneCard validation; use validate_scene_cards.',
+      'The user is asking to validate a whole outline_preview; use validate_outline.',
+    ],
+    inputSchema: this.inputSchema,
+    outputSchema: this.outputSchema,
+    parameterHints: {
+      preview: { source: 'previous_step', description: 'Output from generate_chapter_craft_brief_preview.' },
+      taskContext: { source: 'previous_step', description: 'Optional context for audit visibility; database refs are the source of truth.' },
+    },
+    examples: [
+      {
+        user: 'Validate the chapter progress card before saving.',
+        plan: [
+          { tool: 'generate_chapter_craft_brief_preview', args: { instruction: '{{context.userMessage}}' } },
+          { tool: 'validate_chapter_craft_brief', args: { preview: '{{steps.generate_chapter_craft_brief_preview.output}}' } },
+        ],
+      },
+    ],
+    allowedModes: this.allowedModes,
+    riskLevel: this.riskLevel,
+    requiresApproval: this.requiresApproval,
+    sideEffects: this.sideEffects,
+    idPolicy: {
+      forbiddenToInvent: ['projectId', 'chapterId', 'volumeId', 'candidateId'],
+      allowedSources: ['projectId from ToolContext only', 'candidateId/sourceTrace from generate_chapter_craft_brief_preview output', 'chapter refs read from the database'],
+    },
+  };
+
+  constructor(private readonly prisma: PrismaService) {}
+
+  async run(args: ValidateChapterCraftBriefInput, context: ToolContext): Promise<ValidateChapterCraftBriefOutput> {
+    if (!args.preview) throw new BadRequestException('validate_chapter_craft_brief requires generate_chapter_craft_brief_preview output.');
+    if (args.preview.writePlan?.target !== 'Chapter.craftBrief' || args.preview.writePlan?.requiresApprovalBeforePersist !== true) {
+      throw new BadRequestException('Chapter craft brief preview has an invalid writePlan.');
+    }
+    await assertProjectExists(this.prisma, context.projectId);
+    const candidates = getPreviewCandidates(args.preview);
+    const refs = await loadChapterRefs(this.prisma, context.projectId, candidates);
+    const accepted: ValidateChapterCraftBriefOutput['accepted'] = [];
+    const rejected: ValidateChapterCraftBriefOutput['rejected'] = [];
+    const warnings: string[] = [];
+    const writeChapters: ValidateChapterCraftBriefOutput['writePreview']['chapters'] = [];
+
+    candidates.forEach((candidate) => {
+      const dbChapter = refs.get(candidate.chapterId);
+      const status = dbChapter?.status ?? candidate.status;
+      const reasons = validateCraftBriefCandidate(candidate, context, dbChapter);
+      if (reasons.length) {
+        rejected.push({
+          candidateId: text(candidate.candidateId, ''),
+          chapterNo: positiveInt(candidate.chapterNo),
+          title: text(candidate.title, ''),
+          reasons,
+        });
+        return;
+      }
+      const action = status === 'planned' ? 'update' : 'skip_by_default';
+      if (action === 'skip_by_default') warnings.push(`Chapter ${candidate.chapterNo} status is ${status}; persist_chapter_craft_brief will skip it by default unless allowDrafted is explicitly approved.`);
+      accepted.push({
+        candidateId: candidate.candidateId,
+        chapterId: candidate.chapterId,
+        chapterNo: candidate.chapterNo,
+        title: candidate.title,
+        status,
+        action,
+        sourceTrace: candidate.sourceTrace,
+      });
+      writeChapters.push({
+        candidateId: candidate.candidateId,
+        chapterId: candidate.chapterId,
+        chapterNo: candidate.chapterNo,
+        title: candidate.title,
+        status,
+        action,
+        ...(action === 'skip_by_default' ? { reason: `Chapter status ${status} is not planned.` } : {}),
+        proposedFields: candidate.proposedFields,
+        sourceTrace: candidate.sourceTrace,
+      });
+    });
+
+    return {
+      valid: candidates.length > 0 && rejected.length === 0,
+      accepted,
+      rejected,
+      warnings: [...new Set(warnings)],
+      writePreview: {
+        target: 'Chapter.craftBrief',
+        requiresApprovalBeforePersist: true,
+        chapters: writeChapters,
+      },
+    };
+  }
+}
+
 async function assertProjectExists(prisma: Pick<PrismaService, 'project'>, projectId: string) {
   const project = await prisma.project.findUnique({ where: { id: projectId }, select: { id: true } });
   if (!project) throw new NotFoundException(`Project not found: ${projectId}`);
@@ -430,6 +603,80 @@ function normalizeRawCandidates(data: Partial<GenerateChapterCraftBriefPreviewOu
   if (Array.isArray(data.chapters)) return data.chapters;
   if (data.chapter) return [data.chapter];
   return [];
+}
+
+function getPreviewCandidates(preview?: GenerateChapterCraftBriefPreviewOutput): ChapterCraftBriefCandidate[] {
+  if (!preview || !Array.isArray(preview.candidates)) return [];
+  return preview.candidates.filter((item): item is ChapterCraftBriefCandidate => Boolean(item) && typeof item === 'object' && !Array.isArray(item));
+}
+
+async function loadChapterRefs(
+  prisma: Pick<PrismaService, 'chapter'>,
+  projectId: string,
+  candidates: ChapterCraftBriefCandidate[],
+): Promise<Map<string, Pick<ChapterTarget, 'id' | 'chapterNo' | 'title' | 'status'>>> {
+  const chapterIds = [...new Set(candidates.map((candidate) => candidate.chapterId).filter(Boolean))];
+  const chapters = chapterIds.length
+    ? await prisma.chapter.findMany({
+        where: { projectId, id: { in: chapterIds } },
+        select: { id: true, chapterNo: true, title: true, status: true },
+      })
+    : [];
+  return new Map(chapters.map((chapter) => [chapter.id, chapter]));
+}
+
+function validateCraftBriefCandidate(
+  candidate: ChapterCraftBriefCandidate,
+  context: ToolContext,
+  dbChapter?: Pick<ChapterTarget, 'id' | 'chapterNo' | 'title' | 'status'>,
+): string[] {
+  const reasons: string[] = [];
+  const sourceTrace = candidate.sourceTrace;
+  const brief = asRecord(candidate.proposedFields?.craftBrief);
+
+  if (!text(candidate.candidateId, '')) reasons.push('Missing candidateId.');
+  if (!text(candidate.chapterId, '')) reasons.push('Missing chapterId.');
+  if (!Number.isInteger(candidate.chapterNo) || candidate.chapterNo < 1) reasons.push('chapterNo must be a positive integer.');
+  if (!text(candidate.title, '')) reasons.push('Missing title.');
+  if (!dbChapter) reasons.push(`Chapter not found in project: ${candidate.chapterId}.`);
+  if (dbChapter && dbChapter.chapterNo !== candidate.chapterNo) reasons.push(`chapterNo does not match database chapter: ${candidate.chapterNo}.`);
+  if (!isSameCraftBriefSourceTrace(sourceTrace, context)) reasons.push('sourceTrace is not from generate_chapter_craft_brief_preview in the current agent run.');
+  if (!brief) {
+    reasons.push('Missing proposedFields.craftBrief.');
+    return [...new Set(reasons)];
+  }
+  reasons.push(...validateCraftBriefQuality(brief));
+  return [...new Set(reasons)];
+}
+
+function validateCraftBriefQuality(brief: Record<string, unknown>): string[] {
+  const reasons: string[] = [];
+  const requiredTextFields = [
+    'visibleGoal',
+    'hiddenEmotion',
+    'coreConflict',
+    'mainlineTask',
+    'dialogueSubtext',
+    'characterShift',
+    'irreversibleConsequence',
+  ];
+  requiredTextFields.forEach((field) => {
+    if (!optionalText(brief[field])) reasons.push(`craftBrief.${field} is required.`);
+  });
+  if (stringArray(brief.subplotTasks).length < 1) reasons.push('craftBrief.subplotTasks must contain at least 1 item.');
+  if (stringArray(brief.actionBeats).length < 3) reasons.push('craftBrief.actionBeats must contain at least 3 concrete action beats.');
+  if (!normalizeClues(brief.concreteClues, []).length) reasons.push('craftBrief.concreteClues must contain at least 1 tangible clue.');
+  if (stringArray(brief.progressTypes).length < 1) reasons.push('craftBrief.progressTypes must contain at least 1 item.');
+  return reasons;
+}
+
+function isSameCraftBriefSourceTrace(sourceTrace: ChapterCraftBriefSourceTrace | undefined, context: ToolContext): boolean {
+  return Boolean(sourceTrace)
+    && sourceTrace?.sourceKind === CHAPTER_CRAFT_BRIEF_SOURCE_KIND
+    && sourceTrace?.originTool === CHAPTER_CRAFT_BRIEF_ORIGIN_TOOL
+    && sourceTrace?.agentRunId === context.agentRunId
+    && Number.isInteger(sourceTrace?.candidateIndex)
+    && Number.isInteger(sourceTrace?.chapterNo);
 }
 
 function normalizeCraftBrief(raw: Record<string, unknown> | undefined, base: { chapterNo: number; title: string; objective: string; conflict: string; outline: string }): ChapterCraftBrief {
