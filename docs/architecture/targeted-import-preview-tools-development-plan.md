@@ -355,7 +355,7 @@
 
 ### TIP-P2-004 增加快速模式和深度模式
 
-- 状态：`[ ]`
+- 状态：`[x]`
 - 模块：Web/API
 - 文件：`AgentInputBox.tsx`、`AgentPlannerService`
 - 任务：允许用户在“快速预览”和“深度拆分”之间选择。
@@ -364,6 +364,12 @@
   - 深度模式优先分目标 Tool。
   - 默认模式可按目标数量决定：单目标或双目标走深度，多目标可提示成本更高。
 - 验证：`pnpm --dir apps/api run test:agent`、`pnpm --dir apps/web run build`
+- 完成记录：
+  - 2026-05-06：Web `AgentInputBox` 在目标产物选择区增加导入预览模式选择（自动/快速/深度），提交时通过 `useAgentRun.createPlan` 将 `importPreviewMode` 纳入请求 context 和幂等指纹。
+  - 2026-05-06：API context DTO、Run context 归一化、AgentContextBuilder 增加 `importPreviewMode`，并拒绝非法模式值。
+  - 2026-05-06：Planner 支持 quick/deep/auto：quick 优先 `build_import_preview`，deep 优先分目标 Tool，auto 对单目标/双目标走 deep、多目标走 quick；所有模式仍保留 validate 和需审批的 `persist_project_assets`。
+  - 修改文件：`apps/api/src/modules/agent-runs/dto/create-agent-plan.dto.ts`、`apps/api/src/modules/agent-runs/agent-runs.service.ts`、`apps/api/src/modules/agent-runs/agent-context-builder.service.ts`、`apps/api/src/modules/agent-runs/agent-planner.service.ts`、`apps/api/src/modules/agent-runs/agent-services.spec.ts`、`apps/web/hooks/useAgentRun.ts`、`apps/web/components/agent/AgentInputBox.tsx`、`apps/web/components/agent/AgentFloatingPanel.tsx`、`apps/web/components/agent/AgentWorkspace.tsx`、`apps/web/app/globals.css`、`docs/architecture/targeted-import-preview-tools-development-plan.md`。
+  - 验证结果：`pnpm --dir apps/api run test:agent` 通过，183 项测试通过；`pnpm --dir apps/web run build` 通过；`git diff --check` 通过。
 
 ## 6. P3 生产化和监控
 

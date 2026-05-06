@@ -133,8 +133,8 @@ export function AgentFloatingPanel({
       pushMessage('system', '创意文档仍在上传中，请稍后再发送。');
       return;
     }
-    const requestContext = submitOptions?.requestedAssetTypes?.length
-      ? { ...pageContext, requestedAssetTypes: submitOptions.requestedAssetTypes }
+    const requestContext = submitOptions?.requestedAssetTypes?.length || submitOptions?.importPreviewMode
+      ? { ...pageContext, ...(submitOptions.requestedAssetTypes?.length ? { requestedAssetTypes: submitOptions.requestedAssetTypes } : {}), ...(submitOptions.importPreviewMode ? { importPreviewMode: submitOptions.importPreviewMode } : {}) }
       : pageContext;
     // 立即将用户消息推入聊天历史并清空输入框，模拟即时发送效果
     pushMessage('user', message);

@@ -1,7 +1,7 @@
 import { BadRequestException, Injectable, NotFoundException } from '@nestjs/common';
 import { Prisma } from '@prisma/client';
 import { PrismaService } from '../../prisma/prisma.service';
-import { AgentCreativeDocumentAttachmentDto, AgentCreativeDocumentExtensionDto, CreateAgentPlanContextDto, CreateAgentPlanDto, ImportAssetTypeDto, ReplanAgentRunDto, SubmitAgentClarificationChoiceDto } from './dto/create-agent-plan.dto';
+import { AgentCreativeDocumentAttachmentDto, AgentCreativeDocumentExtensionDto, CreateAgentPlanContextDto, CreateAgentPlanDto, ImportAssetTypeDto, ImportPreviewModeDto, ReplanAgentRunDto, SubmitAgentClarificationChoiceDto } from './dto/create-agent-plan.dto';
 import { ExecuteAgentRunDto } from './dto/execute-agent-run.dto';
 import { InterpretAgentMessageDto } from './dto/interpret-agent-message.dto';
 import { AgentMessageIntentService } from './agent-message-intent.service';
@@ -13,6 +13,7 @@ export class AgentRunsService {
 
   private readonly creativeDocumentExtensions = new Set<AgentCreativeDocumentExtensionDto>(['md', 'txt', 'docx', 'pdf']);
   private readonly importAssetTypes = new Set<ImportAssetTypeDto>(['projectProfile', 'outline', 'characters', 'worldbuilding', 'writingRules']);
+  private readonly importPreviewModes = new Set<ImportPreviewModeDto>(['auto', 'quick', 'deep']);
 
   /**
    * 从现有 Run/Plan/Step/Approval/Artifact 表派生审计事件。
@@ -167,11 +168,13 @@ export class AgentRunsService {
   private normalizePlanContext(value: unknown): CreateAgentPlanContextDto {
     if (value === undefined || value === null) return {};
     if (!this.isRecord(value)) throw new BadRequestException('context 必须是对象');
-    const { requestedAssetTypes, ...rest } = value;
+    const { requestedAssetTypes, importPreviewMode, ...rest } = value;
     const normalizedAssetTypes = this.normalizeRequestedAssetTypes(requestedAssetTypes);
+    const normalizedImportPreviewMode = this.normalizeImportPreviewMode(importPreviewMode);
     return {
       ...rest,
       ...(normalizedAssetTypes.length ? { requestedAssetTypes: normalizedAssetTypes } : {}),
+      ...(normalizedImportPreviewMode ? { importPreviewMode: normalizedImportPreviewMode } : {}),
     } as CreateAgentPlanContextDto;
   }
 
@@ -186,6 +189,14 @@ export class AgentRunsService {
       normalized.push(item as ImportAssetTypeDto);
     });
     return [...new Set(normalized)];
+  }
+
+  private normalizeImportPreviewMode(value: unknown): ImportPreviewModeDto | undefined {
+    if (value === undefined || value === null) return undefined;
+    if (typeof value !== 'string' || !this.importPreviewModes.has(value as ImportPreviewModeDto)) {
+      throw new BadRequestException('context.importPreviewMode 只支持 auto/quick/deep');
+    }
+    return value as ImportPreviewModeDto;
   }
 
   private normalizeCreativeDocumentAttachment(value: unknown, index: number): AgentCreativeDocumentAttachmentDto {

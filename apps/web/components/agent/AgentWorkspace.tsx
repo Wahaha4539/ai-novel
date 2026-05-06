@@ -72,8 +72,8 @@ export function AgentWorkspace({ projectId, selectedChapterId, onRefresh }: Agen
       pushMessage('system', '创意文档仍在上传中，请稍后再发送。');
       return;
     }
-    const requestContext = submitOptions?.requestedAssetTypes?.length
-      ? { ...pageContext, requestedAssetTypes: submitOptions.requestedAssetTypes }
+    const requestContext = submitOptions?.requestedAssetTypes?.length || submitOptions?.importPreviewMode
+      ? { ...pageContext, ...(submitOptions.requestedAssetTypes?.length ? { requestedAssetTypes: submitOptions.requestedAssetTypes } : {}), ...(submitOptions.importPreviewMode ? { importPreviewMode: submitOptions.importPreviewMode } : {}) }
       : pageContext;
     // 立即推入用户消息并清空输入框
     pushMessage('user', message);

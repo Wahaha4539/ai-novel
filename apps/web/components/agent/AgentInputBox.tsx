@@ -1,7 +1,7 @@
 'use client';
 
 import { ChangeEvent, FormEvent, KeyboardEvent, useEffect, useMemo, useRef, useState } from 'react';
-import type { AgentImportAssetType, AgentPlanPayload } from '../../hooks/useAgentRun';
+import type { AgentImportAssetType, AgentImportPreviewMode, AgentPlanPayload } from '../../hooks/useAgentRun';
 import { CREATIVE_DOCUMENT_ACCEPT } from '../../lib/uploadCreativeDocument';
 import type { AgentCreativeDocumentAttachment, AgentCreativeDocumentExtension } from '../../types/agent-attachment';
 
@@ -14,6 +14,7 @@ export type AgentTargetProductId = AgentImportAssetType;
 
 export interface AgentInputSubmitOptions {
   requestedAssetTypes?: AgentTargetProductId[];
+  importPreviewMode?: AgentImportPreviewMode;
 }
 
 const TARGET_PRODUCTS: Array<{ id: AgentTargetProductId; label: string; promptLabel: string; detail: string }> = [
@@ -22,6 +23,12 @@ const TARGET_PRODUCTS: Array<{ id: AgentTargetProductId; label: string; promptLa
   { id: 'worldbuilding', label: '世界设定', promptLabel: '世界设定', detail: '地点、势力、规则、背景' },
   { id: 'writingRules', label: '写作规则', promptLabel: '写作规则', detail: '文风、视角、禁写规则' },
   { id: 'projectProfile', label: '项目资料', promptLabel: '项目资料', detail: '题材、主题、简介、基调' },
+];
+
+const IMPORT_PREVIEW_MODES: Array<{ id: AgentImportPreviewMode; label: string; detail: string }> = [
+  { id: 'auto', label: '自动', detail: '单目标或双目标使用深度拆分，多目标使用快速预览' },
+  { id: 'quick', label: '快速', detail: '优先使用 build_import_preview 生成统一预览' },
+  { id: 'deep', label: '深度', detail: '优先使用分目标工具并合并预览' },
 ];
 
 /** 聊天消息类型：user=用户发送，agent=Agent 回复，system=系统提示 */
@@ -78,6 +85,7 @@ export function AgentInputBox({ goal, loading, canReplan, hasCurrentRun, canAct 
   const showCounter = charCount >= CHAR_COUNT_THRESHOLD;
   const planSteps = useMemo(() => plan?.steps?.slice(0, 6) ?? [], [plan]);
   const [selectedTargetIds, setSelectedTargetIds] = useState<AgentTargetProductId[]>([]);
+  const [importPreviewMode, setImportPreviewMode] = useState<AgentImportPreviewMode>('auto');
   const lastTargetPromptRef = useRef('');
   const inputPlaceholder = canAct ? '可以用自然语言回复是否执行当前计划；我会先让 LLM 判断你的意图…' : '例如：帮我写第 2 卷第一章内容，目标 5000 字…';
 
@@ -93,6 +101,7 @@ export function AgentInputBox({ goal, loading, canReplan, hasCurrentRun, canAct 
   useEffect(() => {
     if (!goal.trim()) {
       setSelectedTargetIds([]);
+      setImportPreviewMode('auto');
       lastTargetPromptRef.current = '';
     }
   }, [goal]);
@@ -100,7 +109,7 @@ export function AgentInputBox({ goal, loading, canReplan, hasCurrentRun, canAct 
   const handleSubmit = async (event: FormEvent) => {
     event.preventDefault();
     if (!goal.trim() || loading) return;
-    await onSubmit(createSubmitOptions(selectedTargetIds));
+    await onSubmit(createSubmitOptions(selectedTargetIds, importPreviewMode));
   };
 
   const handleInputKeyDown = async (event: KeyboardEvent<HTMLTextAreaElement>) => {
@@ -108,7 +117,7 @@ export function AgentInputBox({ goal, loading, canReplan, hasCurrentRun, canAct 
     if (event.key === 'Enter' && !event.shiftKey && !event.nativeEvent.isComposing) {
       event.preventDefault();
       if (!goal.trim() || loading) return;
-      await onSubmit(createSubmitOptions(selectedTargetIds));
+      await onSubmit(createSubmitOptions(selectedTargetIds, importPreviewMode));
     }
   };
 
@@ -147,6 +156,11 @@ export function AgentInputBox({ goal, loading, canReplan, hasCurrentRun, canAct 
     const allIds = TARGET_PRODUCTS.map((item) => item.id);
     setSelectedTargetIds(allIds);
     applyTargetProducts(allIds);
+  };
+
+  const handleImportPreviewModeChange = (mode: AgentImportPreviewMode) => {
+    if (loading) return;
+    setImportPreviewMode(mode);
   };
 
   return (
@@ -278,6 +292,24 @@ export function AgentInputBox({ goal, loading, canReplan, hasCurrentRun, canAct 
                   全套
                 </button>
               </div>
+              <div className="agent-import-preview-mode" aria-label="导入预览模式">
+                {IMPORT_PREVIEW_MODES.map((item) => {
+                  const active = importPreviewMode === item.id;
+                  return (
+                    <button
+                      key={item.id}
+                      type="button"
+                      className={`agent-import-preview-mode__btn ${active ? 'agent-import-preview-mode__btn--active' : ''}`}
+                      aria-pressed={active}
+                      title={item.detail}
+                      disabled={loading}
+                      onClick={() => handleImportPreviewModeChange(item.id)}
+                    >
+                      {item.label}
+                    </button>
+                  );
+                })}
+              </div>
               <div className="agent-target-products__grid">
                 {TARGET_PRODUCTS.map((item) => {
                   const active = selectedTargetIds.includes(item.id);
@@ -393,8 +425,8 @@ function composeTargetPrompt(ids: AgentTargetProductId[], hasCreativeDocument: b
   return `请根据${sourceText}生成目标产物：${selected.map((item) => item.promptLabel).join('、')}。只生成这些目标产物，不要生成未选择的其他资产。`;
 }
 
-function createSubmitOptions(ids: AgentTargetProductId[]): AgentInputSubmitOptions | undefined {
-  return ids.length ? { requestedAssetTypes: [...ids] } : undefined;
+function createSubmitOptions(ids: AgentTargetProductId[], importPreviewMode: AgentImportPreviewMode): AgentInputSubmitOptions | undefined {
+  return ids.length ? { requestedAssetTypes: [...ids], importPreviewMode } : undefined;
 }
 
 function stripPreviousTargetPrompt(goal: string, previousPrompt: string) {

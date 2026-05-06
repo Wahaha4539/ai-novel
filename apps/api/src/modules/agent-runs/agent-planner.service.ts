@@ -5,6 +5,7 @@ import { ImportAssetType, IMPORT_ASSET_TYPES } from '../agent-tools/tools/import
 import { ToolRegistryService } from '../agent-tools/tool-registry.service';
 import { LlmGatewayService } from '../llm/llm-gateway.service';
 import { AgentContextV2 } from './agent-context-builder.service';
+import type { ImportPreviewModeDto } from './dto/create-agent-plan.dto';
 
 export interface AgentPlanStepSpec {
   id?: string;
@@ -152,6 +153,7 @@ export class AgentPlannerService {
           '你需要根据 Available Tools 的 whenToUse/whenNotToUse/parameterHints/idPolicy 自主编排步骤和 args。',
           '导入类任务不是固定全量流程。用户指定目标产物时，build_import_preview.args.requestedAssetTypes 必须只包含用户明确要求的资产：projectProfile、outline、characters、worldbuilding、writingRules；例如只要故事大纲就只传 ["outline"]。',
           '导入类任务如果 agentContext.session.requestedAssetTypes 存在，它是最高优先级的结构化目标产物范围；只能为这些目标产物生成预览，不能因为有上传文档就扩成全套导入。',
+          '导入预览模式由 agentContext.session.importPreviewMode 控制：quick 优先 build_import_preview；deep 优先分目标 generate_import_*_preview；auto 在单目标/双目标时走 deep，多目标时走 quick。',
           '导入分目标优先链路：read_source_document -> analyze_source_text -> build_import_brief（若可用） -> 按 requestedAssetTypes 调用已注册的 generate_import_*_preview 专用工具 -> merge_import_previews -> cross_target_consistency_check（若可用） -> validate_imported_assets -> persist_project_assets。',
           '如果某个 generate_import_*_preview 专用工具未出现在 Available Tools，允许 fallback 到 build_import_preview；fallback 的 requestedAssetTypes 仍必须等于用户选择的目标范围。',
           '只要导入预览未来可写入，计划中必须包含 persist_project_assets，且它必须是需要审批的写入步骤；validate_imported_assets 必须读取 merge_import_previews 或 build_import_preview 的统一预览输出。',
@@ -256,6 +258,7 @@ export class AgentPlannerService {
             '必须修复 invalidPlan，使 taskType 来自 availableTaskTypes，steps[].tool 全部来自 registeredTools。',
             'taskType 由 userGoal 语义决定；不要依赖后端关键词分类。',
             '修复导入计划时必须保留用户指定的目标产物范围；build_import_preview.args.requestedAssetTypes 只能包含用户明确要求的资产，不能因为有上传文档就扩成全套导入。',
+            '修复导入计划时必须保留 agentContext.session.importPreviewMode：quick 使用 build_import_preview，deep 使用分目标工具，auto 由目标数量决定。',
             '修复导入分目标计划时，优先使用 build_import_brief（若可用）和已注册的 generate_import_*_preview 专用工具；目标专用预览后必须调用 merge_import_previews、cross_target_consistency_check（若可用），再把合并结果传给 validate_imported_assets。',
             '如果专用目标工具未注册，使用 build_import_preview fallback，但 requestedAssetTypes 仍必须等于用户选择的目标范围；persist_project_assets 必须作为需审批写入步骤保留。',
             '如果 agentContext.session.guided.currentStep 存在，修复后的 taskType 仍应优先使用 guided_step_consultation、guided_step_generate 或 guided_step_finalize，不要修成 chapter_write。',
@@ -354,6 +357,7 @@ export class AgentPlannerService {
       registeredTools,
       (tool) => toolRequiresApproval.get(tool) ?? false,
       this.explicitImportAssetTypes(context?.session.requestedAssetTypes),
+      context?.session.importPreviewMode,
     );
     if (normalizedSteps.length > maxSteps) throw new Error(`规范化后的 Agent Plan steps 数量非法，最多 ${maxSteps} 步`);
     const missingTool = normalizedSteps.find((step) => !registeredTools.has(step.tool));
@@ -416,16 +420,21 @@ export class AgentPlannerService {
    * 导入计划必须形成 preview -> validate -> approval-gated persist 骨架。
    * 预览源优先使用 merge_import_previews；缺少分目标工具时允许 build_import_preview fallback，但不能扩大结构化目标范围。
    */
-  private enforceProjectImportPipeline(taskType: unknown, steps: AgentPlanStepSpec[], registeredTools: Set<string>, requiresApproval: (tool: string) => boolean, contextRequestedAssetTypes: ImportAssetType[]): AgentPlanStepSpec[] {
+  private enforceProjectImportPipeline(taskType: unknown, steps: AgentPlanStepSpec[], registeredTools: Set<string>, requiresApproval: (tool: string) => boolean, contextRequestedAssetTypes: ImportAssetType[], importPreviewMode?: ImportPreviewModeDto): AgentPlanStepSpec[] {
     if (taskType !== 'project_import_preview') return steps;
     let normalized = this.constrainImportTargetsToRequestedAssets(steps, contextRequestedAssetTypes);
     const requestedAssetTypes = contextRequestedAssetTypes.length ? contextRequestedAssetTypes : this.requestedAssetTypesFromImportSteps(normalized);
+    const effectiveMode = this.effectiveImportPreviewMode(importPreviewMode, requestedAssetTypes);
 
     normalized = this.ensureBuildImportPreviewScope(normalized, requestedAssetTypes);
-    normalized = this.ensureImportBriefStep(normalized, registeredTools, requiresApproval, requestedAssetTypes);
-    normalized = this.ensureImportPreviewSource(normalized, registeredTools, requiresApproval, requestedAssetTypes);
-    normalized = this.ensureTargetPreviewImportBriefArgs(normalized);
-    normalized = this.ensureMergeImportPreviewsStep(normalized, registeredTools, requiresApproval, requestedAssetTypes);
+    if (effectiveMode === 'quick') {
+      normalized = this.ensureQuickImportPreviewSource(normalized, registeredTools, requiresApproval, requestedAssetTypes);
+    } else {
+      normalized = this.ensureImportBriefStep(normalized, registeredTools, requiresApproval, requestedAssetTypes);
+      normalized = this.ensureImportPreviewSource(normalized, registeredTools, requiresApproval, requestedAssetTypes);
+      normalized = this.ensureTargetPreviewImportBriefArgs(normalized);
+      normalized = this.ensureMergeImportPreviewsStep(normalized, registeredTools, requiresApproval, requestedAssetTypes);
+    }
 
     const previewStep = this.findImportPreviewSourceStep(normalized);
     if (!previewStep) return normalized;
@@ -436,6 +445,12 @@ export class AgentPlannerService {
     const latestPreviewStep = this.findImportPreviewSourceStep(normalized) ?? previewStep;
     normalized = this.ensurePersistProjectAssetsStep(normalized, latestPreviewStep, registeredTools, requiresApproval);
     return normalized;
+  }
+
+  private effectiveImportPreviewMode(importPreviewMode: ImportPreviewModeDto | undefined, requestedAssetTypes: ImportAssetType[]): 'quick' | 'deep' {
+    if (importPreviewMode === 'quick' || importPreviewMode === 'deep') return importPreviewMode;
+    if (importPreviewMode === 'auto') return requestedAssetTypes.length > 0 && requestedAssetTypes.length <= 2 ? 'deep' : 'quick';
+    return 'deep';
   }
 
   private constrainImportTargetsToRequestedAssets(steps: AgentPlanStepSpec[], requestedAssetTypes: ImportAssetType[]): AgentPlanStepSpec[] {
@@ -463,6 +478,15 @@ export class AgentPlannerService {
   private ensureBuildImportPreviewScope(steps: AgentPlanStepSpec[], requestedAssetTypes: ImportAssetType[]): AgentPlanStepSpec[] {
     if (!requestedAssetTypes.length) return steps;
     return steps.map((step) => step.tool === 'build_import_preview' ? { ...step, args: { ...step.args, requestedAssetTypes } } : step);
+  }
+
+  private ensureQuickImportPreviewSource(steps: AgentPlanStepSpec[], registeredTools: Set<string>, requiresApproval: (tool: string) => boolean, requestedAssetTypes: ImportAssetType[]): AgentPlanStepSpec[] {
+    const quickSteps = this.renumberSteps(steps.filter((step) => (
+      step.tool !== BUILD_IMPORT_BRIEF_TOOL
+      && !IMPORT_TARGET_ASSET_BY_TOOL.has(step.tool)
+      && step.tool !== 'merge_import_previews'
+    )));
+    return this.ensureBuildImportPreviewStep(quickSteps, registeredTools, requiresApproval, requestedAssetTypes);
   }
 
   private ensureImportBriefStep(steps: AgentPlanStepSpec[], registeredTools: Set<string>, requiresApproval: (tool: string) => boolean, requestedAssetTypes: ImportAssetType[]): AgentPlanStepSpec[] {

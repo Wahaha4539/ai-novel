@@ -4,7 +4,7 @@ import { PrismaService } from '../../prisma/prisma.service';
 import { RuleEngineService } from '../agent-rules/rule-engine.service';
 import { ToolManifestForPlanner } from '../agent-tools/tool-manifest.types';
 import { ToolRegistryService } from '../agent-tools/tool-registry.service';
-import { ImportAssetTypeDto } from './dto/create-agent-plan.dto';
+import { ImportAssetTypeDto, ImportPreviewModeDto } from './dto/create-agent-plan.dto';
 
 export interface GuidedAgentContext {
   currentStep?: string;
@@ -51,6 +51,7 @@ export interface AgentContextV2 {
     selectedRange?: { start: number; end: number };
     sourcePage?: string;
     requestedAssetTypes?: ImportAssetTypeDto[];
+    importPreviewMode?: ImportPreviewModeDto;
     clarification?: {
       latestChoice?: { id?: string; label?: string; payload?: unknown; message?: string; answeredAt?: string };
       history: Array<{ roundNo?: number; question?: string; selectedChoice?: unknown; answeredAt?: string }>;
@@ -93,6 +94,7 @@ export interface AgentContextV2 {
 @Injectable()
 export class AgentContextBuilderService {
   private readonly importAssetTypes = new Set<ImportAssetTypeDto>(['projectProfile', 'outline', 'characters', 'worldbuilding', 'writingRules']);
+  private readonly importPreviewModes = new Set<ImportPreviewModeDto>(['auto', 'quick', 'deep']);
 
   constructor(
     private readonly prisma: PrismaService,
@@ -138,6 +140,7 @@ export class AgentContextBuilderService {
         selectedRange: this.rangeValue(sessionHints.selectedRange),
         sourcePage: this.stringValue(sessionHints.sourcePage),
         requestedAssetTypes: this.importAssetTypesValue(sessionHints.requestedAssetTypes),
+        importPreviewMode: this.importPreviewModeValue(sessionHints.importPreviewMode),
         clarification: clarification.history.length || clarification.latestChoice ? clarification : undefined,
         guided: this.guidedValue(sessionHints.guided),
       },
@@ -235,6 +238,11 @@ export class AgentContextBuilderService {
     const normalized = value.filter((item): item is ImportAssetTypeDto => typeof item === 'string' && this.importAssetTypes.has(item as ImportAssetTypeDto));
     const unique = [...new Set(normalized)];
     return unique.length ? unique : undefined;
+  }
+
+  private importPreviewModeValue(value: unknown): ImportPreviewModeDto | undefined {
+    if (typeof value !== 'string' || !this.importPreviewModes.has(value as ImportPreviewModeDto)) return undefined;
+    return value as ImportPreviewModeDto;
   }
 
   private rangeValue(value: unknown) {

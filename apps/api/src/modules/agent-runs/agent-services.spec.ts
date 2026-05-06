@@ -898,10 +898,11 @@ test('AgentRunsService 接收结构化 requestedAssetTypes 并写入 Run context
   await service.createPlan({
     projectId: '11111111-1111-4111-8111-111111111111',
     message: '只生成大纲和写作规则',
-    context: { currentProjectId: '11111111-1111-4111-8111-111111111111', requestedAssetTypes: ['outline', 'writingRules', 'outline'] },
+    context: { currentProjectId: '11111111-1111-4111-8111-111111111111', requestedAssetTypes: ['outline', 'writingRules', 'outline'], importPreviewMode: 'quick' },
   });
 
   assert.deepEqual((createdInput?.context as Record<string, unknown>).requestedAssetTypes, ['outline', 'writingRules']);
+  assert.equal((createdInput?.context as Record<string, unknown>).importPreviewMode, 'quick');
 });
 
 test('AgentRunsService 拒绝非法 requestedAssetTypes', async () => {
@@ -914,6 +915,19 @@ test('AgentRunsService 拒绝非法 requestedAssetTypes', async () => {
       context: { requestedAssetTypes: ['outline', 'allAssets'] as never },
     }),
     /context\.requestedAssetTypes\[1\]/,
+  );
+});
+
+test('AgentRunsService 拒绝非法 importPreviewMode', async () => {
+  const service = new AgentRunsService({} as never, {} as never, {} as never);
+
+  await assert.rejects(
+    () => service.createPlan({
+      projectId: '11111111-1111-4111-8111-111111111111',
+      message: '导入文档',
+      context: { requestedAssetTypes: ['outline'], importPreviewMode: 'turbo' as never },
+    }),
+    /context\.importPreviewMode/,
   );
 });
 
@@ -4698,7 +4712,7 @@ test('Planner 全套目标可编排五个专用导入 Tool', () => {
       ],
     },
     { taskType: 'general', summary: 'fallback', assumptions: [], risks: [] },
-    { session: { requestedAssetTypes } },
+    { session: { requestedAssetTypes, importPreviewMode: 'deep' } },
   );
 
   assert.deepEqual(plan.steps.map((step) => step.tool), [
@@ -4738,6 +4752,89 @@ test('Planner 全套目标可编排五个专用导入 Tool', () => {
   assert.deepEqual(plan.steps[10].args, { preview: '{{steps.9.output}}' });
   assert.deepEqual(plan.steps[11].args, { preview: '{{steps.9.output}}' });
   assert.deepEqual(plan.requiredApprovals[0].target?.stepNos, [12]);
+});
+
+test('Planner quick importPreviewMode prefers build_import_preview even when target tools are available', () => {
+  const tools = createProjectImportToolRegistry();
+  const planner = new AgentPlannerService(new SkillRegistryService(), tools, new RuleEngineService(), {} as LlmGatewayService) as unknown as {
+    validateAndNormalizeLlmPlan: (data: unknown, baseline: { taskType: string; summary: string; assumptions: string[]; risks: string[] }, context?: unknown) => ImportPlannerTestPlan;
+  };
+  const requestedAssetTypes = ['outline', 'writingRules'];
+
+  const plan = planner.validateAndNormalizeLlmPlan(
+    {
+      taskType: 'project_import_preview',
+      summary: 'Quick import preview',
+      assumptions: [],
+      risks: [],
+      steps: [
+        { stepNo: 1, name: 'Read', tool: 'read_source_document', mode: 'act', requiresApproval: false, args: { attachmentUrl: '{{context.attachments.0.url}}' } },
+        { stepNo: 2, name: 'Analyze', tool: 'analyze_source_text', mode: 'act', requiresApproval: false, args: { sourceText: '{{steps.1.output.sourceText}}' } },
+        { stepNo: 3, name: 'Outline', tool: 'generate_import_outline_preview', mode: 'act', requiresApproval: false, args: { analysis: '{{steps.2.output}}' } },
+        { stepNo: 4, name: 'Rules', tool: 'generate_import_writing_rules_preview', mode: 'act', requiresApproval: false, args: { analysis: '{{steps.2.output}}' } },
+        { stepNo: 5, name: 'Merge', tool: 'merge_import_previews', mode: 'act', requiresApproval: false, args: { requestedAssetTypes, outlinePreview: '{{steps.3.output}}', writingRulesPreview: '{{steps.4.output}}' } },
+      ],
+    },
+    { taskType: 'general', summary: 'fallback', assumptions: [], risks: [] },
+    { session: { requestedAssetTypes, importPreviewMode: 'quick' } },
+  );
+
+  assert.deepEqual(plan.steps.map((step) => step.tool), ['read_source_document', 'analyze_source_text', 'build_import_preview', 'cross_target_consistency_check', 'validate_imported_assets', 'persist_project_assets']);
+  assert.deepEqual(plan.steps[2].args, { analysis: '{{steps.2.output}}', instruction: '{{context.userMessage}}', requestedAssetTypes });
+  assert.equal(plan.steps.some((step) => step.tool.startsWith('generate_import_') || step.tool === 'merge_import_previews' || step.tool === 'build_import_brief'), false);
+  assert.equal(plan.steps[5].requiresApproval, true);
+});
+
+test('Planner auto importPreviewMode uses deep for one or two targets', () => {
+  const tools = createProjectImportToolRegistry();
+  const planner = new AgentPlannerService(new SkillRegistryService(), tools, new RuleEngineService(), {} as LlmGatewayService) as unknown as {
+    validateAndNormalizeLlmPlan: (data: unknown, baseline: { taskType: string; summary: string; assumptions: string[]; risks: string[] }, context?: unknown) => ImportPlannerTestPlan;
+  };
+
+  const plan = planner.validateAndNormalizeLlmPlan(
+    {
+      taskType: 'project_import_preview',
+      summary: 'Auto single target',
+      assumptions: [],
+      risks: [],
+      steps: [
+        { stepNo: 1, name: 'Read', tool: 'read_source_document', mode: 'act', requiresApproval: false, args: { attachmentUrl: '{{context.attachments.0.url}}' } },
+        { stepNo: 2, name: 'Analyze', tool: 'analyze_source_text', mode: 'act', requiresApproval: false, args: { sourceText: '{{steps.1.output.sourceText}}' } },
+      ],
+    },
+    { taskType: 'general', summary: 'fallback', assumptions: [], risks: [] },
+    { session: { requestedAssetTypes: ['outline'], importPreviewMode: 'auto' } },
+  );
+
+  assert.deepEqual(plan.steps.map((step) => step.tool), ['read_source_document', 'analyze_source_text', 'build_import_brief', 'generate_import_outline_preview', 'merge_import_previews', 'cross_target_consistency_check', 'validate_imported_assets', 'persist_project_assets']);
+  assert.equal(plan.steps.some((step) => step.tool === 'build_import_preview'), false);
+});
+
+test('Planner auto importPreviewMode uses quick fallback for more than two targets', () => {
+  const tools = createProjectImportToolRegistry();
+  const planner = new AgentPlannerService(new SkillRegistryService(), tools, new RuleEngineService(), {} as LlmGatewayService) as unknown as {
+    validateAndNormalizeLlmPlan: (data: unknown, baseline: { taskType: string; summary: string; assumptions: string[]; risks: string[] }, context?: unknown) => ImportPlannerTestPlan;
+  };
+  const requestedAssetTypes = ['projectProfile', 'outline', 'characters', 'worldbuilding', 'writingRules'];
+
+  const plan = planner.validateAndNormalizeLlmPlan(
+    {
+      taskType: 'project_import_preview',
+      summary: 'Auto multi target',
+      assumptions: [],
+      risks: [],
+      steps: [
+        { stepNo: 1, name: 'Read', tool: 'read_source_document', mode: 'act', requiresApproval: false, args: { attachmentUrl: '{{context.attachments.0.url}}' } },
+        { stepNo: 2, name: 'Analyze', tool: 'analyze_source_text', mode: 'act', requiresApproval: false, args: { sourceText: '{{steps.1.output.sourceText}}' } },
+      ],
+    },
+    { taskType: 'general', summary: 'fallback', assumptions: [], risks: [] },
+    { session: { requestedAssetTypes, importPreviewMode: 'auto' } },
+  );
+
+  assert.deepEqual(plan.steps.map((step) => step.tool), ['read_source_document', 'analyze_source_text', 'build_import_preview', 'cross_target_consistency_check', 'validate_imported_assets', 'persist_project_assets']);
+  assert.deepEqual(plan.steps[2].args, { analysis: '{{steps.2.output}}', instruction: '{{context.userMessage}}', requestedAssetTypes });
+  assert.equal(plan.steps.some((step) => step.tool.startsWith('generate_import_') || step.tool === 'merge_import_previews' || step.tool === 'build_import_brief'), false);
 });
 
 test('Planner 缺少专用目标 Tool 时回退到 build_import_preview 且保持目标范围', () => {
@@ -5698,7 +5795,7 @@ test('AgentContextBuilder 将多轮澄清状态注入 Planner session', async ()
     chapterId: null,
     goal: '继续处理澄清后的任务',
     input: {
-      context: { requestedAssetTypes: ['outline', 'writingRules', 'unknown'] },
+      context: { requestedAssetTypes: ['outline', 'writingRules', 'unknown'], importPreviewMode: 'deep' },
       clarificationState: { latestChoice: { id: 'char_1', label: '林烬', payload: { characterId: 'char_1' } }, history: [{ roundNo: 1, question: '你说的小林是哪位？', selectedChoice: { id: 'char_1', label: '林烬' }, answeredAt: '2026-04-28T00:00:00.000Z' }] },
     } as never,
   });
@@ -5707,6 +5804,7 @@ test('AgentContextBuilder 将多轮澄清状态注入 Planner session', async ()
   assert.equal(context.session.clarification?.latestChoice?.label, '林烬');
   assert.deepEqual(context.session.clarification?.latestChoice?.payload, { characterId: 'char_1' });
   assert.deepEqual(context.session.requestedAssetTypes, ['outline', 'writingRules']);
+  assert.equal(context.session.importPreviewMode, 'deep');
 });
 
 test('WritingRulesService create update remove invalidate recall cache', async () => {

@@ -186,8 +186,10 @@ export interface GuidedAgentPageContext {
 }
 
 export type AgentImportAssetType = 'projectProfile' | 'outline' | 'characters' | 'worldbuilding' | 'writingRules';
+export type AgentImportPreviewMode = 'auto' | 'quick' | 'deep';
 
 const IMPORT_ASSET_TYPES = new Set<AgentImportAssetType>(['projectProfile', 'outline', 'characters', 'worldbuilding', 'writingRules']);
+const IMPORT_PREVIEW_MODES = new Set<AgentImportPreviewMode>(['auto', 'quick', 'deep']);
 
 export interface AgentPageContext {
   currentProjectId?: string;
@@ -200,6 +202,7 @@ export interface AgentPageContext {
   selectedRange?: { start: number; end: number };
   sourcePage?: string;
   requestedAssetTypes?: AgentImportAssetType[];
+  importPreviewMode?: AgentImportPreviewMode;
   guided?: GuidedAgentPageContext;
   [key: string]: unknown;
 }
@@ -220,19 +223,27 @@ function createRequestedAssetTypesFingerprint(requestedAssetTypes?: AgentImportA
   return requestedAssetTypes?.length ? requestedAssetTypes.join('|') : 'infer-targets';
 }
 
+function createImportPreviewModeFingerprint(importPreviewMode?: AgentImportPreviewMode) {
+  return importPreviewMode ?? 'default-mode';
+}
+
 function normalizeRequestedAssetTypes(value?: AgentImportAssetType[]) {
   if (!Array.isArray(value)) return [];
   return [...new Set(value.filter((item): item is AgentImportAssetType => IMPORT_ASSET_TYPES.has(item)))];
 }
 
-function createClientRequestId(projectId: string, message: string, currentChapterId?: string, attachments?: AgentCreativeDocumentAttachment[], requestedAssetTypes?: AgentImportAssetType[]) {
+function normalizeImportPreviewMode(value: unknown): AgentImportPreviewMode | undefined {
+  return typeof value === 'string' && IMPORT_PREVIEW_MODES.has(value as AgentImportPreviewMode) ? value as AgentImportPreviewMode : undefined;
+}
+
+function createClientRequestId(projectId: string, message: string, currentChapterId?: string, attachments?: AgentCreativeDocumentAttachment[], requestedAssetTypes?: AgentImportAssetType[], importPreviewMode?: AgentImportPreviewMode) {
   const normalizedMessage = message.trim().slice(0, 120);
-  const hash = hashRequestPart(`${normalizedMessage}:${createAttachmentRequestFingerprint(attachments)}:${createRequestedAssetTypesFingerprint(requestedAssetTypes)}`);
+  const hash = hashRequestPart(`${normalizedMessage}:${createAttachmentRequestFingerprint(attachments)}:${createRequestedAssetTypesFingerprint(requestedAssetTypes)}:${createImportPreviewModeFingerprint(importPreviewMode)}`);
   return `agent_${projectId}_${currentChapterId ?? 'project'}_${Date.now().toString(36)}_${hash}`;
 }
 
-function createPlanRequestFingerprint(projectId: string, message: string, currentChapterId?: string, attachments?: AgentCreativeDocumentAttachment[], requestedAssetTypes?: AgentImportAssetType[]) {
-  return `${projectId}:${currentChapterId ?? 'project'}:${message.trim()}:${createAttachmentRequestFingerprint(attachments)}:${createRequestedAssetTypesFingerprint(requestedAssetTypes)}`;
+function createPlanRequestFingerprint(projectId: string, message: string, currentChapterId?: string, attachments?: AgentCreativeDocumentAttachment[], requestedAssetTypes?: AgentImportAssetType[], importPreviewMode?: AgentImportPreviewMode) {
+  return `${projectId}:${currentChapterId ?? 'project'}:${message.trim()}:${createAttachmentRequestFingerprint(attachments)}:${createRequestedAssetTypesFingerprint(requestedAssetTypes)}:${createImportPreviewModeFingerprint(importPreviewMode)}`;
 }
 
 /**
@@ -277,12 +288,13 @@ export function useAgentRun() {
     const pageContext: AgentPageContext = typeof pageContextOrChapterId === 'string' ? { currentChapterId: pageContextOrChapterId } : (pageContextOrChapterId ?? {});
     const currentChapterId = pageContext.currentChapterId;
     const planAttachments = attachments?.length ? attachments : undefined;
-    const { requestedAssetTypes: rawRequestedAssetTypes, ...restPageContext } = pageContext;
+    const { requestedAssetTypes: rawRequestedAssetTypes, importPreviewMode: rawImportPreviewMode, ...restPageContext } = pageContext;
     const requestedAssetTypes = normalizeRequestedAssetTypes(rawRequestedAssetTypes);
-    const fingerprint = createPlanRequestFingerprint(projectId, message, currentChapterId, planAttachments, requestedAssetTypes);
+    const importPreviewMode = normalizeImportPreviewMode(rawImportPreviewMode);
+    const fingerprint = createPlanRequestFingerprint(projectId, message, currentChapterId, planAttachments, requestedAssetTypes, importPreviewMode);
     let clientRequestId = createPlanRequestIdsRef.current.get(fingerprint);
     if (!clientRequestId) {
-      clientRequestId = createClientRequestId(projectId, message, currentChapterId, planAttachments, requestedAssetTypes);
+      clientRequestId = createClientRequestId(projectId, message, currentChapterId, planAttachments, requestedAssetTypes, importPreviewMode);
       createPlanRequestIdsRef.current.set(fingerprint, clientRequestId);
     }
     try {
@@ -296,6 +308,7 @@ export function useAgentRun() {
             sourcePage: 'agent_workspace',
             ...restPageContext,
             ...(requestedAssetTypes.length ? { requestedAssetTypes } : {}),
+            ...(importPreviewMode ? { importPreviewMode } : {}),
           },
           attachments: planAttachments,
           clientRequestId,

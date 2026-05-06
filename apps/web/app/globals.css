@@ -1532,6 +1532,42 @@ textarea.input, textarea.input-field {
   cursor: not-allowed;
   opacity: 0.45;
 }
+.agent-import-preview-mode {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: 0.35rem;
+  margin-bottom: 0.55rem;
+}
+.agent-import-preview-mode__btn {
+  min-height: 2rem;
+  border: 1px solid var(--agent-border);
+  border-radius: 8px;
+  background: color-mix(in srgb, var(--bg-primary) 42%, transparent);
+  color: var(--agent-text-label);
+  cursor: pointer;
+  font: inherit;
+  font-size: 0.72rem;
+  font-weight: 850;
+  line-height: 1.2;
+  padding: 0.38rem 0.45rem;
+  text-align: center;
+  transition: background 0.2s ease, border-color 0.2s ease, color 0.2s ease, transform 0.2s ease;
+}
+.agent-import-preview-mode__btn:hover:not(:disabled) {
+  border-color: var(--agent-border-strong);
+  background: var(--agent-glass);
+  color: var(--text-main);
+  transform: translateY(-1px);
+}
+.agent-import-preview-mode__btn:disabled {
+  cursor: not-allowed;
+  opacity: 0.45;
+}
+.agent-import-preview-mode__btn--active {
+  border-color: color-mix(in srgb, var(--agent-accent-2) 68%, var(--agent-border));
+  background: color-mix(in srgb, var(--agent-accent-2) 14%, var(--agent-glass));
+  color: var(--text-main);
+}
 .agent-target-products__grid {
   display: grid;
   grid-template-columns: repeat(2, minmax(0, 1fr));

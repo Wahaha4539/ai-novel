@@ -9,6 +9,7 @@ export interface GuidedAgentPlanContextDto {
 }
 
 export type ImportAssetTypeDto = 'projectProfile' | 'outline' | 'characters' | 'worldbuilding' | 'writingRules';
+export type ImportPreviewModeDto = 'auto' | 'quick' | 'deep';
 
 export interface CreateAgentPlanContextDto {
   currentProjectId?: string;
@@ -23,6 +24,7 @@ export interface CreateAgentPlanContextDto {
   selectedRange?: { start: number; end: number };
   sourcePage?: string;
   requestedAssetTypes?: ImportAssetTypeDto[];
+  importPreviewMode?: ImportPreviewModeDto;
   guided?: GuidedAgentPlanContextDto;
   [key: string]: unknown;
 }
