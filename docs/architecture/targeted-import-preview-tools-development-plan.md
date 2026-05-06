@@ -207,7 +207,7 @@
 
 ### TIP-P1-005 新增 generate_import_project_profile_preview
 
-- 状态：`[ ]`
+- 状态：`[x]`
 - 模块：API
 - 文件：新增 `apps/api/src/modules/agent-tools/tools/generate-import-project-profile-preview.tool.ts`
 - 任务：根据文档分析生成项目资料预览。
@@ -216,6 +216,11 @@
   - 未选择 `outline` 时不生成 `projectProfile.outline`。
   - Prompt 专注作品定位、卖点、简介和基调。
 - 验证：`pnpm --dir apps/api run test:agent`
+- 完成记录：
+  - 2026-05-06：新增 `GenerateImportProjectProfilePreviewTool`，输入包含 `analysis`、`instruction?`、`projectContext?`；专用 prompt 聚焦作品定位、卖点、简介、题材、主题和基调。
+  - 2026-05-06：输出只包含 `projectProfile.title/genre/theme/tone/logline/synopsis` 和 `risks`，显式丢弃 `projectProfile.outline`、角色、世界设定、写作规则、卷章字段；处理对象/数组/数字/布尔字段，保持只读低风险元数据。
+  - 修改文件：`apps/api/src/modules/agent-tools/tools/generate-import-project-profile-preview.tool.ts`、`apps/api/src/modules/agent-runs/agent-services.spec.ts`、`docs/architecture/targeted-import-preview-tools-development-plan.md`。
+  - 验证结果：`pnpm --dir apps/api run test:agent` 通过，167 项测试通过。
 
 ### TIP-P1-006 注册所有目标产物 Tool 和 Manifest
 

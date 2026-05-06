@@ -39,6 +39,7 @@ import { PersistGuidedStepResultTool } from '../agent-tools/tools/persist-guided
 import { BuildImportPreviewTool } from '../agent-tools/tools/build-import-preview.tool';
 import { GenerateImportCharactersPreviewTool } from '../agent-tools/tools/generate-import-characters-preview.tool';
 import { GenerateImportOutlinePreviewTool } from '../agent-tools/tools/generate-import-outline-preview.tool';
+import { GenerateImportProjectProfilePreviewTool } from '../agent-tools/tools/generate-import-project-profile-preview.tool';
 import { GenerateImportWorldbuildingPreviewTool } from '../agent-tools/tools/generate-import-worldbuilding-preview.tool';
 import { GenerateImportWritingRulesPreviewTool } from '../agent-tools/tools/generate-import-writing-rules-preview.tool';
 import { MergeImportPreviewsTool } from '../agent-tools/tools/merge-import-previews.tool';
@@ -3808,6 +3809,73 @@ test('GenerateImportWritingRulesPreviewTool 只生成导入写作规则预览并
   assert.match(promptText, /prose style, POV, tense\/person/);
   assert.match(promptText, /Do not put worldbuilding facts/);
   assert.equal(receivedOptions?.appStep, 'agent_import_writing_rules_preview');
+});
+
+test('GenerateImportProjectProfilePreviewTool 只生成项目资料且不生成 outline', async () => {
+  let promptText = '';
+  let receivedOptions: Record<string, unknown> | undefined;
+  const llm = {
+    async chatJson(messages: Array<{ role: string; content: string }>, options: Record<string, unknown>) {
+      promptText = messages.map((item) => item.content).join('\n\n');
+      receivedOptions = options;
+      return {
+        data: {
+          projectProfile: {
+            title: { primary: '雾城旧档' },
+            genre: ['悬疑', '都市奇幻'],
+            theme: { summary: '记忆与真相' },
+            tone: { value: '冷静克制' },
+            logline: { premise: '档案员追查一份不存在的死亡记录。' },
+            synopsis: { content: '档案缺页牵出城市记忆篡改。' },
+            outline: '不应输出',
+          },
+          characters: [{ name: '不应出现' }],
+          lorebookEntries: [{ title: '不应出现' }],
+          writingRules: [{ title: '不应出现' }],
+          chapters: [{ title: '不应出现' }],
+          risks: [{ message: '标题需用户确认' }, '  保留风险  '],
+        },
+      };
+    },
+  };
+  const tool = new GenerateImportProjectProfilePreviewTool(llm as never);
+  const output = await tool.run(
+    {
+      analysis: {
+        sourceText: '雾城旧档讲述档案员追查不存在的死亡记录，档案缺页牵出城市记忆篡改。',
+        length: 36,
+        paragraphs: ['档案员追查不存在的死亡记录', '档案缺页牵出城市记忆篡改'],
+        keywords: ['雾城旧档', '记忆'],
+      },
+      instruction: '只生成项目资料',
+      projectContext: { title: '旧标题' },
+    },
+    { agentRunId: 'run1', projectId: 'p1', mode: 'plan', approved: false, outputs: {}, policy: {} },
+  );
+  const outputRecord = output as unknown as Record<string, unknown>;
+  const profileRecord = output.projectProfile as Record<string, unknown>;
+
+  assert.equal(tool.name, 'generate_import_project_profile_preview');
+  assert.deepEqual(tool.allowedModes, ['plan', 'act']);
+  assert.equal(tool.requiresApproval, false);
+  assert.deepEqual(tool.sideEffects, []);
+  assert.equal(tool.riskLevel, 'low');
+  assert.deepEqual(output.projectProfile, {
+    title: '雾城旧档',
+    genre: '悬疑、都市奇幻',
+    theme: '记忆与真相',
+    tone: '冷静克制',
+    logline: '档案员追查一份不存在的死亡记录。',
+    synopsis: '档案缺页牵出城市记忆篡改。',
+  });
+  assert.deepEqual(output.risks, ['标题需用户确认', '保留风险']);
+  assert.equal(Object.prototype.hasOwnProperty.call(profileRecord, 'outline'), false);
+  assert.equal(Object.prototype.hasOwnProperty.call(outputRecord, 'characters'), false);
+  assert.equal(Object.prototype.hasOwnProperty.call(outputRecord, 'lorebookEntries'), false);
+  assert.equal(Object.prototype.hasOwnProperty.call(outputRecord, 'writingRules'), false);
+  assert.match(promptText, /work positioning/);
+  assert.match(promptText, /Do not output projectProfile\.outline/);
+  assert.equal(receivedOptions?.appStep, 'agent_import_project_profile_preview');
 });
 
 test('BuildImportPreviewTool normalizes non-string risks', async () => {
