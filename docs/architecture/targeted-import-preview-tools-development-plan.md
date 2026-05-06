@@ -63,7 +63,7 @@
 
 ### TIP-P0-003 抽离 ImportPreview 类型和过滤工具
 
-- 状态：`[ ]`
+- 状态：`[x]`
 - 模块：API
 - 文件：新增 `apps/api/src/modules/agent-tools/tools/import-preview.types.ts`
 - 任务：把 `ImportAssetType`、`ImportPreviewOutput`、`normalizeImportAssetTypes`、`filterImportPreviewByAssetTypes` 从 `build-import-preview.tool.ts` 抽离。
@@ -72,6 +72,10 @@
   - 没有循环依赖。
   - 现有测试不需要大规模改写。
 - 验证：`pnpm --dir apps/api run test:agent`
+- 完成记录：
+  - 2026-05-06：新增 `import-preview.types.ts`，集中导出 `ImportAssetType`、`IMPORT_ASSET_TYPES`、`ImportPreviewOutput`、`normalizeImportAssetTypes` 和 `filterImportPreviewByAssetTypes`；`build_import_preview`、`validate_imported_assets`、`persist_project_assets` 改为从该文件引用共享类型与过滤函数。
+  - 修改文件：`apps/api/src/modules/agent-tools/tools/import-preview.types.ts`、`apps/api/src/modules/agent-tools/tools/build-import-preview.tool.ts`、`apps/api/src/modules/agent-tools/tools/validate-imported-assets.tool.ts`、`apps/api/src/modules/agent-tools/tools/persist-project-assets.tool.ts`、`docs/architecture/targeted-import-preview-tools-development-plan.md`。
+  - 验证结果：`pnpm --dir apps/api run test:agent` 通过，154 项测试通过。
 
 ### TIP-P0-004 新增 merge_import_previews Tool
 

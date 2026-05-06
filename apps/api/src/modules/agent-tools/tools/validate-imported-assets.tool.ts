@@ -1,7 +1,7 @@
 import { Injectable } from '@nestjs/common';
 import { PrismaService } from '../../../prisma/prisma.service';
 import { BaseTool, ToolContext } from '../base-tool';
-import { filterImportPreviewByAssetTypes, ImportPreviewOutput } from './build-import-preview.tool';
+import { filterImportPreviewByAssetTypes, ImportPreviewOutput } from './import-preview.types';
 
 interface ValidateImportedAssetsInput {
   preview?: ImportPreviewOutput;

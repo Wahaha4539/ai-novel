@@ -4,7 +4,7 @@ import { NovelCacheService } from '../../../common/cache/novel-cache.service';
 import { PrismaService } from '../../../prisma/prisma.service';
 import { normalizeLorebookEntryType } from '../../lorebook/lorebook-entry-types';
 import { BaseTool, ToolContext } from '../base-tool';
-import { filterImportPreviewByAssetTypes, ImportPreviewOutput, normalizeImportAssetTypes } from './build-import-preview.tool';
+import { filterImportPreviewByAssetTypes, ImportPreviewOutput, normalizeImportAssetTypes } from './import-preview.types';
 
 interface PersistProjectAssetsInput {
   preview?: ImportPreviewOutput;
