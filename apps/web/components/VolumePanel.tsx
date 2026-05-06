@@ -1,4 +1,4 @@
-import React, { useState, useEffect } from 'react';
+import React, { useState, useEffect, useMemo } from 'react';
 import { ProjectSummary, VolumeSummary, ChapterSummary } from '../types/dashboard';
 import { useVolumeActions, VolumeFormData } from '../hooks/useVolumeActions';
 import { BatchGeneratePanel } from './BatchGeneratePanel';
@@ -24,6 +24,19 @@ export function VolumePanel({ selectedProject, selectedProjectId, chapters = [] 
   const [editingVolume, setEditingVolume] = useState<VolumeSummary | null>(null);
   const [showCreateForm, setShowCreateForm] = useState(false);
   const [showBatchPanel, setShowBatchPanel] = useState(false);
+  const chaptersByVolume = useMemo(() => {
+    const map = new Map<string, ChapterSummary[]>();
+    for (const chapter of chapters) {
+      if (!chapter.volumeId) continue;
+      const existing = map.get(chapter.volumeId) ?? [];
+      existing.push(chapter);
+      map.set(chapter.volumeId, existing);
+    }
+    for (const list of map.values()) {
+      list.sort((a, b) => a.chapterNo - b.chapterNo);
+    }
+    return map;
+  }, [chapters]);
 
   useEffect(() => {
     if (selectedProjectId) {
@@ -182,6 +195,7 @@ export function VolumePanel({ selectedProject, selectedProjectId, chapters = [] 
                   <VolumeCard
                     key={volume.id}
                     volume={volume}
+                    chapters={chaptersByVolume.get(volume.id) ?? []}
                     isEditing={editingVolume?.id === volume.id}
                     onEdit={() => setEditingVolume(volume)}
                     onSaveSynopsis={(synopsis) => handleSaveSynopsis(volume.id, synopsis)}
@@ -283,6 +297,7 @@ function VolumeCreateForm({
 
 function VolumeCard({
   volume,
+  chapters,
   isEditing,
   onEdit,
   onSaveSynopsis,
@@ -290,6 +305,7 @@ function VolumeCard({
   onCancelEdit,
 }: {
   volume: VolumeSummary;
+  chapters: ChapterSummary[];
   isEditing: boolean;
   onEdit: () => void;
   onSaveSynopsis: (synopsis: string) => void;
@@ -297,7 +313,8 @@ function VolumeCard({
   onCancelEdit: () => void;
 }) {
   const [synopsis, setSynopsis] = useState(volume.synopsis ?? '');
-  const chapterCount = volume._count?.chapters ?? 0;
+  const [showChapterOutlines, setShowChapterOutlines] = useState(false);
+  const chapterCount = volume._count?.chapters ?? chapters.length;
 
   useEffect(() => {
     setSynopsis(volume.synopsis ?? '');
@@ -382,6 +399,13 @@ function VolumeCard({
         </>
       )}
 
+      <ChapterOutlineSection
+        chapters={chapters}
+        expectedCount={chapterCount}
+        expanded={showChapterOutlines}
+        onToggle={() => setShowChapterOutlines((prev) => !prev)}
+      />
+
       {/* Card actions */}
       {!isEditing && (
         <div className="flex gap-2 mt-3 pt-3" style={{ borderTop: '1px solid var(--border-dim)' }}>
@@ -397,4 +421,138 @@ function VolumeCard({
       )}
     </div>
   );
+}
+
+function ChapterOutlineSection({
+  chapters,
+  expectedCount,
+  expanded,
+  onToggle,
+}: {
+  chapters: ChapterSummary[];
+  expectedCount: number;
+  expanded: boolean;
+  onToggle: () => void;
+}) {
+  const hasChapters = chapters.length > 0;
+  const buttonLabel = expanded ? '收起章节细纲' : `查看章节细纲${expectedCount ? ` (${expectedCount})` : ''}`;
+
+  return (
+    <section className="mt-3 pt-3" style={{ borderTop: '1px solid var(--border-dim)' }}>
+      <div className="flex items-center justify-between gap-3">
+        <div>
+          <div className="text-xs font-medium" style={{ color: 'var(--text-dim)' }}>章节细纲</div>
+          <div className="text-[0.68rem]" style={{ color: 'var(--text-muted)' }}>
+            {hasChapters
+              ? `已写入 ${chapters.length} 章，可展开查看目标、冲突和大纲。`
+              : expectedCount > 0
+                ? `本卷记录 ${expectedCount} 章，但当前列表尚未加载章节明细。`
+                : '本卷还没有章节细纲。'}
+          </div>
+        </div>
+        <button
+          type="button"
+          className="btn-secondary"
+          onClick={onToggle}
+          disabled={!hasChapters}
+          style={{
+            fontSize: '0.7rem',
+            whiteSpace: 'nowrap',
+            opacity: hasChapters ? 1 : 0.55,
+            cursor: hasChapters ? 'pointer' : 'not-allowed',
+          }}
+        >
+          {buttonLabel}
+        </button>
+      </div>
+
+      {expanded && hasChapters && (
+        <div
+          className="mt-3"
+          style={{
+            maxHeight: '26rem',
+            overflowY: 'auto',
+            border: '1px solid var(--border-dim)',
+            borderRadius: '0.5rem',
+          }}
+        >
+          {chapters.map((chapter) => (
+            <ChapterOutlineRow key={chapter.id} chapter={chapter} />
+          ))}
+        </div>
+      )}
+    </section>
+  );
+}
+
+function ChapterOutlineRow({ chapter }: { chapter: ChapterSummary }) {
+  const craftBrief = asCraftBriefRecord(chapter.craftBrief);
+  const actionBeats = Array.isArray(craftBrief.actionBeats)
+    ? craftBrief.actionBeats.filter((item): item is string => typeof item === 'string' && item.trim().length > 0)
+    : [];
+  const visibleGoal = textValue(craftBrief.visibleGoal);
+  const consequence = textValue(craftBrief.irreversibleConsequence);
+
+  return (
+    <article
+      className="px-3 py-3"
+      style={{
+        borderTop: '1px solid var(--border-dim)',
+      }}
+    >
+      <div className="flex items-center gap-2 mb-2">
+        <span
+          className="text-[0.68rem] font-bold"
+          style={{
+            color: '#14b8a6',
+            minWidth: '2.2rem',
+          }}
+        >
+          第{chapter.chapterNo}章
+        </span>
+        <span className="text-xs font-semibold truncate" style={{ color: 'var(--text-main)' }}>
+          {chapter.title || '未命名章节'}
+        </span>
+        {chapter.status && (
+          <span className="badge" style={{ fontSize: '0.62rem', border: 'none', color: 'var(--text-dim)', background: 'var(--bg-hover-subtle)' }}>
+            {chapter.status}
+          </span>
+        )}
+      </div>
+      <ChapterField label="目标" value={chapter.objective} />
+      <ChapterField label="冲突" value={chapter.conflict} />
+      <ChapterField label="大纲" value={chapter.outline} multiline />
+      {visibleGoal && <ChapterField label="可见目标" value={visibleGoal} />}
+      {actionBeats.length > 0 && <ChapterField label="行动链" value={actionBeats.slice(0, 5).join('；')} multiline />}
+      {consequence && <ChapterField label="后果" value={consequence} multiline />}
+    </article>
+  );
+}
+
+function ChapterField({ label, value, multiline = false }: { label: string; value?: string | null; multiline?: boolean }) {
+  if (!value?.trim()) return null;
+
+  return (
+    <p
+      className="text-[0.68rem]"
+      style={{
+        color: 'var(--text-muted)',
+        lineHeight: 1.55,
+        marginTop: '0.25rem',
+        display: multiline ? 'block' : 'flex',
+        gap: '0.35rem',
+      }}
+    >
+      <span style={{ color: 'var(--text-dim)', fontWeight: 600, flexShrink: 0 }}>{label}：</span>
+      <span>{value}</span>
+    </p>
+  );
+}
+
+function asCraftBriefRecord(value: ChapterSummary['craftBrief']): Record<string, unknown> {
+  return value && typeof value === 'object' && !Array.isArray(value) ? { ...value } as Record<string, unknown> : {};
+}
+
+function textValue(value: unknown) {
+  return typeof value === 'string' && value.trim() ? value.trim() : '';
 }

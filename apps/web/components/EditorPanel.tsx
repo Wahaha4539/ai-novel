@@ -246,6 +246,7 @@ export function EditorPanel({ selectedProject, selectedChapterId, chapters, draf
           <GlobalPlaceholder />
         ) : (
           <div className="animate-fade-in" style={{ maxWidth: '48rem', margin: '0 auto' }}>
+            {chapter && <ChapterPlanningBrief chapter={chapter} />}
             <DraftVersionTabs
               activeMode={activeViewMode}
               draft={viewPair.draft}
@@ -328,6 +329,101 @@ export function EditorPanel({ selectedProject, selectedChapterId, chapters, draf
       )}
     </article>
   );
+}
+
+function ChapterPlanningBrief({ chapter }: { chapter: ChapterSummary }) {
+  const craftBrief = asCraftBriefRecord(chapter.craftBrief);
+  const actionBeats = Array.isArray(craftBrief.actionBeats)
+    ? craftBrief.actionBeats.filter((item): item is string => typeof item === 'string' && item.trim().length > 0)
+    : [];
+  const concreteClues = Array.isArray(craftBrief.concreteClues)
+    ? craftBrief.concreteClues
+        .map((item) => {
+          if (!item || typeof item !== 'object') return '';
+          const record = item as Record<string, unknown>;
+          return typeof record.name === 'string' ? record.name.trim() : '';
+        })
+        .filter(Boolean)
+    : [];
+  const progressTypes = Array.isArray(craftBrief.progressTypes)
+    ? craftBrief.progressTypes.filter((item): item is string => typeof item === 'string' && item.trim().length > 0)
+    : [];
+
+  const hasPlanningData = Boolean(
+    chapter.objective?.trim()
+    || chapter.conflict?.trim()
+    || chapter.outline?.trim()
+    || actionBeats.length
+    || concreteClues.length
+    || progressTypes.length,
+  );
+
+  if (!hasPlanningData) return null;
+
+  return (
+    <section
+      className="mb-5"
+      style={{
+        border: '1px solid var(--border-light)',
+        borderRadius: '0.5rem',
+        background: 'var(--bg-card)',
+        overflow: 'hidden',
+      }}
+    >
+      <div
+        className="px-4 py-3 flex items-center justify-between gap-3"
+        style={{ borderBottom: '1px solid var(--border-dim)' }}
+      >
+        <div>
+          <div className="text-xs font-bold" style={{ color: 'var(--accent-cyan)' }}>章节细纲</div>
+          <div className="text-[0.68rem]" style={{ color: 'var(--text-dim)' }}>
+            正文生成会优先参考这些目标、冲突和执行要点。
+          </div>
+        </div>
+        <span className="text-[0.68rem]" style={{ color: 'var(--text-muted)' }}>
+          第{chapter.chapterNo}章
+        </span>
+      </div>
+      <div className="px-4 py-3">
+        <PlanningField label="目标" value={chapter.objective} />
+        <PlanningField label="冲突" value={chapter.conflict} />
+        <PlanningField label="大纲" value={chapter.outline} multiline />
+        <PlanningField label="可见目标" value={textValue(craftBrief.visibleGoal)} />
+        <PlanningField label="隐性情绪" value={textValue(craftBrief.hiddenEmotion)} />
+        <PlanningField label="行动链" value={actionBeats.slice(0, 6).join('；')} multiline />
+        <PlanningField label="线索" value={concreteClues.slice(0, 8).join('、')} />
+        <PlanningField label="推进类型" value={progressTypes.join('、')} />
+      </div>
+    </section>
+  );
+}
+
+function PlanningField({ label, value, multiline = false }: { label: string; value?: string | null; multiline?: boolean }) {
+  if (!value?.trim()) return null;
+
+  return (
+    <p
+      className="text-xs"
+      style={{
+        color: 'var(--text-muted)',
+        lineHeight: 1.6,
+        marginTop: '0.35rem',
+        display: multiline ? 'block' : 'flex',
+        gap: '0.4rem',
+      }}
+    >
+      <span style={{ color: 'var(--text-dim)', fontWeight: 600, flexShrink: 0 }}>{label}：</span>
+      <span>{value}</span>
+    </p>
+  );
+}
+
+function asCraftBriefRecord(value: ChapterSummary['craftBrief']): Record<string, unknown> {
+  return value && typeof value === 'object' && !Array.isArray(value) ? { ...value } as Record<string, unknown> : {};
+}
+
+function textValue(value: unknown) {
+  return typeof value === 'string' && value.trim() ? value.trim() : '';
 }
 
 /**
