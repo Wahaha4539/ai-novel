@@ -287,7 +287,8 @@ function TypedArtifactPreview({
   if (artifactType === 'character_consistency_report') return <CharacterConsistencySummary content={content} />;
   if (artifactType === 'plot_consistency_report') return <PlotConsistencySummary content={content} />;
   if (artifactType === 'task_context_preview') return <TaskContextSummary content={content} />;
-  if (artifactType === 'outline_persist_result' || artifactType === 'import_persist_result') return <PersistSummary content={content} />;
+  if (artifactType === 'outline_persist_result') return <OutlinePersistSummary content={content} />;
+  if (artifactType === 'import_persist_result') return <PersistSummary content={content} />;
   if (artifactType === 'chapter_draft_result') return <ChapterDraftSummary content={content} />;
   if (artifactType === 'chapter_generation_quality_report') return <GenerationQualitySummary content={content} />;
   if (artifactType === 'chapter_polish_result') return <ChapterPolishSummary content={content} />;
@@ -311,15 +312,26 @@ function OutlinePreviewSummary({ content }: { content: unknown }) {
   const volumeTitle = volume?.title ? textValue(volume.title) : volumes.length ? `${volumes.length} 卷` : '未命名卷';
   const craftBriefCount = chapterRecords.filter((chapter) => hasCraftBrief(chapter.craftBrief)).length;
   const risks = asArray(data?.risks);
+  const riskTexts = risks.map((item) => textValue(item)).filter(Boolean);
+  const fallbackChapterCount = fallbackChapterCountFromRisks(riskTexts, chapters.length);
   return (
     <div className="space-y-3">
-      <div className="grid gap-2 md:grid-cols-4">
+      <div className="grid gap-2 md:grid-cols-5">
         <Metric label="卷" value={volumeTitle} />
         <Metric label="章节数" value={chapters.length} />
         <Metric label="执行卡覆盖" value={`${craftBriefCount}/${chapters.length}`} tone={craftBriefCount === chapters.length ? 'ok' : craftBriefCount > 0 ? 'warn' : 'danger'} />
-        <Metric label="风险" value={risks.length} tone={risks.length ? 'warn' : 'ok'} />
+        <Metric label="Fallback 章节" value={fallbackChapterCount} tone={fallbackChapterCount ? 'warn' : 'ok'} />
+        <Metric label="风险" value={riskTexts.length} tone={riskTexts.length ? 'warn' : 'ok'} />
         <Metric label="总目标字数" value={totalExpectedWordCount} />
       </div>
+      <OutlineWriteNotice fallbackChapterCount={fallbackChapterCount} riskCount={riskTexts.length} />
+      {riskTexts.length > 0 && (
+        <div className="space-y-1">
+          {riskTexts.slice(0, 4).map((risk, index) => (
+            <div key={index} className="text-xs leading-5" style={{ color: '#fbbf24' }}>风险：{risk}</div>
+          ))}
+        </div>
+      )}
       <div className="space-y-2">
         {volumes.slice(0, 3).map((item, index) => {
           const itemVolume = asRecord(item);
@@ -339,6 +351,9 @@ function OutlineChapterSummary({ chapter, index }: { chapter: Record<string, unk
     .map((item) => textValue(asRecord(item)?.name, ''))
     .filter(Boolean);
   const hasBrief = Object.keys(craftBrief).length > 0;
+  const mainlineTask = textValue(craftBrief.mainlineTask, '');
+  const dialogueSubtext = textValue(craftBrief.dialogueSubtext, '');
+  const characterShift = textValue(craftBrief.characterShift, '');
   return (
     <div className="space-y-1 rounded-lg border px-3 py-2" style={{ borderColor: 'var(--border-dim)', background: hasBrief ? 'rgba(20,184,166,0.06)' : 'rgba(251,191,36,0.06)' }}>
       <div className="text-xs leading-5" style={{ color: 'var(--text-muted)' }}>
@@ -348,9 +363,12 @@ function OutlineChapterSummary({ chapter, index }: { chapter: Record<string, unk
       {hasBrief ? (
         <div className="space-y-1 text-[11px] leading-5" style={{ color: 'var(--text-muted)' }}>
           <div><b style={{ color: 'var(--agent-text-label)' }}>执行卡</b>：{textValue(craftBrief.visibleGoal ?? craftBrief.mainlineTask, '暂无可见目标')}</div>
+          {mainlineTask && <div>主线任务：{mainlineTask}</div>}
           {textValue(craftBrief.coreConflict, '') && <div>冲突：{textValue(craftBrief.coreConflict)}</div>}
           {actionBeats.length > 0 && <div>行动链：{actionBeats.slice(0, 3).join(' → ')}</div>}
           {clues.length > 0 && <div>线索：{clues.slice(0, 3).join('、')}</div>}
+          {dialogueSubtext && <div>潜台词：{dialogueSubtext}</div>}
+          {characterShift && <div>人物变化：{characterShift}</div>}
           {textValue(craftBrief.irreversibleConsequence, '') && <div>后果：{textValue(craftBrief.irreversibleConsequence)}</div>}
         </div>
       ) : (
@@ -358,6 +376,32 @@ function OutlineChapterSummary({ chapter, index }: { chapter: Record<string, unk
       )}
     </div>
   );
+}
+
+function OutlineWriteNotice({ fallbackChapterCount, riskCount }: { fallbackChapterCount: number; riskCount: number }) {
+  return (
+    <div className="rounded-lg border px-3 py-2 text-xs leading-5" style={{ borderColor: fallbackChapterCount ? 'rgba(251,191,36,0.35)' : 'rgba(20,184,166,0.30)', background: fallbackChapterCount ? 'rgba(251,191,36,0.08)' : 'rgba(20,184,166,0.07)', color: 'var(--text-muted)' }}>
+      审批写入会创建或更新 planned 章节的细纲与执行卡；已起草或非 planned 章节会跳过。{fallbackChapterCount ? ` ${fallbackChapterCount} 章来自 fallback，写入前建议人工复核。` : ''}{riskCount ? ` 当前有 ${riskCount} 条风险提示。` : ''}
+    </div>
+  );
+}
+
+function fallbackChapterCountFromRisks(risks: string[], totalChapterCount: number) {
+  const fallbackRisks = risks.filter((risk) => /fallback|LLM_TIMEOUT|LLM_PROVIDER_FALLBACK|确定性章节骨架/i.test(risk));
+  if (!fallbackRisks.length) return 0;
+  const chapterNos = new Set<number>();
+  for (const risk of fallbackRisks) {
+    const rangeMatches = risk.matchAll(/第\s*(\d+)\s*-\s*(\d+)\s*章/g);
+    for (const match of rangeMatches) {
+      const start = Number(match[1]);
+      const end = Number(match[2]);
+      if (!Number.isFinite(start) || !Number.isFinite(end)) continue;
+      for (let chapterNo = Math.max(1, start); chapterNo <= Math.min(totalChapterCount, end); chapterNo += 1) {
+        chapterNos.add(chapterNo);
+      }
+    }
+  }
+  return chapterNos.size || totalChapterCount;
 }
 
 function hasCraftBrief(value: unknown) {
@@ -1038,6 +1082,33 @@ function ArraySummary({ content, label, primaryKey, secondaryKey }: { content: u
           return <span key={index} className="px-2 py-1 text-xs" style={{ borderRadius: '999px', border: '1px solid var(--border-dim)', color: 'var(--text-muted)' }}>{textValue(record?.[primaryKey], `${label}${index + 1}`)}{record?.[secondaryKey] ? ` · ${textValue(record[secondaryKey])}` : ''}</span>;
         })}
       </div>
+    </div>
+  );
+}
+
+function OutlinePersistSummary({ content }: { content: unknown }) {
+  const data = asRecord(content) ?? {};
+  const risks = asArray(data?.risks).map((item) => textValue(item)).filter(Boolean);
+  const skippedCount = numberValue(data?.skippedCount);
+  const writtenCount = numberValue(data?.createdCount) + numberValue(data?.updatedCount);
+  return (
+    <div className="space-y-3">
+      <div className="grid gap-2 md:grid-cols-4">
+        <Metric label="创建章节" value={numberValue(data?.createdCount)} tone={numberValue(data?.createdCount) ? 'ok' : undefined} />
+        <Metric label="更新 planned" value={numberValue(data?.updatedCount)} tone={numberValue(data?.updatedCount) ? 'ok' : undefined} />
+        <Metric label="跳过章节" value={skippedCount} tone={skippedCount ? 'warn' : 'ok'} />
+        <Metric label="预览章节" value={numberValue(data?.chapterCount)} />
+      </div>
+      <div className="rounded-lg border px-3 py-2 text-xs leading-5" style={{ borderColor: skippedCount ? 'rgba(251,191,36,0.35)' : 'rgba(20,184,166,0.30)', background: skippedCount ? 'rgba(251,191,36,0.08)' : 'rgba(20,184,166,0.07)', color: 'var(--text-muted)' }}>
+        已写入 {writtenCount} 章规划字段与执行卡；已起草或非 planned 章节保持不覆盖。{skippedCount ? ` 本次跳过 ${skippedCount} 章。` : ''}
+      </div>
+      {risks.length > 0 && (
+        <div className="space-y-1">
+          {risks.slice(0, 4).map((risk, index) => (
+            <div key={index} className="text-xs leading-5" style={{ color: '#fbbf24' }}>写入风险：{risk}</div>
+          ))}
+        </div>
+      )}
     </div>
   );
 }
