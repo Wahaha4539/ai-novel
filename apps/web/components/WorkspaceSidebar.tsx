@@ -3,7 +3,7 @@ import { ProjectSummary, ChapterSummary, VolumeSummary } from '../types/dashboar
 import { ThemeSwitcher } from './ThemeSwitcher';
 import { VolumeChapterTree } from './VolumeChapterTree';
 
-type ActiveView = 'editor' | 'outline' | 'lore' | 'story-bible' | 'writing-rules' | 'scene-bank' | 'pacing' | 'chapter-patterns' | 'quality-reports' | 'relationships' | 'timeline' | 'character-state' | 'generation-config' | 'projects' | 'volumes' | 'guided' | 'prompts' | 'foreshadow' | 'generate' | 'llm-config';
+type ActiveView = 'editor' | 'outline' | 'lore' | 'story-bible' | 'writing-rules' | 'scene-bank' | 'pacing' | 'chapter-patterns' | 'quality-reports' | 'relationships' | 'timeline' | 'character-state' | 'generation-config' | 'projects' | 'volumes' | 'guided' | 'prompts' | 'foreshadow' | 'generate' | 'agent' | 'llm-config';
 
 interface Props {
   projects: ProjectSummary[];
@@ -33,7 +33,7 @@ interface Props {
   onNavigateToPrompts: () => void;
   onNavigateToForeshadow: () => void;
   onNavigateToGenerate: () => void;
-
+  onNavigateToAgent: () => void;
   onNavigateToLlmConfig: () => void;
   onSelectVolume: (id: string) => void;
 }
@@ -66,7 +66,7 @@ export function WorkspaceSidebar({
   onNavigateToPrompts,
   onNavigateToForeshadow,
   onNavigateToGenerate,
-
+  onNavigateToAgent,
   onNavigateToLlmConfig,
   onSelectVolume,
 }: Props) {
@@ -237,7 +237,14 @@ export function WorkspaceSidebar({
                   onClick={onNavigateToGenerate}
                 />
               </li>
-
+              <li>
+                <NavButton
+                  label="🧠 Agent 工作台"
+                  isActive={activeView === 'agent'}
+                  activeColor="#22c55e"
+                  onClick={onNavigateToAgent}
+                />
+              </li>
               <li>
                 <NavButton
                   label="提示词管理 (Prompts)"

@@ -67,10 +67,93 @@ export function planVersionLabel(plan: { version?: number; createdAt?: string })
   return `v${plan.version ?? 1}${plan.createdAt ? ` · ${formatDate(plan.createdAt)}` : ''}`;
 }
 
+const PROJECT_IMPORT_ASSET_LABELS: Record<string, string> = {
+  projectProfile: '项目资料',
+  outline: '剧情大纲',
+  characters: '角色与人设',
+  worldbuilding: '世界设定',
+  writingRules: '写作规则',
+};
+
+const WRITE_TOOL_LABELS: Record<string, string> = {
+  write_chapter: '章节草稿',
+  polish_chapter: '章节润色',
+  postprocess_chapter: '章节后处理',
+  auto_repair_chapter: '章节修复',
+  extract_chapter_facts: '事实层',
+  fact_validation: '事实校验',
+  rebuild_memory: '自动记忆',
+  review_memory: '记忆复核',
+  persist_outline: '剧情大纲',
+  persist_project_assets: '项目资产',
+  persist_worldbuilding: '世界设定',
+  persist_story_bible: '故事圣经',
+  persist_continuity_changes: '连续性资料',
+  persist_guided_step_result: '创作引导结果',
+};
+
+export interface AgentPlanWriteInfo {
+  requiredStepNos: number[];
+  requiredTools: string[];
+  writeTools: string[];
+  writeToolLabels: string[];
+  projectImportAssetLabels: string[];
+  hasWriteSteps: boolean;
+  hasProjectImportWrite: boolean;
+}
+
+function uniqueStrings(items: string[]) {
+  return [...new Set(items.filter(Boolean))];
+}
+
+function stringArray(value: unknown) {
+  if (Array.isArray(value)) return value.map((item) => String(item)).filter(Boolean);
+  if (typeof value === 'string') return value.split(/[,\s，、]+/).filter(Boolean);
+  return [];
+}
+
+function stepArgs(step: { args?: unknown } | undefined) {
+  return step?.args && typeof step.args === 'object' ? (step.args as Record<string, unknown>) : undefined;
+}
+
+function isWriteTool(tool?: string) {
+  return Boolean(tool && WRITE_TOOL_LABELS[tool]);
+}
+
+/** 从 Plan 里提取“确认后会不会写入、会写入什么”的用户可见信息。 */
+export function planWriteInfo(plan: AgentPlanPayload | undefined): AgentPlanWriteInfo {
+  const steps = plan?.steps ?? [];
+  const requiredStepNos = plan?.requiredApprovals?.flatMap((item) => item.target?.stepNos ?? []) ?? [];
+  const requiredTools = uniqueStrings([
+    ...(plan?.requiredApprovals?.flatMap((item) => item.target?.tools ?? []) ?? []),
+    ...steps.filter((step) => step.stepNo && requiredStepNos.includes(step.stepNo)).flatMap((step) => (step.tool ? [step.tool] : [])),
+  ]);
+  const planTools = uniqueStrings(steps.flatMap((step) => (step.tool ? [step.tool] : [])));
+  const writeTools = uniqueStrings(planTools.filter(isWriteTool));
+  const writeToolLabels = uniqueStrings(writeTools.map((tool) => WRITE_TOOL_LABELS[tool] ?? tool));
+  const requestedAssetTypes = uniqueStrings(
+    steps
+      .filter((step) => ['build_import_preview', 'validate_imported_assets', 'persist_project_assets'].includes(step.tool ?? ''))
+      .flatMap((step) => stringArray(stepArgs(step)?.requestedAssetTypes)),
+  );
+  const projectImportAssetLabels = uniqueStrings(requestedAssetTypes.map((type) => PROJECT_IMPORT_ASSET_LABELS[type] ?? type));
+
+  return {
+    requiredStepNos,
+    requiredTools,
+    writeTools,
+    writeToolLabels,
+    projectImportAssetLabels,
+    hasWriteSteps: writeTools.length > 0,
+    hasProjectImportWrite: writeTools.includes('persist_project_assets'),
+  };
+}
+
 /** 汇总审批风险信息，帮助用户快速了解 Plan 写入影响 */
 export function approvalRiskSummary(plan: AgentPlanPayload | undefined, approvedStepNos: number[]) {
-  const requiredStepNos = plan?.requiredApprovals?.flatMap((item) => item.target?.stepNos ?? []) ?? [];
-  const requiredTools = plan?.requiredApprovals?.flatMap((item) => item.target?.tools ?? []) ?? [];
+  const writeInfo = planWriteInfo(plan);
+  const requiredStepNos = writeInfo.requiredStepNos;
+  const requiredTools = writeInfo.requiredTools;
   const uncheckedCount = requiredStepNos.filter((stepNo) => !approvedStepNos.includes(stepNo)).length;
   const summaries: string[] = [];
   if (requiredStepNos.length) summaries.push(`计划要求审批 ${requiredStepNos.length} 个写入/高风险步骤，当前已勾选 ${requiredStepNos.length - uncheckedCount} 个。`);
@@ -78,7 +161,12 @@ export function approvalRiskSummary(plan: AgentPlanPayload | undefined, approved
   if (requiredTools.some((tool) => ['write_chapter', 'polish_chapter', 'postprocess_chapter', 'auto_repair_chapter'].includes(tool))) summaries.push('草稿写入：可能创建或切换当前章节草稿版本。');
   if (requiredTools.some((tool) => ['extract_chapter_facts', 'fact_validation'].includes(tool))) summaries.push('事实层写入：可能更新剧情事件、角色状态、伏笔或校验问题。');
   if (requiredTools.some((tool) => ['rebuild_memory', 'review_memory'].includes(tool))) summaries.push('记忆写入：可能重建自动记忆并复核待确认记忆。');
-  if (requiredTools.some((tool) => ['persist_outline', 'persist_project_assets'].includes(tool))) summaries.push('项目资产写入：可能新增或更新大纲、角色、设定、卷和章节。');
+  if (requiredTools.includes('persist_project_assets')) {
+    const scope = writeInfo.projectImportAssetLabels.length ? writeInfo.projectImportAssetLabels.join('、') : '当前导入预览中的项目资产';
+    summaries.push(`项目资产写入：确认后会按当前计划范围写入 ${scope}。`);
+  } else if (requiredTools.includes('persist_outline')) {
+    summaries.push('项目资产写入：确认后会新增或更新剧情大纲、卷和章节规划。');
+  }
   return summaries;
 }
 

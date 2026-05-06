@@ -4,7 +4,7 @@ import { NovelCacheService } from '../../../common/cache/novel-cache.service';
 import { PrismaService } from '../../../prisma/prisma.service';
 import { normalizeLorebookEntryType } from '../../lorebook/lorebook-entry-types';
 import { BaseTool, ToolContext } from '../base-tool';
-import { ImportPreviewOutput } from './build-import-preview.tool';
+import { filterImportPreviewByAssetTypes, ImportPreviewOutput, normalizeImportAssetTypes } from './build-import-preview.tool';
 
 interface PersistProjectAssetsInput {
   preview?: ImportPreviewOutput;
@@ -18,13 +18,16 @@ interface PersistProjectAssetsInput {
 export class PersistProjectAssetsTool implements BaseTool<PersistProjectAssetsInput, Record<string, unknown>> {
   name = 'persist_project_assets';
   description = '审批后将文案拆解预览写入项目资料、角色、设定、卷和章节。';
-  inputSchema = { type: 'object' as const, required: ['preview'], additionalProperties: false, properties: { preview: { type: 'object' as const, required: ['projectProfile', 'characters', 'lorebookEntries', 'volumes', 'chapters'], properties: { projectProfile: { type: 'object' as const }, characters: { type: 'array' as const }, lorebookEntries: { type: 'array' as const }, volumes: { type: 'array' as const }, chapters: { type: 'array' as const } } } } };
+  inputSchema = { type: 'object' as const, required: ['preview'], additionalProperties: false, properties: { preview: { type: 'object' as const, required: ['projectProfile', 'characters', 'lorebookEntries', 'volumes', 'chapters'], properties: { requestedAssetTypes: { type: 'array' as const, items: { type: 'string' as const } }, projectProfile: { type: 'object' as const }, characters: { type: 'array' as const }, lorebookEntries: { type: 'array' as const }, writingRules: { type: 'array' as const }, volumes: { type: 'array' as const }, chapters: { type: 'array' as const } } } } };
   outputSchema = {
     type: 'object' as const,
-    required: ['characterCreatedCount', 'lorebookCreatedCount', 'volumeCount', 'chapterCreatedCount', 'chapterUpdatedCount', 'chapterSkippedCount'],
+    required: ['characterCreatedCount', 'lorebookCreatedCount', 'writingRuleCreatedCount', 'volumeCount', 'chapterCreatedCount', 'chapterUpdatedCount', 'chapterSkippedCount'],
     properties: {
       characterCreatedCount: { type: 'number' as const, minimum: 0 },
       lorebookCreatedCount: { type: 'number' as const, minimum: 0 },
+      lorebookSkippedCount: { type: 'number' as const, minimum: 0 },
+      writingRuleCreatedCount: { type: 'number' as const, minimum: 0 },
+      writingRuleSkippedCount: { type: 'number' as const, minimum: 0 },
       volumeCount: { type: 'number' as const, minimum: 0 },
       chapterCreatedCount: { type: 'number' as const, minimum: 0 },
       chapterUpdatedCount: { type: 'number' as const, minimum: 0 },
@@ -34,13 +37,13 @@ export class PersistProjectAssetsTool implements BaseTool<PersistProjectAssetsIn
   allowedModes: Array<'plan' | 'act'> = ['act'];
   riskLevel: 'high' = 'high';
   requiresApproval = true;
-  sideEffects = ['update_project_profile', 'create_characters', 'create_lorebook_entries', 'upsert_volumes', 'create_or_update_planned_chapters'];
+  sideEffects = ['update_project_profile', 'create_characters', 'create_lorebook_entries', 'create_writing_rules', 'upsert_volumes', 'create_or_update_planned_chapters'];
 
   constructor(private readonly prisma: PrismaService, private readonly cacheService: NovelCacheService) {}
 
   async run(args: PersistProjectAssetsInput, context: ToolContext) {
     if (!args.preview) throw new BadRequestException('persist_project_assets 需要 import preview');
-    const preview = this.normalizePreview(args.preview);
+    const preview = filterImportPreviewByAssetTypes(this.normalizePreview(args.preview));
     this.assertSafePreview(preview);
 
     const result = await this.prisma.$transaction(async (tx) => {
@@ -82,6 +85,34 @@ export class PersistProjectAssetsTool implements BaseTool<PersistProjectAssetsIn
         lorebookCreatedCount += 1;
       }
 
+      const existingWritingRules = await tx.writingRule.findMany({ where: { projectId: context.projectId }, select: { title: true } });
+      const existingWritingRuleTitles = new Set(existingWritingRules.map((item) => item.title));
+      let writingRuleCreatedCount = 0;
+      let writingRuleSkippedCount = 0;
+      for (const rule of preview.writingRules) {
+        if (existingWritingRuleTitles.has(rule.title)) {
+          writingRuleSkippedCount += 1;
+          continue;
+        }
+        await tx.writingRule.create({
+          data: {
+            projectId: context.projectId,
+            ruleType: rule.ruleType,
+            title: rule.title,
+            content: rule.content,
+            severity: rule.severity ?? 'info',
+            appliesFromChapterNo: rule.appliesFromChapterNo,
+            appliesToChapterNo: rule.appliesToChapterNo,
+            entityType: rule.entityType,
+            entityRef: rule.entityRef,
+            status: rule.status ?? 'active',
+            metadata: { sourceType: 'agent_import', agentRunId: context.agentRunId } as Prisma.InputJsonValue,
+          },
+        });
+        existingWritingRuleTitles.add(rule.title);
+        writingRuleCreatedCount += 1;
+      }
+
       const volumeByNo = new Map<number, string>();
       for (const volume of preview.volumes) {
         const saved = await tx.volume.upsert({
@@ -109,7 +140,7 @@ export class PersistProjectAssetsTool implements BaseTool<PersistProjectAssetsIn
         }
       }
 
-      return { characterCreatedCount, lorebookCreatedCount, lorebookSkippedCount, volumeCount: preview.volumes.length, chapterCreatedCount, chapterUpdatedCount, chapterSkippedCount };
+      return { characterCreatedCount, lorebookCreatedCount, lorebookSkippedCount, writingRuleCreatedCount, writingRuleSkippedCount, volumeCount: preview.volumes.length, chapterCreatedCount, chapterUpdatedCount, chapterSkippedCount };
     });
 
     if (this.hasRetrievalRelevantWrites(result)) {
@@ -122,12 +153,13 @@ export class PersistProjectAssetsTool implements BaseTool<PersistProjectAssetsIn
 
   /** 判断本次导入是否改变了召回可见资料；只在确有写入时触发项目级召回缓存失效。 */
   private hasRetrievalRelevantWrites(result: Record<string, unknown>) {
-    return ['characterCreatedCount', 'lorebookCreatedCount', 'volumeCount', 'chapterCreatedCount', 'chapterUpdatedCount'].some((key) => Number(result[key]) > 0);
+    return ['characterCreatedCount', 'lorebookCreatedCount', 'writingRuleCreatedCount', 'volumeCount', 'chapterCreatedCount', 'chapterUpdatedCount'].some((key) => Number(result[key]) > 0);
   }
 
   private normalizePreview(preview: ImportPreviewOutput): ImportPreviewOutput {
     return {
       projectProfile: this.normalizeProjectProfile(preview.projectProfile),
+      requestedAssetTypes: normalizeImportAssetTypes(preview.requestedAssetTypes),
       characters: (preview.characters ?? [])
         .map((item) => {
           const record = item as Record<string, unknown>;
@@ -149,6 +181,22 @@ export class PersistProjectAssetsTool implements BaseTool<PersistProjectAssetsIn
             content: this.scalarText(record.content),
             summary: this.optionalScalarText(record.summary),
             tags: Array.isArray(record.tags) ? record.tags.map((tag) => this.scalarText(tag)).filter(Boolean) : [],
+          };
+        })
+        .filter((item) => item.title && item.content),
+      writingRules: (preview.writingRules ?? [])
+        .map((item) => {
+          const record = item as Record<string, unknown>;
+          return {
+            title: this.scalarText(record.title),
+            ruleType: this.optionalScalarText(record.ruleType) ?? 'style',
+            content: this.scalarText(record.content),
+            severity: this.normalizeSeverity(record.severity),
+            appliesFromChapterNo: this.optionalNumber(record.appliesFromChapterNo),
+            appliesToChapterNo: this.optionalNumber(record.appliesToChapterNo),
+            entityType: this.optionalScalarText(record.entityType),
+            entityRef: this.optionalScalarText(record.entityRef),
+            status: this.optionalScalarText(record.status) ?? 'active',
           };
         })
         .filter((item) => item.title && item.content),
@@ -201,6 +249,13 @@ export class PersistProjectAssetsTool implements BaseTool<PersistProjectAssetsIn
     return this.scalarText(value) || undefined;
   }
 
+  private normalizeSeverity(value: unknown): 'info' | 'warning' | 'error' | undefined {
+    const text = this.optionalScalarText(value)?.toLowerCase();
+    if (text === 'info' || text === 'warning' || text === 'error') return text;
+    if (text === 'warn') return 'warning';
+    return undefined;
+  }
+
   private scalarText(value: unknown, fallback = ''): string {
     if (typeof value === 'string') return value.trim() || fallback;
     if (typeof value === 'number' || typeof value === 'boolean') return String(value);
@@ -229,5 +284,7 @@ export class PersistProjectAssetsTool implements BaseTool<PersistProjectAssetsIn
     const duplicatedChapters = chapterNos.filter((chapterNo, index) => chapterNos.indexOf(chapterNo) !== index);
     if (duplicatedVolumes.length) throw new BadRequestException(`卷号重复，已阻止写入：${[...new Set(duplicatedVolumes)].join(', ')}`);
     if (duplicatedChapters.length) throw new BadRequestException(`章节编号重复，已阻止写入：${[...new Set(duplicatedChapters)].join(', ')}`);
+    const invalidRuleRange = preview.writingRules.find((rule) => rule.appliesFromChapterNo && rule.appliesToChapterNo && rule.appliesFromChapterNo > rule.appliesToChapterNo);
+    if (invalidRuleRange) throw new BadRequestException(`写作规则章节范围不合法：${invalidRuleRange.title}`);
   }
 }

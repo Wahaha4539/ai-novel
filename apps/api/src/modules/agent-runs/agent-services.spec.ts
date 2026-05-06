@@ -875,16 +875,19 @@ test('ValidateImportedAssetsTool 生成导入写入前 diff，并标记重复/�
   const prisma = {
     character: { async findMany() { return [{ name: '林岚' }]; } },
     lorebookEntry: { async findMany() { return [{ title: '雾城' }]; } },
+    writingRule: { async findMany() { return [{ title: '禁用现代词' }]; } },
     volume: { async findMany() { return [{ volumeNo: 1 }]; } },
     chapter: { async findMany() { return [{ chapterNo: 1, status: 'drafted', title: '旧章' }]; } },
   };
   const tool = new ValidateImportedAssetsTool(prisma as never);
   const result = await tool.run(
-    { preview: { projectProfile: { title: '项目' }, characters: [{ name: '林岚' }, { name: '林岚' }, { name: '沈砚' }], lorebookEntries: [{ title: '雾城', entryType: 'location', content: '旧城' }, { title: '灯塔', entryType: 'place', content: '信号' }], volumes: [{ volumeNo: 1, title: '卷一' }], chapters: [{ chapterNo: 1, title: '一' }, { chapterNo: 2, title: '二' }], risks: [] } },
+    { preview: { projectProfile: { title: '项目' }, characters: [{ name: '林岚' }, { name: '林岚' }, { name: '沈砚' }], lorebookEntries: [{ title: '雾城', entryType: 'location', content: '旧城' }, { title: '灯塔', entryType: 'place', content: '信号' }], writingRules: [{ title: '禁用现代词', ruleType: 'style', content: '避免现代网络词' }, { title: '保持第三人称', ruleType: 'pov', content: '不得切换视角' }], volumes: [{ volumeNo: 1, title: '卷一' }], chapters: [{ chapterNo: 1, title: '一' }, { chapterNo: 2, title: '二' }], risks: [] } },
     { agentRunId: 'run1', projectId: 'p1', mode: 'plan', approved: false, outputs: {}, policy: {} },
   );
   assert.equal(result.writePreview?.summary.characterCreateCount, 1);
   assert.equal(result.writePreview?.summary.characterSkipCount, 2);
+  assert.equal(result.writePreview?.summary.writingRuleCreateCount, 1);
+  assert.equal(result.writePreview?.summary.writingRuleSkipCount, 1);
   assert.equal(result.writePreview?.summary.chapterCreateCount, 1);
   assert.equal(result.writePreview?.summary.chapterSkipCount, 1);
 });
@@ -1431,6 +1434,56 @@ test('AgentRuntime 为 Story Bible Plan 预览按 tool 名提升 Artifacts', () 
 
   assert.deepEqual(artifacts.map((item) => item.artifactType), ['story_bible_preview', 'story_bible_validation_report']);
   assert.deepEqual(artifacts.map((item) => item.content), [preview, validation]);
+});
+
+test('AgentRuntime 为文档导入按 tool 名提升预览和写入结果 Artifacts', () => {
+  const runtime = new AgentRuntimeService({} as never, {} as never, {} as never, {} as never, {} as never, {} as never) as unknown as {
+    buildPreviewArtifacts: (taskType: string, outputs: Record<number, unknown>, steps: Array<{ stepNo: number; tool: string }>) => Array<{ artifactType: string; title: string; content: unknown }>;
+    buildExecutionArtifacts: (taskType: string, outputs: Record<number, unknown>, steps: Array<{ stepNo: number; tool: string }>) => Array<{ artifactType: string; title: string; content: unknown }>;
+  };
+  const preview = { projectProfile: { title: '导入项目' }, characters: [{ name: '林岚' }], lorebookEntries: [{ title: '雾城' }], writingRules: [{ title: '禁用现代词' }], volumes: [{ volumeNo: 1, title: '卷一' }], chapters: [{ chapterNo: 1, title: '一' }], risks: [] };
+  const validation = { valid: true };
+  const persist = { characterCreatedCount: 1, writingRuleCreatedCount: 1, chapterCreatedCount: 1 };
+  const steps = [
+    { stepNo: 1, tool: 'read_source_document' },
+    { stepNo: 2, tool: 'analyze_source_text' },
+    { stepNo: 3, tool: 'build_import_preview' },
+    { stepNo: 4, tool: 'validate_imported_assets' },
+    { stepNo: 5, tool: 'persist_project_assets' },
+  ];
+
+  const planArtifacts = runtime.buildPreviewArtifacts('project_import_preview', { 1: { sourceText: '正文' }, 2: { sourceText: '分析' }, 3: preview, 4: validation }, steps);
+  const actArtifacts = runtime.buildExecutionArtifacts('project_import_preview', { 1: {}, 2: {}, 3: preview, 4: validation, 5: persist }, steps);
+
+  assert.deepEqual(planArtifacts.map((item) => item.artifactType), ['project_profile_preview', 'characters_preview', 'lorebook_preview', 'writing_rules_preview', 'outline_preview', 'import_validation_report']);
+  assert.equal(planArtifacts.find((item) => item.artifactType === 'writing_rules_preview')?.content, preview.writingRules);
+  assert.deepEqual(actArtifacts.map((item) => item.artifactType).slice(-2), ['import_validation_report', 'import_persist_result']);
+  assert.deepEqual(actArtifacts.at(-1)?.content, persist);
+});
+
+test('AgentRuntime 为文档导入按 requestedAssetTypes 只提升用户选择的目标产物', () => {
+  const runtime = new AgentRuntimeService({} as never, {} as never, {} as never, {} as never, {} as never, {} as never) as unknown as {
+    buildPreviewArtifacts: (taskType: string, outputs: Record<number, unknown>, steps: Array<{ stepNo: number; tool: string }>) => Array<{ artifactType: string; title: string; content: unknown }>;
+  };
+  const preview = {
+    requestedAssetTypes: ['outline'],
+    projectProfile: { title: '不应展示', outline: '主线' },
+    characters: [{ name: '不应展示' }],
+    lorebookEntries: [{ title: '不应展示' }],
+    writingRules: [{ title: '不应展示' }],
+    volumes: [{ volumeNo: 1, title: '卷一' }],
+    chapters: [{ chapterNo: 1, title: '一' }],
+    risks: [],
+  };
+  const validation = { valid: true };
+  const steps = [
+    { stepNo: 1, tool: 'build_import_preview' },
+    { stepNo: 2, tool: 'validate_imported_assets' },
+  ];
+
+  const artifacts = runtime.buildPreviewArtifacts('project_import_preview', { 1: preview, 2: validation }, steps);
+
+  assert.deepEqual(artifacts.map((item) => item.artifactType), ['outline_preview', 'import_validation_report']);
 });
 
 test('AgentRuntime maps continuity preview/validation/persist artifacts', () => {
@@ -3468,6 +3521,7 @@ test('BuildImportPreviewTool normalizes LLM object and array scalar fields', asy
           },
           characters: [{ name: { value: 'Lu' }, roleType: ['lead', 'engineer'] }],
           lorebookEntries: [{ title: { name: 'Sea' }, entryType: ['setting'], content: { summary: 'inverted sea' }, tags: ['sky', { value: 'tide' }] }],
+          writingRules: [{ title: { primary: 'No Slang' }, ruleType: ['style'], content: { summary: 'avoid memes' }, severity: 'warn' }],
           volumes: [{ volumeNo: '1', title: { primary: 'First Tide' } }],
           chapters: [{ chapterNo: '1', volumeNo: '1', title: { primary: 'Escape' }, outline: { summary: 'fix bridge' } }],
           risks: [],
@@ -3488,14 +3542,52 @@ test('BuildImportPreviewTool normalizes LLM object and array scalar fields', asy
   assert.equal(output.projectProfile.synopsis, 'source synopsis');
   assert.deepEqual(output.characters[0], { name: 'Lu', roleType: 'lead、engineer', personalityCore: undefined, motivation: undefined, backstory: undefined });
   assert.deepEqual(output.lorebookEntries[0], { title: 'Sea', entryType: 'setting', content: 'inverted sea', summary: undefined, tags: ['sky', '{"value":"tide"}'] });
+  assert.deepEqual(output.writingRules[0], { title: 'No Slang', ruleType: 'style', content: 'avoid memes', severity: 'warning', appliesFromChapterNo: undefined, appliesToChapterNo: undefined, entityType: undefined, entityRef: undefined, status: 'active' });
+  assert.ok(output.projectProfile.outline?.includes('第 1 章：Escape'));
   assert.equal(output.volumes[0].title, 'First Tide');
   assert.equal(output.chapters[0].outline, 'fix bridge');
+});
+
+test('BuildImportPreviewTool 只保留 requestedAssetTypes 指定的目标产物', async () => {
+  let promptText = '';
+  const llm = {
+    async chatJson(messages: Array<{ role: string; content: string }>) {
+      promptText = messages.map((item) => item.content).join('\n');
+      return {
+        data: {
+          projectProfile: { title: 'Bridge', outline: 'main line' },
+          characters: [{ name: 'Lu' }],
+          lorebookEntries: [{ title: 'Sea', entryType: 'setting', content: 'inverted sea' }],
+          writingRules: [{ title: 'No Slang', ruleType: 'style', content: 'avoid memes' }],
+          volumes: [{ volumeNo: 1, title: 'First Tide' }],
+          chapters: [{ chapterNo: 1, title: 'Escape', outline: 'fix bridge' }],
+          risks: [],
+        },
+        result: { model: 'mock' },
+      };
+    },
+  };
+  const tool = new BuildImportPreviewTool(llm as never);
+  const output = await tool.run(
+    { analysis: { sourceText: 'source', length: 6, paragraphs: ['source'], keywords: [] }, instruction: '只生成故事大纲', requestedAssetTypes: ['outline'] },
+    { agentRunId: 'run1', projectId: 'p1', mode: 'plan', approved: false, outputs: {}, policy: {} },
+  );
+
+  assert.match(promptText, /Requested asset types: outline/);
+  assert.deepEqual(output.requestedAssetTypes, ['outline']);
+  assert.equal(output.projectProfile.title, undefined);
+  assert.equal(output.projectProfile.outline, 'main line');
+  assert.deepEqual(output.characters, []);
+  assert.deepEqual(output.lorebookEntries, []);
+  assert.deepEqual(output.writingRules, []);
+  assert.equal(output.chapters.length, 1);
 });
 
 test('PersistProjectAssetsTool normalizes legacy object and array scalar fields before writing', async () => {
   const projectUpdates: Array<{ data: Record<string, unknown> }> = [];
   const createdCharacters: Array<Record<string, unknown>> = [];
   const createdLorebookEntries: Array<Record<string, unknown>> = [];
+  const createdWritingRules: Array<Record<string, unknown>> = [];
   const upsertedVolumes: Array<{ create: Record<string, unknown>; update: Record<string, unknown> }> = [];
   const createdChapters: Array<Record<string, unknown>> = [];
   const tx = {
@@ -3511,6 +3603,13 @@ test('PersistProjectAssetsTool normalizes legacy object and array scalar fields 
       async findMany() { return []; },
       async create(args: { data: Record<string, unknown> }) {
         createdLorebookEntries.push(args.data);
+        return args.data;
+      },
+    },
+    writingRule: {
+      async findMany() { return []; },
+      async create(args: { data: Record<string, unknown> }) {
+        createdWritingRules.push(args.data);
         return args.data;
       },
     },
@@ -3545,6 +3644,7 @@ test('PersistProjectAssetsTool normalizes legacy object and array scalar fields 
         },
         characters: [{ name: { value: 'Lu' } as unknown as string, roleType: ['lead', 'engineer'] as unknown as string }],
         lorebookEntries: [{ title: { name: 'Sea' } as unknown as string, entryType: ['setting'] as unknown as string, content: { summary: 'inverted sea' } as unknown as string }],
+        writingRules: [{ title: { primary: 'No Modern Slang' } as unknown as string, ruleType: ['style'] as unknown as string, content: { summary: 'avoid memes' } as unknown as string, severity: 'warn' as unknown as 'warning' }],
         volumes: [{ volumeNo: '1' as unknown as number, title: { primary: 'First Tide' } as unknown as string }],
         chapters: [{ chapterNo: '1' as unknown as number, volumeNo: '1' as unknown as number, title: { primary: 'Escape' } as unknown as string, outline: { summary: 'fix bridge' } as unknown as string }],
         risks: [],
@@ -3560,10 +3660,92 @@ test('PersistProjectAssetsTool normalizes legacy object and array scalar fields 
   assert.equal(createdCharacters[0].roleType, 'lead、engineer');
   assert.equal(createdLorebookEntries[0].title, 'Sea');
   assert.equal(createdLorebookEntries[0].content, 'inverted sea');
+  assert.equal(createdWritingRules[0].title, 'No Modern Slang');
+  assert.equal(createdWritingRules[0].severity, 'warning');
   assert.equal(upsertedVolumes[0].create.title, 'First Tide');
   assert.equal(createdChapters[0].title, 'Escape');
   assert.equal(createdChapters[0].outline, 'fix bridge');
   assert.equal(result.characterCreatedCount, 1);
+});
+
+test('PersistProjectAssetsTool 按 requestedAssetTypes 阻止未选择资产写入', async () => {
+  const projectUpdates: Array<{ data: Record<string, unknown> }> = [];
+  const createdCharacters: Array<Record<string, unknown>> = [];
+  const createdLorebookEntries: Array<Record<string, unknown>> = [];
+  const createdWritingRules: Array<Record<string, unknown>> = [];
+  const upsertedVolumes: Array<{ create: Record<string, unknown>; update: Record<string, unknown> }> = [];
+  const createdChapters: Array<Record<string, unknown>> = [];
+  const tx = {
+    project: { async update(args: { data: Record<string, unknown> }) { projectUpdates.push(args); } },
+    character: {
+      async findMany() { return []; },
+      async create(args: { data: Record<string, unknown> }) {
+        createdCharacters.push(args.data);
+        return args.data;
+      },
+    },
+    lorebookEntry: {
+      async findMany() { return []; },
+      async create(args: { data: Record<string, unknown> }) {
+        createdLorebookEntries.push(args.data);
+        return args.data;
+      },
+    },
+    writingRule: {
+      async findMany() { return []; },
+      async create(args: { data: Record<string, unknown> }) {
+        createdWritingRules.push(args.data);
+        return args.data;
+      },
+    },
+    volume: {
+      async upsert(args: { create: Record<string, unknown>; update: Record<string, unknown> }) {
+        upsertedVolumes.push(args);
+        return { id: `v${args.create.volumeNo}` };
+      },
+    },
+    chapter: {
+      async findUnique() { return null; },
+      async create(args: { data: Record<string, unknown> }) {
+        createdChapters.push(args.data);
+        return args.data;
+      },
+    },
+  };
+  const prisma = {
+    async $transaction<T>(fn: (txClient: typeof tx) => Promise<T>) {
+      return fn(tx);
+    },
+  };
+  const cache = { async deleteProjectRecallResults() {} };
+  const tool = new PersistProjectAssetsTool(prisma as never, cache as never);
+  const result = await tool.run(
+    {
+      preview: {
+        requestedAssetTypes: ['outline'],
+        projectProfile: { title: '不应写入标题', outline: '主线' },
+        characters: [{ name: '不应写入角色' }],
+        lorebookEntries: [{ title: '不应写入设定', entryType: 'setting', content: '设定' }],
+        writingRules: [{ title: '不应写入规则', ruleType: 'style', content: '规则' }],
+        volumes: [{ volumeNo: 1, title: '卷一' }],
+        chapters: [{ chapterNo: 1, volumeNo: 1, title: '第一章', outline: '起点' }],
+        risks: [],
+      },
+    },
+    { agentRunId: 'run1', projectId: 'p1', mode: 'act', approved: true, outputs: {}, policy: {} },
+  );
+
+  assert.equal(projectUpdates[0].data.title, undefined);
+  assert.equal(projectUpdates[0].data.outline, '主线');
+  assert.equal(createdCharacters.length, 0);
+  assert.equal(createdLorebookEntries.length, 0);
+  assert.equal(createdWritingRules.length, 0);
+  assert.equal(upsertedVolumes.length, 1);
+  assert.equal(createdChapters.length, 1);
+  assert.equal(result.characterCreatedCount, 0);
+  assert.equal(result.lorebookCreatedCount, 0);
+  assert.equal(result.writingRuleCreatedCount, 0);
+  assert.equal(result.chapterCreatedCount, 1);
 });
 
 test('Planner 归一化 LLM Plan 时强制使用 act mode', () => {
@@ -3598,6 +3780,43 @@ test('Planner rejects unknown exact template references', () => {
     ),
     /未知模板引用/,
   );
+});
+
+test('Planner 为导入预览计划补齐审批后写入步骤，避免确认执行只跑只读预览', () => {
+  const tools = {
+    list: () => [
+      createTool({ name: 'read_source_document', requiresApproval: false, sideEffects: [] }),
+      createTool({ name: 'analyze_source_text', requiresApproval: false, sideEffects: [] }),
+      createTool({ name: 'build_import_preview', requiresApproval: false, sideEffects: [] }),
+      createTool({ name: 'validate_imported_assets', requiresApproval: false, sideEffects: [] }),
+      createTool({ name: 'persist_project_assets', requiresApproval: true, sideEffects: ['update_project_profile'] }),
+    ],
+  } as unknown as ToolRegistryService;
+  const planner = new AgentPlannerService(new SkillRegistryService(), tools, new RuleEngineService(), {} as LlmGatewayService) as unknown as {
+    validateAndNormalizeLlmPlan: (data: unknown, baseline: { taskType: string; summary: string; assumptions: string[]; risks: string[] }) => { steps: Array<{ stepNo: number; tool: string; requiresApproval: boolean; args: Record<string, unknown> }>; requiredApprovals: Array<{ target?: { stepNos?: number[]; tools?: string[] } }> };
+  };
+
+  const plan = planner.validateAndNormalizeLlmPlan(
+    {
+      taskType: 'project_import_preview',
+      summary: '导入预览',
+      assumptions: [],
+      risks: [],
+      steps: [
+        { stepNo: 1, name: '读取文档', tool: 'read_source_document', mode: 'act', requiresApproval: false, args: { attachmentUrl: '{{context.attachments.0.url}}' } },
+        { stepNo: 2, name: '分析文档', tool: 'analyze_source_text', mode: 'act', requiresApproval: false, args: { sourceText: '{{steps.1.output.sourceText}}' } },
+        { stepNo: 3, name: '生成导入预览', tool: 'build_import_preview', mode: 'act', requiresApproval: false, args: { analysis: '{{steps.2.output}}', requestedAssetTypes: ['outline'] } },
+        { stepNo: 4, name: '校验导入预览', tool: 'validate_imported_assets', mode: 'act', requiresApproval: false, args: { preview: '{{steps.3.output}}' } },
+      ],
+    },
+    { taskType: 'general', summary: 'fallback', assumptions: [], risks: [] },
+  );
+
+  assert.deepEqual(plan.steps.map((step) => step.tool), ['read_source_document', 'analyze_source_text', 'build_import_preview', 'validate_imported_assets', 'persist_project_assets']);
+  assert.equal(plan.steps[4].requiresApproval, true);
+  assert.deepEqual(plan.steps[4].args, { preview: '{{steps.3.output}}' });
+  assert.deepEqual(plan.requiredApprovals[0].target?.stepNos, [5]);
+  assert.deepEqual(plan.requiredApprovals[0].target?.tools, ['persist_project_assets']);
 });
 
 test('Planner 接受 LLM 语义判定的 taskType，不再被后端 baseline 锁死', () => {

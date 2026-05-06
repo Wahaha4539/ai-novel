@@ -1,13 +1,13 @@
 import { Injectable } from '@nestjs/common';
 import { PrismaService } from '../../../prisma/prisma.service';
 import { BaseTool, ToolContext } from '../base-tool';
-import { ImportPreviewOutput } from './build-import-preview.tool';
+import { filterImportPreviewByAssetTypes, ImportPreviewOutput } from './build-import-preview.tool';
 
 interface ValidateImportedAssetsInput {
   preview?: ImportPreviewOutput;
 }
 
-type ImportValidationArea = 'project' | 'characters' | 'lorebook' | 'volumes' | 'chapters';
+type ImportValidationArea = 'project' | 'characters' | 'lorebook' | 'writingRules' | 'volumes' | 'chapters';
 type ImportValidationSeverity = 'warning' | 'error';
 
 interface ImportedAssetsValidationIssue {
@@ -24,9 +24,11 @@ export interface ValidateImportedAssetsOutput {
   stats: {
     characterCount: number;
     lorebookCount: number;
+    writingRuleCount: number;
     volumeCount: number;
     chapterCount: number;
     duplicatedCharacterNames: string[];
+    duplicatedWritingRuleTitles: string[];
     duplicatedVolumeNos: number[];
     duplicatedChapterNos: number[];
   };
@@ -37,6 +39,8 @@ export interface ValidateImportedAssetsOutput {
       characterSkipCount: number;
       lorebookCreateCount: number;
       lorebookSkipCount: number;
+      writingRuleCreateCount: number;
+      writingRuleSkipCount: number;
       volumeCreateCount: number;
       volumeUpdateCount: number;
       chapterCreateCount: number;
@@ -45,6 +49,7 @@ export interface ValidateImportedAssetsOutput {
     };
     characters: Array<{ name: string; action: 'create' | 'skip_existing' | 'skip_duplicate_in_preview' }>;
     lorebookEntries: Array<{ title: string; action: 'create' | 'skip_existing' | 'skip_duplicate_in_preview' }>;
+    writingRules: Array<{ title: string; action: 'create' | 'skip_existing' | 'skip_duplicate_in_preview' }>;
     volumes: Array<{ volumeNo: number; title: string; action: 'create' | 'update' }>;
     chapters: Array<{ chapterNo: number; title: string; action: 'create' | 'update_planned' | 'skip_existing_content'; existingStatus?: string | null }>;
   };
@@ -73,7 +78,7 @@ export class ValidateImportedAssetsTool implements BaseTool<ValidateImportedAsse
 
   async run(args: ValidateImportedAssetsInput, _context: ToolContext): Promise<ValidateImportedAssetsOutput> {
     const issues: ImportedAssetsValidationIssue[] = [];
-    const preview = args.preview;
+    const preview = args.preview ? filterImportPreviewByAssetTypes(args.preview) : undefined;
 
     if (!preview) {
       issues.push({ severity: 'error', area: 'project', message: '缺少导入预览，无法执行写入前校验。', suggestion: '请先重新构建导入预览。' });
@@ -98,6 +103,20 @@ export class ValidateImportedAssetsTool implements BaseTool<ValidateImportedAsse
       const label = entry.title || `第 ${index + 1} 条设定`;
       if (!entry.title?.trim()) issues.push({ severity: 'error', area: 'lorebook', message: `${label} 缺少 title。` });
       if (!entry.content?.trim()) issues.push({ severity: 'error', area: 'lorebook', message: `${label} 缺少 content。` });
+    });
+
+    const duplicatedWritingRuleTitles = this.findDuplicatedStrings((preview.writingRules ?? []).map((rule) => rule.title));
+    if (duplicatedWritingRuleTitles.length) {
+      issues.push({ severity: 'warning', area: 'writingRules', message: `存在重复写作规则：${duplicatedWritingRuleTitles.join(', ')}。`, suggestion: '写入时会按标题去重，重复项可能被跳过。' });
+    }
+
+    (preview.writingRules ?? []).forEach((rule, index) => {
+      const label = rule.title || `第 ${index + 1} 条写作规则`;
+      if (!rule.title?.trim()) issues.push({ severity: 'error', area: 'writingRules', message: `${label} 缺少 title。` });
+      if (!rule.content?.trim()) issues.push({ severity: 'error', area: 'writingRules', message: `${label} 缺少 content。` });
+      if (rule.appliesFromChapterNo && rule.appliesToChapterNo && rule.appliesFromChapterNo > rule.appliesToChapterNo) {
+        issues.push({ severity: 'error', area: 'writingRules', message: `${label} 的章节范围不合法。`, suggestion: 'appliesFromChapterNo 必须小于等于 appliesToChapterNo。' });
+      }
     });
 
     const volumeNos = (preview.volumes ?? []).map((volume) => Number(volume.volumeNo));
@@ -137,6 +156,7 @@ export class ValidateImportedAssetsTool implements BaseTool<ValidateImportedAsse
   /** 输出统计保持固定结构，便于前端按区域展示导入预览质量。 */
   private buildOutput(issues: ImportedAssetsValidationIssue[], preview?: ImportPreviewOutput, writePreview?: ValidateImportedAssetsOutput['writePreview']): ValidateImportedAssetsOutput {
     const characters = preview?.characters ?? [];
+    const writingRules = preview?.writingRules ?? [];
     const volumes = preview?.volumes ?? [];
     const chapters = preview?.chapters ?? [];
     return {
@@ -146,9 +166,11 @@ export class ValidateImportedAssetsTool implements BaseTool<ValidateImportedAsse
       stats: {
         characterCount: characters.length,
         lorebookCount: preview?.lorebookEntries?.length ?? 0,
+        writingRuleCount: writingRules.length,
         volumeCount: volumes.length,
         chapterCount: chapters.length,
         duplicatedCharacterNames: this.findDuplicatedStrings(characters.map((character) => character.name)),
+        duplicatedWritingRuleTitles: this.findDuplicatedStrings(writingRules.map((rule) => rule.title)),
         duplicatedVolumeNos: this.findDuplicatedNumbers(volumes.map((volume) => Number(volume.volumeNo))),
         duplicatedChapterNos: this.findDuplicatedNumbers(chapters.map((chapter) => Number(chapter.chapterNo))),
       },
@@ -164,21 +186,25 @@ export class ValidateImportedAssetsTool implements BaseTool<ValidateImportedAsse
   private async buildWritePreview(preview: ImportPreviewOutput, context: ToolContext): Promise<ValidateImportedAssetsOutput['writePreview']> {
     const characterNames = [...new Set((preview.characters ?? []).map((item) => item.name?.trim()).filter(Boolean))] as string[];
     const lorebookTitles = [...new Set((preview.lorebookEntries ?? []).map((item) => item.title?.trim()).filter(Boolean))] as string[];
+    const writingRuleTitles = [...new Set((preview.writingRules ?? []).map((item) => item.title?.trim()).filter(Boolean))] as string[];
     const volumeNos = [...new Set((preview.volumes ?? []).map((item) => Number(item.volumeNo)).filter((value) => Number.isFinite(value) && value > 0))];
     const chapterNos = [...new Set((preview.chapters ?? []).map((item) => Number(item.chapterNo)).filter((value) => Number.isFinite(value) && value > 0))];
-    const [existingCharacters, existingLorebookEntries, existingVolumes, existingChapters] = await Promise.all([
+    const [existingCharacters, existingLorebookEntries, existingWritingRules, existingVolumes, existingChapters] = await Promise.all([
       characterNames.length ? this.prisma.character.findMany({ where: { projectId: context.projectId, name: { in: characterNames } }, select: { name: true } }) : Promise.resolve([]),
       lorebookTitles.length ? this.prisma.lorebookEntry.findMany({ where: { projectId: context.projectId, title: { in: lorebookTitles } }, select: { title: true } }) : Promise.resolve([]),
+      writingRuleTitles.length ? this.prisma.writingRule.findMany({ where: { projectId: context.projectId, title: { in: writingRuleTitles } }, select: { title: true } }) : Promise.resolve([]),
       volumeNos.length ? this.prisma.volume.findMany({ where: { projectId: context.projectId, volumeNo: { in: volumeNos } }, select: { volumeNo: true } }) : Promise.resolve([]),
       chapterNos.length ? this.prisma.chapter.findMany({ where: { projectId: context.projectId, chapterNo: { in: chapterNos } }, select: { chapterNo: true, status: true, title: true } }) : Promise.resolve([]),
     ]);
 
     const existingCharacterNames = new Set(existingCharacters.map((item) => item.name));
     const existingLorebookTitles = new Set(existingLorebookEntries.map((item) => item.title));
+    const existingWritingRuleTitles = new Set(existingWritingRules.map((item) => item.title));
     const existingVolumeNos = new Set(existingVolumes.map((item) => item.volumeNo));
     const existingChapterByNo = new Map(existingChapters.map((item) => [item.chapterNo, item]));
     const seenCharacters = new Set<string>();
     const seenLorebook = new Set<string>();
+    const seenWritingRules = new Set<string>();
 
     const characters = (preview.characters ?? []).map((item) => {
       const name = item.name?.trim() || '';
@@ -190,6 +216,12 @@ export class ValidateImportedAssetsTool implements BaseTool<ValidateImportedAsse
       const title = item.title?.trim() || '';
       const action: 'create' | 'skip_existing' | 'skip_duplicate_in_preview' = seenLorebook.has(title) ? 'skip_duplicate_in_preview' : existingLorebookTitles.has(title) ? 'skip_existing' : 'create';
       if (title) seenLorebook.add(title);
+      return { title, action };
+    });
+    const writingRules = (preview.writingRules ?? []).map((item) => {
+      const title = item.title?.trim() || '';
+      const action: 'create' | 'skip_existing' | 'skip_duplicate_in_preview' = seenWritingRules.has(title) ? 'skip_duplicate_in_preview' : existingWritingRuleTitles.has(title) ? 'skip_existing' : 'create';
+      if (title) seenWritingRules.add(title);
       return { title, action };
     });
     const volumes = (preview.volumes ?? []).map((item) => {
@@ -208,6 +240,8 @@ export class ValidateImportedAssetsTool implements BaseTool<ValidateImportedAsse
         characterSkipCount: characters.filter((item) => item.action !== 'create').length,
         lorebookCreateCount: lorebookEntries.filter((item) => item.action === 'create').length,
         lorebookSkipCount: lorebookEntries.filter((item) => item.action !== 'create').length,
+        writingRuleCreateCount: writingRules.filter((item) => item.action === 'create').length,
+        writingRuleSkipCount: writingRules.filter((item) => item.action !== 'create').length,
         volumeCreateCount: volumes.filter((item) => item.action === 'create').length,
         volumeUpdateCount: volumes.filter((item) => item.action === 'update').length,
         chapterCreateCount: chapters.filter((item) => item.action === 'create').length,
@@ -216,6 +250,7 @@ export class ValidateImportedAssetsTool implements BaseTool<ValidateImportedAsse
       },
       characters,
       lorebookEntries,
+      writingRules,
       volumes,
       chapters,
     };

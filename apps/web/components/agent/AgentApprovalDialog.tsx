@@ -1,6 +1,8 @@
 'use client';
 
-import { useEffect, useState } from 'react';
+import { useEffect, useMemo, useState } from 'react';
+import type { AgentPlanPayload } from '../../hooks/useAgentRun';
+import { planWriteInfo } from './AgentSharedWidgets';
 
 interface AgentApprovalDialogProps {
   canAct: boolean;
@@ -8,6 +10,7 @@ interface AgentApprovalDialogProps {
   loading: boolean;
   status?: string;
   hasCurrentRun: boolean;
+  plan?: AgentPlanPayload;
   riskSummary?: string[];
   onCancel: () => void | Promise<void>;
   onRetry: () => void | Promise<void>;
@@ -19,14 +22,31 @@ interface AgentApprovalDialogProps {
  * 使用 agent-panel-section 保持与其他面板一致的卡片风格，
  * 按钮使用 CSS 类以统一主题适配。
  */
-export function AgentApprovalDialog({ canAct, canRetry, loading, status, hasCurrentRun, riskSummary = [], onCancel, onRetry, onAct }: AgentApprovalDialogProps) {
+export function AgentApprovalDialog({ canAct, canRetry, loading, status, hasCurrentRun, plan, riskSummary = [], onCancel, onRetry, onAct }: AgentApprovalDialogProps) {
   const terminal = status === 'succeeded' || status === 'failed' || status === 'cancelled';
   const requiresSecondConfirm = canAct || canRetry;
   const [secondConfirmed, setSecondConfirmed] = useState(false);
+  const writeInfo = useMemo(() => planWriteInfo(plan), [plan]);
+  const scopeText = writeInfo.projectImportAssetLabels.length ? writeInfo.projectImportAssetLabels.join('、') : '当前导入预览中的项目资产';
+  const writeStepText = writeInfo.writeToolLabels.length ? writeInfo.writeToolLabels.join('、') : '写入步骤';
+  const approvalTitle = writeInfo.hasWriteSteps ? '写入确认' : '审批控制台';
+  const approvalDescription = writeInfo.hasProjectImportWrite
+    ? `这是写入确认。确认后会把导入预览写入当前项目：${scopeText}。未被选择的目标产物不会写入。`
+    : writeInfo.hasWriteSteps
+      ? `这是写入确认。确认后会执行当前计划中的写入步骤：${writeStepText}。`
+      : writeInfo.requiredStepNos.length
+        ? '当前计划需要审批，但不包含项目资产写入步骤。确认后只会执行已勾选的校验、分析或高风险步骤，不会写入项目资产。'
+        : '当前计划没有待确认的写入步骤；可以查看预览结果，或重新规划。';
+  const checkboxLabel = writeInfo.hasProjectImportWrite
+    ? '我确认将上述目标产物写入当前项目。'
+    : writeInfo.hasWriteSteps
+      ? '我确认执行上述写入步骤。'
+      : '我确认继续执行当前需审批步骤。';
+  const confirmationSignature = [status, writeInfo.writeTools.join(','), writeInfo.projectImportAssetLabels.join(','), riskSummary.join('\n')].join('|');
 
   useEffect(() => {
     setSecondConfirmed(false);
-  }, [status, riskSummary.join('\n')]);
+  }, [confirmationSignature]);
 
   const actionDisabled = loading || (requiresSecondConfirm && !secondConfirmed);
   /** 没有任何可操作项时隐藏整个区域 */
@@ -42,7 +62,7 @@ export function AgentApprovalDialog({ canAct, canRetry, loading, status, hasCurr
       {/* 标题行 — 标题 + 状态指示 */}
       <div className="flex items-center justify-between gap-3 mb-3">
         <h2 className="text-sm font-bold" style={{ color: 'var(--text-main)' }}>
-          审批控制台
+          {approvalTitle}
         </h2>
         {canAct && (
           <span className="agent-approval-ready-dot" aria-label="等待审批">
@@ -53,7 +73,7 @@ export function AgentApprovalDialog({ canAct, canRetry, loading, status, hasCurr
 
       {/* 说明文字 */}
       <p className="text-xs leading-5 mb-3" style={{ color: 'var(--text-muted)' }}>
-        确认后会执行计划中的写入、校验或记忆回写步骤；此操作同时作为高风险/事实覆盖/删除类副作用的二次确认。
+        {approvalDescription}
       </p>
 
       {/* 显式二次确认入口：避免把普通“执行”误解为已确认事实层覆盖/删除风险。 */}
@@ -66,8 +86,21 @@ export function AgentApprovalDialog({ canAct, canRetry, loading, status, hasCurr
             disabled={loading}
             className="mt-1"
           />
-          <span>我已阅读风险提示，并确认允许执行高风险、事实层覆盖或删除类副作用步骤。</span>
+          <span>{checkboxLabel}</span>
         </label>
+      )}
+
+      {writeInfo.hasWriteSteps && (
+        <div className="mb-3 grid gap-2 text-xs leading-5">
+          <div className="rounded-lg border px-3 py-2" style={{ borderColor: 'var(--agent-border)', background: 'var(--agent-glass)', color: 'var(--text-muted)' }}>
+            写入步骤：<span style={{ color: 'var(--text-main)' }}>{writeStepText}</span>
+          </div>
+          {writeInfo.hasProjectImportWrite && (
+            <div className="rounded-lg border px-3 py-2" style={{ borderColor: 'var(--agent-border)', background: 'var(--agent-glass)', color: 'var(--text-muted)' }}>
+              目标产物：<span style={{ color: 'var(--text-main)' }}>{scopeText}</span>
+            </div>
+          )}
+        </div>
       )}
 
       {/* 风险摘要清单 */}
@@ -112,7 +145,7 @@ export function AgentApprovalDialog({ canAct, canRetry, loading, status, hasCurr
               执行中…
             </>
           ) : (
-            status === 'waiting_review' ? '✓ 二次确认并继续' : '✓ 确认执行'
+            status === 'waiting_review' ? '✓ 二次确认并继续' : writeInfo.hasWriteSteps ? '✓ 确认写入' : '✓ 确认执行'
           )}
         </button>
       </div>

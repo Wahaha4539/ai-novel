@@ -465,6 +465,7 @@ function DetailTabContent(props: {
         loading={props.loading}
         status={props.currentRun?.status}
         hasCurrentRun={!!props.currentRun}
+        plan={props.plan}
         riskSummary={props.riskSummary}
         onCancel={props.onCancel}
         onRetry={props.onRetry}

@@ -1,6 +1,6 @@
 'use client';
 
-import { ChangeEvent, FormEvent, KeyboardEvent, useEffect, useMemo, useRef } from 'react';
+import { ChangeEvent, FormEvent, KeyboardEvent, useEffect, useMemo, useRef, useState } from 'react';
 import type { AgentPlanPayload } from '../../hooks/useAgentRun';
 import { CREATIVE_DOCUMENT_ACCEPT } from '../../lib/uploadCreativeDocument';
 import type { AgentCreativeDocumentAttachment, AgentCreativeDocumentExtension } from '../../types/agent-attachment';
@@ -9,6 +9,16 @@ import type { AgentCreativeDocumentAttachment, AgentCreativeDocumentExtension } 
 const CHAR_COUNT_THRESHOLD = 20;
 /** 建议的最大输入长度 */
 const MAX_CHAR_LIMIT = 2000;
+
+type AgentTargetProductId = 'projectProfile' | 'outline' | 'characters' | 'worldbuilding' | 'writingRules';
+
+const TARGET_PRODUCTS: Array<{ id: AgentTargetProductId; label: string; promptLabel: string; detail: string }> = [
+  { id: 'outline', label: '剧情大纲', promptLabel: '剧情大纲', detail: '卷纲、章节规划、主线推进' },
+  { id: 'characters', label: '角色与人设', promptLabel: '角色与人设（角色档案、动机、关系，不包含世界设定）', detail: '主配角、动机、关系基线' },
+  { id: 'worldbuilding', label: '世界设定', promptLabel: '世界设定', detail: '地点、势力、规则、背景' },
+  { id: 'writingRules', label: '写作规则', promptLabel: '写作规则', detail: '文风、视角、禁写规则' },
+  { id: 'projectProfile', label: '项目资料', promptLabel: '项目资料', detail: '题材、主题、简介、基调' },
+];
 
 /** 聊天消息类型：user=用户发送，agent=Agent 回复，system=系统提示 */
 export type ChatMessageRole = 'user' | 'agent' | 'system';
@@ -63,6 +73,8 @@ export function AgentInputBox({ goal, loading, canReplan, hasCurrentRun, canAct 
   const charCount = useMemo(() => goal.length, [goal]);
   const showCounter = charCount >= CHAR_COUNT_THRESHOLD;
   const planSteps = useMemo(() => plan?.steps?.slice(0, 6) ?? [], [plan]);
+  const [selectedTargetIds, setSelectedTargetIds] = useState<AgentTargetProductId[]>([]);
+  const lastTargetPromptRef = useRef('');
   const inputPlaceholder = canAct ? '可以用自然语言回复是否执行当前计划；我会先让 LLM 判断你的意图…' : '例如：帮我写第 2 卷第一章内容，目标 5000 字…';
 
   /** 自动滚动到最新消息 */
@@ -73,6 +85,13 @@ export function AgentInputBox({ goal, loading, canReplan, hasCurrentRun, canAct 
       threadRef.current.scrollTop = threadRef.current.scrollHeight;
     }
   }, [chatHistory.length, loading]);
+
+  useEffect(() => {
+    if (!goal.trim()) {
+      setSelectedTargetIds([]);
+      lastTargetPromptRef.current = '';
+    }
+  }, [goal]);
 
   const handleSubmit = async (event: FormEvent) => {
     event.preventDefault();
@@ -99,6 +118,31 @@ export function AgentInputBox({ goal, loading, canReplan, hasCurrentRun, canAct 
     event.target.value = '';
     if (!file || loading) return;
     await onCreativeDocumentSelect?.(file);
+  };
+
+  const hasUploadedCreativeDocument = creativeDocumentAttachments.some((item) => item.status === 'uploaded');
+
+  const applyTargetProducts = (nextIds: AgentTargetProductId[]) => {
+    const baseInstruction = stripPreviousTargetPrompt(goal, lastTargetPromptRef.current);
+    const nextPrompt = nextIds.length ? composeTargetPrompt(nextIds, hasUploadedCreativeDocument) : '';
+    lastTargetPromptRef.current = nextPrompt;
+    onGoalChange(nextPrompt && baseInstruction ? `${nextPrompt}\n补充要求：${baseInstruction}` : nextPrompt || baseInstruction);
+  };
+
+  const handleTargetProductToggle = (id: AgentTargetProductId) => {
+    if (loading) return;
+    const nextIds = selectedTargetIds.includes(id)
+      ? selectedTargetIds.filter((item) => item !== id)
+      : [...selectedTargetIds, id];
+    setSelectedTargetIds(nextIds);
+    applyTargetProducts(nextIds);
+  };
+
+  const handleTargetProductAll = () => {
+    if (loading) return;
+    const allIds = TARGET_PRODUCTS.map((item) => item.id);
+    setSelectedTargetIds(allIds);
+    applyTargetProducts(allIds);
   };
 
   return (
@@ -223,6 +267,33 @@ export function AgentInputBox({ goal, loading, canReplan, hasCurrentRun, canAct 
                 ))}
               </div>
             )}
+            <div className="agent-target-products" aria-label="目标产物">
+              <div className="agent-target-products__head">
+                <span>目标产物</span>
+                <button type="button" className="agent-target-products__all" disabled={loading} onClick={handleTargetProductAll}>
+                  全套
+                </button>
+              </div>
+              <div className="agent-target-products__grid">
+                {TARGET_PRODUCTS.map((item) => {
+                  const active = selectedTargetIds.includes(item.id);
+                  return (
+                    <button
+                      key={item.id}
+                      type="button"
+                      className={`agent-target-product ${active ? 'agent-target-product--active' : ''}`}
+                      aria-pressed={active}
+                      title={item.detail}
+                      disabled={loading}
+                      onClick={() => handleTargetProductToggle(item.id)}
+                    >
+                      <span className="agent-target-product__mark" aria-hidden="true" />
+                      <span className="agent-target-product__label">{item.label}</span>
+                    </button>
+                  );
+                })}
+              </div>
+            </div>
             <textarea
               id="agent-chat-goal"
               value={goal}
@@ -310,6 +381,20 @@ function attachmentStatusLabel(status: CreativeDocumentAttachmentStatus) {
   if (status === 'uploading') return '上传中';
   if (status === 'uploaded') return '上传成功';
   return '上传失败';
+}
+
+function composeTargetPrompt(ids: AgentTargetProductId[], hasCreativeDocument: boolean) {
+  const selected = TARGET_PRODUCTS.filter((item) => ids.includes(item.id));
+  const sourceText = hasCreativeDocument ? '我提供的文档和当前项目上下文' : '当前项目上下文';
+  return `请根据${sourceText}生成目标产物：${selected.map((item) => item.promptLabel).join('、')}。只生成这些目标产物，不要生成未选择的其他资产。`;
+}
+
+function stripPreviousTargetPrompt(goal: string, previousPrompt: string) {
+  if (!previousPrompt || !goal.startsWith(previousPrompt)) return goal.trim();
+  return goal
+    .slice(previousPrompt.length)
+    .replace(/^\s*补充要求：?/, '')
+    .trim();
 }
 
 /**

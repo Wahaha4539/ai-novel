@@ -177,6 +177,7 @@ function TypedArtifactPreview({
   if (artifactType === 'project_profile_preview') return <ProjectProfileSummary content={content} />;
   if (artifactType === 'characters_preview') return <ArraySummary content={content} label="角色" primaryKey="name" secondaryKey="roleType" />;
   if (artifactType === 'lorebook_preview') return <ArraySummary content={content} label="设定" primaryKey="title" secondaryKey="entryType" />;
+  if (artifactType === 'writing_rules_preview') return <ArraySummary content={content} label="写作规则" primaryKey="title" secondaryKey="ruleType" />;
   if (artifactType === 'worldbuilding_preview') return <WorldbuildingPreviewSummary content={content} onRequestPersistSelection={onRequestWorldbuildingPersistSelection} actionDisabled={actionDisabled} />;
   if (artifactType === 'worldbuilding_persist_result') return <WorldbuildingPersistSummary content={content} />;
   if (artifactType === 'story_bible_preview') return <StoryBiblePreviewSummary content={content} />;
@@ -205,16 +206,22 @@ function TypedArtifactPreview({
 function OutlinePreviewSummary({ content }: { content: unknown }) {
   const data = asRecord(content);
   const volume = asRecord(data?.volume);
+  const volumes = asArray(data?.volumes);
   const chapters = asArray(data?.chapters);
   const totalExpectedWordCount = chapters.reduce<number>((sum, item) => sum + numberValue(asRecord(item)?.expectedWordCount), 0);
+  const volumeTitle = volume?.title ? textValue(volume.title) : volumes.length ? `${volumes.length} 卷` : '未命名卷';
   return (
     <div className="space-y-3">
       <div className="grid gap-2 md:grid-cols-3">
-        <Metric label="卷" value={textValue(volume?.title, '未命名卷')} />
+        <Metric label="卷" value={volumeTitle} />
         <Metric label="章节数" value={chapters.length} />
         <Metric label="总目标字数" value={totalExpectedWordCount} />
       </div>
       <div className="space-y-2">
+        {volumes.slice(0, 3).map((item, index) => {
+          const itemVolume = asRecord(item);
+          return <div key={`volume-${index}`} className="text-xs leading-5" style={{ color: 'var(--text-muted)' }}><b style={{ color: 'var(--text-main)' }}>第 {numberValue(itemVolume?.volumeNo, index + 1)} 卷：{textValue(itemVolume?.title, '未命名卷')}</b> — {textValue(itemVolume?.synopsis ?? itemVolume?.objective, '暂无简介')}</div>;
+        })}
         {chapters.slice(0, 5).map((item, index) => {
           const chapter = asRecord(item);
           return <div key={index} className="text-xs leading-5" style={{ color: 'var(--text-muted)' }}><b style={{ color: 'var(--text-main)' }}>{numberValue(chapter?.chapterNo, index + 1)}. {textValue(chapter?.title, '未命名章节')}</b> — {textValue(chapter?.objective ?? chapter?.outline, '暂无目标')}</div>;

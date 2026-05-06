@@ -118,6 +118,7 @@ export class AgentPlannerService {
           '注意：outputContract.steps[].mode 是后端计划步骤字段，固定填 act；它不代表当前 UI 的 Plan/Act 开关。',
           'Plan 阶段不写正式业务表；运行时会用 mode=plan 只执行无副作用预览步骤，所有真实副作用必须等用户切到 Act 并审批后才允许。',
           '你需要根据 Available Tools 的 whenToUse/whenNotToUse/parameterHints/idPolicy 自主编排步骤和 args。',
+          '导入类任务不是固定全量流程。用户指定目标产物时，build_import_preview.args.requestedAssetTypes 必须只包含用户明确要求的资产：projectProfile、outline、characters、worldbuilding、writingRules；例如只要故事大纲就只传 ["outline"]。',
           '可引用上下文：{{context.session.currentProjectId}}、{{context.session.currentChapterId}}、{{context.project.defaultWordCount}}、{{context.attachments.0}}、{{context.attachments.0.url}}、{{context.session.guided.currentStep}}、{{context.session.guided.currentStepData}}。',
           '如果 agentContext.session.guided.currentStep 存在，说明用户正在创作引导页；当前步骤问答优先选择 guided_step_consultation，当前步骤生成优先选择 guided_step_generate，确认保存/写入优先选择 guided_step_finalize，不要误判成普通章节正文写作。',
           '可引用前序步骤：{{steps.N.output.field}} 或 {{steps.step_id.output.field}}；不要引用当前或未来步骤。',
@@ -138,7 +139,7 @@ export class AgentPlannerService {
               multi_chapter_write: '连续生成多章正文，例如接下来三章、第 1-5 章、多个指定章节；应优先使用 write_chapter_series，不要展开多个 write_chapter。默认设置 qualityPipeline=full，除非用户明确要求只要草稿。',
               chapter_polish: '润色、修改、改稿、优化文风、去 AI 味。',
               outline_design: '设计大纲、拆卷、拆成/分成多章、章节规划。',
-              project_import_preview: '拆解导入文案、生成角色/世界观/项目资料。',
+              project_import_preview: '拆解导入文案，并按用户指定目标产物生成预览。只要大纲时不要生成角色/世界观/写作规则；要求全套时才生成项目资料、剧情大纲、角色、世界观和写作规则。',
               chapter_revision: '修改当前章或已有章节草稿、增强节奏/压迫感、保留结局等禁改约束。',
               character_consistency_check: '检查人设是否崩、角色动机/对话是否符合设定。',
               worldbuilding_expand: '扩展世界观、宗门、城市、能力体系，且不覆盖已确认剧情。',
@@ -218,6 +219,7 @@ export class AgentPlannerService {
             '当前用户选择的是 Agent 工作台 Plan 模式：只修复可审批计划，不执行写入。',
             '必须修复 invalidPlan，使 taskType 来自 availableTaskTypes，steps[].tool 全部来自 registeredTools。',
             'taskType 由 userGoal 语义决定；不要依赖后端关键词分类。',
+            '修复导入计划时必须保留用户指定的目标产物范围；build_import_preview.args.requestedAssetTypes 只能包含用户明确要求的资产，不能因为有上传文档就扩成全套导入。',
             '如果 agentContext.session.guided.currentStep 存在，修复后的 taskType 仍应优先使用 guided_step_consultation、guided_step_generate 或 guided_step_finalize，不要修成 chapter_write。',
             'steps[].mode 是后端计划步骤字段，固定填 act；Plan/Act 运行时模式由后端注入，不由 LLM 决定。',
             '引用前序步骤输出时，完整对象用 {{steps.N.output}}，对象字段用 {{steps.N.output.field}}；不要把对象序列化成字符串。',
@@ -308,7 +310,12 @@ export class AgentPlannerService {
       return onFailure ? { ...normalized, onFailure } : normalized;
     });
 
-    const normalizedSteps = this.enforceChapterWriteQualityPipeline(steps, (tool) => toolRequiresApproval.get(tool) ?? false);
+    const normalizedSteps = this.enforceProjectImportPersistStep(
+      record.taskType,
+      this.enforceChapterWriteQualityPipeline(steps, (tool) => toolRequiresApproval.get(tool) ?? false),
+      registeredTools,
+      (tool) => toolRequiresApproval.get(tool) ?? false,
+    );
     if (normalizedSteps.length > maxSteps) throw new Error(`规范化后的 Agent Plan steps 数量非法，最多 ${maxSteps} 步`);
     const missingTool = normalizedSteps.find((step) => !registeredTools.has(step.tool));
     if (missingTool) throw new Error(`规范化后的 Agent Plan 使用未注册工具：${missingTool.tool}`);
@@ -364,6 +371,44 @@ export class AgentPlannerService {
 
   private createPlannedStep(name: string, tool: string, args: Record<string, unknown>, requiresApproval: (tool: string) => boolean, runIf?: AgentStepCondition): AgentPlanStepSpec {
     return { id: tool, stepNo: 0, name, purpose: name, tool, mode: 'act', requiresApproval: requiresApproval(tool), args, ...(runIf ? { runIf } : {}) };
+  }
+
+  /**
+   * 导入计划必须包含审批后的写入步骤。Plan 预览执行时 Executor 会在该步骤前停止；
+   * Act 确认后才会执行 persist_project_assets，避免“确认执行”只重复跑只读预览。
+   */
+  private enforceProjectImportPersistStep(taskType: unknown, steps: AgentPlanStepSpec[], registeredTools: Set<string>, requiresApproval: (tool: string) => boolean): AgentPlanStepSpec[] {
+    if (taskType !== 'project_import_preview' || !registeredTools.has('persist_project_assets')) return steps;
+    const buildStep = steps.find((step) => step.tool === 'build_import_preview');
+    if (!buildStep) return steps;
+
+    const persistStep = steps.find((step) => step.tool === 'persist_project_assets');
+    const previewRef = `{{steps.${buildStep.stepNo}.output}}`;
+    if (persistStep) {
+      return steps.map((step) =>
+        step.tool === 'persist_project_assets'
+          ? {
+              ...step,
+              requiresApproval: requiresApproval('persist_project_assets'),
+              args: { ...step.args, preview: this.asRecord(step.args).preview ?? previewRef },
+            }
+          : step,
+      );
+    }
+
+    return [
+      ...steps,
+      {
+        id: 'persist_project_assets',
+        stepNo: steps.length + 1,
+        name: '审批后写入导入资产',
+        purpose: '在用户确认执行后，将本次导入预览写入所选择的项目资产。',
+        tool: 'persist_project_assets',
+        mode: 'act',
+        requiresApproval: requiresApproval('persist_project_assets'),
+        args: { preview: previewRef },
+      },
+    ];
   }
 
   /** 统计 Planner 的模型调用次数，避免 JSON 修复循环失控。 */

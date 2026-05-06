@@ -203,7 +203,7 @@ export function AgentWorkspace({ projectId, selectedChapterId, onRefresh }: Agen
               <AgentArtifactPanel run={currentRun} query={artifactQuery} onQueryChange={setArtifactQuery} onRequestWorldbuildingPersistSelection={handleWorldbuildingPersistSelection} actionDisabled={loading} />
             </div>
             <AgentAuditPanel events={auditEvents} />
-            <AgentApprovalDialog canAct={canAct} canRetry={canRetry} loading={loading} status={currentRun?.status} hasCurrentRun={!!currentRun} riskSummary={riskSummary} onCancel={async () => { if (currentRun) await cancel(currentRun.id); }} onRetry={handleRetry} onAct={handleAct} />
+            <AgentApprovalDialog canAct={canAct} canRetry={canRetry} loading={loading} status={currentRun?.status} hasCurrentRun={!!currentRun} plan={plan} riskSummary={riskSummary} onCancel={async () => { if (currentRun) await cancel(currentRun.id); }} onRetry={handleRetry} onAct={handleAct} />
             <AgentResultPanel output={currentRun?.output} error={currentRun?.error} />
           </div>
         </section>

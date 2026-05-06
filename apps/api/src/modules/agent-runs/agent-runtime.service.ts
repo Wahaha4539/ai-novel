@@ -15,6 +15,17 @@ type AgentArtifactDraft = {
   content: unknown;
 };
 
+type ProjectImportPreviewArtifact = {
+  requestedAssetTypes?: unknown;
+  projectProfile?: unknown;
+  characters?: unknown;
+  lorebookEntries?: unknown;
+  writingRules?: unknown;
+  volumes?: unknown;
+  chapters?: unknown;
+  risks?: unknown;
+};
+
 /** 编排 AgentRun 状态机：Plan 阶段生成预览，Act 阶段执行已审批工具。 */
 @Injectable()
 export class AgentRuntimeService {
@@ -498,14 +509,9 @@ export class AgentRuntimeService {
     }
 
     if (taskType === 'project_import_preview') {
-      const preview = outputs[2] as { projectProfile?: unknown; characters?: unknown; lorebookEntries?: unknown; volumes?: unknown; chapters?: unknown; risks?: unknown } | undefined;
-      return [
-        ...(preview ? [{ artifactType: 'project_profile_preview', title: '项目资料预览', content: preview.projectProfile ?? {} }] : []),
-        ...(preview ? [{ artifactType: 'characters_preview', title: '角色预览', content: preview.characters ?? [] }] : []),
-        ...(preview ? [{ artifactType: 'lorebook_preview', title: '设定预览', content: preview.lorebookEntries ?? [] }] : []),
-        ...(preview ? [{ artifactType: 'outline_preview', title: '卷与章节预览', content: { volumes: preview.volumes ?? [], chapters: preview.chapters ?? [], risks: preview.risks ?? [] } }] : []),
-        ...(outputs[3] ? [{ artifactType: 'import_validation_report', title: '导入校验报告', content: outputs[3] }] : []),
-      ];
+      const preview = this.latestOutputByTools(outputs, steps, ['build_import_preview']) as ProjectImportPreviewArtifact | undefined;
+      const validation = this.latestOutputByTools(outputs, steps, ['validate_imported_assets']);
+      return this.buildProjectImportArtifacts(preview, validation);
     }
 
     if (taskType === 'chapter_write' || taskType === 'chapter_polish') {
@@ -550,24 +556,10 @@ export class AgentRuntimeService {
     }
 
     if (taskType === 'project_import_preview') {
-      const preview = outputs[2] as { projectProfile?: unknown; characters?: unknown; lorebookEntries?: unknown; volumes?: unknown; chapters?: unknown; risks?: unknown } | undefined;
-      const validation = outputs[3];
-      const persist = outputs[4];
-      if (!preview) {
-        return [
-          ...(validation ? [{ artifactType: 'import_validation_report', title: '导入校验报告', content: validation }] : []),
-          ...(persist ? [{ artifactType: 'import_persist_result', title: '导入写入结果', content: persist }] : []),
-        ];
-      }
-
-      return [
-        { artifactType: 'project_profile_preview', title: '项目资料预览', content: preview.projectProfile ?? {} },
-        { artifactType: 'characters_preview', title: '角色预览', content: preview.characters ?? [] },
-        { artifactType: 'lorebook_preview', title: '设定预览', content: preview.lorebookEntries ?? [] },
-        { artifactType: 'outline_preview', title: '卷与章节预览', content: { volumes: preview.volumes ?? [], chapters: preview.chapters ?? [], risks: preview.risks ?? [] } },
-        ...(validation ? [{ artifactType: 'import_validation_report', title: '导入校验报告', content: validation }] : []),
-        ...(persist ? [{ artifactType: 'import_persist_result', title: '导入写入结果', content: persist }] : []),
-      ];
+      const preview = this.latestOutputByTools(outputs, steps, ['build_import_preview']) as ProjectImportPreviewArtifact | undefined;
+      const validation = this.latestOutputByTools(outputs, steps, ['validate_imported_assets']);
+      const persist = this.latestOutputByTools(outputs, steps, ['persist_project_assets']);
+      return this.buildProjectImportArtifacts(preview, validation, persist);
     }
 
     if (taskType === 'worldbuilding_expand') {
@@ -658,6 +650,24 @@ export class AgentRuntimeService {
     }
 
     return [];
+  }
+
+  private buildProjectImportArtifacts(preview?: ProjectImportPreviewArtifact, validation?: unknown, persist?: unknown): AgentArtifactDraft[] {
+    return [
+      ...(this.shouldShowImportArtifact(preview, 'projectProfile') ? [{ artifactType: 'project_profile_preview', title: '项目资料预览', content: preview?.projectProfile ?? {} }] : []),
+      ...(this.shouldShowImportArtifact(preview, 'characters') ? [{ artifactType: 'characters_preview', title: '角色预览', content: preview?.characters ?? [] }] : []),
+      ...(this.shouldShowImportArtifact(preview, 'worldbuilding') ? [{ artifactType: 'lorebook_preview', title: '设定预览', content: preview?.lorebookEntries ?? [] }] : []),
+      ...(this.shouldShowImportArtifact(preview, 'writingRules') ? [{ artifactType: 'writing_rules_preview', title: '写作规则预览', content: preview?.writingRules ?? [] }] : []),
+      ...(this.shouldShowImportArtifact(preview, 'outline') ? [{ artifactType: 'outline_preview', title: '卷与章节预览', content: { volumes: preview?.volumes ?? [], chapters: preview?.chapters ?? [], risks: preview?.risks ?? [] } }] : []),
+      ...(validation ? [{ artifactType: 'import_validation_report', title: '导入校验报告', content: validation }] : []),
+      ...(persist ? [{ artifactType: 'import_persist_result', title: '导入写入结果', content: persist }] : []),
+    ];
+  }
+
+  private shouldShowImportArtifact(preview: ProjectImportPreviewArtifact | undefined, assetType: 'projectProfile' | 'outline' | 'characters' | 'worldbuilding' | 'writingRules') {
+    if (!preview) return false;
+    const requestedAssetTypes = Array.isArray(preview.requestedAssetTypes) ? preview.requestedAssetTypes.map((item) => String(item)) : [];
+    return !requestedAssetTypes.length || requestedAssetTypes.includes(assetType);
   }
 
   private readPath(value: unknown, path: string[]) {

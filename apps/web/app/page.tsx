@@ -25,12 +25,13 @@ import { PacingPanel } from '../components/PacingPanel';
 import { ChapterPatternPanel } from '../components/ChapterPatternPanel';
 import { QualityReportPanel } from '../components/QualityReportPanel';
 import { AgentFloatingOrb } from '../components/agent/AgentFloatingOrb';
+import { AgentWorkspace } from '../components/agent/AgentWorkspace';
 import { AgentPageContext } from '../hooks/useAgentRun';
 
-type ActiveView = 'editor' | 'outline' | 'lore' | 'story-bible' | 'writing-rules' | 'scene-bank' | 'pacing' | 'chapter-patterns' | 'quality-reports' | 'relationships' | 'timeline' | 'character-state' | 'generation-config' | 'projects' | 'volumes' | 'guided' | 'prompts' | 'foreshadow' | 'generate' | 'llm-config';
+type ActiveView = 'editor' | 'outline' | 'lore' | 'story-bible' | 'writing-rules' | 'scene-bank' | 'pacing' | 'chapter-patterns' | 'quality-reports' | 'relationships' | 'timeline' | 'character-state' | 'generation-config' | 'projects' | 'volumes' | 'guided' | 'prompts' | 'foreshadow' | 'generate' | 'agent' | 'llm-config';
 
 const WORKSPACE_STATE_STORAGE_KEY = 'ai-novel:workspace-state';
-const ACTIVE_VIEWS: ActiveView[] = ['editor', 'outline', 'lore', 'story-bible', 'writing-rules', 'scene-bank', 'pacing', 'chapter-patterns', 'quality-reports', 'relationships', 'timeline', 'character-state', 'generation-config', 'projects', 'volumes', 'guided', 'prompts', 'foreshadow', 'generate', 'llm-config'];
+const ACTIVE_VIEWS: ActiveView[] = ['editor', 'outline', 'lore', 'story-bible', 'writing-rules', 'scene-bank', 'pacing', 'chapter-patterns', 'quality-reports', 'relationships', 'timeline', 'character-state', 'generation-config', 'projects', 'volumes', 'guided', 'prompts', 'foreshadow', 'generate', 'agent', 'llm-config'];
 
 type WorkspaceState = {
   activeView: ActiveView;
@@ -72,7 +73,8 @@ export default function HomePage() {
   const [workspaceStateRestored, setWorkspaceStateRestored] = useState(false);
   const loadProjectDataRef = useRef(data.loadProjectData);
 
-  const selectedProject = data.projects.find((item) => item.id === data.selectedProjectId) ?? data.dashboard?.project;
+  const dashboardProject = data.dashboard?.project?.id === data.selectedProjectId ? data.dashboard.project : undefined;
+  const selectedProject = dashboardProject ?? data.projects.find((item) => item.id === data.selectedProjectId);
   const chapters = data.dashboard?.chapters ?? [];
   const toastMessage = data.error || data.actionMessage;
 
@@ -215,7 +217,10 @@ export default function HomePage() {
     setActiveView('generate');
   }, []);
 
-
+  /** Navigate to Agent Workspace for natural-language Plan/Act tasks */
+  const handleNavigateToAgent = useCallback(() => {
+    setActiveView('agent');
+  }, []);
 
   /** Navigate to LLM provider configuration */
   const handleNavigateToLlmConfig = useCallback(() => {
@@ -290,7 +295,7 @@ export default function HomePage() {
         onNavigateToPrompts={handleNavigateToPrompts}
         onNavigateToForeshadow={handleNavigateToForeshadow}
         onNavigateToGenerate={handleNavigateToGenerate}
-
+        onNavigateToAgent={handleNavigateToAgent}
         onNavigateToLlmConfig={handleNavigateToLlmConfig}
         onSelectVolume={handleSelectVolume}
       />
@@ -381,6 +386,12 @@ export default function HomePage() {
             }}
           />
 
+        ) : activeView === 'agent' ? (
+          <AgentWorkspace
+            projectId={data.selectedProjectId}
+            selectedChapterId={data.selectedChapterId !== 'all' ? data.selectedChapterId : undefined}
+            onRefresh={() => data.loadProjectData(data.selectedProjectId, data.selectedChapterId)}
+          />
         ) : (
           <EditorPanel
             selectedProject={selectedProject}
@@ -435,8 +446,8 @@ export default function HomePage() {
         />
       )}
 
-      {/* 4. Agent 悬浮圆球 — 全局可见，不依赖 activeView */}
-      {hasProject && (
+      {/* 4. Agent 悬浮圆球 — 除全屏 Agent 工作台外全局可见 */}
+      {hasProject && activeView !== 'agent' && (
         <AgentFloatingOrb
           projectId={data.selectedProjectId}
           selectedChapterId={data.selectedChapterId !== 'all' ? data.selectedChapterId : undefined}
