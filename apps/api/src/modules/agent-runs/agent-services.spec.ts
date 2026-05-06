@@ -8271,11 +8271,80 @@ test('generate_outline_preview LLM timeout 使用确定性 fallback 且补齐 60
 
   assert.equal(result.chapters.length, 60);
   assert.equal(result.volume.chapterCount, 60);
+  assert.equal(result.chapters.every((chapter) => chapter.volumeNo === 1), true);
+  assert.equal(result.chapters.every((chapter) => Boolean(chapter.craftBrief?.visibleGoal)), true);
+  assert.equal(result.chapters.every((chapter) => (chapter.craftBrief?.actionBeats?.length ?? 0) >= 3), true);
+  assert.equal(result.chapters.every((chapter) => (chapter.craftBrief?.concreteClues?.length ?? 0) >= 1), true);
   assert.match(result.risks.join('；'), /LLM_TIMEOUT/);
+  assert.match(result.risks.join('；'), /fallback.*craftBrief|执行卡/);
   assert.equal(progress[0].phase, 'calling_llm');
   assert.equal(progress[0].timeoutMs, 90_000);
   assert.equal(progress.some((item) => String(item.phase) === 'fallback_generating'), true);
   assert.equal(result.risks.some((risk) => /工具 .*执行超时|工具执行超时/.test(risk)), false);
+});
+
+test('generate_outline_preview 保留 LLM craftBrief 并补齐缺失执行卡字段', async () => {
+  const llm = {
+    async chatJson() {
+      return {
+        data: {
+          volume: { volumeNo: 2, title: '第二卷', synopsis: '卷简介', objective: '破解旧案', chapterCount: 2, narrativePlan: { volumeMainline: '旧案升级' } },
+          chapters: [
+            {
+              chapterNo: 1,
+              volumeNo: 2,
+              title: '雨夜档案',
+              objective: '拿到失踪档案',
+              conflict: '馆长锁门并销毁调阅记录',
+              hook: '档案袋里掉出湿钥匙',
+              outline: '主角潜入档案室，逼问守夜人并拿到关键档案。',
+              expectedWordCount: 3200,
+              craftBrief: {
+                visibleGoal: '拿到失踪档案',
+                hiddenEmotion: '害怕旧案牵连家人',
+                coreConflict: '馆长锁门并销毁调阅记录',
+                mainlineTask: '证明旧案没有结案',
+                subplotTasks: ['守夜人隐瞒线'],
+                actionBeats: ['潜入档案室', '逼问守夜人', '拿到湿钥匙'],
+                concreteClues: [{ name: '湿钥匙', sensoryDetail: '带铁锈味', laterUse: '打开旧库房' }],
+                dialogueSubtext: '守夜人用推脱掩盖恐惧。',
+                characterShift: '主角从怀疑转为主动越界。',
+                irreversibleConsequence: '主角拿走钥匙后被监控拍下。',
+                progressTypes: ['info'],
+              },
+            },
+            {
+              chapterNo: 2,
+              title: '空白卷宗',
+              objective: '确认卷宗被替换',
+              conflict: '同伴担心越界调查会失去职位',
+              hook: '空白页浮出陌生签名',
+              outline: '主角比对卷宗纸张，发现空白页上有隐形签名。',
+              expectedWordCount: 2800,
+              craftBrief: { visibleGoal: '确认卷宗被替换' },
+            },
+          ],
+          risks: [],
+        },
+        result: { model: 'mock' },
+      };
+    },
+  };
+  const tool = new GenerateOutlinePreviewTool(llm as never);
+  const result = await tool.run(
+    { instruction: '生成第二卷细纲', volumeNo: 2, chapterCount: 2 },
+    { agentRunId: 'run1', projectId: 'p1', mode: 'plan', approved: false, outputs: {}, policy: {} },
+  );
+
+  assert.equal(result.volume.narrativePlan?.volumeMainline, '旧案升级');
+  assert.equal(result.chapters[0].volumeNo, 2);
+  assert.equal(result.chapters[0].craftBrief?.visibleGoal, '拿到失踪档案');
+  assert.equal(result.chapters[0].craftBrief?.concreteClues?.[0]?.name, '湿钥匙');
+  assert.equal(result.chapters[1].craftBrief?.visibleGoal, '确认卷宗被替换');
+  assert.equal(result.chapters[1].craftBrief?.coreConflict, '同伴担心越界调查会失去职位');
+  assert.ok((result.chapters[1].craftBrief?.actionBeats?.length ?? 0) >= 3);
+  assert.ok((result.chapters[1].craftBrief?.concreteClues?.length ?? 0) >= 1);
+  assert.ok(result.chapters[1].craftBrief?.irreversibleConsequence);
 });
 
 test('Trace updateStepPhase 写入 phase、phaseMessage、timeoutAt 和 heartbeat', async () => {
