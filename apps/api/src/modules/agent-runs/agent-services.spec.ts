@@ -73,6 +73,7 @@ import { UpdateQualityReportDto } from '../quality-reports/dto/update-quality-re
 import { QualityReportsController } from '../quality-reports/quality-reports.controller';
 
 type TestCase = { name: string; run: () => void | Promise<void> };
+type ImportPlannerTestPlan = { steps: Array<{ stepNo: number; tool: string; requiresApproval: boolean; args: Record<string, unknown> }>; requiredApprovals: Array<{ target?: { stepNos?: number[]; tools?: string[] } }> };
 
 const tests: TestCase[] = [];
 
@@ -93,6 +94,33 @@ function createTool(overrides: Partial<BaseTool> = {}): BaseTool {
     },
     ...overrides,
   };
+}
+
+const TARGETED_IMPORT_PREVIEW_TOOL_NAMES = [
+  'generate_import_project_profile_preview',
+  'generate_import_outline_preview',
+  'generate_import_characters_preview',
+  'generate_import_worldbuilding_preview',
+  'generate_import_writing_rules_preview',
+];
+
+function createProjectImportToolRegistry(targetToolNames = TARGETED_IMPORT_PREVIEW_TOOL_NAMES, includeBuildImportPreview = true): ToolRegistryService {
+  const toolNames = [
+    'read_source_document',
+    'analyze_source_text',
+    ...(includeBuildImportPreview ? ['build_import_preview'] : []),
+    ...targetToolNames,
+    'merge_import_previews',
+    'validate_imported_assets',
+    'persist_project_assets',
+  ];
+  return {
+    list: () => toolNames.map((name) => createTool({
+      name,
+      requiresApproval: name === 'persist_project_assets',
+      sideEffects: name === 'persist_project_assets' ? ['update_project_profile'] : [],
+    })),
+  } as unknown as ToolRegistryService;
 }
 
 function createGenerationProfile(overrides: Record<string, unknown> = {}) {
@@ -4399,6 +4427,170 @@ test('Planner 按结构化 requestedAssetTypes 裁掉未选择的导入目标 To
   assert.deepEqual(plan.steps[4].args, { preview: '{{steps.4.output}}' });
   assert.deepEqual(plan.steps[5].args, { preview: '{{steps.4.output}}' });
   assert.equal(plan.steps[5].requiresApproval, true);
+});
+
+test('Planner 单选大纲只编排对应目标 Tool', () => {
+  const tools = createProjectImportToolRegistry();
+  const planner = new AgentPlannerService(new SkillRegistryService(), tools, new RuleEngineService(), {} as LlmGatewayService) as unknown as {
+    validateAndNormalizeLlmPlan: (data: unknown, baseline: { taskType: string; summary: string; assumptions: string[]; risks: string[] }, context?: unknown) => ImportPlannerTestPlan;
+  };
+
+  const plan = planner.validateAndNormalizeLlmPlan(
+    {
+      taskType: 'project_import_preview',
+      summary: '只导入大纲',
+      assumptions: [],
+      risks: [],
+      steps: [
+        { stepNo: 1, name: '读取文档', tool: 'read_source_document', mode: 'act', requiresApproval: false, args: { attachmentUrl: '{{context.attachments.0.url}}' } },
+        { stepNo: 2, name: '分析文档', tool: 'analyze_source_text', mode: 'act', requiresApproval: false, args: { sourceText: '{{steps.1.output.sourceText}}' } },
+      ],
+    },
+    { taskType: 'general', summary: 'fallback', assumptions: [], risks: [] },
+    { session: { requestedAssetTypes: ['outline'] } },
+  );
+
+  assert.deepEqual(plan.steps.map((step) => step.tool), ['read_source_document', 'analyze_source_text', 'generate_import_outline_preview', 'merge_import_previews', 'validate_imported_assets', 'persist_project_assets']);
+  assert.deepEqual(plan.steps[2].args, { analysis: '{{steps.2.output}}', instruction: '{{context.userMessage}}', projectContext: '{{context.project}}' });
+  assert.deepEqual(plan.steps[3].args, { requestedAssetTypes: ['outline'], outlinePreview: '{{steps.3.output}}' });
+  assert.deepEqual(plan.steps[4].args, { preview: '{{steps.4.output}}' });
+  assert.deepEqual(plan.steps[5].args, { preview: '{{steps.4.output}}' });
+  assert.equal(plan.steps[5].requiresApproval, true);
+  assert.deepEqual(plan.requiredApprovals[0].target?.tools, ['persist_project_assets']);
+  assert.equal(plan.steps.some((step) => ['generate_import_characters_preview', 'generate_import_worldbuilding_preview', 'generate_import_writing_rules_preview', 'build_import_preview'].includes(step.tool)), false);
+});
+
+test('Planner 替换 fallback 时保持 validate 后审批写入顺序', () => {
+  const tools = createProjectImportToolRegistry();
+  const planner = new AgentPlannerService(new SkillRegistryService(), tools, new RuleEngineService(), {} as LlmGatewayService) as unknown as {
+    validateAndNormalizeLlmPlan: (data: unknown, baseline: { taskType: string; summary: string; assumptions: string[]; risks: string[] }, context?: unknown) => ImportPlannerTestPlan;
+  };
+
+  const plan = planner.validateAndNormalizeLlmPlan(
+    {
+      taskType: 'project_import_preview',
+      summary: 'LLM 使用旧导入 fallback',
+      assumptions: [],
+      risks: [],
+      steps: [
+        { stepNo: 1, name: '读取文档', tool: 'read_source_document', mode: 'act', requiresApproval: false, args: { attachmentUrl: '{{context.attachments.0.url}}' } },
+        { stepNo: 2, name: '分析文档', tool: 'analyze_source_text', mode: 'act', requiresApproval: false, args: { sourceText: '{{steps.1.output.sourceText}}' } },
+        { stepNo: 3, name: '旧预览', tool: 'build_import_preview', mode: 'act', requiresApproval: false, args: { analysis: '{{steps.2.output}}', requestedAssetTypes: ['outline'] } },
+        { stepNo: 4, name: '旧校验', tool: 'validate_imported_assets', mode: 'act', requiresApproval: false, args: { preview: '{{steps.3.output}}' } },
+        { stepNo: 5, name: '旧写入', tool: 'persist_project_assets', mode: 'act', requiresApproval: false, args: { preview: '{{steps.3.output}}' } },
+      ],
+    },
+    { taskType: 'general', summary: 'fallback', assumptions: [], risks: [] },
+    { session: { requestedAssetTypes: ['outline'] } },
+  );
+
+  assert.deepEqual(plan.steps.map((step) => step.tool), ['read_source_document', 'analyze_source_text', 'generate_import_outline_preview', 'merge_import_previews', 'validate_imported_assets', 'persist_project_assets']);
+  assert.deepEqual(plan.steps[4].args, { preview: '{{steps.4.output}}' });
+  assert.deepEqual(plan.steps[5].args, { preview: '{{steps.4.output}}' });
+  assert.equal(plan.steps[5].requiresApproval, true);
+  assert.deepEqual(plan.requiredApprovals[0].target?.stepNos, [6]);
+});
+
+test('Planner 双选大纲和写作规则只编排两个对应目标 Tool', () => {
+  const tools = createProjectImportToolRegistry();
+  const planner = new AgentPlannerService(new SkillRegistryService(), tools, new RuleEngineService(), {} as LlmGatewayService) as unknown as {
+    validateAndNormalizeLlmPlan: (data: unknown, baseline: { taskType: string; summary: string; assumptions: string[]; risks: string[] }, context?: unknown) => ImportPlannerTestPlan;
+  };
+
+  const plan = planner.validateAndNormalizeLlmPlan(
+    {
+      taskType: 'project_import_preview',
+      summary: '只导入大纲和写作规则',
+      assumptions: [],
+      risks: [],
+      steps: [
+        { stepNo: 1, name: '读取文档', tool: 'read_source_document', mode: 'act', requiresApproval: false, args: { attachmentUrl: '{{context.attachments.0.url}}' } },
+        { stepNo: 2, name: '分析文档', tool: 'analyze_source_text', mode: 'act', requiresApproval: false, args: { sourceText: '{{steps.1.output.sourceText}}' } },
+      ],
+    },
+    { taskType: 'general', summary: 'fallback', assumptions: [], risks: [] },
+    { session: { requestedAssetTypes: ['outline', 'writingRules'] } },
+  );
+
+  assert.deepEqual(plan.steps.map((step) => step.tool), ['read_source_document', 'analyze_source_text', 'generate_import_outline_preview', 'generate_import_writing_rules_preview', 'merge_import_previews', 'validate_imported_assets', 'persist_project_assets']);
+  assert.deepEqual(plan.steps[4].args, { requestedAssetTypes: ['outline', 'writingRules'], outlinePreview: '{{steps.3.output}}', writingRulesPreview: '{{steps.4.output}}' });
+  assert.deepEqual(plan.steps[5].args, { preview: '{{steps.5.output}}' });
+  assert.deepEqual(plan.steps[6].args, { preview: '{{steps.5.output}}' });
+  assert.equal(plan.steps[6].requiresApproval, true);
+  assert.equal(plan.steps.some((step) => ['generate_import_project_profile_preview', 'generate_import_characters_preview', 'generate_import_worldbuilding_preview', 'build_import_preview'].includes(step.tool)), false);
+});
+
+test('Planner 全套目标可编排五个专用导入 Tool', () => {
+  const tools = createProjectImportToolRegistry();
+  const planner = new AgentPlannerService(new SkillRegistryService(), tools, new RuleEngineService(), {} as LlmGatewayService) as unknown as {
+    validateAndNormalizeLlmPlan: (data: unknown, baseline: { taskType: string; summary: string; assumptions: string[]; risks: string[] }, context?: unknown) => ImportPlannerTestPlan;
+  };
+
+  const requestedAssetTypes = ['projectProfile', 'outline', 'characters', 'worldbuilding', 'writingRules'];
+  const plan = planner.validateAndNormalizeLlmPlan(
+    {
+      taskType: 'project_import_preview',
+      summary: '导入全套目标产物',
+      assumptions: [],
+      risks: [],
+      steps: [
+        { stepNo: 1, name: '读取文档', tool: 'read_source_document', mode: 'act', requiresApproval: false, args: { attachmentUrl: '{{context.attachments.0.url}}' } },
+        { stepNo: 2, name: '分析文档', tool: 'analyze_source_text', mode: 'act', requiresApproval: false, args: { sourceText: '{{steps.1.output.sourceText}}' } },
+      ],
+    },
+    { taskType: 'general', summary: 'fallback', assumptions: [], risks: [] },
+    { session: { requestedAssetTypes } },
+  );
+
+  assert.deepEqual(plan.steps.map((step) => step.tool), [
+    'read_source_document',
+    'analyze_source_text',
+    'generate_import_project_profile_preview',
+    'generate_import_outline_preview',
+    'generate_import_characters_preview',
+    'generate_import_worldbuilding_preview',
+    'generate_import_writing_rules_preview',
+    'merge_import_previews',
+    'validate_imported_assets',
+    'persist_project_assets',
+  ]);
+  assert.deepEqual(plan.steps[7].args, {
+    requestedAssetTypes,
+    projectProfilePreview: '{{steps.3.output}}',
+    outlinePreview: '{{steps.4.output}}',
+    charactersPreview: '{{steps.5.output}}',
+    worldbuildingPreview: '{{steps.6.output}}',
+    writingRulesPreview: '{{steps.7.output}}',
+  });
+  assert.deepEqual(plan.requiredApprovals[0].target?.stepNos, [10]);
+});
+
+test('Planner 缺少专用目标 Tool 时回退到 build_import_preview 且保持目标范围', () => {
+  const tools = createProjectImportToolRegistry([], true);
+  const planner = new AgentPlannerService(new SkillRegistryService(), tools, new RuleEngineService(), {} as LlmGatewayService) as unknown as {
+    validateAndNormalizeLlmPlan: (data: unknown, baseline: { taskType: string; summary: string; assumptions: string[]; risks: string[] }, context?: unknown) => ImportPlannerTestPlan;
+  };
+
+  const plan = planner.validateAndNormalizeLlmPlan(
+    {
+      taskType: 'project_import_preview',
+      summary: '专用工具缺失时导入',
+      assumptions: [],
+      risks: [],
+      steps: [
+        { stepNo: 1, name: '读取文档', tool: 'read_source_document', mode: 'act', requiresApproval: false, args: { attachmentUrl: '{{context.attachments.0.url}}' } },
+        { stepNo: 2, name: '分析文档', tool: 'analyze_source_text', mode: 'act', requiresApproval: false, args: { sourceText: '{{steps.1.output.sourceText}}' } },
+      ],
+    },
+    { taskType: 'general', summary: 'fallback', assumptions: [], risks: [] },
+    { session: { requestedAssetTypes: ['outline', 'writingRules'] } },
+  );
+
+  assert.deepEqual(plan.steps.map((step) => step.tool), ['read_source_document', 'analyze_source_text', 'build_import_preview', 'validate_imported_assets', 'persist_project_assets']);
+  assert.deepEqual(plan.steps[2].args, { analysis: '{{steps.2.output}}', instruction: '{{context.userMessage}}', requestedAssetTypes: ['outline', 'writingRules'] });
+  assert.deepEqual(plan.steps[3].args, { preview: '{{steps.3.output}}' });
+  assert.deepEqual(plan.steps[4].args, { preview: '{{steps.3.output}}' });
+  assert.equal(plan.steps[4].requiresApproval, true);
 });
 
 test('Planner 接受 LLM 语义判定的 taskType，不再被后端 baseline 锁死', () => {

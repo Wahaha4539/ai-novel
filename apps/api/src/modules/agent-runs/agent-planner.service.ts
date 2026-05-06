@@ -78,6 +78,14 @@ const MERGE_PREVIEW_ARG_BY_ASSET_TYPE: Record<ImportAssetType, string> = {
   writingRules: 'writingRulesPreview',
 };
 
+const IMPORT_TARGET_STEP_NAME_BY_ASSET_TYPE: Record<ImportAssetType, string> = {
+  projectProfile: '生成项目资料导入预览',
+  outline: '生成剧情大纲导入预览',
+  characters: '生成角色导入预览',
+  worldbuilding: '生成世界设定导入预览',
+  writingRules: '生成写作规则导入预览',
+};
+
 export class AgentPlannerFailedError extends Error {
   constructor(message: string, readonly diagnostics: Record<string, unknown>) {
     super(message);
@@ -451,8 +459,56 @@ export class AgentPlannerService {
   }
 
   private ensureImportPreviewSource(steps: AgentPlanStepSpec[], registeredTools: Set<string>, requiresApproval: (tool: string) => boolean, requestedAssetTypes: ImportAssetType[]): AgentPlanStepSpec[] {
+    const hasTargetPreview = steps.some((step) => IMPORT_TARGET_ASSET_BY_TOOL.has(step.tool));
+    if (requestedAssetTypes.length) {
+      const allRequestedTargetToolsAvailable = requestedAssetTypes.every((assetType) => registeredTools.has(IMPORT_TARGET_TOOL_BY_ASSET_TYPE[assetType]));
+      if (allRequestedTargetToolsAvailable) {
+        const withoutFallback = this.renumberSteps(steps.filter((step) => step.tool !== 'build_import_preview'));
+        const withTargetPreviews = this.ensureRequestedTargetPreviewSteps(withoutFallback, requiresApproval, requestedAssetTypes);
+        if (this.hasAllRequestedTargetPreviewSteps(withTargetPreviews, requestedAssetTypes)) return withTargetPreviews;
+      }
+      const fallbackSteps = this.renumberSteps(steps.filter((step) => !IMPORT_TARGET_ASSET_BY_TOOL.has(step.tool) && step.tool !== 'merge_import_previews'));
+      return this.ensureBuildImportPreviewStep(fallbackSteps, registeredTools, requiresApproval, requestedAssetTypes);
+    }
+    if (this.findImportPreviewSourceStep(steps) || hasTargetPreview) return steps;
+    return this.ensureBuildImportPreviewStep(steps, registeredTools, requiresApproval, requestedAssetTypes);
+  }
+
+  private ensureRequestedTargetPreviewSteps(steps: AgentPlanStepSpec[], requiresApproval: (tool: string) => boolean, requestedAssetTypes: ImportAssetType[]): AgentPlanStepSpec[] {
+    const existingAssetTypes = new Set(steps.map((step) => IMPORT_TARGET_ASSET_BY_TOOL.get(step.tool)).filter((item): item is ImportAssetType => Boolean(item)));
+    const missingAssetTypes = requestedAssetTypes.filter((assetType) => !existingAssetTypes.has(assetType));
+    if (!missingAssetTypes.length) return steps;
+    const analysisStep = [...steps].reverse().find((step) => step.tool === 'analyze_source_text');
+    if (!analysisStep) return steps;
+    return [
+      ...steps,
+      ...missingAssetTypes.map((assetType, index) => {
+        const tool = IMPORT_TARGET_TOOL_BY_ASSET_TYPE[assetType];
+        return {
+          id: tool,
+          stepNo: steps.length + index + 1,
+          name: IMPORT_TARGET_STEP_NAME_BY_ASSET_TYPE[assetType],
+          purpose: `按用户选择的 ${assetType} 目标生成专用导入预览。`,
+          tool,
+          mode: 'act' as const,
+          requiresApproval: requiresApproval(tool),
+          args: {
+            analysis: `{{steps.${analysisStep.stepNo}.output}}`,
+            instruction: '{{context.userMessage}}',
+            projectContext: '{{context.project}}',
+          },
+        };
+      }),
+    ];
+  }
+
+  private hasAllRequestedTargetPreviewSteps(steps: AgentPlanStepSpec[], requestedAssetTypes: ImportAssetType[]): boolean {
+    const existingTools = new Set(steps.map((step) => step.tool));
+    return requestedAssetTypes.every((assetType) => existingTools.has(IMPORT_TARGET_TOOL_BY_ASSET_TYPE[assetType]));
+  }
+
+  private ensureBuildImportPreviewStep(steps: AgentPlanStepSpec[], registeredTools: Set<string>, requiresApproval: (tool: string) => boolean, requestedAssetTypes: ImportAssetType[]): AgentPlanStepSpec[] {
     if (this.findImportPreviewSourceStep(steps) || !registeredTools.has('build_import_preview')) return steps;
-    if (steps.some((step) => IMPORT_TARGET_ASSET_BY_TOOL.has(step.tool))) return steps;
     const analysisStep = [...steps].reverse().find((step) => step.tool === 'analyze_source_text');
     if (!analysisStep) return steps;
     const args = this.removeUndefinedArgs({
@@ -533,12 +589,25 @@ export class AgentPlannerService {
   private ensurePersistProjectAssetsStep(steps: AgentPlanStepSpec[], previewStep: AgentPlanStepSpec, registeredTools: Set<string>, requiresApproval: (tool: string) => boolean): AgentPlanStepSpec[] {
     if (!registeredTools.has('persist_project_assets')) return steps;
     const previewRef = `{{steps.${previewStep.stepNo}.output}}`;
-    const persistStep = steps.find((step) => step.tool === 'persist_project_assets');
-    if (persistStep) {
-      return steps.map((step) => step.tool === 'persist_project_assets' ? { ...step, requiresApproval: requiresApproval('persist_project_assets'), args: { ...step.args, preview: previewRef } } : step);
-    }
     const validateStep = [...steps].reverse().find((step) => step.tool === 'validate_imported_assets');
     const afterStepNo = validateStep?.stepNo ?? previewStep.stepNo;
+    const persistStep = steps.find((step) => step.tool === 'persist_project_assets');
+    if (persistStep) {
+      if (persistStep.stepNo <= afterStepNo) {
+        const withoutPersist = this.renumberSteps(steps.filter((step) => step.tool !== 'persist_project_assets'));
+        const nextPreviewStep = this.findImportPreviewSourceStep(withoutPersist);
+        if (!nextPreviewStep) return withoutPersist;
+        const nextValidateStep = [...withoutPersist].reverse().find((step) => step.tool === 'validate_imported_assets');
+        const nextAfterStepNo = nextValidateStep?.stepNo ?? nextPreviewStep.stepNo;
+        return this.insertStepAfter(withoutPersist, nextAfterStepNo, {
+          ...persistStep,
+          stepNo: 0,
+          requiresApproval: requiresApproval('persist_project_assets'),
+          args: { ...persistStep.args, preview: `{{steps.${nextPreviewStep.stepNo}.output}}` },
+        });
+      }
+      return steps.map((step) => step.tool === 'persist_project_assets' ? { ...step, requiresApproval: requiresApproval('persist_project_assets'), args: { ...step.args, preview: previewRef } } : step);
+    }
     return this.insertStepAfter(steps, afterStepNo, {
       id: 'persist_project_assets',
       stepNo: 0,

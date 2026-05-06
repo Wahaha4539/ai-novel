@@ -242,7 +242,7 @@
 
 ### TIP-P1-007 Planner 单目标和多目标测试
 
-- 状态：`[ ]`
+- 状态：`[x]`
 - 模块：API
 - 文件：`apps/api/src/modules/agent-runs/agent-services.spec.ts`
 - 任务：增加 Planner 规范化和分目标编排测试。
@@ -252,6 +252,12 @@
   - 全套可编排五个 Tool。
   - 所有导入计划都有 `validate_imported_assets` 和需审批 `persist_project_assets`。
 - 验证：`pnpm --dir apps/api run test:agent`
+- 完成记录：
+  - 2026-05-06：增强 Planner 分目标导入规范化：结构化 `requestedAssetTypes` 存在且对应专用 Tool 已注册时，自动补齐对应 `generate_import_*_preview` 步骤；多目标后补 `merge_import_previews`，再进入 `validate_imported_assets` 和需审批的 `persist_project_assets`。
+  - 2026-05-06：当专用目标 Tool 不全时回退到 scoped `build_import_preview`，保持 `requestedAssetTypes` 不扩范围；修正旧 fallback 被替换成专用目标链路时，已有 `persist_project_assets` 必须移动到 validate 之后。
+  - 2026-05-06：补充 Planner 单选大纲、双选大纲+写作规则、全套五目标、缺专用 Tool fallback、fallback 替换顺序等服务级测试。
+  - 修改文件：`apps/api/src/modules/agent-runs/agent-planner.service.ts`、`apps/api/src/modules/agent-runs/agent-services.spec.ts`、`docs/architecture/targeted-import-preview-tools-development-plan.md`。
+  - 验证结果：`pnpm --dir apps/api run test:agent` 通过，172 项测试通过。
 
 ### TIP-P1-008 Runtime Artifact 提升支持分目标输出
 
