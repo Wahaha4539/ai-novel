@@ -16,6 +16,7 @@ export interface LlmChatResult {
   text: string;
   model: string;
   usage?: Record<string, number>;
+  elapsedMs?: number;
   rawPayloadSummary: Record<string, unknown>;
 }
 

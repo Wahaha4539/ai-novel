@@ -29,6 +29,14 @@ export interface ToolJsonSchema {
   additionalProperties?: boolean;
 }
 
+export interface ToolLlmUsage {
+  appStep?: string;
+  model?: string;
+  usage?: Record<string, number>;
+  rawPayloadSummary?: Record<string, unknown>;
+  elapsedMs?: number;
+}
+
 export interface ToolContext {
   agentRunId: string;
   projectId: string;
@@ -39,6 +47,7 @@ export interface ToolContext {
   outputs: Record<number, unknown>;
   stepTools?: Record<number, string>;
   policy: Record<string, unknown>;
+  recordLlmUsage?: (usage: ToolLlmUsage) => void;
 }
 
 export interface BaseTool<TInput = unknown, TOutput = unknown> {

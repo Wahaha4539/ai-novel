@@ -3,6 +3,7 @@ import { LlmGatewayService } from '../../llm/llm-gateway.service';
 import { BaseTool, ToolContext } from '../base-tool';
 import type { ToolManifestV2 } from '../tool-manifest.types';
 import { SourceTextAnalysisOutput } from './analyze-source-text.tool';
+import { recordToolLlmUsage } from './import-preview-llm-usage';
 import { filterImportPreviewByAssetTypes, ImportAssetType, IMPORT_ASSET_TYPES, ImportPreviewOutput, normalizeImportAssetTypes } from './import-preview.types';
 
 interface BuildImportPreviewInput {
@@ -66,11 +67,11 @@ export class BuildImportPreviewTool implements BaseTool<BuildImportPreviewInput,
 
   constructor(private readonly llm: LlmGatewayService) {}
 
-  async run(args: BuildImportPreviewInput, _context: ToolContext): Promise<ImportPreviewOutput> {
+  async run(args: BuildImportPreviewInput, context: ToolContext): Promise<ImportPreviewOutput> {
     const requestedAssetTypes = normalizeImportAssetTypes(args.requestedAssetTypes, args.instruction);
     const analysis = args.analysis;
     const sourceText = analysis?.sourceText ?? args.instruction ?? '';
-    const { data } = await this.llm.chatJson<ImportPreviewOutput>(
+    const response = await this.llm.chatJson<ImportPreviewOutput>(
       [
         {
           role: 'system',
@@ -93,7 +94,8 @@ export class BuildImportPreviewTool implements BaseTool<BuildImportPreviewInput,
       ],
       { appStep: 'planner', maxTokens: 8000, timeoutMs: 450_000, retries: 1 },
     );
-    return this.normalize(data, sourceText, requestedAssetTypes);
+    recordToolLlmUsage(context, 'planner', response.result);
+    return this.normalize(response.data, sourceText, requestedAssetTypes);
   }
 
   private normalize(data: ImportPreviewOutput, sourceText: string, requestedAssetTypes: ImportAssetType[]): ImportPreviewOutput {

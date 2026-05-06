@@ -4,6 +4,7 @@ import { BaseTool, ToolContext } from '../base-tool';
 import type { ToolManifestV2 } from '../tool-manifest.types';
 import { SourceTextAnalysisOutput } from './analyze-source-text.tool';
 import type { ImportBriefOutput } from './build-import-brief.tool';
+import { recordToolLlmUsage } from './import-preview-llm-usage';
 import { ImportPreviewOutput } from './import-preview.types';
 
 interface GenerateImportOutlinePreviewInput {
@@ -80,10 +81,10 @@ export class GenerateImportOutlinePreviewTool implements BaseTool<GenerateImport
 
   constructor(private readonly llm: LlmGatewayService) {}
 
-  async run(args: GenerateImportOutlinePreviewInput, _context: ToolContext): Promise<GenerateImportOutlinePreviewOutput> {
+  async run(args: GenerateImportOutlinePreviewInput, context: ToolContext): Promise<GenerateImportOutlinePreviewOutput> {
     const analysis = this.normalizeAnalysis(args.analysis);
     const chapterCount = this.normalizeChapterCount(args.chapterCount, analysis);
-    const { data } = await this.llm.chatJson<GenerateImportOutlinePreviewOutput>(
+    const response = await this.llm.chatJson<GenerateImportOutlinePreviewOutput>(
       [
         {
           role: 'system',
@@ -111,7 +112,8 @@ export class GenerateImportOutlinePreviewTool implements BaseTool<GenerateImport
       { appStep: 'agent_import_outline_preview', maxTokens: Math.min(9000, chapterCount * 360 + 1800), timeoutMs: 220_000, retries: 1, temperature: 0.2 },
     );
 
-    return this.normalize(data, chapterCount, analysis.sourceText);
+    recordToolLlmUsage(context, 'agent_import_outline_preview', response.result);
+    return this.normalize(response.data, chapterCount, analysis.sourceText);
   }
 
   private normalize(data: unknown, chapterCount: number, sourceText: string): GenerateImportOutlinePreviewOutput {

@@ -4,6 +4,7 @@ import { BaseTool, ToolContext } from '../base-tool';
 import type { ToolManifestV2 } from '../tool-manifest.types';
 import { SourceTextAnalysisOutput } from './analyze-source-text.tool';
 import type { ImportBriefOutput } from './build-import-brief.tool';
+import { recordToolLlmUsage } from './import-preview-llm-usage';
 import { ImportPreviewOutput } from './import-preview.types';
 
 interface GenerateImportWritingRulesPreviewInput {
@@ -76,10 +77,10 @@ export class GenerateImportWritingRulesPreviewTool implements BaseTool<GenerateI
 
   constructor(private readonly llm: LlmGatewayService) {}
 
-  async run(args: GenerateImportWritingRulesPreviewInput, _context: ToolContext): Promise<GenerateImportWritingRulesPreviewOutput> {
+  async run(args: GenerateImportWritingRulesPreviewInput, context: ToolContext): Promise<GenerateImportWritingRulesPreviewOutput> {
     const analysis = this.normalizeAnalysis(args.analysis);
     const maxRules = this.normalizeMaxRules(args.maxRules);
-    const { data } = await this.llm.chatJson<GenerateImportWritingRulesPreviewOutput>(
+    const response = await this.llm.chatJson<GenerateImportWritingRulesPreviewOutput>(
       [
         {
           role: 'system',
@@ -108,7 +109,8 @@ export class GenerateImportWritingRulesPreviewTool implements BaseTool<GenerateI
       { appStep: 'agent_import_writing_rules_preview', maxTokens: Math.min(8000, maxRules * 440 + 1600), timeoutMs: 220_000, retries: 1, temperature: 0.2 },
     );
 
-    return this.normalize(data, maxRules);
+    recordToolLlmUsage(context, 'agent_import_writing_rules_preview', response.result);
+    return this.normalize(response.data, maxRules);
   }
 
   private normalize(data: unknown, maxRules: number): GenerateImportWritingRulesPreviewOutput {

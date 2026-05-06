@@ -3,6 +3,7 @@ import { LlmGatewayService } from '../../llm/llm-gateway.service';
 import { BaseTool, ToolContext } from '../base-tool';
 import type { ToolManifestV2 } from '../tool-manifest.types';
 import { SourceTextAnalysisOutput } from './analyze-source-text.tool';
+import { recordToolLlmUsage } from './import-preview-llm-usage';
 import { IMPORT_ASSET_TYPES, ImportAssetType, normalizeImportAssetTypes } from './import-preview.types';
 
 export interface ImportBriefOutput {
@@ -84,10 +85,10 @@ export class BuildImportBriefTool implements BaseTool<BuildImportBriefInput, Imp
 
   constructor(private readonly llm: LlmGatewayService) {}
 
-  async run(args: BuildImportBriefInput, _context: ToolContext): Promise<ImportBriefOutput> {
+  async run(args: BuildImportBriefInput, context: ToolContext): Promise<ImportBriefOutput> {
     const analysis = this.normalizeAnalysis(args.analysis);
     const requestedAssetTypes = normalizeImportAssetTypes(args.requestedAssetTypes, args.instruction);
-    const { data } = await this.llm.chatJson<unknown>(
+    const response = await this.llm.chatJson<unknown>(
       [
         {
           role: 'system',
@@ -113,7 +114,8 @@ export class BuildImportBriefTool implements BaseTool<BuildImportBriefInput, Imp
       { appStep: 'agent_import_brief', maxTokens: 3500, timeoutMs: 160_000, retries: 1, temperature: 0.1 },
     );
 
-    return this.normalize(data, analysis, requestedAssetTypes);
+    recordToolLlmUsage(context, 'agent_import_brief', response.result);
+    return this.normalize(response.data, analysis, requestedAssetTypes);
   }
 
   private normalize(data: unknown, analysis: SourceTextAnalysisOutput, requestedAssetTypes: ImportAssetType[]): ImportBriefOutput {

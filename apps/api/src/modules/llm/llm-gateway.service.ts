@@ -1,4 +1,5 @@
 import { Injectable } from '@nestjs/common';
+import { StructuredLogger } from '../../common/logging/structured-logger';
 import { LlmProvidersService, ResolvedLlmConfig } from '../llm-providers/llm-providers.service';
 import { LlmChatMessage, LlmChatOptions, LlmChatResult } from './dto/llm-chat.dto';
 
@@ -8,6 +9,7 @@ import { LlmChatMessage, LlmChatOptions, LlmChatResult } from './dto/llm-chat.dt
  */
 @Injectable()
 export class LlmGatewayService {
+  private readonly logger = new StructuredLogger(LlmGatewayService.name);
   private readonly envBaseUrl = process.env.LLM_BASE_URL ?? 'http://localhost:8318/v1';
   private readonly envApiKey = process.env.LLM_API_KEY ?? '';
   private readonly envModel = process.env.LLM_MODEL ?? 'gpt-4o';
@@ -77,6 +79,7 @@ export class LlmGatewayService {
       throw new Error('缺少 LLM API Key，无法调用 AI。');
     }
 
+    const startedAt = Date.now();
     const response = await fetch(`${config.baseUrl.replace(/\/+$/, '')}/chat/completions`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${config.apiKey}` },
@@ -99,12 +102,15 @@ export class LlmGatewayService {
     const text = this.extractText(payload);
     if (!text) throw new Error(`LLM 返回内容为空：${JSON.stringify(payload).slice(0, 500)}`);
 
-    return {
+    const result = {
       text,
       model: String(payload.model ?? config.model),
       usage: payload.usage as Record<string, number> | undefined,
+      elapsedMs: Date.now() - startedAt,
       rawPayloadSummary: { id: payload.id, model: payload.model, usage: payload.usage },
     };
+    this.logger.log('llm.gateway.chat.completed', { appStep: options.appStep, model: result.model, tokenUsage: result.usage, elapsedMs: result.elapsedMs });
+    return result;
   }
 
   private extractText(payload: Record<string, unknown>): string {

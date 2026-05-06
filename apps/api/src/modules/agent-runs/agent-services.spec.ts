@@ -852,6 +852,194 @@ test('Trace 使用 mode + planVersion 隔离 Plan 预览、Act 执行和 replan 
   ]);
 });
 
+test('Executor records target import tool cost metadata without changing tool output', async () => {
+  const llm = {
+    async chatJson() {
+      return {
+        data: {
+          projectProfile: { outline: '雾城档案员追查记忆篡改主线' },
+          volumes: [],
+          chapters: [],
+          risks: ['章节数量需复核'],
+        },
+        result: {
+          model: 'mock-outline-model',
+          usage: { prompt_tokens: 11, completion_tokens: 7, total_tokens: 18 },
+          elapsedMs: 33,
+          rawPayloadSummary: { id: 'llm-outline' },
+        },
+      };
+    },
+  };
+  const tool = new GenerateImportOutlinePreviewTool(llm as never);
+  const prisma = {
+    agentRun: {
+      async findUnique(args?: { select?: { status?: boolean } }) {
+        return args?.select?.status ? { status: 'planning' } : { id: 'run1', projectId: 'p1', chapterId: null };
+      },
+    },
+  };
+  const tools = { get: (name: string) => name === tool.name ? tool : undefined };
+  const policy = new AgentPolicyService(new RuleEngineService());
+  const finished: Array<{ output: unknown; metadata: unknown; mode: string; planVersion: number }> = [];
+  const trace = {
+    startStep() {},
+    finishStep(_agentRunId: string, _stepNo: number, output: unknown, mode: string, planVersion: number, metadata: unknown) {
+      finished.push({ output, mode, planVersion, metadata });
+    },
+    failStep() { throw new Error('target import preview should not fail'); },
+  };
+  const executor = new AgentExecutorService(prisma as never, tools as never, policy, trace as never);
+
+  const outputs = await executor.execute(
+    'run1',
+    [{ stepNo: 1, name: '生成大纲预览', tool: 'generate_import_outline_preview', mode: 'act', requiresApproval: false, args: { analysis: { sourceText: '雾城档案员发现档案缺页。', length: 12, paragraphs: ['档案缺页'], keywords: ['雾城'] } } }],
+    { mode: 'plan', planVersion: 7, approved: false },
+  );
+
+  assert.equal(tool.requiresApproval, false);
+  assert.deepEqual(tool.sideEffects, []);
+  assert.equal(finished.length, 1);
+  assert.equal(finished[0].mode, 'plan');
+  assert.equal(finished[0].planVersion, 7);
+  assert.deepEqual(finished[0].output, outputs[1]);
+  assert.equal(Object.prototype.hasOwnProperty.call(outputs[1] as Record<string, unknown>, 'executionCost'), false);
+  const metadata = finished[0].metadata as { executionCost: Record<string, unknown> };
+  assert.equal(metadata.executionCost.toolName, 'generate_import_outline_preview');
+  assert.equal(metadata.executionCost.stepNo, 1);
+  assert.equal(metadata.executionCost.planVersion, 7);
+  assert.equal(metadata.executionCost.model, 'mock-outline-model');
+  assert.deepEqual(metadata.executionCost.tokenUsage, { prompt_tokens: 11, completion_tokens: 7, total_tokens: 18 });
+  assert.equal(metadata.executionCost.llmCallCount, 1);
+  assert.ok(typeof metadata.executionCost.elapsedMs === 'number');
+});
+
+test('Executor records distinguishable costs for every full import target tool', async () => {
+  const prisma = {
+    agentRun: {
+      async findUnique(args?: { select?: { status?: boolean } }) {
+        return args?.select?.status ? { status: 'planning' } : { id: 'run1', projectId: 'p1', chapterId: null };
+      },
+    },
+  };
+  const tools = {
+    get(name: string) {
+      if (!TARGETED_IMPORT_PREVIEW_TOOL_NAMES.includes(name)) return undefined;
+      const targetIndex = TARGETED_IMPORT_PREVIEW_TOOL_NAMES.indexOf(name) + 1;
+      return createTool({
+        name,
+        allowedModes: ['plan', 'act'],
+        riskLevel: 'low',
+        requiresApproval: false,
+        sideEffects: [],
+        inputSchema: { type: 'object' },
+        outputSchema: { type: 'object' },
+        async run(_args, context) {
+          await new Promise((resolve) => setTimeout(resolve, targetIndex));
+          context.recordLlmUsage?.({
+            appStep: `test_${name}`,
+            model: `mock-${name}`,
+            usage: { total_tokens: targetIndex * 100 },
+            elapsedMs: targetIndex,
+          });
+          return { target: name };
+        },
+      });
+    },
+  };
+  const policy = new AgentPolicyService(new RuleEngineService());
+  const costs: Array<Record<string, unknown>> = [];
+  const trace = {
+    startStep() {},
+    finishStep(_agentRunId: string, _stepNo: number, _output: unknown, _mode: string, _planVersion: number, metadata: { executionCost: Record<string, unknown> }) {
+      costs.push(metadata.executionCost);
+    },
+    failStep() { throw new Error('full import target tools should not fail'); },
+  };
+  const executor = new AgentExecutorService(prisma as never, tools as never, policy, trace as never);
+
+  await executor.execute(
+    'run1',
+    TARGETED_IMPORT_PREVIEW_TOOL_NAMES.map((toolName, index) => ({ stepNo: index + 1, name: toolName, tool: toolName, mode: 'act' as const, requiresApproval: false, args: {} })),
+    { mode: 'plan', planVersion: 3, approved: false },
+  );
+
+  assert.deepEqual(costs.map((cost) => cost.toolName), TARGETED_IMPORT_PREVIEW_TOOL_NAMES);
+  assert.deepEqual(costs.map((cost) => cost.stepNo), [1, 2, 3, 4, 5]);
+  assert.equal(new Set(costs.map((cost) => cost.model)).size, TARGETED_IMPORT_PREVIEW_TOOL_NAMES.length);
+  assert.deepEqual(costs.map((cost) => (cost.tokenUsage as Record<string, number>).total_tokens), [100, 200, 300, 400, 500]);
+  assert.ok(costs.every((cost) => typeof cost.elapsedMs === 'number'));
+});
+
+test('Executor records fallback build_import_preview cost metadata', async () => {
+  const llm = {
+    async chatJson() {
+      return {
+        data: {
+          requestedAssetTypes: ['outline'],
+          projectProfile: { outline: '桥城主线' },
+          characters: [{ name: '不应保留' }],
+          lorebookEntries: [],
+          writingRules: [],
+          volumes: [{ volumeNo: 1, title: '第一卷' }],
+          chapters: [{ chapterNo: 1, title: '逃离', outline: '修桥' }],
+          risks: [],
+        },
+        result: {
+          model: 'mock-fallback-model',
+          usage: { prompt_tokens: 21, completion_tokens: 9, total_tokens: 30 },
+          elapsedMs: 44,
+          rawPayloadSummary: { id: 'llm-fallback' },
+        },
+      };
+    },
+  };
+  const tool = new BuildImportPreviewTool(llm as never);
+  const prisma = {
+    agentRun: {
+      async findUnique(args?: { select?: { status?: boolean } }) {
+        return args?.select?.status ? { status: 'planning' } : { id: 'run1', projectId: 'p1', chapterId: null };
+      },
+    },
+  };
+  const tools = { get: (name: string) => name === 'build_import_preview' ? tool : undefined };
+  const policy = new AgentPolicyService(new RuleEngineService());
+  let metadata: { executionCost: Record<string, unknown> } | undefined;
+  const trace = {
+    startStep() {},
+    finishStep(_agentRunId: string, _stepNo: number, _output: unknown, _mode: string, _planVersion: number, value: { executionCost: Record<string, unknown> }) {
+      metadata = value;
+    },
+    failStep() { throw new Error('fallback import preview should not fail'); },
+  };
+  const executor = new AgentExecutorService(prisma as never, tools as never, policy, trace as never);
+
+  const outputs = await executor.execute(
+    'run1',
+    [{ stepNo: 1, name: '兼容导入预览', tool: 'build_import_preview', mode: 'act', requiresApproval: false, args: { analysis: { sourceText: 'source', length: 6, paragraphs: ['source'], keywords: [] }, requestedAssetTypes: ['outline'] } }],
+    { mode: 'plan', planVersion: 4, approved: false },
+  );
+
+  assert.deepEqual((outputs[1] as Record<string, unknown>).requestedAssetTypes, ['outline']);
+  assert.equal(((outputs[1] as Record<string, unknown>).characters as unknown[]).length, 0);
+  assert.equal(metadata?.executionCost.toolName, 'build_import_preview');
+  assert.equal(metadata?.executionCost.model, 'mock-fallback-model');
+  assert.deepEqual(metadata?.executionCost.tokenUsage, { prompt_tokens: 21, completion_tokens: 9, total_tokens: 30 });
+});
+
+test('persist_project_assets remains approval gated with cost instrumentation present', () => {
+  const tool = new PersistProjectAssetsTool({} as never, {} as never);
+  const policy = new AgentPolicyService(new RuleEngineService());
+
+  assert.equal(tool.requiresApproval, true);
+  assert.equal(tool.riskLevel, 'high');
+  assert.ok(tool.sideEffects.includes('update_project_profile'));
+  assert.throws(
+    () => policy.assertAllowed(tool, { agentRunId: 'run1', projectId: 'p1', mode: 'act', approved: false, outputs: {}, policy: {} }, ['persist_project_assets']),
+    /需要用户审批/,
+  );
+});
+
 test('AgentRunsService 审计轨迹按时间聚合 Run/Plan/Approval/Step/Artifact', async () => {
   const base = new Date('2026-04-27T00:00:00.000Z');
   const prisma = {

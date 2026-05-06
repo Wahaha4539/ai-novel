@@ -170,6 +170,7 @@ model AgentStep {
   mode        String   @db.VarChar(20)
   input       Json?
   output      Json?
+  metadata    Json     @default("{}")
   error       String?
   startedAt   DateTime?
   finishedAt  DateTime?

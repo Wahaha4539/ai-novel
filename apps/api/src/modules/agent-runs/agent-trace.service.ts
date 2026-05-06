@@ -11,24 +11,30 @@ export class AgentTraceService {
   startStep(agentRunId: string, stepNo: number, data: { stepType: string; name: string; toolName?: string; mode: string; planVersion?: number; input?: unknown }) {
     const input = data.input === undefined ? undefined : (data.input as Prisma.InputJsonValue);
     const planVersion = data.planVersion ?? 1;
+    const createData: Record<string, unknown> = { agentRunId, planVersion, stepNo, stepType: data.stepType, name: data.name, toolName: data.toolName, mode: data.mode, input, status: 'running', startedAt: new Date(), metadata: {} };
+    const updateData: Record<string, unknown> = { stepType: data.stepType, name: data.name, toolName: data.toolName, input, status: 'running', startedAt: new Date(), error: null, metadata: {} };
     return this.prisma.agentStep.upsert({
       where: { agentRunId_mode_planVersion_stepNo: { agentRunId, mode: data.mode, planVersion, stepNo } },
-      create: { agentRunId, planVersion, stepNo, stepType: data.stepType, name: data.name, toolName: data.toolName, mode: data.mode, input, status: 'running', startedAt: new Date() },
-      update: { stepType: data.stepType, name: data.name, toolName: data.toolName, input, status: 'running', startedAt: new Date(), error: null },
+      create: createData as never,
+      update: updateData as never,
     });
   }
 
   /** 标记步骤成功，并把 Tool 输出保存为后续步骤和失败续跑的可校验输入。 */
-  finishStep(agentRunId: string, stepNo: number, output: unknown, mode: string = 'act', planVersion = 1) {
-    return this.prisma.agentStep.update({ where: { agentRunId_mode_planVersion_stepNo: { agentRunId, mode, planVersion, stepNo } }, data: { status: 'succeeded', output: output as Prisma.InputJsonValue, finishedAt: new Date() } });
+  finishStep(agentRunId: string, stepNo: number, output: unknown, mode: string = 'act', planVersion = 1, metadata?: unknown) {
+    const data: Record<string, unknown> = { status: 'succeeded', output: output as Prisma.InputJsonValue, finishedAt: new Date() };
+    if (metadata !== undefined) data.metadata = metadata as Prisma.InputJsonValue;
+    return this.prisma.agentStep.update({ where: { agentRunId_mode_planVersion_stepNo: { agentRunId, mode, planVersion, stepNo } }, data: data as never });
   }
 
   /** 标记步骤暂停等待人工复核；用于二次确认缺失等非失败型审批中断。 */
-  reviewStep(agentRunId: string, stepNo: number, error: unknown, mode: string = 'act', planVersion = 1) {
+  reviewStep(agentRunId: string, stepNo: number, error: unknown, mode: string = 'act', planVersion = 1, metadata?: unknown) {
     const normalized = this.formatError(error);
+    const data: Record<string, unknown> = { status: 'waiting_review', error: normalized.message, output: normalized.detail as Prisma.InputJsonValue, finishedAt: new Date() };
+    if (metadata !== undefined) data.metadata = metadata as Prisma.InputJsonValue;
     return this.prisma.agentStep.update({
       where: { agentRunId_mode_planVersion_stepNo: { agentRunId, mode, planVersion, stepNo } },
-      data: { status: 'waiting_review', error: normalized.message, output: normalized.detail as Prisma.InputJsonValue, finishedAt: new Date() },
+      data: data as never,
     });
   }
 
@@ -44,11 +50,13 @@ export class AgentTraceService {
   }
 
   /** 标记步骤失败，同时保留结构化错误详情，便于前端展示和生产排障。 */
-  failStep(agentRunId: string, stepNo: number, error: unknown, mode: string = 'act', planVersion = 1) {
+  failStep(agentRunId: string, stepNo: number, error: unknown, mode: string = 'act', planVersion = 1, metadata?: unknown) {
     const normalized = this.formatError(error);
+    const data: Record<string, unknown> = { status: 'failed', error: normalized.message, output: normalized.detail as Prisma.InputJsonValue, finishedAt: new Date() };
+    if (metadata !== undefined) data.metadata = metadata as Prisma.InputJsonValue;
     return this.prisma.agentStep.update({
       where: { agentRunId_mode_planVersion_stepNo: { agentRunId, mode, planVersion, stepNo } },
-      data: { status: 'failed', error: normalized.message, output: normalized.detail as Prisma.InputJsonValue, finishedAt: new Date() },
+      data: data as never,
     });
   }
 

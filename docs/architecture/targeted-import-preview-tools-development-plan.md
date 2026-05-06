@@ -375,7 +375,7 @@
 
 ### TIP-P3-001 记录分目标生成耗时和 token
 
-- 状态：`[ ]`
+- 状态：`[x]`
 - 模块：API
 - 文件：LLM gateway 调用链路、AgentStep metadata
 - 任务：记录每个目标 Tool 的耗时、模型和 token 使用。
@@ -383,6 +383,12 @@
   - 审计或日志可看到每个目标产物的生成成本。
   - 全套导入能定位哪个 Tool 最慢。
 - 验证：`pnpm --dir apps/api run test:agent`
+- 完成记录：
+  - 2026-05-06：为 `AgentStep` 增加 `metadata` 审计字段和迁移，Executor 在每个 Tool 成功/失败/等待复核时记录 `executionCost`，包含 `toolName`、`stepNo`、`planVersion`、`mode`、`elapsedMs`、`model`、`tokenUsage` 和 LLM 调用明细；成功日志同步输出成本摘要，便于生产监控定位慢 Tool。
+  - 2026-05-06：在 LLM gateway 返回值中补充 `elapsedMs` 并记录 `llm.gateway.chat.completed` 日志；`build_import_preview`、`build_import_brief` 和五个 `generate_import_*_preview` Tool 通过 ToolContext 上报真实 `result.model/result.usage`，不改变 Tool 输出，不写业务库。
+  - 2026-05-06：补充 Executor 服务测试，覆盖分目标 Tool 成本记录、全套导入五个目标 Tool 成本可区分、fallback `build_import_preview` 成本记录、Tool 输出不被记录逻辑污染、目标 Tool 仍只读、`persist_project_assets` 仍需审批。
+  - 修改文件：`apps/api/prisma/schema.prisma`、`apps/api/prisma/migrations/202605060001_agent_step_execution_metadata/migration.sql`、`apps/api/src/modules/agent-runs/agent-executor.service.ts`、`apps/api/src/modules/agent-runs/agent-trace.service.ts`、`apps/api/src/modules/agent-runs/agent-services.spec.ts`、`apps/api/src/modules/agent-tools/base-tool.ts`、`apps/api/src/modules/agent-tools/tools/import-preview-llm-usage.ts`、`apps/api/src/modules/agent-tools/tools/build-import-preview.tool.ts`、`apps/api/src/modules/agent-tools/tools/build-import-brief.tool.ts`、`apps/api/src/modules/agent-tools/tools/generate-import-project-profile-preview.tool.ts`、`apps/api/src/modules/agent-tools/tools/generate-import-outline-preview.tool.ts`、`apps/api/src/modules/agent-tools/tools/generate-import-characters-preview.tool.ts`、`apps/api/src/modules/agent-tools/tools/generate-import-worldbuilding-preview.tool.ts`、`apps/api/src/modules/agent-tools/tools/generate-import-writing-rules-preview.tool.ts`、`apps/api/src/modules/llm/dto/llm-chat.dto.ts`、`apps/api/src/modules/llm/llm-gateway.service.ts`、`docs/architecture/targeted-import-preview-tools-development-plan.md`。
+  - 验证结果：`pnpm --dir apps/api exec prisma generate` 通过；`pnpm --dir apps/api run test:agent` 通过，187 项测试通过；`git diff --check` 通过（仅 Windows 换行提示）。
 
 ### TIP-P3-002 增加质量回归 Eval
 

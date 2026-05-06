@@ -4,6 +4,7 @@ import { BaseTool, ToolContext } from '../base-tool';
 import type { ToolManifestV2 } from '../tool-manifest.types';
 import { SourceTextAnalysisOutput } from './analyze-source-text.tool';
 import type { ImportBriefOutput } from './build-import-brief.tool';
+import { recordToolLlmUsage } from './import-preview-llm-usage';
 import { ImportPreviewOutput } from './import-preview.types';
 
 interface GenerateImportProjectProfilePreviewInput {
@@ -73,9 +74,9 @@ export class GenerateImportProjectProfilePreviewTool implements BaseTool<Generat
 
   constructor(private readonly llm: LlmGatewayService) {}
 
-  async run(args: GenerateImportProjectProfilePreviewInput, _context: ToolContext): Promise<GenerateImportProjectProfilePreviewOutput> {
+  async run(args: GenerateImportProjectProfilePreviewInput, context: ToolContext): Promise<GenerateImportProjectProfilePreviewOutput> {
     const analysis = this.normalizeAnalysis(args.analysis);
-    const { data } = await this.llm.chatJson<GenerateImportProjectProfilePreviewOutput>(
+    const response = await this.llm.chatJson<GenerateImportProjectProfilePreviewOutput>(
       [
         {
           role: 'system',
@@ -103,7 +104,8 @@ export class GenerateImportProjectProfilePreviewTool implements BaseTool<Generat
       { appStep: 'agent_import_project_profile_preview', maxTokens: 4000, timeoutMs: 180_000, retries: 1, temperature: 0.2 },
     );
 
-    return this.normalize(data, analysis.sourceText);
+    recordToolLlmUsage(context, 'agent_import_project_profile_preview', response.result);
+    return this.normalize(response.data, analysis.sourceText);
   }
 
   private normalize(data: unknown, sourceText: string): GenerateImportProjectProfilePreviewOutput {

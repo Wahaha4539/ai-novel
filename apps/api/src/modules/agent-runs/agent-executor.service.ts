@@ -1,7 +1,7 @@
 import { BadRequestException, Injectable, NotFoundException } from '@nestjs/common';
 import { PrismaService } from '../../prisma/prisma.service';
 import { StructuredLogger } from '../../common/logging/structured-logger';
-import { ToolJsonSchema, ToolSchemaType } from '../agent-tools/base-tool';
+import { ToolJsonSchema, ToolLlmUsage, ToolSchemaType } from '../agent-tools/base-tool';
 import { ToolRegistryService } from '../agent-tools/tool-registry.service';
 import { AgentContextV2 } from './agent-context-builder.service';
 import { AgentExecutionObservationError, AgentObservation, AgentObservationErrorCode } from './agent-observation.types';
@@ -40,6 +40,25 @@ interface AgentStepExecutionError {
   mode: 'plan' | 'act';
   errorType: string;
   message: string;
+}
+
+interface AgentStepExecutionCost {
+  toolName: string;
+  stepNo: number;
+  mode: 'plan' | 'act';
+  planVersion: number;
+  elapsedMs: number;
+  model: string | null;
+  models: string[];
+  tokenUsage: Record<string, number> | null;
+  llmCallCount: number;
+  llmCalls: Array<{
+    appStep?: string;
+    model: string | null;
+    usage: Record<string, number> | null;
+    elapsedMs: number | null;
+    rawPayloadSummary?: Record<string, unknown>;
+  }>;
 }
 
 interface RuntimeReferenceState {
@@ -121,9 +140,20 @@ export class AgentExecutorService {
       const resolvedArgs = this.resolveValue(step.args, outputs, runtimeState, options.agentContext, steps, step.stepNo) as Record<string, unknown>;
       await this.trace.startStep(agentRunId, step.stepNo, { stepType: 'tool', name: step.name, toolName: step.tool, mode, planVersion, input: resolvedArgs });
       const stepStartedAt = Date.now();
+      const llmCalls: ToolLlmUsage[] = [];
       this.logger.log('agent.step.started', { agentRunId, mode, planVersion, stepNo: step.stepNo, stepName: step.name, tool: step.tool, approved: stepApproved, args: this.summarizeValue(resolvedArgs) });
       try {
-        const context = { agentRunId, projectId: run.projectId, chapterId: run.chapterId ?? undefined, mode, approved: stepApproved, outputs, stepTools, policy: { confirmation: options.confirmation } };
+        const context = {
+          agentRunId,
+          projectId: run.projectId,
+          chapterId: run.chapterId ?? undefined,
+          mode,
+          approved: stepApproved,
+          outputs,
+          stepTools,
+          policy: { confirmation: options.confirmation },
+          recordLlmUsage: (usage: ToolLlmUsage) => llmCalls.push(this.normalizeToolLlmUsage(usage)),
+        };
         this.policy.assertAllowed(tool, context, plannedTools);
         this.assertSchema(tool.inputSchema, resolvedArgs, `${tool.name}.input`);
         this.assertIdPolicy(tool, resolvedArgs, step.args, options.agentContext);
@@ -133,18 +163,23 @@ export class AgentExecutorService {
         this.assertSchema(tool.outputSchema, output, `${tool.name}.output`);
         outputs[step.stepNo] = output;
         this.updateRuntimeState(runtimeState, output);
-        await this.trace.finishStep(agentRunId, step.stepNo, output, mode, planVersion);
-        this.logger.log('agent.step.succeeded', { agentRunId, mode, planVersion, stepNo: step.stepNo, tool: step.tool, elapsedMs: Date.now() - stepStartedAt, output: this.summarizeValue(output), runtimeState });
+        const elapsedMs = Date.now() - stepStartedAt;
+        const executionCost = this.buildStepExecutionCost(step.tool, step.stepNo, mode, planVersion, elapsedMs, llmCalls);
+        await this.trace.finishStep(agentRunId, step.stepNo, output, mode, planVersion, { executionCost });
+        this.logger.log('agent.step.succeeded', { agentRunId, mode, planVersion, stepNo: step.stepNo, tool: step.tool, elapsedMs, model: executionCost.model, tokenUsage: executionCost.tokenUsage, llmCallCount: executionCost.llmCallCount, executionCost, output: this.summarizeValue(output), runtimeState });
       } catch (error) {
         if (error instanceof AgentSecondConfirmationRequiredError) {
           // 二次确认缺失是“等待用户复核”的暂停点，不应被记录成业务执行失败。
-          await this.trace.reviewStep(agentRunId, step.stepNo, this.formatStepError(step.stepNo, tool.name, mode, error), mode, planVersion);
-          this.logger.warn('agent.step.waiting_review.second_confirmation_required', { agentRunId, mode, planVersion, stepNo: step.stepNo, tool: tool.name, elapsedMs: Date.now() - stepStartedAt, riskIds: error.riskIds });
+          const elapsedMs = Date.now() - stepStartedAt;
+          await this.trace.reviewStep(agentRunId, step.stepNo, this.formatStepError(step.stepNo, tool.name, mode, error), mode, planVersion, { executionCost: this.buildStepExecutionCost(step.tool, step.stepNo, mode, planVersion, elapsedMs, llmCalls) });
+          this.logger.warn('agent.step.waiting_review.second_confirmation_required', { agentRunId, mode, planVersion, stepNo: step.stepNo, tool: tool.name, elapsedMs, riskIds: error.riskIds });
           throw new AgentWaitingReviewError(error.message);
         }
         const observation = this.createObservation(step, tool.name, mode, resolvedArgs, outputs, error);
-        await this.trace.failStep(agentRunId, step.stepNo, observation, mode, planVersion);
-        this.logger.error('agent.step.failed', error, { agentRunId, mode, planVersion, stepNo: step.stepNo, tool: tool.name, elapsedMs: Date.now() - stepStartedAt, observation: this.summarizeValue(observation) });
+        const elapsedMs = Date.now() - stepStartedAt;
+        const executionCost = this.buildStepExecutionCost(step.tool, step.stepNo, mode, planVersion, elapsedMs, llmCalls);
+        await this.trace.failStep(agentRunId, step.stepNo, observation, mode, planVersion, { executionCost });
+        this.logger.error('agent.step.failed', error, { agentRunId, mode, planVersion, stepNo: step.stepNo, tool: tool.name, elapsedMs, model: executionCost.model, tokenUsage: executionCost.tokenUsage, llmCallCount: executionCost.llmCallCount, observation: this.summarizeValue(observation) });
         throw new AgentExecutionObservationError(observation);
       }
     }
@@ -268,6 +303,59 @@ export class AgentExecutorService {
 
   private isRetryableObservation(code: AgentObservationErrorCode): boolean {
     return ['MISSING_REQUIRED_ARGUMENT', 'SCHEMA_VALIDATION_FAILED', 'ENTITY_NOT_FOUND', 'AMBIGUOUS_ENTITY', 'TOOL_TIMEOUT', 'VALIDATION_FAILED'].includes(code);
+  }
+
+  private normalizeToolLlmUsage(usage: ToolLlmUsage): ToolLlmUsage {
+    return {
+      ...(usage.appStep ? { appStep: usage.appStep } : {}),
+      ...(usage.model ? { model: usage.model } : {}),
+      ...(usage.usage ? { usage: this.sumTokenUsage([usage]) ?? undefined } : {}),
+      ...(usage.rawPayloadSummary ? { rawPayloadSummary: this.toJsonCompatible(usage.rawPayloadSummary) as Record<string, unknown> } : {}),
+      ...(typeof usage.elapsedMs === 'number' && Number.isFinite(usage.elapsedMs) ? { elapsedMs: Math.max(0, Math.round(usage.elapsedMs)) } : {}),
+    };
+  }
+
+  private buildStepExecutionCost(toolName: string, stepNo: number, mode: 'plan' | 'act', planVersion: number, elapsedMs: number, llmCalls: ToolLlmUsage[]): AgentStepExecutionCost {
+    const models = [...new Set(llmCalls.map((call) => call.model).filter((item): item is string => Boolean(item)))];
+    const tokenUsage = this.sumTokenUsage(llmCalls) ?? null;
+    return {
+      toolName,
+      stepNo,
+      mode,
+      planVersion,
+      elapsedMs: Math.max(0, Math.round(elapsedMs)),
+      model: models[0] ?? null,
+      models,
+      tokenUsage,
+      llmCallCount: llmCalls.length,
+      llmCalls: llmCalls.map((call) => ({
+        ...(call.appStep ? { appStep: call.appStep } : {}),
+        model: call.model ?? null,
+        usage: call.usage ?? null,
+        elapsedMs: typeof call.elapsedMs === 'number' ? call.elapsedMs : null,
+        ...(call.rawPayloadSummary ? { rawPayloadSummary: call.rawPayloadSummary } : {}),
+      })),
+    };
+  }
+
+  private sumTokenUsage(calls: ToolLlmUsage[]): Record<string, number> | undefined {
+    const totals: Record<string, number> = {};
+    for (const call of calls) {
+      for (const [key, value] of Object.entries(call.usage ?? {})) {
+        if (typeof value !== 'number' || !Number.isFinite(value)) continue;
+        totals[key] = (totals[key] ?? 0) + value;
+      }
+    }
+    return Object.keys(totals).length ? totals : undefined;
+  }
+
+  private toJsonCompatible(value: unknown): unknown {
+    if (value === undefined) return null;
+    try {
+      return JSON.parse(JSON.stringify(value)) as unknown;
+    } catch {
+      return String(value);
+    }
   }
 
   /**

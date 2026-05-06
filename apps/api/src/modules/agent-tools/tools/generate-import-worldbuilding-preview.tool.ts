@@ -4,6 +4,7 @@ import { BaseTool, ToolContext } from '../base-tool';
 import type { ToolManifestV2 } from '../tool-manifest.types';
 import { SourceTextAnalysisOutput } from './analyze-source-text.tool';
 import type { ImportBriefOutput } from './build-import-brief.tool';
+import { recordToolLlmUsage } from './import-preview-llm-usage';
 import { ImportPreviewOutput } from './import-preview.types';
 
 interface GenerateImportWorldbuildingPreviewInput {
@@ -76,10 +77,10 @@ export class GenerateImportWorldbuildingPreviewTool implements BaseTool<Generate
 
   constructor(private readonly llm: LlmGatewayService) {}
 
-  async run(args: GenerateImportWorldbuildingPreviewInput, _context: ToolContext): Promise<GenerateImportWorldbuildingPreviewOutput> {
+  async run(args: GenerateImportWorldbuildingPreviewInput, context: ToolContext): Promise<GenerateImportWorldbuildingPreviewOutput> {
     const analysis = this.normalizeAnalysis(args.analysis);
     const maxEntries = this.normalizeMaxEntries(args.maxEntries);
-    const { data } = await this.llm.chatJson<GenerateImportWorldbuildingPreviewOutput>(
+    const response = await this.llm.chatJson<GenerateImportWorldbuildingPreviewOutput>(
       [
         {
           role: 'system',
@@ -108,7 +109,8 @@ export class GenerateImportWorldbuildingPreviewTool implements BaseTool<Generate
       { appStep: 'agent_import_worldbuilding_preview', maxTokens: Math.min(8000, maxEntries * 520 + 1600), timeoutMs: 220_000, retries: 1, temperature: 0.2 },
     );
 
-    return this.normalize(data, maxEntries);
+    recordToolLlmUsage(context, 'agent_import_worldbuilding_preview', response.result);
+    return this.normalize(response.data, maxEntries);
   }
 
   private normalize(data: unknown, maxEntries: number): GenerateImportWorldbuildingPreviewOutput {

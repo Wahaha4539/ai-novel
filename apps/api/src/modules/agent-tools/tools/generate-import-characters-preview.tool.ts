@@ -4,6 +4,7 @@ import { BaseTool, ToolContext } from '../base-tool';
 import type { ToolManifestV2 } from '../tool-manifest.types';
 import { SourceTextAnalysisOutput } from './analyze-source-text.tool';
 import type { ImportBriefOutput } from './build-import-brief.tool';
+import { recordToolLlmUsage } from './import-preview-llm-usage';
 import { ImportPreviewOutput } from './import-preview.types';
 
 interface GenerateImportCharactersPreviewInput {
@@ -73,9 +74,9 @@ export class GenerateImportCharactersPreviewTool implements BaseTool<GenerateImp
 
   constructor(private readonly llm: LlmGatewayService) {}
 
-  async run(args: GenerateImportCharactersPreviewInput, _context: ToolContext): Promise<GenerateImportCharactersPreviewOutput> {
+  async run(args: GenerateImportCharactersPreviewInput, context: ToolContext): Promise<GenerateImportCharactersPreviewOutput> {
     const analysis = this.normalizeAnalysis(args.analysis);
-    const { data } = await this.llm.chatJson<GenerateImportCharactersPreviewOutput>(
+    const response = await this.llm.chatJson<GenerateImportCharactersPreviewOutput>(
       [
         {
           role: 'system',
@@ -102,7 +103,8 @@ export class GenerateImportCharactersPreviewTool implements BaseTool<GenerateImp
       { appStep: 'agent_import_characters_preview', maxTokens: 7000, timeoutMs: 220_000, retries: 1, temperature: 0.2 },
     );
 
-    return this.normalize(data);
+    recordToolLlmUsage(context, 'agent_import_characters_preview', response.result);
+    return this.normalize(response.data);
   }
 
   private normalize(data: unknown): GenerateImportCharactersPreviewOutput {
