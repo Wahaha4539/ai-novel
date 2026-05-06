@@ -4,6 +4,7 @@ import { PrismaService } from '../../prisma/prisma.service';
 import { RuleEngineService } from '../agent-rules/rule-engine.service';
 import { ToolManifestForPlanner } from '../agent-tools/tool-manifest.types';
 import { ToolRegistryService } from '../agent-tools/tool-registry.service';
+import { ImportAssetTypeDto } from './dto/create-agent-plan.dto';
 
 export interface GuidedAgentContext {
   currentStep?: string;
@@ -49,6 +50,7 @@ export interface AgentContextV2 {
     selectedText?: string;
     selectedRange?: { start: number; end: number };
     sourcePage?: string;
+    requestedAssetTypes?: ImportAssetTypeDto[];
     clarification?: {
       latestChoice?: { id?: string; label?: string; payload?: unknown; message?: string; answeredAt?: string };
       history: Array<{ roundNo?: number; question?: string; selectedChoice?: unknown; answeredAt?: string }>;
@@ -90,6 +92,8 @@ export interface AgentContextV2 {
  */
 @Injectable()
 export class AgentContextBuilderService {
+  private readonly importAssetTypes = new Set<ImportAssetTypeDto>(['projectProfile', 'outline', 'characters', 'worldbuilding', 'writingRules']);
+
   constructor(
     private readonly prisma: PrismaService,
     private readonly tools: ToolRegistryService,
@@ -133,6 +137,7 @@ export class AgentContextBuilderService {
         selectedText: this.stringValue(sessionHints.selectedText),
         selectedRange: this.rangeValue(sessionHints.selectedRange),
         sourcePage: this.stringValue(sessionHints.sourcePage),
+        requestedAssetTypes: this.importAssetTypesValue(sessionHints.requestedAssetTypes),
         clarification: clarification.history.length || clarification.latestChoice ? clarification : undefined,
         guided: this.guidedValue(sessionHints.guided),
       },
@@ -223,6 +228,13 @@ export class AgentContextBuilderService {
 
   private stringArray(value: unknown) {
     return Array.isArray(value) ? value.filter((item): item is string => typeof item === 'string' && item.trim().length > 0) : [];
+  }
+
+  private importAssetTypesValue(value: unknown): ImportAssetTypeDto[] | undefined {
+    if (!Array.isArray(value)) return undefined;
+    const normalized = value.filter((item): item is ImportAssetTypeDto => typeof item === 'string' && this.importAssetTypes.has(item as ImportAssetTypeDto));
+    const unique = [...new Set(normalized)];
+    return unique.length ? unique : undefined;
   }
 
   private rangeValue(value: unknown) {

@@ -1,7 +1,7 @@
 import { BadRequestException, Injectable, NotFoundException } from '@nestjs/common';
 import { Prisma } from '@prisma/client';
 import { PrismaService } from '../../prisma/prisma.service';
-import { AgentCreativeDocumentAttachmentDto, AgentCreativeDocumentExtensionDto, CreateAgentPlanDto, ReplanAgentRunDto, SubmitAgentClarificationChoiceDto } from './dto/create-agent-plan.dto';
+import { AgentCreativeDocumentAttachmentDto, AgentCreativeDocumentExtensionDto, CreateAgentPlanContextDto, CreateAgentPlanDto, ImportAssetTypeDto, ReplanAgentRunDto, SubmitAgentClarificationChoiceDto } from './dto/create-agent-plan.dto';
 import { ExecuteAgentRunDto } from './dto/execute-agent-run.dto';
 import { InterpretAgentMessageDto } from './dto/interpret-agent-message.dto';
 import { AgentMessageIntentService } from './agent-message-intent.service';
@@ -12,6 +12,7 @@ export class AgentRunsService {
   constructor(private readonly prisma: PrismaService, private readonly runtime: AgentRuntimeService, private readonly messageIntent: AgentMessageIntentService) {}
 
   private readonly creativeDocumentExtensions = new Set<AgentCreativeDocumentExtensionDto>(['md', 'txt', 'docx', 'pdf']);
+  private readonly importAssetTypes = new Set<ImportAssetTypeDto>(['projectProfile', 'outline', 'characters', 'worldbuilding', 'writingRules']);
 
   /**
    * 从现有 Run/Plan/Step/Approval/Artifact 表派生审计事件。
@@ -163,6 +164,30 @@ export class AgentRunsService {
     return value.map((attachment, index) => this.normalizeCreativeDocumentAttachment(attachment, index));
   }
 
+  private normalizePlanContext(value: unknown): CreateAgentPlanContextDto {
+    if (value === undefined || value === null) return {};
+    if (!this.isRecord(value)) throw new BadRequestException('context 必须是对象');
+    const { requestedAssetTypes, ...rest } = value;
+    const normalizedAssetTypes = this.normalizeRequestedAssetTypes(requestedAssetTypes);
+    return {
+      ...rest,
+      ...(normalizedAssetTypes.length ? { requestedAssetTypes: normalizedAssetTypes } : {}),
+    } as CreateAgentPlanContextDto;
+  }
+
+  private normalizeRequestedAssetTypes(value: unknown): ImportAssetTypeDto[] {
+    if (value === undefined || value === null) return [];
+    if (!Array.isArray(value)) throw new BadRequestException('context.requestedAssetTypes 必须是数组');
+    const normalized: ImportAssetTypeDto[] = [];
+    value.forEach((item, index) => {
+      if (typeof item !== 'string' || !this.importAssetTypes.has(item as ImportAssetTypeDto)) {
+        throw new BadRequestException(`context.requestedAssetTypes[${index}] 只支持 projectProfile/outline/characters/worldbuilding/writingRules`);
+      }
+      normalized.push(item as ImportAssetTypeDto);
+    });
+    return [...new Set(normalized)];
+  }
+
   private normalizeCreativeDocumentAttachment(value: unknown, index: number): AgentCreativeDocumentAttachmentDto {
     if (!this.isRecord(value)) throw new BadRequestException(`attachments[${index}] 必须是对象`);
 
@@ -216,6 +241,7 @@ export class AgentRunsService {
 
   async createPlan(dto: CreateAgentPlanDto) {
     const attachments = this.normalizeAttachments(dto.attachments);
+    const context = this.normalizePlanContext(dto.context);
     const clientRequestId = dto.clientRequestId?.trim();
     if (clientRequestId) {
       const existing = await this.prisma.agentRun.findFirst({
@@ -226,9 +252,9 @@ export class AgentRunsService {
     }
 
     // DTO 类实例没有 JSON index signature，显式转为普通对象再写入 Prisma Json 字段。
-    const input = { projectId: dto.projectId, message: dto.message, context: dto.context ?? {}, attachments, ...(clientRequestId ? { clientRequestId } : {}) };
+    const input = { projectId: dto.projectId, message: dto.message, context, attachments, ...(clientRequestId ? { clientRequestId } : {}) };
     const run = await this.prisma.agentRun.create({
-      data: { projectId: dto.projectId, chapterId: dto.context?.currentChapterId, agentType: 'CreativeAgent', status: 'planning', mode: 'plan', goal: dto.message, input: input as unknown as Prisma.InputJsonValue },
+      data: { projectId: dto.projectId, chapterId: context.currentChapterId, agentType: 'CreativeAgent', status: 'planning', mode: 'plan', goal: dto.message, input: input as unknown as Prisma.InputJsonValue },
     });
     const result = await this.runtime.plan(run.id);
     return { agentRunId: run.id, status: 'waiting_approval', ...result };

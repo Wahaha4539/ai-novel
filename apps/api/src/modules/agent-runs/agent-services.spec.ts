@@ -843,6 +843,42 @@ test('AgentRunsService 审计轨迹按时间聚合 Run/Plan/Approval/Step/Artifa
   assert.equal(events.find((event) => event.eventType === 'step_failed')?.severity, 'danger');
 });
 
+test('AgentRunsService 接收结构化 requestedAssetTypes 并写入 Run context', async () => {
+  let createdInput: Record<string, unknown> | undefined;
+  const prisma = {
+    agentRun: {
+      async findFirst() { return null; },
+      async create(args: { data: { input: Record<string, unknown> } }) {
+        createdInput = args.data.input;
+        return { id: 'run-targets' };
+      },
+    },
+  };
+  const runtime = { async plan() { return { plan: null, artifacts: [] }; } };
+  const service = new AgentRunsService(prisma as never, runtime as never, {} as never);
+
+  await service.createPlan({
+    projectId: '11111111-1111-4111-8111-111111111111',
+    message: '只生成大纲和写作规则',
+    context: { currentProjectId: '11111111-1111-4111-8111-111111111111', requestedAssetTypes: ['outline', 'writingRules', 'outline'] },
+  });
+
+  assert.deepEqual((createdInput?.context as Record<string, unknown>).requestedAssetTypes, ['outline', 'writingRules']);
+});
+
+test('AgentRunsService 拒绝非法 requestedAssetTypes', async () => {
+  const service = new AgentRunsService({} as never, {} as never, {} as never);
+
+  await assert.rejects(
+    () => service.createPlan({
+      projectId: '11111111-1111-4111-8111-111111111111',
+      message: '导入文档',
+      context: { requestedAssetTypes: ['outline', 'allAssets'] as never },
+    }),
+    /context\.requestedAssetTypes\[1\]/,
+  );
+});
+
 test('ValidateOutlineTool 生成写入前 diff，区分创建、更新和跳过章节', async () => {
   const prisma = {
     volume: { async findUnique() { return { title: '旧第一卷' }; } },
@@ -4747,12 +4783,16 @@ test('AgentContextBuilder 将多轮澄清状态注入 Planner session', async ()
     projectId: 'p1',
     chapterId: null,
     goal: '继续处理澄清后的任务',
-    input: { clarificationState: { latestChoice: { id: 'char_1', label: '林烬', payload: { characterId: 'char_1' } }, history: [{ roundNo: 1, question: '你说的小林是哪位？', selectedChoice: { id: 'char_1', label: '林烬' }, answeredAt: '2026-04-28T00:00:00.000Z' }] } } as never,
+    input: {
+      context: { requestedAssetTypes: ['outline', 'writingRules', 'unknown'] },
+      clarificationState: { latestChoice: { id: 'char_1', label: '林烬', payload: { characterId: 'char_1' } }, history: [{ roundNo: 1, question: '你说的小林是哪位？', selectedChoice: { id: 'char_1', label: '林烬' }, answeredAt: '2026-04-28T00:00:00.000Z' }] },
+    } as never,
   });
 
   assert.equal(context.session.clarification?.history.length, 1);
   assert.equal(context.session.clarification?.latestChoice?.label, '林烬');
   assert.deepEqual(context.session.clarification?.latestChoice?.payload, { characterId: 'char_1' });
+  assert.deepEqual(context.session.requestedAssetTypes, ['outline', 'writingRules']);
 });
 
 test('WritingRulesService create update remove invalidate recall cache', async () => {

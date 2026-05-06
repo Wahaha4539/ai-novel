@@ -47,7 +47,7 @@
 
 ### TIP-P0-002 后端 DTO 和 Context 接收 requestedAssetTypes
 
-- 状态：`[ ]`
+- 状态：`[x]`
 - 模块：API
 - 文件：`apps/api/src/modules/agent-runs/dto/create-agent-plan.dto.ts`、`apps/api/src/modules/agent-runs/agent-context-builder.service.ts`
 - 任务：校验并注入结构化目标产物范围。
@@ -56,6 +56,10 @@
   - 非法值返回 400 或在归一化时丢弃并记录诊断。
   - Planner 输入能读取 `context.session.requestedAssetTypes` 或等价字段。
 - 验证：`pnpm --dir apps/api run test:agent`
+- 完成记录：
+  - 2026-05-06：`CreateAgentPlanContextDto` 增加 `requestedAssetTypes` 类型；`AgentRunsService.createPlan` 对请求上下文中的目标产物做枚举校验、去重和空数组省略，非法值返回 400；`AgentContextBuilderService` 将目标产物范围注入 `context.session.requestedAssetTypes`，并对历史脏值做防御性过滤。
+  - 修改文件：`apps/api/src/modules/agent-runs/dto/create-agent-plan.dto.ts`、`apps/api/src/modules/agent-runs/agent-runs.service.ts`、`apps/api/src/modules/agent-runs/agent-context-builder.service.ts`、`apps/api/src/modules/agent-runs/agent-services.spec.ts`、`docs/architecture/targeted-import-preview-tools-development-plan.md`。
+  - 验证结果：`pnpm --dir apps/api run test:agent` 通过，154 项测试通过。
 
 ### TIP-P0-003 抽离 ImportPreview 类型和过滤工具
 

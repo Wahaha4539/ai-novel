@@ -8,6 +8,8 @@ export interface GuidedAgentPlanContextDto {
   documentDraft?: Record<string, unknown>;
 }
 
+export type ImportAssetTypeDto = 'projectProfile' | 'outline' | 'characters' | 'worldbuilding' | 'writingRules';
+
 export interface CreateAgentPlanContextDto {
   currentProjectId?: string;
   currentVolumeId?: string;
@@ -20,6 +22,7 @@ export interface CreateAgentPlanContextDto {
   selectedText?: string;
   selectedRange?: { start: number; end: number };
   sourcePage?: string;
+  requestedAssetTypes?: ImportAssetTypeDto[];
   guided?: GuidedAgentPlanContextDto;
   [key: string]: unknown;
 }
