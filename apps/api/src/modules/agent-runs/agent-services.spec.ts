@@ -5359,6 +5359,64 @@ test('Planner 接受 LLM 语义判定的 taskType，不再被后端 baseline 锁
   assert.deepEqual(plan.steps.slice(0, 3).map((step) => step.tool), ['resolve_chapter', 'collect_chapter_context', 'write_chapter']);
 });
 
+test('Planner prompt 将长章节细纲引导到 outline_design 而非正文写作', async () => {
+  let capturedMessages: Array<{ role: string; content: string }> = [];
+  const toolList = [
+    createTool({ name: 'inspect_project_context', requiresApproval: false, riskLevel: 'low', sideEffects: [] }),
+    createTool({ name: 'generate_outline_preview', description: '生成卷/章节细纲与执行卡预览，超过 15 章自动分批。', requiresApproval: false, riskLevel: 'low', sideEffects: [] }),
+    createTool({ name: 'validate_outline', requiresApproval: false, riskLevel: 'low', sideEffects: [] }),
+    createTool({ name: 'persist_outline', requiresApproval: true, riskLevel: 'high', sideEffects: ['create_chapters', 'update_chapters'] }),
+  ];
+  const tools = {
+    list: () => toolList,
+    listManifestsForPlanner: () => toolList.map((tool) => ({
+      name: tool.name,
+      displayName: tool.name,
+      description: tool.description,
+      whenToUse: tool.name === 'generate_outline_preview' ? ['卷细纲', '章节细纲', '60 章细纲', '执行卡预览'] : [],
+      whenNotToUse: [],
+      allowedModes: tool.allowedModes,
+      riskLevel: tool.riskLevel,
+      requiresApproval: tool.requiresApproval,
+      sideEffects: tool.sideEffects,
+    })),
+  } as unknown as ToolRegistryService;
+  const llm = {
+    async chatJson(messages: Array<{ role: string; content: string }>) {
+      capturedMessages = messages;
+      return {
+        data: {
+          taskType: 'outline_design',
+          summary: '生成 60 章细纲',
+          assumptions: [],
+          risks: [],
+          steps: [
+            { stepNo: 1, name: '巡检上下文', tool: 'inspect_project_context', mode: 'act', requiresApproval: false, args: { focus: ['outline', 'volumes', 'chapters'] } },
+            { stepNo: 2, name: '生成细纲预览', tool: 'generate_outline_preview', mode: 'act', requiresApproval: false, args: { context: '{{steps.1.output}}', instruction: '{{context.userMessage}}', volumeNo: 1, chapterCount: 60 } },
+            { stepNo: 3, name: '校验细纲', tool: 'validate_outline', mode: 'act', requiresApproval: false, args: { preview: '{{steps.2.output}}' } },
+            { stepNo: 4, name: '审批后写入细纲', tool: 'persist_outline', mode: 'act', requiresApproval: true, args: { preview: '{{steps.2.output}}', validation: '{{steps.3.output}}' } },
+          ],
+        },
+        result: { model: 'planner-mock' },
+      };
+    },
+  };
+  const planner = new AgentPlannerService(new SkillRegistryService(), tools, new RuleEngineService(), llm as never);
+
+  const plan = await planner.createPlan('为第 1 卷生成 60 章细纲');
+  const promptPayload = JSON.parse(capturedMessages[1].content);
+
+  assert.equal(plan.taskType, 'outline_design');
+  assert.deepEqual(plan.steps.map((step) => step.tool), ['inspect_project_context', 'generate_outline_preview', 'validate_outline', 'persist_outline']);
+  assert.equal(plan.steps[3].requiresApproval, true);
+  assert.match(capturedMessages[0].content, /卷细纲 \/ 章节细纲 \/ 60 章细纲/);
+  assert.match(capturedMessages[0].content, /不要误判为 write_chapter/);
+  assert.match(promptPayload.taskTypeGuidance.outline_design, /60章细纲/);
+  assert.match(promptPayload.taskTypeGuidance.outline_design, /generate_outline_preview/);
+  assert.match(promptPayload.taskTypeGuidance.outline_design, /自动分批/);
+  assert.match(JSON.stringify(promptPayload.availableTools), /执行卡预览/);
+});
+
 test('Planner 接受创作引导 guided taskType', () => {
   const tools = { list: () => [createTool({ name: 'report_result', requiresApproval: false, sideEffects: [] })] } as unknown as ToolRegistryService;
   const planner = new AgentPlannerService(new SkillRegistryService(), tools, new RuleEngineService(), {} as LlmGatewayService) as unknown as {
@@ -8579,6 +8637,18 @@ test('generate_outline_preview 单批 timeout 只 fallback 当前批并继续后
   assert.equal(progress.filter((item) => item.phase === 'calling_llm').length, 5);
   assert.equal(progress.some((item) => item.phase === 'fallback_generating' && /13-24/.test(String(item.phaseMessage))), true);
   assert.equal(progress.some((item) => item.phase === 'merging_preview'), true);
+});
+
+test('GenerateOutlinePreviewTool Manifest 声明执行卡预览和长细纲分批策略', () => {
+  const tool = new GenerateOutlinePreviewTool({} as never);
+
+  assert.match(tool.description, /卷\/章节细纲与执行卡预览/);
+  assert.match(tool.manifest.description, /Chapter\.craftBrief/);
+  assert.match(tool.manifest.description, /超过 15/);
+  assert.equal(tool.manifest.whenToUse.some((item) => /60 章细纲/.test(item)), true);
+  assert.equal(tool.manifest.whenNotToUse.some((item) => /写正文/.test(item) && /write_chapter/.test(item)), true);
+  assert.equal(tool.manifest.whenNotToUse.some((item) => /SceneCard/.test(item)), true);
+  assert.match(tool.manifest.parameterHints?.chapterCount.description ?? '', /自动分批/);
 });
 
 test('generate_outline_preview 保留 LLM craftBrief 并补齐缺失执行卡字段', async () => {

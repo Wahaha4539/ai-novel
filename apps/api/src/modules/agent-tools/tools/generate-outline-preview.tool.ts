@@ -1,6 +1,7 @@
 import { Injectable } from '@nestjs/common';
 import { LlmGatewayService } from '../../llm/llm-gateway.service';
 import { BaseTool, ToolContext } from '../base-tool';
+import type { ToolManifestV2 } from '../tool-manifest.types';
 import { recordToolLlmUsage } from './import-preview-llm-usage';
 
 const OUTLINE_PREVIEW_LLM_TIMEOUT_MS = 90_000;
@@ -53,7 +54,7 @@ export interface OutlinePreviewOutput {
 @Injectable()
 export class GenerateOutlinePreviewTool implements BaseTool<GenerateOutlinePreviewInput, OutlinePreviewOutput> {
   name = 'generate_outline_preview';
-  description = '根据项目上下文和用户目标生成卷/章节大纲预览，不写入正式业务表。';
+  description = '根据项目上下文和用户目标生成卷/章节细纲与执行卡预览，不写入正式业务表。';
   inputSchema = { type: 'object' as const, properties: { context: { type: 'object' as const }, instruction: { type: 'string' as const }, volumeNo: { type: 'number' as const }, chapterCount: { type: 'number' as const } } };
   outputSchema = { type: 'object' as const, required: ['volume', 'chapters', 'risks'], properties: { volume: { type: 'object' as const }, chapters: { type: 'array' as const }, risks: { type: 'array' as const, items: { type: 'string' as const } } } };
   allowedModes: Array<'plan' | 'act'> = ['plan', 'act'];
@@ -61,6 +62,47 @@ export class GenerateOutlinePreviewTool implements BaseTool<GenerateOutlinePrevi
   requiresApproval = false;
   sideEffects: string[] = [];
   executionTimeoutMs = 500_000;
+  manifest: ToolManifestV2 = {
+    name: this.name,
+    displayName: '生成卷/章节细纲与执行卡预览',
+    description: '生成 outline_preview：包含卷信息、章节细纲、每章 Chapter.craftBrief 执行卡和风险；当章节数超过 15 时自动按批次调用 LLM 并合并。',
+    whenToUse: [
+      '用户要求生成卷细纲、章节细纲、章节规划、等长细纲或 60 章细纲',
+      '用户要求把某一卷拆成多章，但还不是写正文',
+      '用户需要审批前预览 planned 章节和 Chapter.craftBrief 执行卡',
+    ],
+    whenNotToUse: [
+      '用户要求写正文、生成正文、续写正文时使用 write_chapter 或 write_chapter_series',
+      '用户要求把章节拆成场景、场景卡或 SceneCard 时使用 generate_scene_cards_preview',
+      '用户只要求校验或写入已有 outline_preview 时使用 validate_outline 或 persist_outline',
+    ],
+    inputSchema: this.inputSchema,
+    outputSchema: this.outputSchema,
+    parameterHints: {
+      context: { source: 'previous_step', description: '通常来自 inspect_project_context.output，包含项目、目标卷、已有章节、角色和设定摘要。' },
+      instruction: { source: 'user_message', description: '保留用户对卷号、章节数、节奏、风格和结构的要求。' },
+      volumeNo: { source: 'user_message', description: '用户指定“第 N 卷”时填入；未指定时默认第 1 卷。' },
+      chapterCount: { source: 'user_message', description: '用户指定“60 章”等目标数量时填入；超过 15 章会自动分批，单批 timeout/fallback 不影响其余批次。' },
+    },
+    examples: [
+      {
+        user: '为第 1 卷生成 60 章细纲。',
+        plan: [
+          { tool: 'inspect_project_context', args: { focus: ['outline', 'volumes', 'chapters', 'characters', 'lorebook'] } },
+          { tool: 'generate_outline_preview', args: { context: '{{steps.1.output}}', instruction: '为第 1 卷生成 60 章细纲', volumeNo: 1, chapterCount: 60 } },
+          { tool: 'validate_outline', args: { preview: '{{steps.2.output}}' } },
+          { tool: 'persist_outline', args: { preview: '{{steps.2.output}}', validation: '{{steps.3.output}}' } },
+        ],
+      },
+    ],
+    failureHints: [
+      { code: 'LLM_TIMEOUT', meaning: '单批 LLM 未在内部 timeoutMs 内稳定返回', suggestedRepair: '保留已生成批次，对 timeout 批次使用 fallback 并在 risks 中提示人工复核。' },
+    ],
+    allowedModes: this.allowedModes,
+    riskLevel: this.riskLevel,
+    requiresApproval: this.requiresApproval,
+    sideEffects: this.sideEffects,
+  };
 
   constructor(private readonly llm: LlmGatewayService) {}
 

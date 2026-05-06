@@ -146,6 +146,17 @@
 - 后端 `generate-step` 没有单章细化参数。
 - 正文生成 Prompt 目前只读取 `Chapter.outline`，无法稳定识别“本章执行卡”。
 
+### 5.3 Agent 工作台章节细纲落地约定
+
+Agent 工作台的 `generate_outline_preview` 与引导式 `guided_chapter` 保持同一章级规划方向，但它的产物先作为可审批 Artifact 展示，再由 `persist_outline` 写入业务表：
+
+- `outline_preview.chapters[]` 保留旧字段，并新增可选 `craftBrief`，字段对齐章级执行卡。
+- `generate_outline_preview` 应生成“卷/章节细纲与执行卡预览”，不是正文；超过 15 章时按批次生成，默认批次大小为 12。
+- 每批 LLM 调用使用 Tool 内部 `timeoutMs`，批次失败只 fallback 当前批，最终仍返回完整章节数，并在 `risks` 标明批次范围和原因。
+- AgentRun Timeline 通过 `phase/progressCurrent/progressTotal/heartbeat` 展示当前批次、合并和校验进度。
+- `persist_outline` 只创建或更新 `planned` 章节的规划字段与 `Chapter.craftBrief`；已 `drafted` 或非 planned 章节默认跳过。
+- Planner guidance 明确：用户说“卷细纲 / 章节细纲 / 60 章细纲 / 等长细纲”走 `outline_design`；用户说“写正文 / 生成正文”才走正文写作；用户说“拆成场景 / SceneCard”走场景卡链路。
+
 ## 6. 目标生成流程
 
 ```text
