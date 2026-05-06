@@ -1167,6 +1167,60 @@ test('ValidateOutlineTool 容忍 LLM 返回非字符串章节梗概', async () =
   assert.equal(result.writePreview?.chapters[0].title, '一');
 });
 
+test('ValidateOutlineTool 兼容旧 outline_preview 缺 craftBrief，仅产生 warning', async () => {
+  const prisma = {
+    volume: { async findUnique() { return null; } },
+    chapter: { async findMany() { return []; } },
+  };
+  const tool = new ValidateOutlineTool(prisma as never);
+  const result = await tool.run(
+    { preview: { volume: { volumeNo: 1, title: '卷一', synopsis: '卷简介', objective: '卷目标', chapterCount: 1 }, chapters: [{ chapterNo: 1, title: '一', objective: '目标', conflict: '冲突', hook: '钩子', outline: '梗概', expectedWordCount: 2000 }], risks: [] } },
+    { agentRunId: 'run1', projectId: 'p1', mode: 'plan', approved: false, outputs: {}, policy: {} },
+  );
+
+  assert.equal(result.valid, true);
+  assert.equal(result.stats.craftBriefCount, 0);
+  assert.equal(result.stats.craftBriefMissingCount, 1);
+  assert.equal(result.issues.some((issue) => issue.severity === 'warning' && /缺少 craftBrief/.test(issue.message)), true);
+});
+
+test('ValidateOutlineTool 校验 craftBrief 行动链、线索和不可逆后果质量', async () => {
+  const prisma = {
+    volume: { async findUnique() { return null; } },
+    chapter: { async findMany() { return []; } },
+  };
+  const tool = new ValidateOutlineTool(prisma as never);
+  const result = await tool.run(
+    {
+      preview: {
+        volume: { volumeNo: 1, title: '卷一', synopsis: '卷简介', objective: '卷目标', chapterCount: 1 },
+        chapters: [
+          {
+            chapterNo: 1,
+            title: '一',
+            objective: '目标',
+            conflict: '冲突',
+            hook: '钩子',
+            outline: '梗概',
+            expectedWordCount: 2000,
+            craftBrief: { visibleGoal: '拿到钥匙', actionBeats: ['潜入档案室'], concreteClues: [], progressTypes: ['info'] },
+          },
+        ],
+        risks: [],
+      },
+    },
+    { agentRunId: 'run1', projectId: 'p1', mode: 'plan', approved: false, outputs: {}, policy: {} },
+  );
+
+  assert.equal(result.valid, true);
+  assert.equal(result.stats.craftBriefCount, 1);
+  assert.equal(result.stats.craftBriefMissingCount, 0);
+  assert.equal(result.issues.some((issue) => /coreConflict/.test(issue.message)), true);
+  assert.equal(result.issues.some((issue) => /actionBeats/.test(issue.message)), true);
+  assert.equal(result.issues.some((issue) => /concreteClues/.test(issue.message)), true);
+  assert.equal(result.issues.some((issue) => /irreversibleConsequence/.test(issue.message)), true);
+});
+
 test('ValidateImportedAssetsTool 生成导入写入前 diff，并标记重复/已存在资产', async () => {
   const prisma = {
     character: { async findMany() { return [{ name: '林岚' }]; } },

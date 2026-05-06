@@ -24,6 +24,8 @@ export interface ValidateOutlineOutput {
     expectedChapterCount?: number;
     duplicatedChapterNos: number[];
     totalExpectedWordCount: number;
+    craftBriefCount: number;
+    craftBriefMissingCount: number;
   };
   sourceRisks: string[];
   writePreview?: {
@@ -102,6 +104,7 @@ export class ValidateOutlineTool implements BaseTool<ValidateOutlineInput, Valid
       } else if (Number(chapter.expectedWordCount) < 500) {
         issues.push({ severity: 'warning', message: `${label} 的预期字数偏低。`, suggestion: '如非短篇/片段，建议提高到更合理的章节字数。' });
       }
+      this.validateCraftBrief(chapter.craftBrief, label, issues);
     });
 
     const writePreview = await this.buildWritePreview(preview, _context);
@@ -111,6 +114,7 @@ export class ValidateOutlineTool implements BaseTool<ValidateOutlineInput, Valid
   /** 统一构建输出，确保前端和 report_result 都能稳定读取 issueCount/stats。 */
   private buildOutput(issues: OutlineValidationIssue[], chapters: OutlinePreviewOutput['chapters'], expectedChapterCount: number | undefined, sourceRisks: string[], writePreview?: ValidateOutlineOutput['writePreview']): ValidateOutlineOutput {
     const duplicatedChapterNos = this.findDuplicatedNumbers(chapters.map((chapter) => Number(chapter.chapterNo)));
+    const craftBriefCount = chapters.filter((chapter) => Object.keys(this.asRecord(chapter.craftBrief)).length > 0).length;
     return {
       valid: !issues.some((issue) => issue.severity === 'error'),
       issueCount: issues.length,
@@ -120,6 +124,8 @@ export class ValidateOutlineTool implements BaseTool<ValidateOutlineInput, Valid
         expectedChapterCount,
         duplicatedChapterNos,
         totalExpectedWordCount: chapters.reduce((sum, chapter) => sum + (Number(chapter.expectedWordCount) || 0), 0),
+        craftBriefCount,
+        craftBriefMissingCount: Math.max(0, chapters.length - craftBriefCount),
       },
       sourceRisks,
       ...(writePreview ? { writePreview } : {}),
@@ -166,11 +172,56 @@ export class ValidateOutlineTool implements BaseTool<ValidateOutlineInput, Valid
     return [...duplicated].sort((a, b) => a - b);
   }
 
+  private validateCraftBrief(value: unknown, label: string, issues: OutlineValidationIssue[]) {
+    const brief = this.asRecord(value);
+    if (!Object.keys(brief).length) {
+      issues.push({
+        severity: 'warning',
+        message: `${label} 缺少 craftBrief 执行卡。`,
+        suggestion: '旧 outline_preview 可以继续写入，但建议补齐 visibleGoal/coreConflict/actionBeats/concreteClues/irreversibleConsequence 后再用于正文生成。',
+      });
+      return;
+    }
+    if (!this.text(brief.visibleGoal).trim()) {
+      issues.push({ severity: 'warning', message: `${label} 的 craftBrief.visibleGoal 为空。`, suggestion: '补充可被正文检验的表层目标。' });
+    }
+    if (!this.text(brief.coreConflict).trim()) {
+      issues.push({ severity: 'warning', message: `${label} 的 craftBrief.coreConflict 为空。`, suggestion: '补充阻力来源和阻力方式。' });
+    }
+    const actionBeats = this.stringArray(brief.actionBeats);
+    if (actionBeats.length < 3) {
+      issues.push({ severity: 'warning', message: `${label} 的 craftBrief.actionBeats 少于 3 个节点。`, suggestion: '行动链建议至少包含起手行动、正面受阻、阶段结果。' });
+    }
+    const clues = this.asRecordArray(brief.concreteClues).filter((item) => this.text(item.name).trim());
+    if (!clues.length) {
+      issues.push({ severity: 'warning', message: `${label} 缺少 craftBrief.concreteClues。`, suggestion: '至少补 1 个具象线索、物证或可回收细节。' });
+    }
+    if (!this.text(brief.irreversibleConsequence).trim()) {
+      issues.push({ severity: 'warning', message: `${label} 的 craftBrief.irreversibleConsequence 为空。`, suggestion: '结尾后果应改变事实、关系、资源、地位、规则或危险等级之一。' });
+    }
+  }
+
   /** 将上游 LLM 预览字段安全转换为文本，避免非字符串内容导致校验阶段 500。 */
   private text(value: unknown): string {
     if (typeof value === 'string') return value;
     if (typeof value === 'number' || typeof value === 'boolean') return String(value);
     if (value && typeof value === 'object') return JSON.stringify(value);
     return '';
+  }
+
+  private asRecord(value: unknown): Record<string, unknown> {
+    return value && typeof value === 'object' && !Array.isArray(value) ? value as Record<string, unknown> : {};
+  }
+
+  private asRecordArray(value: unknown): Array<Record<string, unknown>> {
+    return Array.isArray(value)
+      ? value.map((item) => this.asRecord(item)).filter((item) => Object.keys(item).length > 0)
+      : [];
+  }
+
+  private stringArray(value: unknown): string[] {
+    return Array.isArray(value)
+      ? value.map((item) => (typeof item === 'string' ? item.trim() : '')).filter(Boolean)
+      : [];
   }
 }
