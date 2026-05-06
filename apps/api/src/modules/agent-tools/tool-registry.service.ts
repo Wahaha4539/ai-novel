@@ -13,6 +13,11 @@ import { EchoReportTool } from './tools/echo-report.tool';
 import { ExtractChapterFactsTool } from './tools/extract-chapter-facts.tool';
 import { FactValidationTool } from './tools/fact-validation.tool';
 import { GenerateGuidedStepPreviewTool } from './tools/generate-guided-step-preview.tool';
+import { GenerateImportCharactersPreviewTool } from './tools/generate-import-characters-preview.tool';
+import { GenerateImportOutlinePreviewTool } from './tools/generate-import-outline-preview.tool';
+import { GenerateImportProjectProfilePreviewTool } from './tools/generate-import-project-profile-preview.tool';
+import { GenerateImportWorldbuildingPreviewTool } from './tools/generate-import-worldbuilding-preview.tool';
+import { GenerateImportWritingRulesPreviewTool } from './tools/generate-import-writing-rules-preview.tool';
 import { GenerateOutlinePreviewTool } from './tools/generate-outline-preview.tool';
 import { GenerateStoryBiblePreviewTool } from './tools/generate-story-bible-preview.tool';
 import { GenerateWorldbuildingPreviewTool } from './tools/generate-worldbuilding-preview.tool';
@@ -85,6 +90,11 @@ export class ToolRegistryService implements OnModuleInit {
     private readonly readSourceDocumentTool: ReadSourceDocumentTool,
     private readonly analyzeSourceTextTool: AnalyzeSourceTextTool,
     private readonly buildImportPreviewTool: BuildImportPreviewTool,
+    private readonly generateImportProjectProfilePreviewTool: GenerateImportProjectProfilePreviewTool,
+    private readonly generateImportOutlinePreviewTool: GenerateImportOutlinePreviewTool,
+    private readonly generateImportCharactersPreviewTool: GenerateImportCharactersPreviewTool,
+    private readonly generateImportWorldbuildingPreviewTool: GenerateImportWorldbuildingPreviewTool,
+    private readonly generateImportWritingRulesPreviewTool: GenerateImportWritingRulesPreviewTool,
     private readonly mergeImportPreviewsTool: MergeImportPreviewsTool,
     private readonly validateImportedAssetsTool: ValidateImportedAssetsTool,
     private readonly persistProjectAssetsTool: PersistProjectAssetsTool,
@@ -127,6 +137,11 @@ export class ToolRegistryService implements OnModuleInit {
     this.register(this.readSourceDocumentTool);
     this.register(this.analyzeSourceTextTool);
     this.register(this.buildImportPreviewTool);
+    this.register(this.generateImportProjectProfilePreviewTool);
+    this.register(this.generateImportOutlinePreviewTool);
+    this.register(this.generateImportCharactersPreviewTool);
+    this.register(this.generateImportWorldbuildingPreviewTool);
+    this.register(this.generateImportWritingRulesPreviewTool);
     this.register(this.mergeImportPreviewsTool);
     this.register(this.validateImportedAssetsTool);
     this.register(this.persistProjectAssetsTool);

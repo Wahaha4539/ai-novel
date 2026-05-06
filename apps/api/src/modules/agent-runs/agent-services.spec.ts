@@ -7013,6 +7013,27 @@ test('AppModule compiles with phase4 CRUD and phase5 quality modules registered'
   assert.ok(registry.get('validate_continuity_changes'));
   assert.ok(registry.get('persist_continuity_changes'));
   assert.ok(registry.get('merge_import_previews'));
+  const targetedImportTools = [
+    ['generate_import_project_profile_preview', /项目资料|作品资料|书名/],
+    ['generate_import_outline_preview', /剧情大纲|卷章结构|章节规划/],
+    ['generate_import_characters_preview', /角色|人设|人物关系/],
+    ['generate_import_worldbuilding_preview', /世界设定|地点|势力|规则/],
+    ['generate_import_writing_rules_preview', /写作规则|文风|视角|节奏/],
+  ] as const;
+  const manifests = registry.listManifestsForPlanner();
+  for (const [toolName, targetPattern] of targetedImportTools) {
+    assert.ok(registry.get(toolName));
+    const manifest = manifests.find((item) => item.name === toolName);
+    assert.ok(manifest);
+    assert.match(manifest.whenToUse.join('；'), targetPattern);
+    assert.match(manifest.whenNotToUse.join('；'), /专用导入预览 Tool/);
+    assert.ok(manifest.parameterHints?.analysis);
+    assert.ok(manifest.parameterHints?.instruction);
+    assert.deepEqual(manifest.allowedModes, ['plan', 'act']);
+    assert.equal(manifest.requiresApproval, false);
+    assert.deepEqual(manifest.sideEffects, []);
+    assert.equal(manifest.riskLevel, 'low');
+  }
   await moduleRef.close();
 });
 

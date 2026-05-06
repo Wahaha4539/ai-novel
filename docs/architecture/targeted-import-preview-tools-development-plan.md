@@ -224,7 +224,7 @@
 
 ### TIP-P1-006 注册所有目标产物 Tool 和 Manifest
 
-- 状态：`[ ]`
+- 状态：`[x]`
 - 模块：API
 - 文件：`apps/api/src/modules/agent-tools/agent-tools.module.ts`、`apps/api/src/modules/agent-tools/tool-registry.service.ts`
 - 任务：注册 P1 新增 Tool，并为每个 Tool 提供 Manifest。
@@ -234,6 +234,11 @@
   - `whenNotToUse` 明确不生成未选择目标产物。
   - `parameterHints` 要求使用 `analysis` 和 `instruction`。
 - 验证：`pnpm --dir apps/api run test:agent`
+- 完成记录：
+  - 2026-05-06：将 `generate_import_project_profile_preview`、`generate_import_outline_preview`、`generate_import_characters_preview`、`generate_import_worldbuilding_preview`、`generate_import_writing_rules_preview` 注册进 `AgentToolsModule` providers 和 `ToolRegistryService`。
+  - 2026-05-06：更新 AppModule registry 测试，确认 Planner manifest 能看到五个目标 Tool，且每个 Tool 暴露目标明确的 `whenToUse`、不混用目标的 `whenNotToUse`、`analysis`/`instruction` 参数提示，以及只读低风险元数据。
+  - 修改文件：`apps/api/src/modules/agent-tools/agent-tools.module.ts`、`apps/api/src/modules/agent-tools/tool-registry.service.ts`、`apps/api/src/modules/agent-runs/agent-services.spec.ts`、`docs/architecture/targeted-import-preview-tools-development-plan.md`。
+  - 验证结果：`pnpm --dir apps/api run test:agent` 通过，167 项测试通过。
 
 ### TIP-P1-007 Planner 单目标和多目标测试
 
