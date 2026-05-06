@@ -12,7 +12,7 @@ import { AgentAuditPanel } from './AgentAuditPanel';
 import { AgentResultPanel } from './AgentResultPanel';
 import { AgentObservationPanel } from './AgentObservationPanel';
 import { AgentRunHistoryPanel } from './AgentRunHistoryPanel';
-import { StatusBadge, approvalRiskSummary, latestPlan, latestPlanVersion } from './AgentSharedWidgets';
+import { PROJECT_IMPORT_ASSET_LABELS, StatusBadge, approvalRiskSummary, latestPlan, latestPlanVersion, type ProjectImportAssetType } from './AgentSharedWidgets';
 
 type PanelTab = 'task' | 'detail' | 'history';
 type AgentMode = 'plan' | 'act';
@@ -248,6 +248,15 @@ export function AgentFloatingPanel({
     setActiveTab('detail');
   }, [currentRun, listByProject, projectId, pushMessage, replan]);
 
+  const handleImportTargetRegeneration = useCallback(async (assetType: ProjectImportAssetType) => {
+    if (!currentRun) return;
+    const label = PROJECT_IMPORT_ASSET_LABELS[assetType] ?? assetType;
+    pushMessage('user', `重新生成${label}`);
+    await replan(currentRun.id, `用户请求只重新生成${label}预览；保留其他已选择目标产物预览，写入仍需审批。`, { importTargetRegeneration: { assetType } });
+    await listByProject(projectId);
+    setActiveTab('detail');
+  }, [currentRun, listByProject, projectId, pushMessage, replan]);
+
   const handleToggleApproval = useCallback((stepNo: number) => {
     setApprovedStepNos((current) =>
       current.includes(stepNo) ? current.filter((n) => n !== stepNo) : [...current, stepNo].sort((a, b) => a - b),
@@ -392,6 +401,7 @@ export function AgentFloatingPanel({
               onAct={handleAct}
               onAnswerClarification={handleClarification}
               onRequestWorldbuildingPersistSelection={handleWorldbuildingPersistSelection}
+              onRequestImportTargetRegeneration={handleImportTargetRegeneration}
             />
           )}
 
@@ -450,6 +460,7 @@ function DetailTabContent(props: {
   onAct: () => void | Promise<void>;
   onAnswerClarification: (choice: Parameters<ReturnType<typeof useAgentRun>['answerClarification']>[1]) => void | Promise<void>;
   onRequestWorldbuildingPersistSelection: (titles: string[]) => void | Promise<void>;
+  onRequestImportTargetRegeneration: (assetType: ProjectImportAssetType) => void | Promise<void>;
 }) {
   return (
     <div className="space-y-4">
@@ -479,6 +490,7 @@ function DetailTabContent(props: {
         query={props.artifactQuery}
         onQueryChange={props.onArtifactQueryChange}
         onRequestWorldbuildingPersistSelection={props.onRequestWorldbuildingPersistSelection}
+        onRequestImportTargetRegeneration={props.onRequestImportTargetRegeneration}
         actionDisabled={props.loading}
       />
       <AgentAuditPanel events={props.auditEvents} />

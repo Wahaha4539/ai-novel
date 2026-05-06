@@ -15,6 +15,7 @@ import {
   projectImportTargetSources,
   safeJson,
   textValue,
+  type ProjectImportAssetType,
   type ProjectImportTargetSource,
 } from './AgentSharedWidgets';
 
@@ -69,11 +70,12 @@ interface ArtifactSourceInfo {
   tool: string;
   verb: '生成' | '校验' | '写入';
   scope?: string;
+  assetType?: ProjectImportAssetType;
 }
 
 function artifactSourceInfo(artifactType: string | undefined, targetSources: ProjectImportTargetSource[], projectImportAssetLabels: string[]): ArtifactSourceInfo | undefined {
   const targetSource = targetSources.find((source) => source.artifactType === artifactType);
-  if (targetSource) return { label: targetSource.label, tool: targetSource.tool, verb: '生成' };
+  if (targetSource) return { label: targetSource.label, tool: targetSource.tool, verb: '生成', assetType: targetSource.assetType };
   if (artifactType === 'import_validation_report') return { label: '导入预览', tool: 'validate_imported_assets', verb: '校验' };
   if (artifactType === 'import_persist_result') {
     return {
@@ -95,11 +97,12 @@ interface AgentArtifactPanelProps {
   query: string;
   onQueryChange: (value: string) => void;
   onRequestWorldbuildingPersistSelection?: (titles: string[]) => void | Promise<void>;
+  onRequestImportTargetRegeneration?: (assetType: ProjectImportAssetType) => void | Promise<void>;
   actionDisabled?: boolean;
 }
 
 /** 产物预览面板：搜索、去重、按类型渲染业务化摘要 */
-export function AgentArtifactPanel({ run, query, onQueryChange, onRequestWorldbuildingPersistSelection, actionDisabled }: AgentArtifactPanelProps) {
+export function AgentArtifactPanel({ run, query, onQueryChange, onRequestWorldbuildingPersistSelection, onRequestImportTargetRegeneration, actionDisabled }: AgentArtifactPanelProps) {
   const plan = latestPlan(run);
   const targetSources = useMemo(() => projectImportTargetSources(plan), [plan]);
   const writeInfo = useMemo(() => planWriteInfo(plan), [plan]);
@@ -134,6 +137,7 @@ export function AgentArtifactPanel({ run, query, onQueryChange, onRequestWorldbu
               content={artifact.content}
               sourceInfo={artifactSourceInfo(artifact.artifactType, targetSources, writeInfo.projectImportAssetLabels)}
               onRequestWorldbuildingPersistSelection={onRequestWorldbuildingPersistSelection}
+              onRequestImportTargetRegeneration={onRequestImportTargetRegeneration}
               actionDisabled={actionDisabled}
             />
           ))}
@@ -174,6 +178,7 @@ function ArtifactCard({
   content,
   sourceInfo,
   onRequestWorldbuildingPersistSelection,
+  onRequestImportTargetRegeneration,
   actionDisabled,
 }: {
   artifactType?: string;
@@ -181,6 +186,7 @@ function ArtifactCard({
   content?: unknown;
   sourceInfo?: ArtifactSourceInfo;
   onRequestWorldbuildingPersistSelection?: (titles: string[]) => void | Promise<void>;
+  onRequestImportTargetRegeneration?: (assetType: ProjectImportAssetType) => void | Promise<void>;
   actionDisabled?: boolean;
 }) {
   return (
@@ -192,7 +198,7 @@ function ArtifactCard({
         <span className="agent-artifact-card__arrow" aria-hidden="true">▸</span>
       </summary>
       <div className="agent-artifact-card__body">
-        {sourceInfo && <ArtifactSourceLine sourceInfo={sourceInfo} />}
+        {sourceInfo && <ArtifactSourceLine sourceInfo={sourceInfo} onRequestImportTargetRegeneration={onRequestImportTargetRegeneration} actionDisabled={actionDisabled} />}
         <TypedArtifactPreview
           artifactType={artifactType}
           content={content}
@@ -208,7 +214,15 @@ function ArtifactCard({
   );
 }
 
-function ArtifactSourceLine({ sourceInfo }: { sourceInfo: ArtifactSourceInfo }) {
+function ArtifactSourceLine({
+  sourceInfo,
+  onRequestImportTargetRegeneration,
+  actionDisabled,
+}: {
+  sourceInfo: ArtifactSourceInfo;
+  onRequestImportTargetRegeneration?: (assetType: ProjectImportAssetType) => void | Promise<void>;
+  actionDisabled?: boolean;
+}) {
   return (
     <div className="mb-3 flex flex-wrap items-center gap-2 text-xs" style={{ color: 'var(--text-muted)' }}>
       <span
@@ -226,6 +240,18 @@ function ArtifactSourceLine({ sourceInfo }: { sourceInfo: ArtifactSourceInfo }) 
         >
           写入范围：{sourceInfo.scope}
         </span>
+      )}
+      {sourceInfo.assetType && onRequestImportTargetRegeneration && (
+        <button
+          type="button"
+          className="agent-new-session-btn"
+          onClick={() => void onRequestImportTargetRegeneration(sourceInfo.assetType!)}
+          disabled={actionDisabled}
+          title={`只重新生成${sourceInfo.label}预览，写入仍需确认`}
+          style={{ padding: '0.35rem 0.55rem', fontSize: 11 }}
+        >
+          重新生成{sourceInfo.label}
+        </button>
       )}
     </div>
   );

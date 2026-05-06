@@ -314,6 +314,15 @@ export class AgentRunsService {
     if (!run) throw new NotFoundException(`AgentRun 不存在：${id}`);
     if (run.status === 'acting') throw new BadRequestException('acting 状态不能重新规划，请等待执行结束或取消');
 
+    const regenerationAssetType = dto.importTargetRegeneration?.assetType;
+    if (dto.importTargetRegeneration !== undefined) {
+      if (!regenerationAssetType || !this.importAssetTypes.has(regenerationAssetType)) {
+        throw new BadRequestException('importTargetRegeneration.assetType 只支持 projectProfile/outline/characters/worldbuilding/writingRules');
+      }
+      await this.runtime.replanImportTargetRegeneration(id, regenerationAssetType, dto.message);
+      return this.get(id);
+    }
+
     const selectedTitles = dto.worldbuildingSelection?.selectedTitles;
     if (selectedTitles !== undefined) {
       const normalizedTitles = [...new Set(selectedTitles.map((title) => typeof title === 'string' ? title.trim() : '').filter(Boolean))];

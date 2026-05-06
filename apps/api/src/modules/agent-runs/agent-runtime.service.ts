@@ -28,12 +28,39 @@ type ProjectImportPreviewArtifact = {
 
 type ProjectImportAssetType = 'projectProfile' | 'outline' | 'characters' | 'worldbuilding' | 'writingRules';
 
+const PROJECT_IMPORT_ASSET_TYPES: ProjectImportAssetType[] = ['projectProfile', 'outline', 'characters', 'worldbuilding', 'writingRules'];
+const CROSS_TARGET_CONSISTENCY_CHECK_TOOL = 'cross_target_consistency_check';
+
+const PROJECT_IMPORT_TARGET_TOOL_BY_ASSET_TYPE: Record<ProjectImportAssetType, string> = {
+  projectProfile: 'generate_import_project_profile_preview',
+  outline: 'generate_import_outline_preview',
+  characters: 'generate_import_characters_preview',
+  worldbuilding: 'generate_import_worldbuilding_preview',
+  writingRules: 'generate_import_writing_rules_preview',
+};
+
 const PROJECT_IMPORT_TARGET_TOOL_ASSET_TYPE: Record<string, ProjectImportAssetType> = {
   generate_import_project_profile_preview: 'projectProfile',
   generate_import_outline_preview: 'outline',
   generate_import_characters_preview: 'characters',
   generate_import_worldbuilding_preview: 'worldbuilding',
   generate_import_writing_rules_preview: 'writingRules',
+};
+
+const MERGE_PREVIEW_ARG_BY_ASSET_TYPE: Record<ProjectImportAssetType, string> = {
+  projectProfile: 'projectProfilePreview',
+  outline: 'outlinePreview',
+  characters: 'charactersPreview',
+  worldbuilding: 'worldbuildingPreview',
+  writingRules: 'writingRulesPreview',
+};
+
+const PROJECT_IMPORT_ASSET_LABELS: Record<ProjectImportAssetType, string> = {
+  projectProfile: 'project profile',
+  outline: 'outline',
+  characters: 'characters',
+  worldbuilding: 'worldbuilding',
+  writingRules: 'writing rules',
 };
 
 /** 编排 AgentRun 状态机：Plan 阶段生成预览，Act 阶段执行已审批工具。 */
@@ -221,6 +248,118 @@ export class AgentRuntimeService {
    * 世界观预览勾选后的专用局部重规划：只 patch persist_worldbuilding.selectedTitles，
    * 不重新请求 LLM，避免用户明确选择在自然语言 replan 中丢失或被扩大写入范围。
    */
+  async replanImportTargetRegeneration(agentRunId: string, assetType: ProjectImportAssetType, message?: string) {
+    const run = await this.prisma.agentRun.findUnique({ where: { id: agentRunId } });
+    if (!run) throw new Error(`AgentRun 不存在：${agentRunId}`);
+    const latest = await this.prisma.agentPlan.findFirst({ where: { agentRunId }, orderBy: { version: 'desc' } });
+    if (!latest) throw new Error('Missing plan for import target regeneration');
+    if (latest.taskType !== 'project_import_preview') throw new Error('Import target regeneration only supports project_import_preview plans');
+
+    const previousSteps = Array.isArray(latest.steps) ? latest.steps as unknown as AgentPlanSpec['steps'] : [];
+    const history = await this.loadImportRegenerationHistory(agentRunId, latest.version, previousSteps);
+    const requestedAssetTypes = this.resolveImportRegenerationAssetScope(previousSteps, history.unifiedPreview, history.targetPreviewByAssetType);
+    if (!requestedAssetTypes.includes(assetType)) {
+      throw new Error(`Cannot regenerate ${assetType}; it is outside the current import target scope`);
+    }
+
+    const steps = this.buildImportTargetRegenerationSteps({
+      assetType,
+      requestedAssetTypes,
+      previousSteps,
+      targetPreviewByAssetType: history.targetPreviewByAssetType,
+      unifiedPreview: history.unifiedPreview,
+      analysis: history.analysis,
+      importBrief: history.importBrief,
+      instruction: message?.trim() || run.goal,
+      projectContext: this.projectContextFromRunInput(run.input),
+    });
+    const nextVersion = latest.version + 1;
+    const summary = `Regenerate ${PROJECT_IMPORT_ASSET_LABELS[assetType]} import preview only; existing selected targets are preserved.`;
+    const plan: AgentPlanSpec = {
+      schemaVersion: 2,
+      understanding: summary,
+      userGoal: message?.trim() || run.goal,
+      taskType: 'project_import_preview',
+      confidence: 1,
+      summary,
+      assumptions: [
+        'Reuses the latest successful source analysis and import brief as literal inputs.',
+        'Only the requested import target preview tool is rerun.',
+      ],
+      risks: [
+        'persist_project_assets remains approval-gated and reads the merged preview.',
+      ],
+      steps,
+      requiredApprovals: this.requiredApprovalsForSteps(steps),
+      riskReview: {
+        riskLevel: 'medium',
+        reasons: ['The final persist_project_assets step can write project assets after approval.'],
+        requiresApproval: true,
+        approvalMessage: 'Confirm before writing regenerated import assets.',
+      },
+      userVisiblePlan: {
+        summary,
+        bullets: [
+          `Regenerate ${PROJECT_IMPORT_ASSET_LABELS[assetType]} preview.`,
+          'Merge it with the unchanged previews for the other selected targets.',
+          'Validate and wait for approval before persisting.',
+        ],
+        hiddenTechnicalSteps: true,
+      },
+      plannerDiagnostics: {
+        source: 'runtime_patch',
+        patchType: 'import_target_regeneration',
+        assetType,
+        requestedAssetTypes,
+        replannedFromVersion: latest.version,
+      },
+    };
+
+    await this.prisma.agentRun.update({ where: { id: agentRunId }, data: { status: 'planning', mode: 'plan', error: null } });
+    const savedPlan = await this.prisma.agentPlan.create({
+      data: {
+        agentRunId,
+        version: nextVersion,
+        status: 'waiting_approval',
+        taskType: plan.taskType,
+        summary: plan.summary,
+        assumptions: plan.assumptions as Prisma.InputJsonValue,
+        risks: plan.risks as Prisma.InputJsonValue,
+        steps: plan.steps as unknown as Prisma.InputJsonValue,
+        requiredApprovals: plan.requiredApprovals as unknown as Prisma.InputJsonValue,
+      },
+    });
+
+    await this.prisma.agentArtifact.create({
+      data: { agentRunId, artifactType: 'agent_plan_preview', title: `Agent 执行计划预览 v${savedPlan.version}（重新生成 ${PROJECT_IMPORT_ASSET_LABELS[assetType]}）`, content: plan as unknown as Prisma.InputJsonValue, status: 'preview' },
+    });
+    await this.trace.recordDecision(agentRunId, { name: 'Import target regeneration plan', mode: 'plan', planVersion: nextVersion, input: { assetType, message, requestedAssetTypes }, output: { stepCount: steps.length, requiredApprovals: plan.requiredApprovals } });
+
+    const previewOutputs = await this.executor.execute(agentRunId, steps, { mode: 'plan', planVersion: nextVersion, approved: false, previewOnly: true });
+    const previewArtifacts = this.buildPreviewArtifacts(plan.taskType, previewOutputs, steps);
+    if (previewArtifacts.length) {
+      await this.prisma.agentArtifact.createMany({
+        data: previewArtifacts.map((preview) => ({
+          agentRunId,
+          artifactType: preview.artifactType,
+          title: `${preview.title} v${savedPlan.version}`,
+          content: preview.content as Prisma.InputJsonValue,
+          status: 'preview',
+        })),
+      });
+    }
+
+    return this.prisma.agentRun.update({
+      where: { id: agentRunId },
+      data: {
+        status: 'waiting_approval',
+        taskType: plan.taskType,
+        error: null,
+        output: { planId: savedPlan.id, replannedFromVersion: latest.version, importTargetRegeneration: { assetType } } as unknown as Prisma.InputJsonValue,
+      },
+    });
+  }
+
   async replanWorldbuildingSelection(agentRunId: string, selectedTitles: string[], message?: string) {
     const run = await this.prisma.agentRun.findUnique({ where: { id: agentRunId } });
     if (!run) throw new Error(`AgentRun 不存在：${agentRunId}`);
@@ -449,6 +588,195 @@ export class AgentRuntimeService {
 
   private removeUndefinedArgs(args: Record<string, unknown>) {
     return Object.fromEntries(Object.entries(args).filter(([, value]) => value !== undefined));
+  }
+
+  private async loadImportRegenerationHistory(agentRunId: string, planVersion: number, previousSteps: AgentPlanSpec['steps']) {
+    const records = await this.prisma.agentStep.findMany({
+      where: { agentRunId, planVersion, mode: 'plan', status: 'succeeded' },
+      orderBy: { stepNo: 'asc' },
+      select: { stepNo: true, toolName: true, input: true, output: true },
+    });
+    const outputs: Record<number, unknown> = {};
+    const targetPreviewByAssetType = new Map<ProjectImportAssetType, unknown>();
+    let analysis: unknown;
+    let importBrief: unknown;
+    let unifiedPreview: ProjectImportPreviewArtifact | undefined;
+
+    for (const record of records) {
+      if (record.output !== null && record.output !== undefined) outputs[record.stepNo] = record.output;
+      const input = this.asRecord(record.input);
+      if (analysis === undefined && input.analysis !== undefined) analysis = input.analysis;
+      if (importBrief === undefined && input.importBrief !== undefined) importBrief = input.importBrief;
+      if (record.toolName === 'analyze_source_text') analysis = record.output;
+      if (record.toolName === 'build_import_brief') importBrief = record.output;
+      const assetType = record.toolName ? PROJECT_IMPORT_TARGET_TOOL_ASSET_TYPE[record.toolName] : undefined;
+      if (assetType && record.output !== null && record.output !== undefined) targetPreviewByAssetType.set(assetType, record.output);
+      if (record.toolName === 'merge_import_previews' && record.output) unifiedPreview = record.output as ProjectImportPreviewArtifact;
+      if (!unifiedPreview && record.toolName === 'build_import_preview' && record.output) unifiedPreview = record.output as ProjectImportPreviewArtifact;
+    }
+
+    unifiedPreview ??= this.buildProjectImportPreviewFromTargetOutputs(outputs, previousSteps);
+    if (analysis === undefined) throw new Error('Missing historical analyze_source_text output for import target regeneration');
+    return { analysis, importBrief, unifiedPreview, targetPreviewByAssetType };
+  }
+
+  private resolveImportRegenerationAssetScope(steps: AgentPlanSpec['steps'], unifiedPreview: ProjectImportPreviewArtifact | undefined, targetPreviewByAssetType: Map<ProjectImportAssetType, unknown>): ProjectImportAssetType[] {
+    const planScope = this.requestedImportAssetTypesFromPlan(steps);
+    if (planScope.length) return planScope;
+    const previewScope = this.normalizeProjectImportAssetTypes(this.asRecord(unifiedPreview).requestedAssetTypes);
+    if (previewScope.length) return previewScope;
+    const targetScope = this.uniqueProjectImportAssetTypes([...targetPreviewByAssetType.keys()]);
+    if (targetScope.length) return targetScope;
+    return this.inferImportAssetTypesFromPreview(unifiedPreview);
+  }
+
+  private buildImportTargetRegenerationSteps(input: {
+    assetType: ProjectImportAssetType;
+    requestedAssetTypes: ProjectImportAssetType[];
+    previousSteps: AgentPlanSpec['steps'];
+    targetPreviewByAssetType: Map<ProjectImportAssetType, unknown>;
+    unifiedPreview?: ProjectImportPreviewArtifact;
+    analysis: unknown;
+    importBrief?: unknown;
+    instruction: string;
+    projectContext?: unknown;
+  }): AgentPlanSpec['steps'] {
+    const targetTool = PROJECT_IMPORT_TARGET_TOOL_BY_ASSET_TYPE[input.assetType];
+    const targetStep: AgentPlanSpec['steps'][number] = {
+      id: targetTool,
+      stepNo: 1,
+      name: `Regenerate ${PROJECT_IMPORT_ASSET_LABELS[input.assetType]} import preview`,
+      purpose: `Only rerun ${targetTool} for the selected import target.`,
+      tool: targetTool,
+      mode: 'act',
+      requiresApproval: false,
+      args: this.removeUndefinedArgs({
+        analysis: input.analysis,
+        importBrief: input.importBrief,
+        instruction: input.instruction,
+        projectContext: input.projectContext,
+      }),
+    };
+
+    const mergeArgs: Record<string, unknown> = { requestedAssetTypes: input.requestedAssetTypes };
+    for (const assetType of input.requestedAssetTypes) {
+      const mergeArg = MERGE_PREVIEW_ARG_BY_ASSET_TYPE[assetType];
+      mergeArgs[mergeArg] = assetType === input.assetType
+        ? '{{steps.1.output}}'
+        : this.previousPreviewForAsset(assetType, input.targetPreviewByAssetType, input.unifiedPreview);
+    }
+
+    const steps: AgentPlanSpec['steps'] = [
+      targetStep,
+      {
+        id: 'merge_import_previews',
+        stepNo: 2,
+        name: 'Merge regenerated import preview',
+        purpose: 'Replace only the regenerated target preview and preserve literal old previews for the other selected targets.',
+        tool: 'merge_import_previews',
+        mode: 'act',
+        requiresApproval: false,
+        args: mergeArgs,
+      },
+    ];
+
+    if (input.previousSteps.some((step) => step.tool === CROSS_TARGET_CONSISTENCY_CHECK_TOOL)) {
+      steps.push({
+        id: CROSS_TARGET_CONSISTENCY_CHECK_TOOL,
+        stepNo: steps.length + 1,
+        name: 'Check cross-target consistency',
+        purpose: 'Validate consistency after replacing one target preview.',
+        tool: CROSS_TARGET_CONSISTENCY_CHECK_TOOL,
+        mode: 'act',
+        requiresApproval: false,
+        args: { preview: '{{steps.2.output}}', instruction: input.instruction },
+      });
+    }
+
+    steps.push(
+      {
+        id: 'validate_imported_assets',
+        stepNo: steps.length + 1,
+        name: 'Validate regenerated import preview',
+        purpose: 'Validate the merged import preview before any write step.',
+        tool: 'validate_imported_assets',
+        mode: 'act',
+        requiresApproval: false,
+        args: { preview: '{{steps.2.output}}' },
+      },
+      {
+        id: 'persist_project_assets',
+        stepNo: steps.length + 2,
+        name: 'Persist regenerated import assets after approval',
+        purpose: 'Write the merged preview only after explicit user approval.',
+        tool: 'persist_project_assets',
+        mode: 'act',
+        requiresApproval: true,
+        args: { preview: '{{steps.2.output}}' },
+      },
+    );
+    return steps;
+  }
+
+  private previousPreviewForAsset(assetType: ProjectImportAssetType, targetPreviewByAssetType: Map<ProjectImportAssetType, unknown>, unifiedPreview: ProjectImportPreviewArtifact | undefined) {
+    const targetPreview = targetPreviewByAssetType.get(assetType);
+    if (targetPreview !== undefined) return targetPreview;
+    const sliced = this.sliceUnifiedPreviewForAsset(assetType, unifiedPreview);
+    if (sliced !== undefined) return sliced;
+    throw new Error(`Missing historical ${assetType} preview for import target regeneration`);
+  }
+
+  private sliceUnifiedPreviewForAsset(assetType: ProjectImportAssetType, unifiedPreview: ProjectImportPreviewArtifact | undefined): unknown {
+    const preview = this.asRecord(unifiedPreview);
+    if (!Object.keys(preview).length) return undefined;
+    const risks = Array.isArray(preview.risks) ? preview.risks : [];
+    if (assetType === 'projectProfile') return { projectProfile: this.projectProfileWithoutOutline(preview.projectProfile), risks };
+    if (assetType === 'outline') {
+      const profile = this.asRecord(preview.projectProfile);
+      return { projectProfile: this.removeUndefinedArgs({ outline: profile.outline }), volumes: preview.volumes ?? [], chapters: preview.chapters ?? [], risks };
+    }
+    if (assetType === 'characters') return { characters: preview.characters ?? [], risks };
+    if (assetType === 'worldbuilding') return { lorebookEntries: preview.lorebookEntries ?? [], risks };
+    if (assetType === 'writingRules') return { writingRules: preview.writingRules ?? [], risks };
+    return undefined;
+  }
+
+  private requestedImportAssetTypesFromPlan(steps: AgentPlanSpec['steps']) {
+    for (const step of steps) {
+      if (step.tool === 'merge_import_previews' || step.tool === 'build_import_preview') {
+        const explicit = this.normalizeProjectImportAssetTypes(this.asRecord(step.args).requestedAssetTypes);
+        if (explicit.length) return explicit;
+      }
+    }
+    return this.uniqueProjectImportAssetTypes(steps.map((step) => PROJECT_IMPORT_TARGET_TOOL_ASSET_TYPE[step.tool]).filter((item): item is ProjectImportAssetType => Boolean(item)));
+  }
+
+  private inferImportAssetTypesFromPreview(preview: ProjectImportPreviewArtifact | undefined) {
+    const record = this.asRecord(preview);
+    const profile = this.asRecord(record.projectProfile);
+    const inferred: ProjectImportAssetType[] = [];
+    if (['title', 'genre', 'theme', 'tone', 'logline', 'synopsis'].some((key) => profile[key] !== undefined)) inferred.push('projectProfile');
+    if (profile.outline !== undefined || (Array.isArray(record.volumes) && record.volumes.length) || (Array.isArray(record.chapters) && record.chapters.length)) inferred.push('outline');
+    if (Array.isArray(record.characters) && record.characters.length) inferred.push('characters');
+    if (Array.isArray(record.lorebookEntries) && record.lorebookEntries.length) inferred.push('worldbuilding');
+    if (Array.isArray(record.writingRules) && record.writingRules.length) inferred.push('writingRules');
+    return this.uniqueProjectImportAssetTypes(inferred);
+  }
+
+  private normalizeProjectImportAssetTypes(value: unknown) {
+    if (!Array.isArray(value)) return [];
+    return this.uniqueProjectImportAssetTypes(value.filter((item): item is ProjectImportAssetType => typeof item === 'string' && PROJECT_IMPORT_ASSET_TYPES.includes(item as ProjectImportAssetType)));
+  }
+
+  private uniqueProjectImportAssetTypes(value: ProjectImportAssetType[]) {
+    const selected = new Set(value);
+    return PROJECT_IMPORT_ASSET_TYPES.filter((assetType) => selected.has(assetType));
+  }
+
+  private projectContextFromRunInput(input: unknown) {
+    const contextSnapshot = this.asRecord(this.asRecord(input).contextSnapshot);
+    const project = this.asRecord(contextSnapshot.project);
+    return Object.keys(project).length ? project : undefined;
   }
 
   private requiredApprovalsForSteps(steps: AgentPlanSpec['steps']) {

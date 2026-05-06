@@ -337,7 +337,7 @@
 
 ### TIP-P2-003 支持单目标重新生成
 
-- 状态：`[ ]`
+- 状态：`[x]`
 - 模块：API/Web
 - 文件：`AgentArtifactPanel.tsx`、`AgentRuntimeService`、Planner replan 相关文件
 - 任务：用户可以只重生成某一个目标产物，不影响其他预览。
@@ -346,6 +346,12 @@
   - 新 Plan 只重跑对应目标 Tool、merge、validate。
   - 写入仍需确认。
 - 验证：`pnpm --dir apps/api run test:agent`、`pnpm --dir apps/web run build`
+- 完成记录：
+  - 2026-05-06：Web Artifact 面板对分目标导入预览展示“重新生成X”操作，FloatingPanel/Workspace 通过 `useAgentRun.replan` 传入 `importTargetRegeneration.assetType`，操作后刷新历史并回到详情预览。
+  - 2026-05-06：API `ReplanAgentRunDto`、Controller、Service 增加单目标重生成入口和白名单校验；Runtime 新增 `replanImportTargetRegeneration`，复用历史 `analyze_source_text`/`build_import_brief` 输出，只重跑目标 Tool、`merge_import_previews`、可用时的 `cross_target_consistency_check`、`validate_imported_assets`，并保留 `persist_project_assets` 作为唯一审批写入入口。
+  - 2026-05-06：单目标重生成会保留其他已选目标旧预览作为 literal input，拒绝重生成当前导入范围外的合法 assetType，不删除 `build_import_preview` fallback 链路。
+  - 修改文件：`apps/api/src/modules/agent-runs/dto/create-agent-plan.dto.ts`、`apps/api/src/modules/agent-runs/agent-runs.controller.ts`、`apps/api/src/modules/agent-runs/agent-runs.service.ts`、`apps/api/src/modules/agent-runs/agent-runtime.service.ts`、`apps/api/src/modules/agent-runs/agent-services.spec.ts`、`apps/web/hooks/useAgentRun.ts`、`apps/web/components/agent/AgentArtifactPanel.tsx`、`apps/web/components/agent/AgentFloatingPanel.tsx`、`apps/web/components/agent/AgentWorkspace.tsx`、`docs/architecture/targeted-import-preview-tools-development-plan.md`。
+  - 验证结果：`pnpm --dir apps/api run test:agent` 通过，179 项测试通过；`pnpm --dir apps/web run build` 通过；`git diff --check` 通过。
 
 ### TIP-P2-004 增加快速模式和深度模式
 

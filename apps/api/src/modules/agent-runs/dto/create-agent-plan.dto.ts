@@ -80,6 +80,12 @@ export class ReplanAgentRunDto {
   worldbuildingSelection?: {
     selectedTitles?: string[];
   };
+
+  @IsOptional()
+  @IsObject()
+  importTargetRegeneration?: {
+    assetType?: ImportAssetTypeDto;
+  };
 }
 
 export class AgentClarificationChoiceDto {

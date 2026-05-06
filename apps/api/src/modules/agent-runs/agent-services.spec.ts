@@ -7422,6 +7422,200 @@ test('AppModule compiles with phase4 CRUD and phase5 quality modules registered'
   await moduleRef.close();
 });
 
+test('AgentRuntime importTargetRegeneration writingRules creates scoped plan version preserving old target previews', async () => {
+  const createdPlans: Array<Record<string, unknown>> = [];
+  const createdArtifacts: Array<Record<string, unknown>> = [];
+  const createdArtifactBatches: Array<Record<string, unknown>[]> = [];
+  let updatedRun: Record<string, unknown> | undefined;
+  let executedSteps: Array<{ tool: string; args: Record<string, unknown>; requiresApproval: boolean }> = [];
+  const analysisOutput = { sourceText: 'source text', paragraphs: ['source text'], keywords: ['rule'] };
+  const importBriefOutput = { theme: 'memory', tone: 'quiet', requestedAssetTypes: ['projectProfile', 'outline', 'characters', 'worldbuilding', 'writingRules'] };
+  const projectProfilePreview = { projectProfile: { title: 'Old Title', genre: 'mystery' }, risks: ['profile risk'] };
+  const outlinePreview = { projectProfile: { outline: 'Old outline' }, volumes: [{ volumeNo: 1, title: 'Vol 1' }], chapters: [{ chapterNo: 1, title: 'Ch 1' }], risks: ['outline risk'] };
+  const charactersPreview = { characters: [{ name: 'Lin', roleType: 'lead' }], risks: ['character risk'] };
+  const worldbuildingPreview = { lorebookEntries: [{ title: 'Fog City', content: 'Old setting' }], risks: ['world risk'] };
+  const writingRulesPreview = { writingRules: [{ title: 'Old POV', content: 'Old rule' }], risks: ['rule risk'] };
+  const mergedPreview = {
+    requestedAssetTypes: ['projectProfile', 'outline', 'characters', 'worldbuilding', 'writingRules'],
+    projectProfile: { title: 'Old Title', genre: 'mystery', outline: 'Old outline' },
+    characters: charactersPreview.characters,
+    lorebookEntries: worldbuildingPreview.lorebookEntries,
+    writingRules: writingRulesPreview.writingRules,
+    volumes: outlinePreview.volumes,
+    chapters: outlinePreview.chapters,
+    risks: [],
+  };
+  const previousSteps = [
+    { stepNo: 1, id: 'read', name: 'Read', tool: 'read_source_document', mode: 'act' as const, requiresApproval: false, args: {} },
+    { stepNo: 2, id: 'analyze', name: 'Analyze', tool: 'analyze_source_text', mode: 'act' as const, requiresApproval: false, args: {} },
+    { stepNo: 3, id: 'brief', name: 'Brief', tool: 'build_import_brief', mode: 'act' as const, requiresApproval: false, args: {} },
+    { stepNo: 4, id: 'profile', name: 'Profile', tool: 'generate_import_project_profile_preview', mode: 'act' as const, requiresApproval: false, args: {} },
+    { stepNo: 5, id: 'outline', name: 'Outline', tool: 'generate_import_outline_preview', mode: 'act' as const, requiresApproval: false, args: {} },
+    { stepNo: 6, id: 'characters', name: 'Characters', tool: 'generate_import_characters_preview', mode: 'act' as const, requiresApproval: false, args: {} },
+    { stepNo: 7, id: 'world', name: 'World', tool: 'generate_import_worldbuilding_preview', mode: 'act' as const, requiresApproval: false, args: {} },
+    { stepNo: 8, id: 'rules', name: 'Rules', tool: 'generate_import_writing_rules_preview', mode: 'act' as const, requiresApproval: false, args: {} },
+    { stepNo: 9, id: 'merge', name: 'Merge', tool: 'merge_import_previews', mode: 'act' as const, requiresApproval: false, args: { requestedAssetTypes: ['projectProfile', 'outline', 'characters', 'worldbuilding', 'writingRules'], projectProfilePreview: '{{steps.4.output}}', outlinePreview: '{{steps.5.output}}', charactersPreview: '{{steps.6.output}}', worldbuildingPreview: '{{steps.7.output}}', writingRulesPreview: '{{steps.8.output}}' } },
+    { stepNo: 10, id: 'cross', name: 'Cross', tool: 'cross_target_consistency_check', mode: 'act' as const, requiresApproval: false, args: { preview: '{{steps.9.output}}' } },
+    { stepNo: 11, id: 'validate', name: 'Validate', tool: 'validate_imported_assets', mode: 'act' as const, requiresApproval: false, args: { preview: '{{steps.9.output}}' } },
+    { stepNo: 12, id: 'persist', name: 'Persist', tool: 'persist_project_assets', mode: 'act' as const, requiresApproval: true, args: { preview: '{{steps.9.output}}' } },
+  ];
+  const prisma = {
+    agentRun: {
+      async findUnique() { return { id: 'run1', projectId: 'p1', chapterId: null, goal: 'Import selected targets', input: { contextSnapshot: { project: { id: 'p1', title: 'Project' } } } }; },
+      async update(args: { data: Record<string, unknown> }) { updatedRun = args.data; return { id: 'run1', ...args.data }; },
+    },
+    agentPlan: {
+      async findFirst() {
+        return {
+          id: 'plan2',
+          version: 2,
+          taskType: 'project_import_preview',
+          summary: 'Import preview',
+          assumptions: [],
+          risks: [],
+          requiredApprovals: [{ target: { stepNos: [12], tools: ['persist_project_assets'] } }],
+          steps: previousSteps,
+        };
+      },
+      async create(args: { data: Record<string, unknown> }) { createdPlans.push(args.data); return { id: 'plan3', version: args.data.version }; },
+    },
+    agentStep: {
+      async findMany() {
+        return [
+          { stepNo: 2, toolName: 'analyze_source_text', input: {}, output: analysisOutput },
+          { stepNo: 3, toolName: 'build_import_brief', input: {}, output: importBriefOutput },
+          { stepNo: 4, toolName: 'generate_import_project_profile_preview', input: {}, output: projectProfilePreview },
+          { stepNo: 5, toolName: 'generate_import_outline_preview', input: {}, output: outlinePreview },
+          { stepNo: 6, toolName: 'generate_import_characters_preview', input: {}, output: charactersPreview },
+          { stepNo: 7, toolName: 'generate_import_worldbuilding_preview', input: {}, output: worldbuildingPreview },
+          { stepNo: 8, toolName: 'generate_import_writing_rules_preview', input: {}, output: writingRulesPreview },
+          { stepNo: 9, toolName: 'merge_import_previews', input: {}, output: mergedPreview },
+        ];
+      },
+    },
+    agentArtifact: {
+      async create(args: { data: Record<string, unknown> }) { createdArtifacts.push(args.data); return args.data; },
+      async createMany(args: { data: Record<string, unknown>[] }) { createdArtifactBatches.push(args.data); return { count: args.data.length }; },
+    },
+  };
+  const executor = {
+    async execute(_agentRunId: string, steps: Array<{ tool: string; args: Record<string, unknown>; requiresApproval: boolean }>) {
+      executedSteps = steps;
+      return {
+        1: { writingRules: [{ title: 'New POV', content: 'New rule' }], risks: [] },
+        2: { ...mergedPreview, writingRules: [{ title: 'New POV', content: 'New rule' }] },
+        3: { valid: true, issues: [] },
+        4: { valid: true, issues: [] },
+      };
+    },
+  };
+  const trace = { async recordDecision() {} };
+  const runtime = new AgentRuntimeService(prisma as never, {} as never, {} as never, executor as never, {} as never, trace as never);
+
+  await runtime.replanImportTargetRegeneration('run1', 'writingRules', 'Regenerate writing rules only');
+
+  assert.equal(createdPlans[0].version, 3);
+  assert.equal(createdPlans[0].status, 'waiting_approval');
+  const steps = createdPlans[0].steps as Array<{ tool: string; args: Record<string, unknown>; requiresApproval: boolean }>;
+  assert.deepEqual(steps.map((step) => step.tool), [
+    'generate_import_writing_rules_preview',
+    'merge_import_previews',
+    'cross_target_consistency_check',
+    'validate_imported_assets',
+    'persist_project_assets',
+  ]);
+  assert.equal(steps.some((step) => ['generate_import_outline_preview', 'generate_import_characters_preview', 'generate_import_worldbuilding_preview', 'generate_import_project_profile_preview'].includes(step.tool)), false);
+  assert.deepEqual(steps[0].args.analysis, analysisOutput);
+  assert.deepEqual(steps[0].args.importBrief, importBriefOutput);
+  assert.deepEqual(steps[1].args.requestedAssetTypes, ['projectProfile', 'outline', 'characters', 'worldbuilding', 'writingRules']);
+  assert.deepEqual(steps[1].args.projectProfilePreview, projectProfilePreview);
+  assert.deepEqual(steps[1].args.outlinePreview, outlinePreview);
+  assert.deepEqual(steps[1].args.charactersPreview, charactersPreview);
+  assert.deepEqual(steps[1].args.worldbuildingPreview, worldbuildingPreview);
+  assert.equal(steps[1].args.writingRulesPreview, '{{steps.1.output}}');
+  assert.deepEqual(steps[3].args, { preview: '{{steps.2.output}}' });
+  assert.deepEqual(steps[4].args, { preview: '{{steps.2.output}}' });
+  assert.equal(steps[4].requiresApproval, true);
+  assert.deepEqual(createdPlans[0].requiredApprovals, [{ approvalType: 'plan', target: { stepNos: [5], tools: ['persist_project_assets'] } }]);
+  assert.deepEqual(executedSteps.map((step) => step.tool), steps.map((step) => step.tool));
+  assert.equal(createdArtifacts[0].artifactType, 'agent_plan_preview');
+  assert.ok(createdArtifactBatches[0].some((artifact) => artifact.artifactType === 'writing_rules_preview'));
+  assert.equal(updatedRun?.status, 'waiting_approval');
+});
+
+test('AgentRuntime importTargetRegeneration rejects valid asset outside current import scope', async () => {
+  let executorCalled = false;
+  const previousSteps = [
+    { stepNo: 1, id: 'analyze', name: 'Analyze', tool: 'analyze_source_text', mode: 'act' as const, requiresApproval: false, args: {} },
+    { stepNo: 2, id: 'rules', name: 'Rules', tool: 'generate_import_writing_rules_preview', mode: 'act' as const, requiresApproval: false, args: {} },
+    { stepNo: 3, id: 'merge', name: 'Merge', tool: 'merge_import_previews', mode: 'act' as const, requiresApproval: false, args: { requestedAssetTypes: ['writingRules'], writingRulesPreview: '{{steps.2.output}}' } },
+    { stepNo: 4, id: 'validate', name: 'Validate', tool: 'validate_imported_assets', mode: 'act' as const, requiresApproval: false, args: { preview: '{{steps.3.output}}' } },
+    { stepNo: 5, id: 'persist', name: 'Persist', tool: 'persist_project_assets', mode: 'act' as const, requiresApproval: true, args: { preview: '{{steps.3.output}}' } },
+  ];
+  const prisma = {
+    agentRun: {
+      async findUnique() { return { id: 'run1', projectId: 'p1', chapterId: null, goal: 'Import writing rules', input: {} }; },
+      async update() { throw new Error('run update should not be called'); },
+    },
+    agentPlan: {
+      async findFirst() {
+        return {
+          id: 'plan1',
+          version: 1,
+          taskType: 'project_import_preview',
+          summary: 'Writing rules only',
+          assumptions: [],
+          risks: [],
+          requiredApprovals: [{ target: { stepNos: [5], tools: ['persist_project_assets'] } }],
+          steps: previousSteps,
+        };
+      },
+      async create() { throw new Error('plan create should not be called'); },
+    },
+    agentStep: {
+      async findMany() {
+        return [
+          { stepNo: 1, toolName: 'analyze_source_text', input: {}, output: { sourceText: 'source text' } },
+          { stepNo: 2, toolName: 'generate_import_writing_rules_preview', input: {}, output: { writingRules: [{ title: 'POV', content: 'Rule' }] } },
+          { stepNo: 3, toolName: 'merge_import_previews', input: {}, output: { requestedAssetTypes: ['writingRules'], writingRules: [{ title: 'POV', content: 'Rule' }] } },
+        ];
+      },
+    },
+  };
+  const executor = {
+    async execute() {
+      executorCalled = true;
+      return {};
+    },
+  };
+  const runtime = new AgentRuntimeService(prisma as never, {} as never, {} as never, executor as never, {} as never, { async recordDecision() {} } as never);
+
+  await assert.rejects(
+    () => runtime.replanImportTargetRegeneration('run1', 'outline', 'Regenerate outline'),
+    /outside the current import target scope/,
+  );
+  assert.equal(executorCalled, false);
+});
+
+test('AgentRunsService rejects invalid importTargetRegeneration assetType', async () => {
+  let runtimeCalled = false;
+  const prisma = {
+    agentRun: { async findUnique() { return { id: 'run1', status: 'waiting_approval' }; } },
+  };
+  const runtime = {
+    async replanImportTargetRegeneration() {
+      runtimeCalled = true;
+    },
+  };
+  const service = new AgentRunsService(prisma as never, runtime as never, {} as never);
+
+  await assert.rejects(
+    () => service.replan('run1', { importTargetRegeneration: { assetType: 'allAssets' as never } }),
+    /importTargetRegeneration\.assetType/,
+  );
+  assert.equal(runtimeCalled, false);
+});
+
 async function main() {
   for (const item of tests) {
     await item.run();

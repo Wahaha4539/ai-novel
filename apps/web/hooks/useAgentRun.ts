@@ -75,6 +75,11 @@ export interface ReplanClarificationChoice {
   payload?: unknown;
 }
 
+export interface AgentRunReplanOptions {
+  worldbuildingSelection?: { selectedTitles: string[] };
+  importTargetRegeneration?: { assetType: AgentImportAssetType };
+}
+
 export interface ReplanPatchPayload {
   action?: 'patch_plan' | 'ask_user' | 'fail_with_reason';
   reason?: string;
@@ -404,7 +409,7 @@ export function useAgentRun() {
     }
   }, [loadAudit]);
 
-  const replan = useCallback(async (agentRunId: string, message?: string, options?: { worldbuildingSelection?: { selectedTitles: string[] } }) => {
+  const replan = useCallback(async (agentRunId: string, message?: string, options?: AgentRunReplanOptions) => {
     setLoading(true);
     setError('');
     setActionMessage('正在基于当前任务重新规划…');

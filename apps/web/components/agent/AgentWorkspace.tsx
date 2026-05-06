@@ -12,7 +12,7 @@ import { AgentAuditPanel } from './AgentAuditPanel';
 import { AgentResultPanel } from './AgentResultPanel';
 import { AgentObservationPanel } from './AgentObservationPanel';
 import { AgentRunHistoryPanel } from './AgentRunHistoryPanel';
-import { StatusBadge, approvalRiskSummary, latestPlan, latestPlanVersion } from './AgentSharedWidgets';
+import { PROJECT_IMPORT_ASSET_LABELS, StatusBadge, approvalRiskSummary, latestPlan, latestPlanVersion, type ProjectImportAssetType } from './AgentSharedWidgets';
 
 interface AgentWorkspaceProps {
   projectId: string;
@@ -158,6 +158,14 @@ export function AgentWorkspace({ projectId, selectedChapterId, onRefresh }: Agen
     await listByProject(projectId);
   }, [currentRun, listByProject, projectId, pushMessage, replan]);
 
+  const handleImportTargetRegeneration = useCallback(async (assetType: ProjectImportAssetType) => {
+    if (!currentRun) return;
+    const label = PROJECT_IMPORT_ASSET_LABELS[assetType] ?? assetType;
+    pushMessage('user', `重新生成${label}`);
+    await replan(currentRun.id, `用户请求只重新生成${label}预览；保留其他已选择目标产物预览，写入仍需审批。`, { importTargetRegeneration: { assetType } });
+    await listByProject(projectId);
+  }, [currentRun, listByProject, projectId, pushMessage, replan]);
+
   /** 新增会话：清空当前全屏工作台的本地输入、聊天记录和选中 Run，不影响后端历史。 */
   const handleNewSession = useCallback(() => {
     startNewSession();
@@ -203,7 +211,7 @@ export function AgentWorkspace({ projectId, selectedChapterId, onRefresh }: Agen
             <AgentObservationPanel run={currentRun} loading={loading} onAnswerClarification={handleClarification} />
             <div className="grid gap-5 lg:grid-cols-2">
               <AgentTimelinePanel steps={currentRun?.steps ?? []} plan={plan} planVersion={activePlanVersion} approvedStepNos={approvedStepNos} onToggleApproval={(stepNo) => setApprovedStepNos((current) => (current.includes(stepNo) ? current.filter((item) => item !== stepNo) : [...current, stepNo].sort((a, b) => a - b)))} />
-              <AgentArtifactPanel run={currentRun} query={artifactQuery} onQueryChange={setArtifactQuery} onRequestWorldbuildingPersistSelection={handleWorldbuildingPersistSelection} actionDisabled={loading} />
+              <AgentArtifactPanel run={currentRun} query={artifactQuery} onQueryChange={setArtifactQuery} onRequestWorldbuildingPersistSelection={handleWorldbuildingPersistSelection} onRequestImportTargetRegeneration={handleImportTargetRegeneration} actionDisabled={loading} />
             </div>
             <AgentAuditPanel events={auditEvents} />
             <AgentApprovalDialog canAct={canAct} canRetry={canRetry} loading={loading} status={currentRun?.status} hasCurrentRun={!!currentRun} plan={plan} riskSummary={riskSummary} onCancel={async () => { if (currentRun) await cancel(currentRun.id); }} onRetry={handleRetry} onAct={handleAct} />
