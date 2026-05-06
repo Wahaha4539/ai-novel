@@ -3,10 +3,12 @@ import { LlmGatewayService } from '../../llm/llm-gateway.service';
 import { BaseTool, ToolContext } from '../base-tool';
 import type { ToolManifestV2 } from '../tool-manifest.types';
 import { SourceTextAnalysisOutput } from './analyze-source-text.tool';
+import type { ImportBriefOutput } from './build-import-brief.tool';
 import { ImportPreviewOutput } from './import-preview.types';
 
 interface GenerateImportOutlinePreviewInput {
   analysis: SourceTextAnalysisOutput;
+  importBrief?: ImportBriefOutput;
   instruction?: string;
   projectContext?: Record<string, unknown>;
   chapterCount?: number;
@@ -33,6 +35,7 @@ export class GenerateImportOutlinePreviewTool implements BaseTool<GenerateImport
     additionalProperties: false,
     properties: {
       analysis: { type: 'object' as const },
+      importBrief: { type: 'object' as const },
       instruction: { type: 'string' as const },
       projectContext: { type: 'object' as const },
       chapterCount: { type: 'number' as const, minimum: 1, maximum: 80 },
@@ -59,6 +62,7 @@ export class GenerateImportOutlinePreviewTool implements BaseTool<GenerateImport
     outputSchema: this.outputSchema,
     parameterHints: {
       analysis: { source: 'previous_step', description: '来自 analyze_source_text 的完整输出，优先使用 sourceText、paragraphs、keywords。' },
+      importBrief: { source: 'previous_step', description: '可选，来自 build_import_brief 的全局简报，用于保持主线、主题、关键人物和世界规则一致。' },
       instruction: { source: 'user_message', description: '用户对大纲拆分、章节数量、重点主线的原始要求。' },
       projectContext: { source: 'context', description: '可选项目上下文，用于避免与现有项目标题、题材、已规划章节冲突。' },
       chapterCount: { source: 'user_message', description: '用户明确指定章节数时传入；未指定时由工具按文档复杂度保守生成。' },
@@ -96,6 +100,7 @@ export class GenerateImportOutlinePreviewTool implements BaseTool<GenerateImport
           content: [
             `User instruction: ${args.instruction ?? ''}`,
             `Target chapter count: ${chapterCount}`,
+            `Import brief:\n${JSON.stringify(args.importBrief ?? {}, null, 2).slice(0, 6000)}`,
             `Keywords: ${analysis.keywords.join(', ')}`,
             `Paragraphs:\n${analysis.paragraphs.slice(0, 40).map((item, index) => `${index + 1}. ${item}`).join('\n')}`,
             `Project context:\n${JSON.stringify(args.projectContext ?? {}, null, 2).slice(0, 8000)}`,

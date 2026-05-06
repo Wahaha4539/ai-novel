@@ -4,6 +4,7 @@ import { ToolManifestForPlanner } from './tool-manifest.types';
 import { AiQualityReviewTool } from './tools/ai-quality-review.tool';
 import { AnalyzeSourceTextTool } from './tools/analyze-source-text.tool';
 import { AutoRepairChapterTool } from './tools/auto-repair-chapter.tool';
+import { BuildImportBriefTool } from './tools/build-import-brief.tool';
 import { BuildImportPreviewTool } from './tools/build-import-preview.tool';
 import { CharacterConsistencyCheckTool } from './tools/character-consistency-check.tool';
 import { CollectChapterContextTool } from './tools/collect-chapter-context.tool';
@@ -89,6 +90,7 @@ export class ToolRegistryService implements OnModuleInit {
     private readonly persistOutlineTool: PersistOutlineTool,
     private readonly readSourceDocumentTool: ReadSourceDocumentTool,
     private readonly analyzeSourceTextTool: AnalyzeSourceTextTool,
+    private readonly buildImportBriefTool: BuildImportBriefTool,
     private readonly buildImportPreviewTool: BuildImportPreviewTool,
     private readonly generateImportProjectProfilePreviewTool: GenerateImportProjectProfilePreviewTool,
     private readonly generateImportOutlinePreviewTool: GenerateImportOutlinePreviewTool,
@@ -136,6 +138,7 @@ export class ToolRegistryService implements OnModuleInit {
     this.register(this.persistOutlineTool);
     this.register(this.readSourceDocumentTool);
     this.register(this.analyzeSourceTextTool);
+    this.register(this.buildImportBriefTool);
     this.register(this.buildImportPreviewTool);
     this.register(this.generateImportProjectProfilePreviewTool);
     this.register(this.generateImportOutlinePreviewTool);

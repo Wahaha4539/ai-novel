@@ -70,6 +70,8 @@ const IMPORT_TARGET_ASSET_BY_TOOL = new Map<string, ImportAssetType>(
   Object.entries(IMPORT_TARGET_TOOL_BY_ASSET_TYPE).map(([assetType, tool]) => [tool, assetType as ImportAssetType]),
 );
 
+const BUILD_IMPORT_BRIEF_TOOL = 'build_import_brief';
+
 const MERGE_PREVIEW_ARG_BY_ASSET_TYPE: Record<ImportAssetType, string> = {
   projectProfile: 'projectProfilePreview',
   outline: 'outlinePreview',
@@ -149,7 +151,7 @@ export class AgentPlannerService {
           '你需要根据 Available Tools 的 whenToUse/whenNotToUse/parameterHints/idPolicy 自主编排步骤和 args。',
           '导入类任务不是固定全量流程。用户指定目标产物时，build_import_preview.args.requestedAssetTypes 必须只包含用户明确要求的资产：projectProfile、outline、characters、worldbuilding、writingRules；例如只要故事大纲就只传 ["outline"]。',
           '导入类任务如果 agentContext.session.requestedAssetTypes 存在，它是最高优先级的结构化目标产物范围；只能为这些目标产物生成预览，不能因为有上传文档就扩成全套导入。',
-          '导入分目标优先链路：read_source_document -> analyze_source_text -> 按 requestedAssetTypes 调用已注册的 generate_import_*_preview 专用工具 -> merge_import_previews -> validate_imported_assets -> persist_project_assets。',
+          '导入分目标优先链路：read_source_document -> analyze_source_text -> build_import_brief（若可用） -> 按 requestedAssetTypes 调用已注册的 generate_import_*_preview 专用工具 -> merge_import_previews -> validate_imported_assets -> persist_project_assets。',
           '如果某个 generate_import_*_preview 专用工具未出现在 Available Tools，允许 fallback 到 build_import_preview；fallback 的 requestedAssetTypes 仍必须等于用户选择的目标范围。',
           '只要导入预览未来可写入，计划中必须包含 persist_project_assets，且它必须是需要审批的写入步骤；validate_imported_assets 必须读取 merge_import_previews 或 build_import_preview 的统一预览输出。',
           '可引用上下文：{{context.session.currentProjectId}}、{{context.session.currentChapterId}}、{{context.project.defaultWordCount}}、{{context.attachments.0}}、{{context.attachments.0.url}}、{{context.session.guided.currentStep}}、{{context.session.guided.currentStepData}}。',
@@ -253,7 +255,7 @@ export class AgentPlannerService {
             '必须修复 invalidPlan，使 taskType 来自 availableTaskTypes，steps[].tool 全部来自 registeredTools。',
             'taskType 由 userGoal 语义决定；不要依赖后端关键词分类。',
             '修复导入计划时必须保留用户指定的目标产物范围；build_import_preview.args.requestedAssetTypes 只能包含用户明确要求的资产，不能因为有上传文档就扩成全套导入。',
-            '修复导入分目标计划时，优先使用已注册的 generate_import_*_preview 专用工具；多目标专用预览后必须调用 merge_import_previews，再把合并结果传给 validate_imported_assets。',
+            '修复导入分目标计划时，优先使用 build_import_brief（若可用）和已注册的 generate_import_*_preview 专用工具；目标专用预览后必须调用 merge_import_previews，再把合并结果传给 validate_imported_assets。',
             '如果专用目标工具未注册，使用 build_import_preview fallback，但 requestedAssetTypes 仍必须等于用户选择的目标范围；persist_project_assets 必须作为需审批写入步骤保留。',
             '如果 agentContext.session.guided.currentStep 存在，修复后的 taskType 仍应优先使用 guided_step_consultation、guided_step_generate 或 guided_step_finalize，不要修成 chapter_write。',
             'steps[].mode 是后端计划步骤字段，固定填 act；Plan/Act 运行时模式由后端注入，不由 LLM 决定。',
@@ -419,7 +421,9 @@ export class AgentPlannerService {
     const requestedAssetTypes = contextRequestedAssetTypes.length ? contextRequestedAssetTypes : this.requestedAssetTypesFromImportSteps(normalized);
 
     normalized = this.ensureBuildImportPreviewScope(normalized, requestedAssetTypes);
+    normalized = this.ensureImportBriefStep(normalized, registeredTools, requiresApproval, requestedAssetTypes);
     normalized = this.ensureImportPreviewSource(normalized, registeredTools, requiresApproval, requestedAssetTypes);
+    normalized = this.ensureTargetPreviewImportBriefArgs(normalized);
     normalized = this.ensureMergeImportPreviewsStep(normalized, registeredTools, requiresApproval, requestedAssetTypes);
 
     const previewStep = this.findImportPreviewSourceStep(normalized);
@@ -458,6 +462,32 @@ export class AgentPlannerService {
     return steps.map((step) => step.tool === 'build_import_preview' ? { ...step, args: { ...step.args, requestedAssetTypes } } : step);
   }
 
+  private ensureImportBriefStep(steps: AgentPlanStepSpec[], registeredTools: Set<string>, requiresApproval: (tool: string) => boolean, requestedAssetTypes: ImportAssetType[]): AgentPlanStepSpec[] {
+    if (!registeredTools.has(BUILD_IMPORT_BRIEF_TOOL)) return steps;
+    const hasTargetPreview = steps.some((step) => IMPORT_TARGET_ASSET_BY_TOOL.has(step.tool));
+    const canUseRequestedTargetTools = requestedAssetTypes.length > 0 && requestedAssetTypes.every((assetType) => registeredTools.has(IMPORT_TARGET_TOOL_BY_ASSET_TYPE[assetType]));
+    if (!hasTargetPreview && !canUseRequestedTargetTools) return steps;
+    const withoutBrief = this.renumberSteps(steps.filter((step) => step.tool !== BUILD_IMPORT_BRIEF_TOOL));
+    const analysisStep = [...withoutBrief].reverse().find((step) => step.tool === 'analyze_source_text');
+    if (!analysisStep) return steps;
+    const args = this.removeUndefinedArgs({
+      analysis: `{{steps.${analysisStep.stepNo}.output}}`,
+      instruction: '{{context.userMessage}}',
+      requestedAssetTypes: requestedAssetTypes.length ? requestedAssetTypes : undefined,
+      projectContext: '{{context.project}}',
+    });
+    return this.insertStepAfter(withoutBrief, analysisStep.stepNo, {
+      id: BUILD_IMPORT_BRIEF_TOOL,
+      stepNo: 0,
+      name: '生成导入全局简报',
+      purpose: '在分目标预览前提炼共同主线、设定、人物、世界规则、语气和风险，供目标 Tool 参考。',
+      tool: BUILD_IMPORT_BRIEF_TOOL,
+      mode: 'act',
+      requiresApproval: requiresApproval(BUILD_IMPORT_BRIEF_TOOL),
+      args,
+    });
+  }
+
   private ensureImportPreviewSource(steps: AgentPlanStepSpec[], registeredTools: Set<string>, requiresApproval: (tool: string) => boolean, requestedAssetTypes: ImportAssetType[]): AgentPlanStepSpec[] {
     const hasTargetPreview = steps.some((step) => IMPORT_TARGET_ASSET_BY_TOOL.has(step.tool));
     if (requestedAssetTypes.length) {
@@ -479,11 +509,18 @@ export class AgentPlannerService {
     const missingAssetTypes = requestedAssetTypes.filter((assetType) => !existingAssetTypes.has(assetType));
     if (!missingAssetTypes.length) return steps;
     const analysisStep = [...steps].reverse().find((step) => step.tool === 'analyze_source_text');
+    const importBriefStep = [...steps].reverse().find((step) => step.tool === BUILD_IMPORT_BRIEF_TOOL);
     if (!analysisStep) return steps;
     return [
       ...steps,
       ...missingAssetTypes.map((assetType, index) => {
         const tool = IMPORT_TARGET_TOOL_BY_ASSET_TYPE[assetType];
+        const args = this.removeUndefinedArgs({
+          analysis: `{{steps.${analysisStep.stepNo}.output}}`,
+          importBrief: importBriefStep ? `{{steps.${importBriefStep.stepNo}.output}}` : undefined,
+          instruction: '{{context.userMessage}}',
+          projectContext: '{{context.project}}',
+        });
         return {
           id: tool,
           stepNo: steps.length + index + 1,
@@ -492,14 +529,20 @@ export class AgentPlannerService {
           tool,
           mode: 'act' as const,
           requiresApproval: requiresApproval(tool),
-          args: {
-            analysis: `{{steps.${analysisStep.stepNo}.output}}`,
-            instruction: '{{context.userMessage}}',
-            projectContext: '{{context.project}}',
-          },
+          args,
         };
       }),
     ];
+  }
+
+  private ensureTargetPreviewImportBriefArgs(steps: AgentPlanStepSpec[]): AgentPlanStepSpec[] {
+    const importBriefStep = [...steps].reverse().find((step) => step.tool === BUILD_IMPORT_BRIEF_TOOL);
+    if (!importBriefStep) return steps;
+    return steps.map((step) => (
+      IMPORT_TARGET_ASSET_BY_TOOL.has(step.tool)
+        ? { ...step, args: { ...step.args, importBrief: `{{steps.${importBriefStep.stepNo}.output}}` } }
+        : step
+    ));
   }
 
   private hasAllRequestedTargetPreviewSteps(steps: AgentPlanStepSpec[], requestedAssetTypes: ImportAssetType[]): boolean {

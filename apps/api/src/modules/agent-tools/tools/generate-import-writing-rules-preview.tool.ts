@@ -3,10 +3,12 @@ import { LlmGatewayService } from '../../llm/llm-gateway.service';
 import { BaseTool, ToolContext } from '../base-tool';
 import type { ToolManifestV2 } from '../tool-manifest.types';
 import { SourceTextAnalysisOutput } from './analyze-source-text.tool';
+import type { ImportBriefOutput } from './build-import-brief.tool';
 import { ImportPreviewOutput } from './import-preview.types';
 
 interface GenerateImportWritingRulesPreviewInput {
   analysis: SourceTextAnalysisOutput;
+  importBrief?: ImportBriefOutput;
   instruction?: string;
   projectContext?: Record<string, unknown>;
   maxRules?: number;
@@ -31,6 +33,7 @@ export class GenerateImportWritingRulesPreviewTool implements BaseTool<GenerateI
     additionalProperties: false,
     properties: {
       analysis: { type: 'object' as const },
+      importBrief: { type: 'object' as const },
       instruction: { type: 'string' as const },
       projectContext: { type: 'object' as const },
       maxRules: { type: 'number' as const, minimum: 1, maximum: 50 },
@@ -55,6 +58,7 @@ export class GenerateImportWritingRulesPreviewTool implements BaseTool<GenerateI
     outputSchema: this.outputSchema,
     parameterHints: {
       analysis: { source: 'previous_step', description: '来自 analyze_source_text 的完整输出，优先使用 sourceText、paragraphs、keywords。' },
+      importBrief: { source: 'previous_step', description: '可选，来自 build_import_brief 的全局简报，用于保持主题、语气、世界规则和风险一致。' },
       instruction: { source: 'user_message', description: '用户对写作规则范围、禁写内容、风格和适用章节的原始要求。' },
       projectContext: { source: 'context', description: '可选项目上下文，用于避免和已有写作规则冲突。' },
       maxRules: { source: 'user_message', description: '用户明确限制规则条数时传入。' },
@@ -93,6 +97,7 @@ export class GenerateImportWritingRulesPreviewTool implements BaseTool<GenerateI
           content: [
             `User instruction: ${args.instruction ?? ''}`,
             `Max rules: ${maxRules}`,
+            `Import brief:\n${JSON.stringify(args.importBrief ?? {}, null, 2).slice(0, 6000)}`,
             `Keywords: ${analysis.keywords.join(', ')}`,
             `Paragraphs:\n${analysis.paragraphs.slice(0, 50).map((item, index) => `${index + 1}. ${item}`).join('\n')}`,
             `Project context:\n${JSON.stringify(args.projectContext ?? {}, null, 2).slice(0, 10000)}`,

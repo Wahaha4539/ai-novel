@@ -301,7 +301,7 @@
 
 ### TIP-P2-001 新增 build_import_brief
 
-- 状态：`[ ]`
+- 状态：`[x]`
 - 模块：API
 - 文件：新增 `apps/api/src/modules/agent-tools/tools/build-import-brief.tool.ts`
 - 任务：在分目标生成前，先生成一份全局导入简报，作为所有目标 Tool 的共同依据。
@@ -310,6 +310,12 @@
   - 所有目标 Tool 可选择接收 `importBrief`。
   - Brief 只读，不写库。
 - 验证：`pnpm --dir apps/api run test:agent`
+- 完成记录：
+  - 2026-05-06：新增只读 `build_import_brief` Tool，输出 `requestedAssetTypes`、核心设定、主线、主题、关键人物、世界规则、语气和风险，并注册到 Tool 白名单和 Planner manifest。
+  - 2026-05-06：分目标导入 Planner 在专用目标 Tool 前插入 `build_import_brief`，并把 `importBrief` 传给 `generate_import_*_preview`；缺少专用目标 Tool 的 fallback 路径仍走 `build_import_preview` 且不扩大目标范围。
+  - 2026-05-06：五个目标 Tool 的 input schema、manifest 参数提示和 prompt 均支持可选 `importBrief`，仍只生成各自目标预览且不写库。
+  - 修改文件：`apps/api/src/modules/agent-tools/tools/build-import-brief.tool.ts`、`apps/api/src/modules/agent-tools/tools/generate-import-outline-preview.tool.ts`、`apps/api/src/modules/agent-tools/tools/generate-import-characters-preview.tool.ts`、`apps/api/src/modules/agent-tools/tools/generate-import-worldbuilding-preview.tool.ts`、`apps/api/src/modules/agent-tools/tools/generate-import-writing-rules-preview.tool.ts`、`apps/api/src/modules/agent-tools/tools/generate-import-project-profile-preview.tool.ts`、`apps/api/src/modules/agent-tools/agent-tools.module.ts`、`apps/api/src/modules/agent-tools/tool-registry.service.ts`、`apps/api/src/modules/agent-runs/agent-planner.service.ts`、`apps/api/src/modules/agent-runs/agent-services.spec.ts`、`docs/architecture/targeted-import-preview-tools-development-plan.md`。
+  - 验证结果：`pnpm --dir apps/api run test:agent` 通过，175 项测试通过。
 
 ### TIP-P2-002 增加 cross_target_consistency_check
 

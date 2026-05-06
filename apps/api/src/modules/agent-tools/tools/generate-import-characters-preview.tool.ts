@@ -3,10 +3,12 @@ import { LlmGatewayService } from '../../llm/llm-gateway.service';
 import { BaseTool, ToolContext } from '../base-tool';
 import type { ToolManifestV2 } from '../tool-manifest.types';
 import { SourceTextAnalysisOutput } from './analyze-source-text.tool';
+import type { ImportBriefOutput } from './build-import-brief.tool';
 import { ImportPreviewOutput } from './import-preview.types';
 
 interface GenerateImportCharactersPreviewInput {
   analysis: SourceTextAnalysisOutput;
+  importBrief?: ImportBriefOutput;
   instruction?: string;
   projectContext?: Record<string, unknown>;
 }
@@ -30,6 +32,7 @@ export class GenerateImportCharactersPreviewTool implements BaseTool<GenerateImp
     additionalProperties: false,
     properties: {
       analysis: { type: 'object' as const },
+      importBrief: { type: 'object' as const },
       instruction: { type: 'string' as const },
       projectContext: { type: 'object' as const },
     },
@@ -53,6 +56,7 @@ export class GenerateImportCharactersPreviewTool implements BaseTool<GenerateImp
     outputSchema: this.outputSchema,
     parameterHints: {
       analysis: { source: 'previous_step', description: '来自 analyze_source_text 的完整输出，优先使用 sourceText、paragraphs、keywords。' },
+      importBrief: { source: 'previous_step', description: '可选，来自 build_import_brief 的全局简报，用于保持主题、主线、关键人物和世界规则一致。' },
       instruction: { source: 'user_message', description: '用户对角色范围、主配角、关系重点、禁写内容的原始要求。' },
       projectContext: { source: 'context', description: '可选项目上下文，用于避免与已有角色重名或人设冲突。' },
     },
@@ -87,6 +91,7 @@ export class GenerateImportCharactersPreviewTool implements BaseTool<GenerateImp
           role: 'user',
           content: [
             `User instruction: ${args.instruction ?? ''}`,
+            `Import brief:\n${JSON.stringify(args.importBrief ?? {}, null, 2).slice(0, 6000)}`,
             `Keywords: ${analysis.keywords.join(', ')}`,
             `Paragraphs:\n${analysis.paragraphs.slice(0, 50).map((item, index) => `${index + 1}. ${item}`).join('\n')}`,
             `Project context:\n${JSON.stringify(args.projectContext ?? {}, null, 2).slice(0, 8000)}`,
