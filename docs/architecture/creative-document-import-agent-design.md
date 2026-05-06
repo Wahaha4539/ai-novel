@@ -13,7 +13,7 @@
 
 本功能是「AI 助手能力迁移到 Agent」的一项子能力：它解决的是 AI 助手/Agent 如何接收长文档输入，而不是替代整体 AI 助手迁移方案。整体迁移包括右侧 AI 助手聊天、当前步骤问答、AI 生成、结构化保存和创作引导步骤写入，详见上层迁移方案。
 
-当前系统已经具备 Agent Plan/Act、ToolRegistry、`project_import_preview`、`analyze_source_text`、`build_import_preview`、`validate_imported_assets`、`persist_project_assets` 等基础能力。缺口在于：Agent 还不能从用户上传的文档 URL 中稳定读取正文，也没有前端「导入创意文档」附件入口。
+当前系统已经具备 Agent Plan/Act、ToolRegistry、`project_import_preview`、`analyze_source_text`、分目标导入预览 Tool、`build_import_preview` fallback、`validate_imported_assets`、`persist_project_assets` 等基础能力。缺口在于：Agent 还不能从用户上传的文档 URL 中稳定读取正文，也没有前端「导入创意文档」附件入口。
 
 ## 2. 目标
 
@@ -53,7 +53,10 @@ POST /api/agent-runs/plan，携带 message + attachments
 Agent Planner 编排：
   read_source_document
   → analyze_source_text
-  → build_import_preview
+  → build_import_brief（deep 模式，可选）
+  → generate_import_*_preview（只为 requestedAssetTypes 中的目标执行）
+  → merge_import_previews
+  → cross_target_consistency_check（可用时）
   → validate_imported_assets
   → persist_project_assets
   → report_result
@@ -107,7 +110,9 @@ export interface AgentCreativeDocumentAttachment {
   "message": "根据导入的创意文档生成风格、设定、大纲和角色。",
   "context": {
     "currentProjectId": "project-id",
-    "sourcePage": "agent_floating_panel"
+    "sourcePage": "agent_floating_panel",
+    "requestedAssetTypes": ["outline", "writingRules"],
+    "importPreviewMode": "deep"
   },
   "attachments": [
     {
@@ -147,7 +152,7 @@ attachments: Array<{
 
 ### 8.1 作用
 
-`read_source_document` 是只读低风险工具，负责从附件 URL 下载并提取文本，输出给 `analyze_source_text` 和 `build_import_preview` 使用。
+`read_source_document` 是只读低风险工具，负责从附件 URL 下载并提取文本，输出给 `analyze_source_text` 使用；后续可进入分目标导入预览链路，也可在 quick/兼容路径中进入 `build_import_preview` fallback。
 
 ### 8.2 输入
 
@@ -219,19 +224,37 @@ P1：
 1. 如果用户目标是导入、拆解、生成设定、大纲、角色、风格，优先选择 `project_import_preview`。
 2. 第一步必须使用 `read_source_document` 读取附件正文。
 3. 第二步使用 `analyze_source_text` 分析 `{{steps.read_source_document.output.sourceText}}`。
-4. 第三步使用 `build_import_preview` 生成项目资料、角色、设定、卷和章节预览。
-5. 第四步使用 `validate_imported_assets` 生成写入前校验和 diff。
-6. 写入类步骤 `persist_project_assets` 必须等待用户审批后执行。
+4. 如果 `context.requestedAssetTypes` 存在，它是本轮导入的结构化目标范围；Planner 只能生成这些目标产物，不能因为有上传文档就固定跑全套。
+5. `importPreviewMode='deep'` 或 auto 的单/双目标场景，优先使用 `build_import_brief` 与对应的 `generate_import_*_preview` 专用 Tool，再通过 `merge_import_previews` 合并成统一预览。
+6. `importPreviewMode='quick'`、全套快速预览、或专用 Tool 缺失时，允许使用 `build_import_preview` 作为 fallback；fallback 的 `requestedAssetTypes` 仍必须等于用户选择的目标范围，不能扩成全套。
+7. 预览生成后可调用 `cross_target_consistency_check` 做只读一致性检查，再使用 `validate_imported_assets` 生成写入前校验和 diff。
+8. 写入类步骤只能是 `persist_project_assets`，且必须等待用户审批后执行；所有目标 Tool、合并 Tool 和校验 Tool 都不得写业务库。
 
-推荐计划：
+推荐 deep 双目标计划：
+
+```text
+1. read_source_document
+2. analyze_source_text
+3. build_import_brief
+4. generate_import_outline_preview
+5. generate_import_writing_rules_preview
+6. merge_import_previews
+7. cross_target_consistency_check
+8. validate_imported_assets
+9. persist_project_assets
+10. report_result
+```
+
+推荐 quick/fallback 计划：
 
 ```text
 1. read_source_document
 2. analyze_source_text
 3. build_import_preview
-4. validate_imported_assets
-5. persist_project_assets
-6. report_result
+4. cross_target_consistency_check
+5. validate_imported_assets
+6. persist_project_assets
+7. report_result
 ```
 
 ## 10. 前端交互设计
@@ -289,20 +312,21 @@ P1：
 Plan 阶段应至少生成：
 
 - `source_document_summary`：文档名、长度、截断状态、开头摘录、解析诊断。
-- `project_profile_preview`：标题、类型、主题、基调、一句话概括、简介。
-- `characters_preview`：角色列表、动机、背景、关系线索。
-- `lorebook_preview`：世界观、地点、组织、规则、能力体系。
-- `outline_preview`：卷纲和章节纲预览。
+- 所选目标产物的预览：`project_profile_preview`、`characters_preview`、`lorebook_preview`、`outline_preview`、`writing_rules_preview` 只展示本轮 `requestedAssetTypes` 中包含的目标；未选择的目标应为空或不展示。
 - `import_validation_report`：重复项、缺字段、写入前 diff、风险。
+
+Artifact 和写入确认卡片必须同时展示本轮目标范围，说明未选择的目标不会生成，也不会在确认后写入。
 
 ## 13. 验收用例
 
 | 用例 | 输入 | 期望 |
 |---|---|---|
-| Markdown 创意导入 | 上传 `.md`，输入“根据这份文档生成设定、大纲和角色” | Plan 包含 `read_source_document → analyze_source_text → build_import_preview → validate_imported_assets → persist_project_assets`。 |
-| 文本文件导入 | 上传 `.txt`，输入“拆成角色和前三卷大纲” | 生成项目资料、角色、世界观、卷与章节预览，不直接写库。 |
+| 单目标 deep 导入 | 上传 `.md`，选择 `requestedAssetTypes=["outline"]`，`importPreviewMode="deep"`，输入“只生成剧情大纲” | Plan 包含 `read_source_document → analyze_source_text → build_import_brief → generate_import_outline_preview → merge_import_previews → validate_imported_assets → persist_project_assets`；不调用角色、世界观、项目资料、写作规则目标 Tool；确认后只写大纲相关资产。 |
+| 双目标 deep 导入 | 上传 `.txt`，选择 `requestedAssetTypes=["outline","writingRules"]`，输入“生成大纲和写作规则” | Plan 只调用 `generate_import_outline_preview` 与 `generate_import_writing_rules_preview`；`merge_import_previews.requestedAssetTypes` 等于所选两项；确认后不写角色和世界观。 |
+| 全套 deep 导入 | 上传 `.md`，选择五类目标产物，`importPreviewMode="deep"` | Plan 包含五个 `generate_import_*_preview` Tool，且包含 `generate_import_writing_rules_preview`；合并、校验和写入确认链路完整。 |
+| 全套 quick/fallback 导入 | 上传 `.md`，选择五类目标产物，`importPreviewMode="quick"` | Plan 使用 scoped `build_import_preview` fallback，`build_import_preview.args.requestedAssetTypes` 等于五类目标；不展开分目标 Tool；后续仍进入一致性检查、校验和审批写入。 |
 | 未审批 | 生成预览后不点确认 | 不调用 `persist_project_assets`，业务表不变。 |
-| 审批执行 | 用户确认计划 | Act 复用预览并写入项目资料、角色、设定、卷和 planned 章节。 |
+| 审批执行 | 用户确认计划 | Act 复用预览并只写本轮 `requestedAssetTypes` 覆盖的资产；`persist_project_assets` 是唯一项目资产写入入口，且必须处于需审批步骤。 |
 | 不支持类型 | 上传 `.png` 或 `.zip` | 前端阻止选择或后端拒绝，提示仅支持创意文档。 |
 | 同消息换文件 | 两次输入相同 message，但上传不同文档 | 创建不同 AgentRun，不复用旧 clientRequestId。 |
 

@@ -410,7 +410,7 @@
 
 ### TIP-P3-003 文档和操作手册更新
 
-- 状态：`[ ]`
+- 状态：`[x]`
 - 模块：Docs
 - 文件：`docs/architecture/creative-document-import-agent-design.md`、用户手工测试文档
 - 任务：把新分目标链路同步到原导入文档和手工验收流程。
@@ -419,6 +419,12 @@
   - 手工验收包含单目标、双目标、全套三类用例。
   - 写入确认边界清楚。
 - 验证：文档审阅
+- 完成记录：
+  - 2026-05-06：更新原导入设计文档，说明导入预览现为 deep 分目标链路与 quick/兼容 `build_import_preview` fallback 双轨；`requestedAssetTypes` 是结构化目标范围，fallback 也必须保持同一范围。
+  - 2026-05-06：补充手工验收表，覆盖单目标、双目标、全套 deep、全套 quick/fallback、未审批和审批执行；明确未选择目标不生成、不展示、不写入。
+  - 2026-05-06：写入确认边界更新为 `persist_project_assets` 是唯一项目资产写入入口且必须审批，目标 Tool、合并 Tool、校验 Tool 都不得写业务库。
+  - 修改文件：`docs/architecture/creative-document-import-agent-design.md`、`docs/architecture/targeted-import-preview-tools-development-plan.md`。
+  - 验证结果：文档审阅通过；`git diff --check` 通过。
 
 ## 7. P0 完成定义
 
