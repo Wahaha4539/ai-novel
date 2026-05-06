@@ -30,6 +30,7 @@ import { ValidateOutlineTool } from '../agent-tools/tools/validate-outline.tool'
 import { ValidateImportedAssetsTool } from '../agent-tools/tools/validate-imported-assets.tool';
 import { PersistOutlineTool } from '../agent-tools/tools/persist-outline.tool';
 import { GenerateOutlinePreviewTool } from '../agent-tools/tools/generate-outline-preview.tool';
+import { ResolveChapterTool } from '../agent-tools/tools/resolve-chapter.tool';
 import { CollectChapterContextTool } from '../agent-tools/tools/collect-chapter-context.tool';
 import { CollectTaskContextTool } from '../agent-tools/tools/collect-task-context.tool';
 import { InspectProjectContextTool } from '../agent-tools/tools/inspect-project-context.tool';
@@ -9518,6 +9519,34 @@ test('Watchdog stale scan ignores steps with unexpired phase timeout', async () 
   assert.deepEqual(stepFindManyArgs[1].where?.AND, [
     { OR: [{ timeoutAt: null }, { timeoutAt: { lt: now } }] },
   ]);
+});
+
+test('ResolveChapterTool prefers explicit chapterNo over current context chapterId', async () => {
+  const queries: Array<{ where?: Record<string, unknown> }> = [];
+  const prisma = {
+    chapter: {
+      async findFirst(args: { where?: Record<string, unknown> }) {
+        queries.push(args);
+        if (args.where?.chapterNo === 3) {
+          return { id: 'c3', chapterNo: 3, title: 'Chapter 3', status: 'planned', objective: 'Target 3', conflict: 'Conflict 3', outline: 'Outline 3', expectedWordCount: 2500 };
+        }
+        if (args.where?.id === 'c1') {
+          return { id: 'c1', chapterNo: 1, title: 'Chapter 1', status: 'planned', objective: 'Target 1', conflict: 'Conflict 1', outline: 'Outline 1', expectedWordCount: 2500 };
+        }
+        return null;
+      },
+    },
+  };
+  const tool = new ResolveChapterTool(prisma as never);
+
+  const result = await tool.run(
+    { chapterRef: '第 3 章', chapterNo: 3, currentChapterId: 'c1' },
+    { agentRunId: 'run1', projectId: 'p1', chapterId: 'c1', mode: 'plan', approved: false, outputs: {}, policy: {} },
+  );
+
+  assert.equal(result.chapterId, 'c3');
+  assert.equal(result.chapterNo, 3);
+  assert.deepEqual(queries[0].where, { chapterNo: 3, projectId: 'p1' });
 });
 
 test('AgentRuntime maps chapter craft brief preview and validation artifacts in plan mode', () => {

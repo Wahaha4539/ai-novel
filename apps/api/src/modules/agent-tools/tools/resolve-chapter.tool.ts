@@ -81,9 +81,10 @@ export class ResolveChapterTool implements BaseTool<ResolveChapterInput, Resolve
   constructor(private readonly prisma: PrismaService) {}
 
   async run(args: ResolveChapterInput, context: ToolContext): Promise<ResolveChapterOutput> {
-    const chapterId = args.chapterId ?? (args.chapterRef && this.looksLikeUuid(args.chapterRef) ? args.chapterRef : undefined) ?? context.chapterId;
+    const explicitChapterId = args.chapterId ?? (args.chapterRef && this.looksLikeUuid(args.chapterRef) ? args.chapterRef : undefined);
     const currentChapterId = args.currentChapterId ?? context.chapterId;
     const chapterNo = typeof args.chapterNo === 'number' ? args.chapterNo : await this.resolveChapterNo(args.chapterRef, context.projectId, currentChapterId, args.currentChapterIndex);
+    const chapterId = explicitChapterId ?? (!chapterNo && !args.chapterRef ? context.chapterId : undefined);
 
     if (!chapterId && !chapterNo) {
       throw new BadRequestException('resolve_chapter 需要 chapterId、chapterNo 或可解析的 chapterRef');
