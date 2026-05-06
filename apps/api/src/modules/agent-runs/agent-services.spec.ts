@@ -4049,9 +4049,11 @@ test('PersistOutlineTool 兼容旧 outline_preview 缺 craftBrief，不覆盖 pl
 
 test('GenerateOutlinePreviewTool keeps 500s outer timeout but bounds LLM call', async () => {
   let receivedOptions: Record<string, unknown> | undefined;
+  let receivedMessages: Array<{ role: string; content: string }> | undefined;
   const llmUsages: Array<{ model?: string }> = [];
   const llm = {
-    async chatJson(_messages: unknown, options: Record<string, unknown>) {
+    async chatJson(messages: Array<{ role: string; content: string }>, options: Record<string, unknown>) {
+      receivedMessages = messages;
       receivedOptions = options;
       return {
         data: {
@@ -4065,13 +4067,33 @@ test('GenerateOutlinePreviewTool keeps 500s outer timeout but bounds LLM call', 
   };
   const tool = new GenerateOutlinePreviewTool(llm as never);
   const output = await tool.run(
-    { instruction: '把第二卷拆成 1 章', volumeNo: 2, chapterCount: 1, context: { project: { title: '逆潮脊梁' } } },
+    {
+      instruction: '把第二卷拆成 1 章',
+      volumeNo: 2,
+      chapterCount: 1,
+      context: {
+        project: { title: '逆潮脊梁', genre: '工业奇幻', outline: '修成逆潮工程，建立共承制度。' },
+        volumes: [{ volumeNo: 2, title: '盐风峡路', objective: '建立稳定商路', synopsis: '峡谷商路争夺。', narrativePlan: { volumeMainline: '夺取通路权' } }],
+        existingChapters: [{ chapterNo: 1, title: '旧章', objective: '旧目标' }],
+        characters: [{ name: '林澈', roleType: 'protagonist', motivation: '保护工队' }],
+        lorebookEntries: [{ title: '盐风峡', entryType: 'location', content: '峡谷会周期性爆发盐风暴。' }],
+      },
+    },
     { agentRunId: 'run1', projectId: 'p1', mode: 'plan', approved: false, outputs: {}, policy: {}, recordLlmUsage: (usage) => llmUsages.push(usage) },
   );
 
   assert.equal(tool.executionTimeoutMs, 500_000);
   assert.equal(receivedOptions?.timeoutMs, 90_000);
   assert.equal(receivedOptions?.retries, 0);
+  assert.equal(receivedOptions?.maxTokens, 4000);
+  assert.match(receivedMessages?.[0]?.content ?? '', /actionBeats 至少 3 个节点/);
+  assert.match(receivedMessages?.[0]?.content ?? '', /concreteClues 至少 1 个/);
+  assert.match(receivedMessages?.[0]?.content ?? '', /不可逆后果/);
+  assert.match(receivedMessages?.[1]?.content ?? '', /目标卷纲/);
+  assert.match(receivedMessages?.[1]?.content ?? '', /夺取通路权/);
+  assert.match(receivedMessages?.[1]?.content ?? '', /已有章节摘要/);
+  assert.match(receivedMessages?.[1]?.content ?? '', /角色摘要/);
+  assert.match(receivedMessages?.[1]?.content ?? '', /设定摘要/);
   assert.equal(output.volume.volumeNo, 2);
   assert.equal(output.chapters.length, 1);
   assert.equal(llmUsages[0].model, 'mock-outline-model');

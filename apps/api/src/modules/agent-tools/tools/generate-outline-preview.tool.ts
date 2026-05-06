@@ -65,10 +65,10 @@ export class GenerateOutlinePreviewTool implements BaseTool<GenerateOutlinePrevi
       });
       const response = await this.llm.chatJson<OutlinePreviewOutput>(
         [
-          { role: 'system', content: '你是小说大纲设计 Agent。只输出 JSON，不要 Markdown。字段必须包含 volume、chapters、risks。每章包含 chapterNo/volumeNo/title/objective/conflict/hook/outline/expectedWordCount/craftBrief。章节字段要短，不要写正文。craftBrief 是本章执行卡，需包含 visibleGoal/coreConflict/mainlineTask/actionBeats/concreteClues/irreversibleConsequence。' },
-          { role: 'user', content: `用户目标：${args.instruction ?? '生成章节大纲'}\n卷号：${volumeNo}\n章节数：${chapterCount}\n项目上下文：\n${this.compactContext(args.context)}` },
+          { role: 'system', content: this.buildSystemPrompt() },
+          { role: 'user', content: this.buildUserPrompt(args, volumeNo, chapterCount) },
         ],
-        { appStep: 'planner', maxTokens: Math.min(8000, chapterCount * 220 + 1000), timeoutMs: OUTLINE_PREVIEW_LLM_TIMEOUT_MS, retries: 0 },
+        { appStep: 'planner', maxTokens: this.estimateMaxTokens(chapterCount), timeoutMs: OUTLINE_PREVIEW_LLM_TIMEOUT_MS, retries: 0 },
       );
       recordToolLlmUsage(context, 'planner', response.result);
       await context.updateProgress?.({ phase: 'validating', phaseMessage: '正在校验章节预览', progressCurrent: chapterCount, progressTotal: chapterCount });
@@ -252,14 +252,81 @@ export class GenerateOutlinePreviewTool implements BaseTool<GenerateOutlinePrevi
     };
   }
 
-  private compactContext(context: unknown): string {
-    const record = this.asRecord(context);
+  private buildSystemPrompt(): string {
+    return [
+      '你是小说章节细纲设计 Agent。只输出严格 JSON，不要 Markdown、解释或代码块。',
+      '本工具生成的是卷/章节细纲与章级执行卡，不是正文，不要写正文段落。',
+      '输出字段必须包含 volume、chapters、risks；每章必须包含 chapterNo、volumeNo、title、objective、conflict、hook、outline、expectedWordCount、craftBrief。',
+      '',
+      '高密度章节细纲规则：',
+      '- 每章至少领取 1 个本卷主线任务，并至少推进 1 条卷内支线。',
+      '- objective 必须具体可检验，不能只写“推进主线”“调查线索”。',
+      '- conflict 必须写清阻力来源和阻力方式。',
+      '- outline 必须包含具体场景、关键行动、阶段结果，不要写泛泛剧情摘要。',
+      '- craftBrief 必填，必须包含 visibleGoal、hiddenEmotion、coreConflict、mainlineTask、subplotTasks、actionBeats、concreteClues、dialogueSubtext、characterShift、irreversibleConsequence、progressTypes。',
+      '- craftBrief.actionBeats 至少 3 个节点，形成“起手行动 -> 正面受阻 -> 阶段结果”的行动链。',
+      '- craftBrief.concreteClues 至少 1 个具象线索或物证，写清 name，可补 sensoryDetail 和 laterUse。',
+      '- craftBrief.irreversibleConsequence 必须具体，且改变事实、关系、资源、地位、规则或危险等级之一。',
+      '- 每 3-4 章至少出现一次信息揭示、关系反转、资源得失、地位变化或规则升级。',
+      '- 卷末章节必须收束本卷主线，并留下下一卷或下一阶段交接。',
+      '',
+      'JSON 输出示例骨架：',
+      '{"volume":{"volumeNo":1,"title":"卷名","synopsis":"卷概要","objective":"可检验卷目标","chapterCount":10,"narrativePlan":{}},"chapters":[{"chapterNo":1,"volumeNo":1,"title":"章节标题","objective":"本章可检验目标","conflict":"阻力来源与方式","hook":"章末钩子","outline":"具体场景、关键行动、阶段结果","expectedWordCount":2500,"craftBrief":{"visibleGoal":"表层目标","hiddenEmotion":"隐藏情绪","coreConflict":"核心冲突","mainlineTask":"本章主线任务","subplotTasks":["支线任务"],"actionBeats":["行动1","行动2","行动3"],"concreteClues":[{"name":"线索","sensoryDetail":"感官细节","laterUse":"后续用途"}],"dialogueSubtext":"潜台词","characterShift":"人物变化","irreversibleConsequence":"不可逆后果","progressTypes":["info"]}}],"risks":[]}',
+    ].join('\n');
+  }
+
+  private buildUserPrompt(args: GenerateOutlinePreviewInput, volumeNo: number, chapterCount: number): string {
+    const record = this.asRecord(args.context);
     const project = this.asRecord(record.project);
-    const volumes = Array.isArray(record.volumes) ? record.volumes.slice(0, 12) : [];
-    const existingChapters = Array.isArray(record.existingChapters) ? record.existingChapters.slice(0, 120) : [];
-    const characters = Array.isArray(record.characters) ? record.characters.slice(0, 20) : [];
-    const lorebookEntries = Array.isArray(record.lorebookEntries) ? record.lorebookEntries.slice(0, 20) : [];
-    return JSON.stringify({ project, volumes, existingChapters, characters, lorebookEntries }, null, 2).slice(0, 12000);
+    const volumes = Array.isArray(record.volumes) ? record.volumes.map((item) => this.asRecord(item)) : [];
+    const targetVolume = volumes.find((item) => Number(item.volumeNo) === volumeNo) ?? {};
+    const existingChapters = Array.isArray(record.existingChapters) ? record.existingChapters.slice(0, 160) : [];
+    const characters = Array.isArray(record.characters) ? record.characters.slice(0, 30) : [];
+    const lorebookEntries = Array.isArray(record.lorebookEntries) ? record.lorebookEntries.slice(0, 30) : [];
+    return [
+      `用户目标：${args.instruction ?? '生成章节细纲'}`,
+      `目标卷：第 ${volumeNo} 卷`,
+      `目标章节数：${chapterCount}`,
+      `章节范围：第 1-${chapterCount} 章`,
+      '',
+      '项目概览：',
+      this.safeJson({
+        title: project.title,
+        genre: project.genre,
+        tone: project.tone,
+        synopsis: project.synopsis,
+        outline: project.outline,
+      }, 3000),
+      '',
+      '目标卷纲：',
+      this.safeJson({
+        volumeNo,
+        title: targetVolume.title,
+        synopsis: targetVolume.synopsis,
+        objective: targetVolume.objective,
+        narrativePlan: targetVolume.narrativePlan,
+      }, 4000),
+      '',
+      '已有章节摘要（避免重复编号、标题和目标）：',
+      this.safeJson(existingChapters, 6000),
+      '',
+      '角色摘要：',
+      this.safeJson(characters, 4000),
+      '',
+      '设定摘要：',
+      this.safeJson(lorebookEntries, 4000),
+      '',
+      '请严格按目标章节数返回 chapters。若上下文不足，把风险写入 risks，但仍输出完整章节和 craftBrief。',
+    ].join('\n');
+  }
+
+  private estimateMaxTokens(chapterCount: number): number {
+    return Math.min(16_000, Math.max(4000, chapterCount * 620 + 1800));
+  }
+
+  private safeJson(value: unknown, limit: number): string {
+    const text = JSON.stringify(value ?? {}, null, 2);
+    return text.length > limit ? `${text.slice(0, limit)}...` : text;
   }
 
   private asRecord(value: unknown): Record<string, unknown> {
