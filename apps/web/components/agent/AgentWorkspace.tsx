@@ -4,7 +4,7 @@ import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { useAgentRun } from '../../hooks/useAgentRun';
 import { getCreativeDocumentExtension, uploadCreativeDocument } from '../../lib/uploadCreativeDocument';
 import { AgentApprovalDialog } from './AgentApprovalDialog';
-import { AgentInputBox, type ChatMessage, type CreativeDocumentAttachmentItem } from './AgentInputBox';
+import { AgentInputBox, type AgentInputSubmitOptions, type ChatMessage, type CreativeDocumentAttachmentItem } from './AgentInputBox';
 import { AgentPlanPanel } from './AgentPlanPanel';
 import { AgentTimelinePanel } from './AgentTimelinePanel';
 import { AgentArtifactPanel } from './AgentArtifactPanel';
@@ -65,13 +65,16 @@ export function AgentWorkspace({ projectId, selectedChapterId, onRefresh }: Agen
     setChatHistory((prev) => [...prev, { id: `msg-${msgIdCounter.current}`, role, content, timestamp: Date.now() }]);
   }, []);
 
-  const handleSubmit = useCallback(async () => {
+  const handleSubmit = useCallback(async (submitOptions?: AgentInputSubmitOptions) => {
     const message = goal.trim();
     if (!message || loading) return;
     if (hasUploadingCreativeDocument) {
       pushMessage('system', '创意文档仍在上传中，请稍后再发送。');
       return;
     }
+    const requestContext = submitOptions?.requestedAssetTypes?.length
+      ? { ...pageContext, requestedAssetTypes: submitOptions.requestedAssetTypes }
+      : pageContext;
     // 立即推入用户消息并清空输入框
     pushMessage('user', message);
     if (uploadedCreativeDocumentAttachments.length) {
@@ -86,11 +89,11 @@ export function AgentWorkspace({ projectId, selectedChapterId, onRefresh }: Agen
         await handleAct();
         return;
       }
-      const run = await createPlan(projectId, message, pageContext, uploadedCreativeDocumentAttachments);
+      const run = await createPlan(projectId, message, requestContext, uploadedCreativeDocumentAttachments);
       if (run) pushMessage('agent', '已收到新任务，正在生成计划…');
       return;
     }
-    const run = await createPlan(projectId, message, pageContext, uploadedCreativeDocumentAttachments);
+    const run = await createPlan(projectId, message, requestContext, uploadedCreativeDocumentAttachments);
     if (run) pushMessage('agent', '已收到任务，正在生成计划…');
   }, [goal, loading, hasUploadingCreativeDocument, uploadedCreativeDocumentAttachments, canAct, currentRun, interpretMessage, handleAct, createPlan, projectId, pageContext, pushMessage]);
 

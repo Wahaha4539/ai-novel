@@ -1,0 +1,338 @@
+# 按目标产物拆分导入生成 Tool 开发任务清单
+
+> 来源设计文档：`docs/architecture/targeted-import-preview-tools-design.md`
+> 功能入口：Agent 输入区目标产物选择器
+> 任务编号前缀：`TIP`，即 Targeted Import Preview
+> 任务状态：`[ ]` 未开始，`[~]` 进行中，`[x]` 已完成
+> 最后更新：2026-05-06
+
+## 1. 已具备基础
+
+- 前端已有目标产物选择器，能在自然语言中表达“只生成这些目标产物”。
+- `build_import_preview` 已支持 `requestedAssetTypes` 并按范围过滤输出。
+- `validate_imported_assets` 已支持写作规则和目标产物范围。
+- `persist_project_assets` 已支持写作规则写入，并按 `requestedAssetTypes` 阻止未选择资产写入。
+- Planner 已有导入计划补齐 `persist_project_assets` 的后端保护。
+- 写入确认 UI 已能根据 Plan 展示写入步骤和目标产物范围。
+
+本任务清单从“高质量分目标生成”开始，不重复已经完成的导入附件基础能力。
+
+## 2. 开发原则
+
+- 每个目标产物 Tool 必须只读，不写库。
+- 用户选择几个目标产物，就只编排几个目标产物 Tool。
+- 目标产物选择必须变成结构化上下文，不能只依赖 prompt 拼接。
+- 新链路必须输出现有 `ImportPreviewOutput`，复用校验和写入。
+- `build_import_preview` 保留为 fallback，不删除。
+- 所有写入仍统一走 `persist_project_assets` 和写入确认。
+
+## 3. P0 结构化目标产物和合并链路
+
+### TIP-P0-001 前端提交结构化 requestedAssetTypes
+
+- 状态：`[x]`
+- 模块：Web
+- 文件：`apps/web/components/agent/AgentInputBox.tsx`、`apps/web/components/agent/AgentFloatingPanel.tsx`、`apps/web/components/agent/AgentWorkspace.tsx`、`apps/web/hooks/useAgentRun.ts`
+- 任务：把目标产物选择从纯文本提示升级为结构化请求字段。
+- 验收：
+  - `selectedTargetIds` 随 `createPlan` 提交。
+  - 请求体 `context.requestedAssetTypes` 包含用户选择。
+  - 自然语言提示仍保留，作为 LLM 可读说明。
+  - 未选择目标产物时不传该字段，由后端按自然语言兜底推断。
+- 验证：`pnpm --dir apps/web run build`
+- 完成记录：
+  - 2026-05-06：`AgentInputBox` 在提交时把已选择目标产物作为 `requestedAssetTypes` 传给父组件；`AgentFloatingPanel` 和 `AgentWorkspace` 将其并入 `pageContext`；`useAgentRun.createPlan` 过滤合法目标产物并写入请求体 `context.requestedAssetTypes`，未选择时不传，同时把目标产物纳入请求指纹和幂等键。
+  - 修改文件：`apps/web/components/agent/AgentInputBox.tsx`、`apps/web/components/agent/AgentFloatingPanel.tsx`、`apps/web/components/agent/AgentWorkspace.tsx`、`apps/web/hooks/useAgentRun.ts`、`docs/architecture/targeted-import-preview-tools-development-plan.md`。
+  - 验证结果：`pnpm --dir apps/web run build` 首次因已有 Next dev server 占用 `.next/trace` 返回 EPERM；停止相关 `next dev -p 3000` 进程后重跑通过。
+
+### TIP-P0-002 后端 DTO 和 Context 接收 requestedAssetTypes
+
+- 状态：`[ ]`
+- 模块：API
+- 文件：`apps/api/src/modules/agent-runs/dto/create-agent-plan.dto.ts`、`apps/api/src/modules/agent-runs/agent-context-builder.service.ts`
+- 任务：校验并注入结构化目标产物范围。
+- 验收：
+  - 只接受 `projectProfile/outline/characters/worldbuilding/writingRules`。
+  - 非法值返回 400 或在归一化时丢弃并记录诊断。
+  - Planner 输入能读取 `context.session.requestedAssetTypes` 或等价字段。
+- 验证：`pnpm --dir apps/api run test:agent`
+
+### TIP-P0-003 抽离 ImportPreview 类型和过滤工具
+
+- 状态：`[ ]`
+- 模块：API
+- 文件：新增 `apps/api/src/modules/agent-tools/tools/import-preview.types.ts`
+- 任务：把 `ImportAssetType`、`ImportPreviewOutput`、`normalizeImportAssetTypes`、`filterImportPreviewByAssetTypes` 从 `build-import-preview.tool.ts` 抽离。
+- 验收：
+  - `build_import_preview`、`validate_imported_assets`、`persist_project_assets` 都从新文件引用类型和过滤函数。
+  - 没有循环依赖。
+  - 现有测试不需要大规模改写。
+- 验证：`pnpm --dir apps/api run test:agent`
+
+### TIP-P0-004 新增 merge_import_previews Tool
+
+- 状态：`[ ]`
+- 模块：API
+- 文件：新增 `apps/api/src/modules/agent-tools/tools/merge-import-previews.tool.ts`
+- 任务：把多个目标产物预览合并为统一 `ImportPreviewOutput`。
+- 验收：
+  - `allowedModes=['plan','act']`。
+  - `requiresApproval=false`，`sideEffects=[]`。
+  - 未选择目标产物输出为空。
+  - 角色、世界设定、写作规则同名去重并返回 risks。
+  - 大纲只合并 `projectProfile.outline`、`volumes`、`chapters`。
+- 验证：`pnpm --dir apps/api run test:agent`
+
+### TIP-P0-005 注册 merge_import_previews Tool 和 Manifest
+
+- 状态：`[ ]`
+- 模块：API
+- 文件：`apps/api/src/modules/agent-tools/agent-tools.module.ts`、`apps/api/src/modules/agent-tools/tool-registry.service.ts`、`merge-import-previews.tool.ts`
+- 任务：注册 Tool 并补齐 Planner 可读 Manifest。
+- 验收：
+  - `ToolRegistryService.list()` 包含 `merge_import_previews`。
+  - Manifest 说明它只做合并，不生成、不写库。
+  - Planner examples 展示两个目标产物合并的用法。
+- 验证：`pnpm --dir apps/api run test:agent`
+
+### TIP-P0-006 Planner 支持分目标链路骨架
+
+- 状态：`[ ]`
+- 模块：API
+- 文件：`apps/api/src/modules/agent-runs/agent-planner.service.ts`
+- 任务：更新 Planner prompt 和规范化规则，使其能按 `requestedAssetTypes` 编排目标产物 Tool。
+- 验收：
+  - 只选 `outline` 时，不生成 characters/worldbuilding/writingRules 相关 Tool。
+  - 多目标时，生成对应目标 Tool 后调用 `merge_import_previews`。
+  - 合并结果进入 `validate_imported_assets`。
+  - `persist_project_assets` 仍为需审批步骤。
+  - 专用 Tool 未注册时 fallback 到 `build_import_preview`。
+- 验证：`pnpm --dir apps/api run test:agent`
+
+## 4. P1 目标产物专用生成 Tool
+
+### TIP-P1-001 新增 generate_import_outline_preview
+
+- 状态：`[ ]`
+- 模块：API
+- 文件：新增 `apps/api/src/modules/agent-tools/tools/generate-import-outline-preview.tool.ts`
+- 任务：根据文档分析和项目上下文生成导入大纲预览。
+- 验收：
+  - 输入包含 `analysis`、`instruction`、`projectContext?`、`chapterCount?`。
+  - 输出包含 `projectProfile.outline`、`volumes`、`chapters`、`risks`。
+  - 不输出角色、世界设定、写作规则。
+  - Prompt 专注主线、卷章结构、冲突递进、章节钩子。
+- 验证：`pnpm --dir apps/api run test:agent`
+
+### TIP-P1-002 新增 generate_import_characters_preview
+
+- 状态：`[ ]`
+- 模块：API
+- 文件：新增 `apps/api/src/modules/agent-tools/tools/generate-import-characters-preview.tool.ts`
+- 任务：根据文档分析生成角色与人设预览。
+- 验收：
+  - 输出 `characters` 数组。
+  - 每个角色包含 `name/roleType/personalityCore/motivation/backstory`。
+  - Prompt 专注角色动机、关系、人物弧光和行为约束。
+  - 不把世界设定塞进角色字段。
+- 验证：`pnpm --dir apps/api run test:agent`
+
+### TIP-P1-003 新增 generate_import_worldbuilding_preview
+
+- 状态：`[ ]`
+- 模块：API
+- 文件：新增 `apps/api/src/modules/agent-tools/tools/generate-import-worldbuilding-preview.tool.ts`
+- 任务：根据文档分析生成世界设定导入预览。
+- 验收：
+  - 输出 `lorebookEntries` 数组。
+  - 每项包含 `title/entryType/content/summary/tags`。
+  - Prompt 专注地点、势力、规则、历史、能力体系。
+  - 能读取项目上下文，避免覆盖 locked facts。
+- 验证：`pnpm --dir apps/api run test:agent`
+
+### TIP-P1-004 新增 generate_import_writing_rules_preview
+
+- 状态：`[ ]`
+- 模块：API
+- 文件：新增 `apps/api/src/modules/agent-tools/tools/generate-import-writing-rules-preview.tool.ts`
+- 任务：根据文档分析生成写作规则预览。
+- 验收：
+  - 输出 `writingRules` 数组。
+  - 每项包含 `title/ruleType/content/severity/appliesFromChapterNo?/appliesToChapterNo?/entityType?/entityRef?/status?`。
+  - Prompt 专注文风、视角、人称、禁写、节奏、结构规范。
+  - 不把世界观规则误塞进 lorebook。
+- 验证：`pnpm --dir apps/api run test:agent`
+
+### TIP-P1-005 新增 generate_import_project_profile_preview
+
+- 状态：`[ ]`
+- 模块：API
+- 文件：新增 `apps/api/src/modules/agent-tools/tools/generate-import-project-profile-preview.tool.ts`
+- 任务：根据文档分析生成项目资料预览。
+- 验收：
+  - 输出 `projectProfile.title/genre/theme/tone/logline/synopsis`。
+  - 未选择 `outline` 时不生成 `projectProfile.outline`。
+  - Prompt 专注作品定位、卖点、简介和基调。
+- 验证：`pnpm --dir apps/api run test:agent`
+
+### TIP-P1-006 注册所有目标产物 Tool 和 Manifest
+
+- 状态：`[ ]`
+- 模块：API
+- 文件：`apps/api/src/modules/agent-tools/agent-tools.module.ts`、`apps/api/src/modules/agent-tools/tool-registry.service.ts`
+- 任务：注册 P1 新增 Tool，并为每个 Tool 提供 Manifest。
+- 验收：
+  - Planner Available Tools 能看到所有新 Tool。
+  - `whenToUse` 明确对应目标产物。
+  - `whenNotToUse` 明确不生成未选择目标产物。
+  - `parameterHints` 要求使用 `analysis` 和 `instruction`。
+- 验证：`pnpm --dir apps/api run test:agent`
+
+### TIP-P1-007 Planner 单目标和多目标测试
+
+- 状态：`[ ]`
+- 模块：API
+- 文件：`apps/api/src/modules/agent-runs/agent-services.spec.ts`
+- 任务：增加 Planner 规范化和分目标编排测试。
+- 验收：
+  - 单选大纲只编排大纲 Tool。
+  - 双选大纲和写作规则只编排两个对应 Tool。
+  - 全套可编排五个 Tool。
+  - 所有导入计划都有 `validate_imported_assets` 和需审批 `persist_project_assets`。
+- 验证：`pnpm --dir apps/api run test:agent`
+
+### TIP-P1-008 Runtime Artifact 提升支持分目标输出
+
+- 状态：`[ ]`
+- 模块：API
+- 文件：`apps/api/src/modules/agent-runs/agent-runtime.service.ts`
+- 任务：从目标 Tool 输出和合并输出中生成前端 Artifact。
+- 验收：
+  - 大纲 Tool 输出提升为 `outline_preview`。
+  - 角色 Tool 输出提升为 `characters_preview`。
+  - 世界设定 Tool 输出提升为 `lorebook_preview`。
+  - 写作规则 Tool 输出提升为 `writing_rules_preview`。
+  - 只展示用户选择的目标产物。
+- 验证：`pnpm --dir apps/api run test:agent`
+
+### TIP-P1-009 前端 Plan 和 Artifact 展示目标产物来源
+
+- 状态：`[ ]`
+- 模块：Web
+- 文件：`apps/web/components/agent/AgentPlanPanel.tsx`、`apps/web/components/agent/AgentArtifactPanel.tsx`
+- 任务：在计划和产物面板中展示本次目标产物和对应生成 Tool。
+- 验收：
+  - 用户能看到“剧情大纲由 generate_import_outline_preview 生成”这类来源信息。
+  - 未选择目标产物不展示空卡片。
+  - 写入确认仍展示最终写入范围。
+- 验证：`pnpm --dir apps/web run build`
+
+## 5. P2 质量和一致性增强
+
+### TIP-P2-001 新增 build_import_brief
+
+- 状态：`[ ]`
+- 模块：API
+- 文件：新增 `apps/api/src/modules/agent-tools/tools/build-import-brief.tool.ts`
+- 任务：在分目标生成前，先生成一份全局导入简报，作为所有目标 Tool 的共同依据。
+- 验收：
+  - 输出核心设定、主线、主题、关键人物、世界规则、语气和风险。
+  - 所有目标 Tool 可选择接收 `importBrief`。
+  - Brief 只读，不写库。
+- 验证：`pnpm --dir apps/api run test:agent`
+
+### TIP-P2-002 增加 cross_target_consistency_check
+
+- 状态：`[ ]`
+- 模块：API
+- 文件：新增一致性校验 Tool 或扩展 `validate_imported_assets`
+- 任务：校验大纲、角色、世界设定、写作规则之间是否互相冲突。
+- 验收：
+  - 能发现角色动机和大纲行为冲突。
+  - 能发现世界设定和写作规则混放。
+  - 校验只读，输出 warning/error。
+- 验证：`pnpm --dir apps/api run test:agent`
+
+### TIP-P2-003 支持单目标重新生成
+
+- 状态：`[ ]`
+- 模块：API/Web
+- 文件：`AgentArtifactPanel.tsx`、`AgentRuntimeService`、Planner replan 相关文件
+- 任务：用户可以只重生成某一个目标产物，不影响其他预览。
+- 验收：
+  - 从 Artifact 面板触发“重新生成写作规则”。
+  - 新 Plan 只重跑对应目标 Tool、merge、validate。
+  - 写入仍需确认。
+- 验证：`pnpm --dir apps/api run test:agent`、`pnpm --dir apps/web run build`
+
+### TIP-P2-004 增加快速模式和深度模式
+
+- 状态：`[ ]`
+- 模块：Web/API
+- 文件：`AgentInputBox.tsx`、`AgentPlannerService`
+- 任务：允许用户在“快速预览”和“深度拆分”之间选择。
+- 验收：
+  - 快速模式优先 `build_import_preview`。
+  - 深度模式优先分目标 Tool。
+  - 默认模式可按目标数量决定：单目标或双目标走深度，多目标可提示成本更高。
+- 验证：`pnpm --dir apps/api run test:agent`、`pnpm --dir apps/web run build`
+
+## 6. P3 生产化和监控
+
+### TIP-P3-001 记录分目标生成耗时和 token
+
+- 状态：`[ ]`
+- 模块：API
+- 文件：LLM gateway 调用链路、AgentStep metadata
+- 任务：记录每个目标 Tool 的耗时、模型和 token 使用。
+- 验收：
+  - 审计或日志可看到每个目标产物的生成成本。
+  - 全套导入能定位哪个 Tool 最慢。
+- 验证：`pnpm --dir apps/api run test:agent`
+
+### TIP-P3-002 增加质量回归 Eval
+
+- 状态：`[ ]`
+- 模块：API/Test
+- 文件：`apps/api/test/fixtures/agent-eval-cases.json` 或现有 eval 位置
+- 任务：增加导入分目标质量评测用例。
+- 验收：
+  - 单目标不生成未选资产。
+  - 双目标输出结构完整。
+  - 全套输出不缺写作规则。
+  - Planner 不会固定跑全套。
+- 验证：项目现有 Agent eval 命令
+
+### TIP-P3-003 文档和操作手册更新
+
+- 状态：`[ ]`
+- 模块：Docs
+- 文件：`docs/architecture/creative-document-import-agent-design.md`、用户手工测试文档
+- 任务：把新分目标链路同步到原导入文档和手工验收流程。
+- 验收：
+  - 原文档说明 `build_import_preview` 是 fallback。
+  - 手工验收包含单目标、双目标、全套三类用例。
+  - 写入确认边界清楚。
+- 验证：文档审阅
+
+## 7. P0 完成定义
+
+P0 完成后必须满足：
+
+1. 前端会把目标产物作为结构化 `requestedAssetTypes` 提交。
+2. 后端 Context 能向 Planner 暴露目标产物范围。
+3. `merge_import_previews` 已注册并可把多个目标预览合并成 `ImportPreviewOutput`。
+4. Planner 能生成“目标 Tool → merge → validate → persist”的计划骨架。
+5. 专用目标 Tool 缺失时，仍可 fallback 到 `build_import_preview`。
+6. 现有导入测试全部通过。
+
+## 8. P1 完成定义
+
+P1 完成后必须满足：
+
+1. 五类目标产物都有导入专用生成 Tool。
+2. 用户选择单目标时只调用对应 Tool。
+3. 用户选择多目标时只调用所选 Tool。
+4. Artifact 只展示所选目标产物。
+5. 确认写入后只写所选目标产物。
+6. `pnpm --dir apps/api run test:agent` 和 `pnpm --dir apps/web run build` 通过。

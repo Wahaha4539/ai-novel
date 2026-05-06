@@ -180,6 +180,10 @@ export interface GuidedAgentPageContext {
   documentDraft?: Record<string, unknown>;
 }
 
+export type AgentImportAssetType = 'projectProfile' | 'outline' | 'characters' | 'worldbuilding' | 'writingRules';
+
+const IMPORT_ASSET_TYPES = new Set<AgentImportAssetType>(['projectProfile', 'outline', 'characters', 'worldbuilding', 'writingRules']);
+
 export interface AgentPageContext {
   currentProjectId?: string;
   currentChapterId?: string;
@@ -190,6 +194,7 @@ export interface AgentPageContext {
   selectedText?: string;
   selectedRange?: { start: number; end: number };
   sourcePage?: string;
+  requestedAssetTypes?: AgentImportAssetType[];
   guided?: GuidedAgentPageContext;
   [key: string]: unknown;
 }
@@ -206,14 +211,23 @@ function createAttachmentRequestFingerprint(attachments?: AgentCreativeDocumentA
     .join('|');
 }
 
-function createClientRequestId(projectId: string, message: string, currentChapterId?: string, attachments?: AgentCreativeDocumentAttachment[]) {
+function createRequestedAssetTypesFingerprint(requestedAssetTypes?: AgentImportAssetType[]) {
+  return requestedAssetTypes?.length ? requestedAssetTypes.join('|') : 'infer-targets';
+}
+
+function normalizeRequestedAssetTypes(value?: AgentImportAssetType[]) {
+  if (!Array.isArray(value)) return [];
+  return [...new Set(value.filter((item): item is AgentImportAssetType => IMPORT_ASSET_TYPES.has(item)))];
+}
+
+function createClientRequestId(projectId: string, message: string, currentChapterId?: string, attachments?: AgentCreativeDocumentAttachment[], requestedAssetTypes?: AgentImportAssetType[]) {
   const normalizedMessage = message.trim().slice(0, 120);
-  const hash = hashRequestPart(`${normalizedMessage}:${createAttachmentRequestFingerprint(attachments)}`);
+  const hash = hashRequestPart(`${normalizedMessage}:${createAttachmentRequestFingerprint(attachments)}:${createRequestedAssetTypesFingerprint(requestedAssetTypes)}`);
   return `agent_${projectId}_${currentChapterId ?? 'project'}_${Date.now().toString(36)}_${hash}`;
 }
 
-function createPlanRequestFingerprint(projectId: string, message: string, currentChapterId?: string, attachments?: AgentCreativeDocumentAttachment[]) {
-  return `${projectId}:${currentChapterId ?? 'project'}:${message.trim()}:${createAttachmentRequestFingerprint(attachments)}`;
+function createPlanRequestFingerprint(projectId: string, message: string, currentChapterId?: string, attachments?: AgentCreativeDocumentAttachment[], requestedAssetTypes?: AgentImportAssetType[]) {
+  return `${projectId}:${currentChapterId ?? 'project'}:${message.trim()}:${createAttachmentRequestFingerprint(attachments)}:${createRequestedAssetTypesFingerprint(requestedAssetTypes)}`;
 }
 
 /**
@@ -258,10 +272,12 @@ export function useAgentRun() {
     const pageContext: AgentPageContext = typeof pageContextOrChapterId === 'string' ? { currentChapterId: pageContextOrChapterId } : (pageContextOrChapterId ?? {});
     const currentChapterId = pageContext.currentChapterId;
     const planAttachments = attachments?.length ? attachments : undefined;
-    const fingerprint = createPlanRequestFingerprint(projectId, message, currentChapterId, planAttachments);
+    const { requestedAssetTypes: rawRequestedAssetTypes, ...restPageContext } = pageContext;
+    const requestedAssetTypes = normalizeRequestedAssetTypes(rawRequestedAssetTypes);
+    const fingerprint = createPlanRequestFingerprint(projectId, message, currentChapterId, planAttachments, requestedAssetTypes);
     let clientRequestId = createPlanRequestIdsRef.current.get(fingerprint);
     if (!clientRequestId) {
-      clientRequestId = createClientRequestId(projectId, message, currentChapterId, planAttachments);
+      clientRequestId = createClientRequestId(projectId, message, currentChapterId, planAttachments, requestedAssetTypes);
       createPlanRequestIdsRef.current.set(fingerprint, clientRequestId);
     }
     try {
@@ -270,7 +286,12 @@ export function useAgentRun() {
         body: JSON.stringify({
           projectId,
           message,
-          context: { currentProjectId: projectId, sourcePage: 'agent_workspace', ...pageContext },
+          context: {
+            currentProjectId: projectId,
+            sourcePage: 'agent_workspace',
+            ...restPageContext,
+            ...(requestedAssetTypes.length ? { requestedAssetTypes } : {}),
+          },
           attachments: planAttachments,
           clientRequestId,
         }),

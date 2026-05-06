@@ -3,7 +3,7 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { type AgentPageContext, useAgentRun } from '../../hooks/useAgentRun';
 import { getCreativeDocumentExtension, uploadCreativeDocument } from '../../lib/uploadCreativeDocument';
-import { AgentInputBox, type ChatMessage, type CreativeDocumentAttachmentItem } from './AgentInputBox';
+import { AgentInputBox, type AgentInputSubmitOptions, type ChatMessage, type CreativeDocumentAttachmentItem } from './AgentInputBox';
 import { AgentApprovalDialog } from './AgentApprovalDialog';
 import { AgentPlanPanel } from './AgentPlanPanel';
 import { AgentTimelinePanel } from './AgentTimelinePanel';
@@ -126,13 +126,16 @@ export function AgentFloatingPanel({
     setChatHistory((prev) => [...prev, msg]);
   }, []);
 
-  const handleSubmit = useCallback(async () => {
+  const handleSubmit = useCallback(async (submitOptions?: AgentInputSubmitOptions) => {
     const message = goal.trim();
     if (!message || loading) return;
     if (hasUploadingCreativeDocument) {
       pushMessage('system', '创意文档仍在上传中，请稍后再发送。');
       return;
     }
+    const requestContext = submitOptions?.requestedAssetTypes?.length
+      ? { ...pageContext, requestedAssetTypes: submitOptions.requestedAssetTypes }
+      : pageContext;
     // 立即将用户消息推入聊天历史并清空输入框，模拟即时发送效果
     pushMessage('user', message);
     if (uploadedCreativeDocumentAttachments.length) {
@@ -148,7 +151,7 @@ export function AgentFloatingPanel({
         await handleAct();
         return;
       }
-      const run = await createPlan(projectId, message, pageContext, uploadedCreativeDocumentAttachments);
+      const run = await createPlan(projectId, message, requestContext, uploadedCreativeDocumentAttachments);
       if (run?.id) {
         pushMessage('agent', '已收到新任务，正在生成计划…');
         setActiveTab('detail');
@@ -156,7 +159,7 @@ export function AgentFloatingPanel({
       return;
     }
 
-    const run = await createPlan(projectId, message, pageContext, uploadedCreativeDocumentAttachments);
+    const run = await createPlan(projectId, message, requestContext, uploadedCreativeDocumentAttachments);
     if (run) {
       pushMessage('agent', '已收到任务，正在生成计划…');
     }
@@ -418,7 +421,7 @@ function TaskTabContent(props: {
   canAct?: boolean; plan?: ReturnType<typeof latestPlan>; currentRunGoal?: string; riskSummary?: string[];
   chatHistory?: ChatMessage[];
   creativeDocumentAttachments?: CreativeDocumentAttachmentItem[];
-  onGoalChange: (v: string) => void; onSubmit: () => void | Promise<void>;
+  onGoalChange: (v: string) => void; onSubmit: (options?: AgentInputSubmitOptions) => void | Promise<void>;
   onReplan: () => void | Promise<void>; onRefresh: () => void | Promise<void>;
   onCreativeDocumentSelect?: (file: File) => void | Promise<void>;
   onCreativeDocumentRemove?: (id: string) => void;

@@ -1,7 +1,7 @@
 'use client';
 
 import { ChangeEvent, FormEvent, KeyboardEvent, useEffect, useMemo, useRef, useState } from 'react';
-import type { AgentPlanPayload } from '../../hooks/useAgentRun';
+import type { AgentImportAssetType, AgentPlanPayload } from '../../hooks/useAgentRun';
 import { CREATIVE_DOCUMENT_ACCEPT } from '../../lib/uploadCreativeDocument';
 import type { AgentCreativeDocumentAttachment, AgentCreativeDocumentExtension } from '../../types/agent-attachment';
 
@@ -10,7 +10,11 @@ const CHAR_COUNT_THRESHOLD = 20;
 /** 建议的最大输入长度 */
 const MAX_CHAR_LIMIT = 2000;
 
-type AgentTargetProductId = 'projectProfile' | 'outline' | 'characters' | 'worldbuilding' | 'writingRules';
+export type AgentTargetProductId = AgentImportAssetType;
+
+export interface AgentInputSubmitOptions {
+  requestedAssetTypes?: AgentTargetProductId[];
+}
 
 const TARGET_PRODUCTS: Array<{ id: AgentTargetProductId; label: string; promptLabel: string; detail: string }> = [
   { id: 'outline', label: '剧情大纲', promptLabel: '剧情大纲', detail: '卷纲、章节规划、主线推进' },
@@ -56,7 +60,7 @@ interface AgentInputBoxProps {
   chatHistory?: ChatMessage[];
   creativeDocumentAttachments?: CreativeDocumentAttachmentItem[];
   onGoalChange: (value: string) => void;
-  onSubmit: () => void | Promise<void>;
+  onSubmit: (options?: AgentInputSubmitOptions) => void | Promise<void>;
   onReplan: () => void | Promise<void>;
   onRefresh: () => void | Promise<void>;
   onCreativeDocumentSelect?: (file: File) => void | Promise<void>;
@@ -96,7 +100,7 @@ export function AgentInputBox({ goal, loading, canReplan, hasCurrentRun, canAct 
   const handleSubmit = async (event: FormEvent) => {
     event.preventDefault();
     if (!goal.trim() || loading) return;
-    await onSubmit();
+    await onSubmit(createSubmitOptions(selectedTargetIds));
   };
 
   const handleInputKeyDown = async (event: KeyboardEvent<HTMLTextAreaElement>) => {
@@ -104,7 +108,7 @@ export function AgentInputBox({ goal, loading, canReplan, hasCurrentRun, canAct 
     if (event.key === 'Enter' && !event.shiftKey && !event.nativeEvent.isComposing) {
       event.preventDefault();
       if (!goal.trim() || loading) return;
-      await onSubmit();
+      await onSubmit(createSubmitOptions(selectedTargetIds));
     }
   };
 
@@ -387,6 +391,10 @@ function composeTargetPrompt(ids: AgentTargetProductId[], hasCreativeDocument: b
   const selected = TARGET_PRODUCTS.filter((item) => ids.includes(item.id));
   const sourceText = hasCreativeDocument ? '我提供的文档和当前项目上下文' : '当前项目上下文';
   return `请根据${sourceText}生成目标产物：${selected.map((item) => item.promptLabel).join('、')}。只生成这些目标产物，不要生成未选择的其他资产。`;
+}
+
+function createSubmitOptions(ids: AgentTargetProductId[]): AgentInputSubmitOptions | undefined {
+  return ids.length ? { requestedAssetTypes: [...ids] } : undefined;
 }
 
 function stripPreviousTargetPrompt(goal: string, previousPrompt: string) {
