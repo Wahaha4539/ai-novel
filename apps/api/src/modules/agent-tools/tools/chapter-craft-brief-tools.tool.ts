@@ -1,5 +1,6 @@
 import { BadRequestException, Injectable, NotFoundException } from '@nestjs/common';
 import { Prisma } from '@prisma/client';
+import { NovelCacheService } from '../../../common/cache/novel-cache.service';
 import { PrismaService } from '../../../prisma/prisma.service';
 import { LlmGatewayService } from '../../llm/llm-gateway.service';
 import { BaseTool, ToolContext } from '../base-tool';
@@ -113,6 +114,34 @@ export interface ValidateChapterCraftBriefOutput {
       sourceTrace: ChapterCraftBriefSourceTrace;
     }>;
   };
+}
+
+interface PersistChapterCraftBriefInput {
+  preview?: GenerateChapterCraftBriefPreviewOutput;
+  validation?: ValidateChapterCraftBriefOutput;
+  selectedCandidateIds?: string[];
+  chapterNos?: number[];
+  allowDrafted?: boolean;
+  syncChapterFields?: boolean;
+}
+
+export interface PersistChapterCraftBriefOutput {
+  updatedCount: number;
+  skippedCount: number;
+  updatedChapters: Array<{ id: string; chapterNo: number; title: string | null; status: string }>;
+  skippedChapters: Array<{ candidateId: string; chapterId: string; chapterNo: number; title: string; status: string; reason: string }>;
+  perChapterAudit: Array<{
+    candidateId: string;
+    chapterId: string;
+    chapterNo: number;
+    title: string;
+    action: 'updated' | 'skipped_status' | 'skipped_unselected';
+    reason: string;
+    sourceStep: 'persist_chapter_craft_brief';
+  }>;
+  approval: { required: true; approved: boolean; mode: string; allowDrafted: boolean; syncChapterFields: boolean };
+  persistedAt: string;
+  approvalMessage: string;
 }
 
 type ChapterTarget = {
@@ -508,6 +537,198 @@ export class ValidateChapterCraftBriefTool implements BaseTool<ValidateChapterCr
   }
 }
 
+@Injectable()
+export class PersistChapterCraftBriefTool implements BaseTool<PersistChapterCraftBriefInput, PersistChapterCraftBriefOutput> {
+  name = 'persist_chapter_craft_brief';
+  description = 'Persist approved Chapter.craftBrief preview candidates into planned Chapter rows.';
+  inputSchema = {
+    type: 'object' as const,
+    required: ['preview', 'validation'],
+    additionalProperties: false,
+    properties: {
+      preview: { type: 'object' as const },
+      validation: { type: 'object' as const },
+      selectedCandidateIds: { type: 'array' as const, items: { type: 'string' as const } },
+      chapterNos: { type: 'array' as const, items: { type: 'number' as const, minimum: 1, integer: true } },
+      allowDrafted: { type: 'boolean' as const },
+      syncChapterFields: { type: 'boolean' as const },
+    },
+  };
+  outputSchema = {
+    type: 'object' as const,
+    required: ['updatedCount', 'skippedCount', 'updatedChapters', 'skippedChapters', 'perChapterAudit', 'approval', 'persistedAt', 'approvalMessage'],
+    properties: {
+      updatedCount: { type: 'number' as const, minimum: 0 },
+      skippedCount: { type: 'number' as const, minimum: 0 },
+      updatedChapters: { type: 'array' as const },
+      skippedChapters: { type: 'array' as const },
+      perChapterAudit: { type: 'array' as const },
+      approval: { type: 'object' as const },
+      persistedAt: { type: 'string' as const },
+      approvalMessage: { type: 'string' as const },
+    },
+  };
+  allowedModes: Array<'act'> = ['act'];
+  riskLevel: 'high' = 'high';
+  requiresApproval = true;
+  sideEffects = ['update_chapter_craft_brief', 'invalidate_chapter_context_cache', 'invalidate_project_recall_cache'];
+  manifest: ToolManifestV2 = {
+    name: this.name,
+    displayName: 'Persist Chapter Craft Brief',
+    description: 'After user approval, writes validated Chapter.craftBrief planning cards. Planned chapters are updated; drafted/non-planned chapters are skipped by default.',
+    whenToUse: [
+      'validate_chapter_craft_brief has passed and the user approved saving Chapter.craftBrief.',
+      'The user wants the previewed chapter progress card to become the chapter planning card.',
+      'The write target is only Chapter planning fields and never chapter prose.',
+    ],
+    whenNotToUse: [
+      'The run is in plan mode or lacks explicit user approval.',
+      'There is no generate_chapter_craft_brief_preview and validate_chapter_craft_brief output.',
+      'The user asks to write or modify prose; use chapter writing or polish tools.',
+    ],
+    inputSchema: this.inputSchema,
+    outputSchema: this.outputSchema,
+    parameterHints: {
+      preview: { source: 'previous_step', description: 'Output from generate_chapter_craft_brief_preview. Required because it contains proposed fields.' },
+      validation: { source: 'previous_step', description: 'Output from validate_chapter_craft_brief. Accepted candidates constrain default selection.' },
+      selectedCandidateIds: { source: 'previous_step', description: 'Candidate IDs copied from preview/validation output. Unknown IDs are rejected.' },
+      chapterNos: { source: 'user_message', description: 'Optional natural chapter numbers to persist from accepted candidates.' },
+      allowDrafted: { source: 'user_message', description: 'Default false. Only set true after explicit approval to update planning card fields for drafted/non-planned chapters without changing prose.' },
+      syncChapterFields: { source: 'user_message', description: 'Default false. When true, also sync proposed objective/conflict/outline planning fields.' },
+    },
+    examples: [
+      {
+        user: 'Save the chapter progress card.',
+        plan: [
+          { tool: 'generate_chapter_craft_brief_preview', args: { instruction: '{{context.userMessage}}' } },
+          { tool: 'validate_chapter_craft_brief', args: { preview: '{{steps.generate_chapter_craft_brief_preview.output}}' } },
+          { tool: 'persist_chapter_craft_brief', args: { preview: '{{steps.generate_chapter_craft_brief_preview.output}}', validation: '{{steps.validate_chapter_craft_brief.output}}' } },
+        ],
+      },
+    ],
+    preconditions: ['context.mode must be act', 'context.approved must be true', 'validate_chapter_craft_brief.valid must be true'],
+    postconditions: ['Writes Chapter.craftBrief only under context.projectId', 'Skips drafted/non-planned chapters unless allowDrafted is explicitly approved', 'Invalidates chapter context and project recall caches after successful writes'],
+    failureHints: [
+      { code: 'APPROVAL_REQUIRED', meaning: 'persist_chapter_craft_brief is a write tool and must run only after approval in act mode.', suggestedRepair: 'Ask for user approval and re-run in act mode.' },
+      { code: 'VALIDATION_FAILED', meaning: 'The selected candidates do not pass validate_chapter_craft_brief.', suggestedRepair: 'Run validate_chapter_craft_brief again and resolve rejected candidates.' },
+    ],
+    allowedModes: this.allowedModes,
+    riskLevel: this.riskLevel,
+    requiresApproval: this.requiresApproval,
+    sideEffects: this.sideEffects,
+    idPolicy: {
+      forbiddenToInvent: ['projectId', 'chapterId', 'candidateId'],
+      allowedSources: ['projectId from ToolContext only', 'candidateId from generate_chapter_craft_brief_preview output', 'chapter IDs from validated preview and database validation'],
+    },
+  };
+
+  constructor(private readonly prisma: PrismaService, private readonly cacheService: NovelCacheService) {}
+
+  async run(args: PersistChapterCraftBriefInput, context: ToolContext): Promise<PersistChapterCraftBriefOutput> {
+    this.assertExecutableInput(args, context);
+    const candidates = getPreviewCandidates(args.preview);
+    const selected = selectCraftBriefCandidates(args, candidates);
+    assertSelectedAllowedByValidation(args.validation, selected, context);
+    const selectedIds = new Set(selected.map((candidate) => candidate.candidateId));
+    const persistedAt = new Date().toISOString();
+
+    const result = await this.prisma.$transaction(async (tx) => {
+      const updatedChapters: PersistChapterCraftBriefOutput['updatedChapters'] = [];
+      const skippedChapters: PersistChapterCraftBriefOutput['skippedChapters'] = [];
+      const perChapterAudit: PersistChapterCraftBriefOutput['perChapterAudit'] = [];
+
+      for (const candidate of candidates) {
+        if (!selectedIds.has(candidate.candidateId)) {
+          perChapterAudit.push({
+            candidateId: candidate.candidateId,
+            chapterId: candidate.chapterId,
+            chapterNo: candidate.chapterNo,
+            title: candidate.title,
+            action: 'skipped_unselected',
+            reason: 'Candidate was not selected for this approved persist step.',
+            sourceStep: 'persist_chapter_craft_brief',
+          });
+          continue;
+        }
+
+        const chapter = await tx.chapter.findFirst({
+          where: { id: candidate.chapterId, projectId: context.projectId },
+          select: { id: true, chapterNo: true, title: true, status: true },
+        });
+        if (!chapter) throw new BadRequestException(`Chapter not found in project: ${candidate.chapterId}`);
+        const status = text(chapter.status, candidate.status);
+        if (status !== 'planned' && args.allowDrafted !== true) {
+          const reason = `Chapter status ${status} is not planned; skipped by default and prose was not changed.`;
+          skippedChapters.push({ candidateId: candidate.candidateId, chapterId: candidate.chapterId, chapterNo: candidate.chapterNo, title: candidate.title, status, reason });
+          perChapterAudit.push({
+            candidateId: candidate.candidateId,
+            chapterId: candidate.chapterId,
+            chapterNo: candidate.chapterNo,
+            title: candidate.title,
+            action: 'skipped_status',
+            reason,
+            sourceStep: 'persist_chapter_craft_brief',
+          });
+          continue;
+        }
+
+        const updated = await tx.chapter.update({
+          where: { id: chapter.id },
+          data: buildChapterCraftBriefUpdateData(candidate, args.syncChapterFields === true),
+          select: { id: true, chapterNo: true, title: true, status: true },
+        });
+        updatedChapters.push(updated);
+        perChapterAudit.push({
+          candidateId: candidate.candidateId,
+          chapterId: candidate.chapterId,
+          chapterNo: candidate.chapterNo,
+          title: candidate.title,
+          action: 'updated',
+          reason: status === 'planned' ? 'Approved Chapter.craftBrief written to planned chapter.' : 'Approved planning-card-only update written to non-planned chapter; prose was not changed.',
+          sourceStep: 'persist_chapter_craft_brief',
+        });
+      }
+
+      return {
+        updatedCount: updatedChapters.length,
+        skippedCount: skippedChapters.length + perChapterAudit.filter((item) => item.action === 'skipped_unselected').length,
+        updatedChapters,
+        skippedChapters,
+        perChapterAudit,
+        approval: {
+          required: true as const,
+          approved: context.approved,
+          mode: context.mode,
+          allowDrafted: args.allowDrafted === true,
+          syncChapterFields: args.syncChapterFields === true,
+        },
+        persistedAt,
+        approvalMessage: args.allowDrafted === true
+          ? 'Approved write updated Chapter.craftBrief planning fields only; chapter prose was not changed.'
+          : 'Approved write updated planned Chapter.craftBrief values and skipped drafted/non-planned chapters by default.',
+      };
+    });
+
+    if (result.updatedCount > 0) {
+      await Promise.all(result.updatedChapters.map((chapter) => this.cacheService.deleteChapterContext(context.projectId, chapter.id)));
+      await this.cacheService.deleteProjectRecallResults(context.projectId);
+    }
+    return result;
+  }
+
+  private assertExecutableInput(args: PersistChapterCraftBriefInput, context: ToolContext) {
+    if (context.mode !== 'act') throw new BadRequestException('persist_chapter_craft_brief can only run in Agent act mode.');
+    if (!context.approved) throw new BadRequestException('persist_chapter_craft_brief requires explicit user approval.');
+    if (!args.preview) throw new BadRequestException('persist_chapter_craft_brief requires generate_chapter_craft_brief_preview output.');
+    if (!args.validation) throw new BadRequestException('persist_chapter_craft_brief requires validate_chapter_craft_brief output.');
+    if (args.validation.valid !== true) throw new BadRequestException('validate_chapter_craft_brief did not pass; persist_chapter_craft_brief will not write.');
+    if (args.preview.writePlan?.target !== 'Chapter.craftBrief' || args.preview.writePlan?.requiresApprovalBeforePersist !== true) {
+      throw new BadRequestException('Chapter craft brief preview has an invalid writePlan.');
+    }
+    if (!getPreviewCandidates(args.preview).length) throw new BadRequestException('persist_chapter_craft_brief requires at least one preview candidate.');
+  }
+}
+
 async function assertProjectExists(prisma: Pick<PrismaService, 'project'>, projectId: string) {
   const project = await prisma.project.findUnique({ where: { id: projectId }, select: { id: true } });
   if (!project) throw new NotFoundException(`Project not found: ${projectId}`);
@@ -679,6 +900,58 @@ function isSameCraftBriefSourceTrace(sourceTrace: ChapterCraftBriefSourceTrace |
     && Number.isInteger(sourceTrace?.chapterNo);
 }
 
+function selectCraftBriefCandidates(args: PersistChapterCraftBriefInput, candidates: ChapterCraftBriefCandidate[]): ChapterCraftBriefCandidate[] {
+  const selectedCandidateIds = stringArray(args.selectedCandidateIds);
+  const selectedChapterNos = uniqueNumbers(numberArray(args.chapterNos));
+  const candidateIdSet = new Set(candidates.map((candidate) => candidate.candidateId));
+  const chapterNoSet = new Set(candidates.map((candidate) => candidate.chapterNo));
+  const unknownIds = selectedCandidateIds.filter((candidateId) => !candidateIdSet.has(candidateId));
+  if (unknownIds.length) throw new BadRequestException(`Unknown Chapter.craftBrief candidateId selection: ${unknownIds.join(', ')}`);
+  const unknownChapterNos = selectedChapterNos.filter((chapterNo) => !chapterNoSet.has(chapterNo));
+  if (unknownChapterNos.length) throw new BadRequestException(`Unknown Chapter.craftBrief chapterNo selection: ${unknownChapterNos.join(', ')}`);
+
+  if (selectedCandidateIds.length) {
+    const selectedSet = new Set(selectedCandidateIds);
+    return candidates.filter((candidate) => selectedSet.has(candidate.candidateId));
+  }
+  if (selectedChapterNos.length) {
+    const selectedSet = new Set(selectedChapterNos);
+    return candidates.filter((candidate) => selectedSet.has(candidate.chapterNo));
+  }
+  const acceptedIds = new Set(stringArray(args.validation?.accepted?.map((item) => item.candidateId)));
+  return acceptedIds.size ? candidates.filter((candidate) => acceptedIds.has(candidate.candidateId)) : candidates;
+}
+
+function assertSelectedAllowedByValidation(validation: ValidateChapterCraftBriefOutput | undefined, selected: ChapterCraftBriefCandidate[], context: ToolContext) {
+  if (!validation) throw new BadRequestException('persist_chapter_craft_brief requires validate_chapter_craft_brief output.');
+  const acceptedById = new Map(validation.accepted.map((item) => [item.candidateId, item]));
+  const writeById = new Map(validation.writePreview?.chapters?.map((item) => [item.candidateId, item]) ?? []);
+  const rejectedIds = new Set(validation.rejected.map((item) => item.candidateId));
+  const errors: string[] = [];
+  selected.forEach((candidate) => {
+    const accepted = acceptedById.get(candidate.candidateId);
+    const write = writeById.get(candidate.candidateId);
+    if (rejectedIds.has(candidate.candidateId)) errors.push(`${candidate.title} was rejected by validate_chapter_craft_brief`);
+    if (!accepted) errors.push(`${candidate.title} was not accepted by validate_chapter_craft_brief`);
+    if (!write) errors.push(`${candidate.title} is missing validate_chapter_craft_brief writePreview`);
+    if (accepted && (accepted.chapterId !== candidate.chapterId || accepted.chapterNo !== candidate.chapterNo)) errors.push(`${candidate.candidateId} chapter ref does not match validate_chapter_craft_brief output`);
+    if (!isSameCraftBriefSourceTrace(candidate.sourceTrace, context)) errors.push(`${candidate.title} sourceTrace does not match current agent run`);
+  });
+  if (errors.length) throw new BadRequestException(`validate_chapter_craft_brief output does not approve selected candidates: ${[...new Set(errors)].join('; ')}`);
+}
+
+function buildChapterCraftBriefUpdateData(candidate: ChapterCraftBriefCandidate, syncChapterFields: boolean): Prisma.ChapterUpdateInput {
+  const data: Prisma.ChapterUpdateInput = {
+    craftBrief: toInputJsonValue(candidate.proposedFields.craftBrief),
+  };
+  if (syncChapterFields) {
+    if (candidate.proposedFields.objective !== undefined) data.objective = candidate.proposedFields.objective;
+    if (candidate.proposedFields.conflict !== undefined) data.conflict = candidate.proposedFields.conflict;
+    if (candidate.proposedFields.outline !== undefined) data.outline = candidate.proposedFields.outline;
+  }
+  return data;
+}
+
 function normalizeCraftBrief(raw: Record<string, unknown> | undefined, base: { chapterNo: number; title: string; objective: string; conflict: string; outline: string }): ChapterCraftBrief {
   const visibleGoal = text(raw?.visibleGoal, base.objective || `Clarify the concrete goal of chapter ${base.chapterNo}.`);
   const coreConflict = text(raw?.coreConflict, base.conflict || 'A visible obstacle blocks the chapter goal.');
@@ -828,4 +1101,8 @@ function isLlmTimeout(error: unknown): boolean {
   const name = text(record?.name, '');
   const message = error instanceof Error ? error.message : text(error, '');
   return /timeout/i.test(name) || /timeout|timed out|LLM_TIMEOUT/i.test(message);
+}
+
+function toInputJsonValue(value: unknown): Prisma.InputJsonValue {
+  return JSON.parse(JSON.stringify(value ?? null)) as Prisma.InputJsonValue;
 }

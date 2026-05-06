@@ -55,7 +55,7 @@ import { GenerateStoryBiblePreviewTool } from '../agent-tools/tools/generate-sto
 import { ValidateStoryBibleTool } from '../agent-tools/tools/validate-story-bible.tool';
 import { PersistStoryBibleTool } from '../agent-tools/tools/persist-story-bible.tool';
 import { GenerateContinuityPreviewTool, PersistContinuityChangesTool, ValidateContinuityChangesTool } from '../agent-tools/tools/continuity-changes.tool';
-import { GenerateChapterCraftBriefPreviewTool, ValidateChapterCraftBriefTool } from '../agent-tools/tools/chapter-craft-brief-tools.tool';
+import { GenerateChapterCraftBriefPreviewTool, PersistChapterCraftBriefTool, ValidateChapterCraftBriefTool } from '../agent-tools/tools/chapter-craft-brief-tools.tool';
 import { GenerateSceneCardsPreviewTool, ListSceneCardsTool, PersistSceneCardsTool, UpdateSceneCardTool, ValidateSceneCardsTool } from '../agent-tools/tools/scene-card-tools.tool';
 import { RelationshipGraphService } from '../agent-tools/relationship-graph.service';
 import { FactExtractorService } from '../facts/fact-extractor.service';
@@ -7525,6 +7525,106 @@ test('ValidateChapterCraftBriefTool checks field completeness and drafted skip p
   assert.match(rejected.rejected[0].reasons.join(' | '), /actionBeats/);
   assert.match(rejected.rejected[0].reasons.join(' | '), /concreteClues/);
   assert.match(rejected.rejected[0].reasons.join(' | '), /irreversibleConsequence/);
+});
+
+test('PersistChapterCraftBriefTool writes planned craftBrief and skips drafted by default', async () => {
+  const context = { agentRunId: 'run-craft-persist', projectId: 'p1', mode: 'plan' as const, approved: false, outputs: {}, policy: {} };
+  const sourceTrace = {
+    sourceKind: 'chapter_craft_brief' as const,
+    originTool: 'generate_chapter_craft_brief_preview' as const,
+    agentRunId: context.agentRunId,
+    candidateIndex: 0,
+    instruction: 'progress card',
+    chapterNo: 3,
+    contextSources: [],
+  };
+  const craftBrief = {
+    visibleGoal: 'Find the ledger.',
+    hiddenEmotion: 'He hides fear behind procedure.',
+    coreConflict: 'The archivist blocks access.',
+    mainlineTask: 'Enter the archive and identify the ledger.',
+    subplotTasks: ['Test an ally.'],
+    actionBeats: ['Ask for access.', 'Spot the rival.', 'Force a choice.'],
+    concreteClues: [{ name: 'salt thread', sensoryDetail: 'Grit on the thumb.', laterUse: 'Links to the bridge file.' }],
+    dialogueSubtext: 'Humidity talk hides a threat.',
+    characterShift: 'He distrusts the archive.',
+    irreversibleConsequence: 'The rival sees the clue and can frame him.',
+    progressTypes: ['info'],
+  };
+  const preview = {
+    candidates: [
+      {
+        candidateId: 'ccb_3_ok',
+        chapterId: 'c3',
+        chapterNo: 3,
+        title: 'Archive pressure',
+        status: 'planned',
+        hasExistingCraftBrief: false,
+        proposedFields: { objective: 'Find the ledger.', conflict: 'The archivist blocks access.', outline: 'Archive confrontation.', craftBrief },
+        risks: [],
+        sourceTrace,
+      },
+      {
+        candidateId: 'ccb_4_drafted',
+        chapterId: 'c4',
+        chapterNo: 4,
+        title: 'Drafted chapter',
+        status: 'drafted',
+        hasExistingCraftBrief: false,
+        proposedFields: { craftBrief: { ...craftBrief, visibleGoal: 'Should not overwrite by default.' } },
+        risks: ['Chapter is drafted.'],
+        sourceTrace: { ...sourceTrace, candidateIndex: 1, chapterNo: 4 },
+      },
+    ],
+    assumptions: [],
+    risks: [],
+    writePlan: { mode: 'preview_only' as const, target: 'Chapter.craftBrief' as const, requiresValidation: true as const, requiresApprovalBeforePersist: true as const },
+  };
+  const updatedRows: Array<Record<string, unknown>> = [];
+  const deletedChapterContexts: string[] = [];
+  const invalidatedProjects: string[] = [];
+  const prisma = {
+    project: { async findUnique() { return { id: 'p1' }; } },
+    chapter: {
+      async findMany() {
+        return [
+          { id: 'c3', chapterNo: 3, title: 'Archive pressure', status: 'planned' },
+          { id: 'c4', chapterNo: 4, title: 'Drafted chapter', status: 'drafted' },
+        ];
+      },
+      async findFirst(args: { where: Record<string, unknown> }) {
+        if (args.where.id === 'c3') return { id: 'c3', chapterNo: 3, title: 'Archive pressure', status: 'planned' };
+        if (args.where.id === 'c4') return { id: 'c4', chapterNo: 4, title: 'Drafted chapter', status: 'drafted' };
+        return null;
+      },
+      async update(args: { where: { id: string }; data: Record<string, unknown> }) {
+        updatedRows.push({ id: args.where.id, ...args.data });
+        return { id: args.where.id, chapterNo: args.where.id === 'c3' ? 3 : 4, title: args.where.id === 'c3' ? 'Archive pressure' : 'Drafted chapter', status: args.where.id === 'c3' ? 'planned' : 'drafted' };
+      },
+    },
+    async $transaction(callback: (tx: unknown) => Promise<unknown>) {
+      return callback(prisma);
+    },
+  };
+  const validateTool = new ValidateChapterCraftBriefTool(prisma as never);
+  const validation = await validateTool.run({ preview }, context);
+  const cache = {
+    async deleteChapterContext(_projectId: string, chapterId: string) { deletedChapterContexts.push(chapterId); },
+    async deleteProjectRecallResults(projectId: string) { invalidatedProjects.push(projectId); },
+  };
+  const persistTool = new PersistChapterCraftBriefTool(prisma as never, cache as never);
+  const persisted = await persistTool.run({ preview, validation }, { ...context, mode: 'act', approved: true });
+
+  assert.equal(persisted.updatedCount, 1);
+  assert.equal(persisted.skippedCount, 1);
+  assert.equal(persisted.updatedChapters[0].id, 'c3');
+  assert.equal(persisted.skippedChapters[0].chapterId, 'c4');
+  assert.equal((updatedRows[0].craftBrief as Record<string, unknown>).visibleGoal, 'Find the ledger.');
+  assert.equal(Object.prototype.hasOwnProperty.call(updatedRows[0], 'objective'), false);
+  assert.deepEqual(deletedChapterContexts, ['c3']);
+  assert.deepEqual(invalidatedProjects, ['p1']);
+  assert.match(persisted.approvalMessage, /skipped drafted/);
+  await assert.rejects(() => persistTool.run({ preview, validation }, { ...context, mode: 'act', approved: false }), /requires explicit user approval/);
 });
 
 test('SceneCard agent tools preview validate persist and update with approval boundaries', async () => {
