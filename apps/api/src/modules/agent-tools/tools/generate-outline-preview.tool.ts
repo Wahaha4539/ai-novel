@@ -108,15 +108,26 @@ export class GenerateOutlinePreviewTool implements BaseTool<GenerateOutlinePrevi
           progressTotal: batch.batchCount,
           timeoutMs: OUTLINE_PREVIEW_LLM_TIMEOUT_MS,
         });
-        const response = await this.callOutlineLlm(args, volumeNo, chapterCount, batch, chapters);
-        recordToolLlmUsage(context, 'planner', response.result);
-        const normalized = this.normalize(response.data, volumeNo, batch.chapterCount, args, {
-          chapterStart: batch.startChapterNo,
-          totalChapterCount: chapterCount,
-        });
+        let normalized: OutlinePreviewOutput;
+        try {
+          const response = await this.callOutlineLlm(args, volumeNo, chapterCount, batch, chapters);
+          recordToolLlmUsage(context, 'planner', response.result);
+          normalized = this.normalize(response.data, volumeNo, batch.chapterCount, args, {
+            chapterStart: batch.startChapterNo,
+            totalChapterCount: chapterCount,
+          });
+        } catch (error) {
+          await context.updateProgress?.({
+            phase: 'fallback_generating',
+            phaseMessage: `第 ${batch.startChapterNo}-${batch.endChapterNo} 章模型未稳定返回，正在生成该批 fallback`,
+            progressCurrent: batch.batchIndex,
+            progressTotal: batch.batchCount,
+          });
+          normalized = this.createFallbackBatch(args, volumeNo, chapterCount, batch, error);
+        }
         volume ??= normalized.volume;
         chapters.push(...normalized.chapters);
-        risks.push(...normalized.risks.map((risk) => `第 ${batch.startChapterNo}-${batch.endChapterNo} 章批次：${risk}`));
+        risks.push(...normalized.risks.map((risk) => this.prefixBatchRisk(batch, risk)));
         await context.heartbeat?.({
           phase: 'merging_preview',
           phaseMessage: `已合并 ${chapters.length}/${chapterCount} 章细纲`,
@@ -130,6 +141,39 @@ export class GenerateOutlinePreviewTool implements BaseTool<GenerateOutlinePrevi
       await context.updateProgress?.({ phase: 'fallback_generating', phaseMessage: '模型批次返回不稳定，正在生成确定性章节骨架', progressCurrent: chapters.length, progressTotal: chapterCount });
       return this.fallback(args, volumeNo, chapterCount, error);
     }
+  }
+
+  private createFallbackBatch(
+    args: GenerateOutlinePreviewInput,
+    volumeNo: number,
+    chapterCount: number,
+    batch: OutlinePreviewBatch,
+    error: unknown,
+  ): OutlinePreviewOutput {
+    const seed = this.createFallbackSeed(args.context, args.instruction, volumeNo);
+    return {
+      volume: {
+        volumeNo,
+        title: seed.volumeTitle,
+        synopsis: seed.synopsis,
+        objective: seed.objective,
+        chapterCount,
+      },
+      chapters: Array.from(
+        { length: batch.chapterCount },
+        (_item, index) => this.createFallbackChapter(batch.startChapterNo + index - 1, chapterCount, seed),
+      ),
+      risks: [
+        `${this.isLlmTimeout(error) ? 'LLM_TIMEOUT' : 'LLM_PROVIDER_FALLBACK'}：第 ${batch.startChapterNo}-${batch.endChapterNo} 章批次未稳定返回，已仅对该批使用确定性章节骨架，其他批次继续生成。`,
+        `第 ${batch.startChapterNo}-${batch.endChapterNo} 章批次降级原因：${this.text(error instanceof Error ? error.message : String(error), '未知错误').slice(0, 160)}`,
+        `第 ${batch.startChapterNo}-${batch.endChapterNo} 章 fallback 已生成基础 craftBrief；请重点复核该批行动链、线索和不可逆后果。`,
+      ],
+    };
+  }
+
+  private prefixBatchRisk(batch: OutlinePreviewBatch, risk: string): string {
+    const rangeLabel = `第 ${batch.startChapterNo}-${batch.endChapterNo} 章`;
+    return risk.includes(rangeLabel) ? risk : `${rangeLabel}批次：${risk}`;
   }
 
   private async callOutlineLlm(
@@ -204,7 +248,14 @@ export class GenerateOutlinePreviewTool implements BaseTool<GenerateOutlinePrevi
     chapterCount: number,
   ): OutlinePreviewOutput {
     const seed = this.createFallbackSeed(args.context, args.instruction, volumeNo);
-    const normalizedChapters: OutlinePreviewOutput['chapters'] = chapters.slice(0, chapterCount).map((chapter, index) => ({ ...chapter, chapterNo: index + 1, volumeNo }));
+    const mergeRisks = this.validateMergedChapters(chapters, volumeNo, chapterCount);
+    const normalizedChapters: OutlinePreviewOutput['chapters'] = chapters.slice(0, chapterCount).map((chapter, index) => {
+      const nextChapter = { ...chapter, chapterNo: index + 1, volumeNo };
+      return {
+        ...nextChapter,
+        craftBrief: nextChapter.craftBrief ?? this.createFallbackCraftBrief(nextChapter, index, chapterCount, seed),
+      };
+    });
     while (normalizedChapters.length < chapterCount) {
       normalizedChapters.push({ ...this.createFallbackChapter(normalizedChapters.length, chapterCount, seed), volumeNo });
     }
@@ -218,8 +269,29 @@ export class GenerateOutlinePreviewTool implements BaseTool<GenerateOutlinePrevi
         ...(volume?.narrativePlan ? { narrativePlan: volume.narrativePlan } : {}),
       },
       chapters: normalizedChapters,
-      risks,
+      risks: [...risks, ...mergeRisks],
     };
+  }
+
+  private validateMergedChapters(chapters: OutlinePreviewOutput['chapters'], volumeNo: number, chapterCount: number): string[] {
+    const risks: string[] = [];
+    if (chapters.length !== chapterCount) {
+      risks.push(`批次合并章节数为 ${chapters.length}/${chapterCount}，已用确定性章节骨架补齐或裁剪；请复核章节完整性。`);
+    }
+    const chapterNos = chapters.map((chapter) => Number(chapter.chapterNo)).filter((chapterNo) => Number.isFinite(chapterNo));
+    if (new Set(chapterNos).size !== chapterNos.length) {
+      risks.push('批次合并发现重复章节编号，已按目标范围重新连续编号；请复核重复批次内容。');
+    }
+    if (chapterNos.length !== chapterCount || chapterNos.some((chapterNo, index) => chapterNo !== index + 1)) {
+      risks.push('批次合并发现章节编号不连续，已按目标范围重新连续编号；请复核跨批衔接。');
+    }
+    if (chapters.some((chapter) => Number(chapter.volumeNo) !== volumeNo)) {
+      risks.push(`批次合并发现 volumeNo 与目标卷 ${volumeNo} 不一致，已统一修正为目标卷；请复核跨卷内容。`);
+    }
+    if (chapters.some((chapter) => !chapter.craftBrief || !chapter.craftBrief.visibleGoal || !chapter.craftBrief.coreConflict)) {
+      risks.push('批次合并发现部分章节 craftBrief 不完整，已补齐基础执行卡；请复核行动链、线索和不可逆后果。');
+    }
+    return risks;
   }
 
   /** 将 LLM 可能返回的非字符串字段收敛为字符串，避免后续 Tool 对 trim 等字符串方法崩溃。 */

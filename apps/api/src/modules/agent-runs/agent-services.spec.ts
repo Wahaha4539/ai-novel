@@ -8515,6 +8515,72 @@ test('generate_outline_preview 为 60 章自动拆分批次生成', async () => 
   assert.equal(progress.some((item) => item.phase === 'merging_preview'), true);
 });
 
+test('generate_outline_preview 单批 timeout 只 fallback 当前批并继续后续批次', async () => {
+  const calls: Array<[number, number]> = [];
+  const progress: Array<Record<string, unknown>> = [];
+  const llm = {
+    async chatJson(messages: Array<{ role: string; content: string }>) {
+      const prompt = messages[1]?.content ?? '';
+      const match = prompt.match(/章节范围：第 (\d+)-(\d+) 章/);
+      assert.ok(match, '批次 prompt 应包含本批章节范围');
+      const start = Number(match[1]);
+      const end = Number(match[2]);
+      calls.push([start, end]);
+      if (start === 13) throw new LlmTimeoutError('第二批超时', 'planner', 90_000);
+      return {
+        data: {
+          volume: { volumeNo: 1, title: '第一卷', synopsis: '卷简介', objective: '完成卷主线', chapterCount: 60 },
+          chapters: Array.from({ length: end - start + 1 }, (_item, index) => {
+            const chapterNo = start + index;
+            return {
+              chapterNo,
+              volumeNo: 1,
+              title: `LLM 第 ${chapterNo} 章`,
+              objective: `LLM 第 ${chapterNo} 章目标`,
+              conflict: `LLM 第 ${chapterNo} 章阻力`,
+              hook: `LLM 第 ${chapterNo} 章钩子`,
+              outline: `LLM 第 ${chapterNo} 章场景、行动和结果。`,
+              expectedWordCount: 2600,
+            };
+          }),
+          risks: [],
+        },
+        result: { model: 'mock-outline' },
+      };
+    },
+  };
+  const tool = new GenerateOutlinePreviewTool(llm as never);
+  const result = await tool.run(
+    { instruction: '为第 1 卷生成 60 章细纲', volumeNo: 1, chapterCount: 60 },
+    {
+      agentRunId: 'run1',
+      projectId: 'p1',
+      mode: 'plan',
+      approved: false,
+      outputs: {},
+      policy: {},
+      async updateProgress(patch) { progress.push(patch as Record<string, unknown>); },
+      async heartbeat(patch) { if (patch) progress.push(patch as Record<string, unknown>); },
+    },
+  );
+
+  assert.deepEqual(calls, [[1, 12], [13, 24], [25, 36], [37, 48], [49, 60]]);
+  assert.equal(result.chapters.length, 60);
+  assert.equal(result.chapters[11].title, 'LLM 第 12 章');
+  assert.notEqual(result.chapters[12].title, 'LLM 第 13 章');
+  assert.equal(result.chapters[24].title, 'LLM 第 25 章');
+  assert.equal(result.chapters.every((chapter) => chapter.volumeNo === 1), true);
+  assert.equal(result.chapters.every((chapter) => Boolean(chapter.craftBrief?.visibleGoal)), true);
+  const riskText = result.risks.join('\n');
+  assert.match(riskText, /第 13-24 章/);
+  assert.match(riskText, /LLM_TIMEOUT/);
+  assert.match(riskText, /仅对该批/);
+  assert.equal(result.risks.some((risk) => /工具 .*执行超时|工具执行超时/.test(risk)), false);
+  assert.equal(progress.filter((item) => item.phase === 'calling_llm').length, 5);
+  assert.equal(progress.some((item) => item.phase === 'fallback_generating' && /13-24/.test(String(item.phaseMessage))), true);
+  assert.equal(progress.some((item) => item.phase === 'merging_preview'), true);
+});
+
 test('generate_outline_preview 保留 LLM craftBrief 并补齐缺失执行卡字段', async () => {
   const llm = {
     async chatJson() {
