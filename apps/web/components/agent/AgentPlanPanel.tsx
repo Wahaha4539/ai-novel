@@ -1,7 +1,7 @@
 'use client';
 
 import { AgentPlanPayload, AgentPlanRecord, AgentRun } from '../../hooks/useAgentRun';
-import { EmptyText, ListBlock, Metric, normalizePlan, planVersionLabel } from './AgentSharedWidgets';
+import { EmptyText, ListBlock, Metric, normalizePlan, planVersionLabel, projectImportTargetSources } from './AgentSharedWidgets';
 
 // ────────────────────────────────────────────
 // Plan 版本 diff 对比
@@ -48,6 +48,7 @@ export function AgentPlanPanel({ run, plan }: AgentPlanPanelProps) {
   const plans = [...(run?.plans ?? [])].sort((a, b) => (b.version ?? 0) - (a.version ?? 0));
   const diff = buildPlanVersionDiff(plans);
   const displayPlan = enrichPlanFromPreviewArtifact(run, plan);
+  const importTargetSources = projectImportTargetSources(displayPlan);
 
   return (
     <section className="agent-panel-section">
@@ -81,6 +82,24 @@ export function AgentPlanPanel({ run, plan }: AgentPlanPanelProps) {
             <Metric label="置信度" value={typeof displayPlan.confidence === 'number' ? `${Math.round(displayPlan.confidence * 100)}%` : '—'} tone={typeof displayPlan.confidence === 'number' && displayPlan.confidence >= 0.85 ? 'ok' : undefined} />
             <Metric label="风险等级" value={displayPlan.riskReview?.riskLevel ?? '—'} tone={displayPlan.riskReview?.riskLevel === 'high' ? 'danger' : displayPlan.riskReview?.riskLevel === 'medium' ? 'warn' : 'ok'} />
           </div>
+          {importTargetSources.length > 0 && (
+            <div className="mb-4 rounded-lg border px-3 py-2" style={{ borderColor: 'var(--agent-border)', background: 'var(--agent-glass)' }}>
+              <div className="mb-2 text-xs font-bold" style={{ color: 'var(--agent-text-label)' }}>目标产物来源</div>
+              <div className="flex flex-wrap gap-2">
+                {importTargetSources.map((source) => (
+                  <span
+                    key={source.assetType}
+                    className="inline-flex items-center gap-1 rounded-full border px-2 py-1 text-xs"
+                    style={{ borderColor: 'var(--border-dim)', color: 'var(--text-muted)', background: 'rgba(15,23,42,0.18)' }}
+                  >
+                    <span style={{ color: 'var(--text-main)' }}>{source.label}</span>由
+                    <code className="text-[11px]" style={{ color: '#67e8f9' }}>{source.tool}</code>
+                    生成
+                  </span>
+                ))}
+              </div>
+            </div>
+          )}
           {displayPlan.understanding && (
             <div className="mb-4 p-3" style={{ borderRadius: '0.75rem', background: 'rgba(6,182,212,0.08)', border: '1px solid rgba(103,232,249,0.22)' }}>
               <div className="text-xs font-bold mb-2" style={{ color: '#67e8f9' }}>Agent 的理解</div>

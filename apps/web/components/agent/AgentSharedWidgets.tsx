@@ -67,13 +67,38 @@ export function planVersionLabel(plan: { version?: number; createdAt?: string })
   return `v${plan.version ?? 1}${plan.createdAt ? ` · ${formatDate(plan.createdAt)}` : ''}`;
 }
 
-const PROJECT_IMPORT_ASSET_LABELS: Record<string, string> = {
+export const PROJECT_IMPORT_ASSET_LABELS: Record<string, string> = {
   projectProfile: '项目资料',
   outline: '剧情大纲',
   characters: '角色与人设',
   worldbuilding: '世界设定',
   writingRules: '写作规则',
 };
+
+export const PROJECT_IMPORT_TARGET_SOURCES = [
+  { assetType: 'projectProfile', label: PROJECT_IMPORT_ASSET_LABELS.projectProfile, tool: 'generate_import_project_profile_preview', artifactType: 'project_profile_preview' },
+  { assetType: 'outline', label: PROJECT_IMPORT_ASSET_LABELS.outline, tool: 'generate_import_outline_preview', artifactType: 'outline_preview' },
+  { assetType: 'characters', label: PROJECT_IMPORT_ASSET_LABELS.characters, tool: 'generate_import_characters_preview', artifactType: 'characters_preview' },
+  { assetType: 'worldbuilding', label: PROJECT_IMPORT_ASSET_LABELS.worldbuilding, tool: 'generate_import_worldbuilding_preview', artifactType: 'lorebook_preview' },
+  { assetType: 'writingRules', label: PROJECT_IMPORT_ASSET_LABELS.writingRules, tool: 'generate_import_writing_rules_preview', artifactType: 'writing_rules_preview' },
+] as const;
+
+export type ProjectImportAssetType = (typeof PROJECT_IMPORT_TARGET_SOURCES)[number]['assetType'];
+
+export interface ProjectImportTargetSource {
+  assetType: ProjectImportAssetType;
+  label: string;
+  tool: string;
+  artifactType: string;
+}
+
+const PROJECT_IMPORT_TARGET_SOURCE_BY_TOOL = new Map<string, (typeof PROJECT_IMPORT_TARGET_SOURCES)[number]>(
+  PROJECT_IMPORT_TARGET_SOURCES.map((source) => [source.tool, source]),
+);
+
+const PROJECT_IMPORT_TARGET_SOURCE_BY_ARTIFACT_TYPE = new Map<string, (typeof PROJECT_IMPORT_TARGET_SOURCES)[number]>(
+  PROJECT_IMPORT_TARGET_SOURCES.map((source) => [source.artifactType, source]),
+);
 
 const WRITE_TOOL_LABELS: Record<string, string> = {
   write_chapter: '章节草稿',
@@ -120,6 +145,34 @@ function isWriteTool(tool?: string) {
   return Boolean(tool && WRITE_TOOL_LABELS[tool]);
 }
 
+export function projectImportAssetTypeForArtifactType(artifactType?: string): ProjectImportAssetType | undefined {
+  return artifactType ? PROJECT_IMPORT_TARGET_SOURCE_BY_ARTIFACT_TYPE.get(artifactType)?.assetType : undefined;
+}
+
+function collectProjectImportRequestedAssetTypes(plan: AgentPlanPayload | undefined) {
+  const steps = plan?.steps ?? [];
+  const requestedFromArgs = steps
+    .filter((step) => ['build_import_preview', 'merge_import_previews', 'validate_imported_assets', 'persist_project_assets'].includes(step.tool ?? ''))
+    .flatMap((step) => stringArray(stepArgs(step)?.requestedAssetTypes));
+  const requestedFromTargetTools = steps.flatMap((step) => {
+    const source = step.tool ? PROJECT_IMPORT_TARGET_SOURCE_BY_TOOL.get(step.tool) : undefined;
+    return source ? [source.assetType] : [];
+  });
+  const requestedSet = new Set(uniqueStrings([...requestedFromArgs, ...requestedFromTargetTools]));
+  return PROJECT_IMPORT_TARGET_SOURCES
+    .map((source) => source.assetType)
+    .filter((assetType) => requestedSet.has(assetType));
+}
+
+export function projectImportTargetSources(plan: AgentPlanPayload | undefined): ProjectImportTargetSource[] {
+  const tools = new Set((plan?.steps ?? []).flatMap((step) => (step.tool ? [step.tool] : [])));
+  return collectProjectImportRequestedAssetTypes(plan).map((assetType) => {
+    const source = PROJECT_IMPORT_TARGET_SOURCES.find((item) => item.assetType === assetType)!;
+    const tool = tools.has(source.tool) ? source.tool : tools.has('build_import_preview') ? 'build_import_preview' : source.tool;
+    return { ...source, tool };
+  });
+}
+
 /** 从 Plan 里提取“确认后会不会写入、会写入什么”的用户可见信息。 */
 export function planWriteInfo(plan: AgentPlanPayload | undefined): AgentPlanWriteInfo {
   const steps = plan?.steps ?? [];
@@ -131,11 +184,7 @@ export function planWriteInfo(plan: AgentPlanPayload | undefined): AgentPlanWrit
   const planTools = uniqueStrings(steps.flatMap((step) => (step.tool ? [step.tool] : [])));
   const writeTools = uniqueStrings(planTools.filter(isWriteTool));
   const writeToolLabels = uniqueStrings(writeTools.map((tool) => WRITE_TOOL_LABELS[tool] ?? tool));
-  const requestedAssetTypes = uniqueStrings(
-    steps
-      .filter((step) => ['build_import_preview', 'validate_imported_assets', 'persist_project_assets'].includes(step.tool ?? ''))
-      .flatMap((step) => stringArray(stepArgs(step)?.requestedAssetTypes)),
-  );
+  const requestedAssetTypes = collectProjectImportRequestedAssetTypes(plan);
   const projectImportAssetLabels = uniqueStrings(requestedAssetTypes.map((type) => PROJECT_IMPORT_ASSET_LABELS[type] ?? type));
 
   return {

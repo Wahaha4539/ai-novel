@@ -281,7 +281,7 @@
 
 ### TIP-P1-009 前端 Plan 和 Artifact 展示目标产物来源
 
-- 状态：`[ ]`
+- 状态：`[x]`
 - 模块：Web
 - 文件：`apps/web/components/agent/AgentPlanPanel.tsx`、`apps/web/components/agent/AgentArtifactPanel.tsx`
 - 任务：在计划和产物面板中展示本次目标产物和对应生成 Tool。
@@ -290,6 +290,12 @@
   - 未选择目标产物不展示空卡片。
   - 写入确认仍展示最终写入范围。
 - 验证：`pnpm --dir apps/web run build`
+- 完成记录：
+  - 2026-05-06：前端共享映射新增目标产物、专用生成 Tool 和 Artifact 类型的对应关系，计划面板展示“目标产物由 Tool 生成”的来源信息。
+  - 2026-05-06：产物卡片展示目标预览、校验报告和写入结果来源；存在明确目标范围时，前端过滤未选择目标类型的预览卡片，保留校验和写入结果。
+  - 2026-05-06：写入确认范围识别覆盖 `merge_import_previews` 和 `generate_import_*_preview` 专用链路，避免退回“当前导入预览中的项目资产”。
+  - 修改文件：`apps/web/components/agent/AgentSharedWidgets.tsx`、`apps/web/components/agent/AgentPlanPanel.tsx`、`apps/web/components/agent/AgentArtifactPanel.tsx`、`docs/architecture/targeted-import-preview-tools-development-plan.md`。
+  - 验证结果：`pnpm --dir apps/web run build` 通过。
 
 ## 5. P2 质量和一致性增强
 

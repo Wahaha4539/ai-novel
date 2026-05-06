@@ -3,7 +3,20 @@
 import { useMemo, useState } from 'react';
 import { AgentRun } from '../../hooks/useAgentRun';
 import { GUIDED_STEPS } from '../../hooks/useGuidedSession';
-import { EmptyText, Metric, asArray, asRecord, numberValue, safeJson, textValue } from './AgentSharedWidgets';
+import {
+  EmptyText,
+  Metric,
+  asArray,
+  asRecord,
+  latestPlan,
+  numberValue,
+  planWriteInfo,
+  projectImportAssetTypeForArtifactType,
+  projectImportTargetSources,
+  safeJson,
+  textValue,
+  type ProjectImportTargetSource,
+} from './AgentSharedWidgets';
 
 // ────────────────────────────────────────────
 // 产物去重与过滤
@@ -51,6 +64,28 @@ function filterArtifacts(artifacts: NonNullable<AgentRun['artifacts']>, query: s
   return artifacts.filter((artifact) => `${artifact.artifactType ?? ''}\n${artifact.title ?? ''}\n${safeJson(artifact.content)}`.toLowerCase().includes(keyword));
 }
 
+interface ArtifactSourceInfo {
+  label: string;
+  tool: string;
+  verb: '生成' | '校验' | '写入';
+  scope?: string;
+}
+
+function artifactSourceInfo(artifactType: string | undefined, targetSources: ProjectImportTargetSource[], projectImportAssetLabels: string[]): ArtifactSourceInfo | undefined {
+  const targetSource = targetSources.find((source) => source.artifactType === artifactType);
+  if (targetSource) return { label: targetSource.label, tool: targetSource.tool, verb: '生成' };
+  if (artifactType === 'import_validation_report') return { label: '导入预览', tool: 'validate_imported_assets', verb: '校验' };
+  if (artifactType === 'import_persist_result') {
+    return {
+      label: '项目资产',
+      tool: 'persist_project_assets',
+      verb: '写入',
+      scope: projectImportAssetLabels.length ? projectImportAssetLabels.join('、') : undefined,
+    };
+  }
+  return undefined;
+}
+
 // ────────────────────────────────────────────
 // ArtifactPanel 主体
 // ────────────────────────────────────────────
@@ -65,8 +100,18 @@ interface AgentArtifactPanelProps {
 
 /** 产物预览面板：搜索、去重、按类型渲染业务化摘要 */
 export function AgentArtifactPanel({ run, query, onQueryChange, onRequestWorldbuildingPersistSelection, actionDisabled }: AgentArtifactPanelProps) {
+  const plan = latestPlan(run);
+  const targetSources = useMemo(() => projectImportTargetSources(plan), [plan]);
+  const writeInfo = useMemo(() => planWriteInfo(plan), [plan]);
   const artifacts = dedupeArtifacts(enrichArtifactsFromPlanSteps(run));
-  const filteredArtifacts = filterArtifacts(artifacts, query);
+  const selectedTargetArtifactTypes = new Set(targetSources.map((source) => source.artifactType));
+  const visibleArtifacts = targetSources.length
+    ? artifacts.filter((artifact) => {
+        const targetAssetType = projectImportAssetTypeForArtifactType(artifact.artifactType);
+        return !targetAssetType || selectedTargetArtifactTypes.has(artifact.artifactType ?? '');
+      })
+    : artifacts;
+  const filteredArtifacts = filterArtifacts(visibleArtifacts, query);
 
   return (
     <section className="agent-panel-section">
@@ -87,13 +132,14 @@ export function AgentArtifactPanel({ run, query, onQueryChange, onRequestWorldbu
               artifactType={artifact.artifactType}
               title={artifact.title}
               content={artifact.content}
+              sourceInfo={artifactSourceInfo(artifact.artifactType, targetSources, writeInfo.projectImportAssetLabels)}
               onRequestWorldbuildingPersistSelection={onRequestWorldbuildingPersistSelection}
               actionDisabled={actionDisabled}
             />
           ))}
         </div>
       ) : (
-        <EmptyText text={artifacts.length ? '没有匹配的产物。' : '计划产物和预览会在这里展开。'} />
+        <EmptyText text={visibleArtifacts.length ? '没有匹配的产物。' : '计划产物和预览会在这里展开。'} />
       )}
     </section>
   );
@@ -126,12 +172,14 @@ function ArtifactCard({
   artifactType,
   title,
   content,
+  sourceInfo,
   onRequestWorldbuildingPersistSelection,
   actionDisabled,
 }: {
   artifactType?: string;
   title?: string;
   content?: unknown;
+  sourceInfo?: ArtifactSourceInfo;
   onRequestWorldbuildingPersistSelection?: (titles: string[]) => void | Promise<void>;
   actionDisabled?: boolean;
 }) {
@@ -144,6 +192,7 @@ function ArtifactCard({
         <span className="agent-artifact-card__arrow" aria-hidden="true">▸</span>
       </summary>
       <div className="agent-artifact-card__body">
+        {sourceInfo && <ArtifactSourceLine sourceInfo={sourceInfo} />}
         <TypedArtifactPreview
           artifactType={artifactType}
           content={content}
@@ -156,6 +205,29 @@ function ArtifactCard({
         </details>
       </div>
     </details>
+  );
+}
+
+function ArtifactSourceLine({ sourceInfo }: { sourceInfo: ArtifactSourceInfo }) {
+  return (
+    <div className="mb-3 flex flex-wrap items-center gap-2 text-xs" style={{ color: 'var(--text-muted)' }}>
+      <span
+        className="inline-flex items-center gap-1 rounded-full border px-2 py-1"
+        style={{ borderColor: 'var(--border-dim)', background: 'rgba(15,23,42,0.18)' }}
+      >
+        <span style={{ color: 'var(--text-main)' }}>{sourceInfo.label}</span>由
+        <code className="text-[11px]" style={{ color: '#67e8f9' }}>{sourceInfo.tool}</code>
+        {sourceInfo.verb}
+      </span>
+      {sourceInfo.scope && (
+        <span
+          className="inline-flex items-center rounded-full border px-2 py-1"
+          style={{ borderColor: 'rgba(20,184,166,0.28)', color: '#5eead4', background: 'rgba(20,184,166,0.08)' }}
+        >
+          写入范围：{sourceInfo.scope}
+        </span>
+      )}
+    </div>
   );
 }
 
