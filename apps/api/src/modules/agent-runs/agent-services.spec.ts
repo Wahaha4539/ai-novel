@@ -3905,6 +3905,94 @@ test('PersistOutlineTool 阻止重复章节编号写入', async () => {
   );
 });
 
+test('PersistOutlineTool 写入新建和 planned 章节 craftBrief 并跳过 drafted', async () => {
+  const createdChapters: Array<Record<string, unknown>> = [];
+  const updatedChapters: Array<Record<string, unknown>> = [];
+  const prisma = {
+    async $transaction(callback: (tx: Record<string, unknown>) => Promise<unknown>) {
+      return callback({
+        volume: {
+          async upsert() { return { id: 'v1' }; },
+        },
+        chapter: {
+          async findUnique(args: { where: { projectId_chapterNo: { chapterNo: number } } }) {
+            const chapterNo = args.where.projectId_chapterNo.chapterNo;
+            if (chapterNo === 2) return { id: 'c2', status: 'planned' };
+            if (chapterNo === 3) return { id: 'c3', status: 'drafted', craftBrief: { visibleGoal: '旧执行卡' } };
+            return null;
+          },
+          async create(args: { data: Record<string, unknown> }) {
+            createdChapters.push(args.data);
+            return { id: 'c1' };
+          },
+          async update(args: { where: { id: string }; data: Record<string, unknown> }) {
+            updatedChapters.push({ id: args.where.id, ...args.data });
+            return { id: args.where.id };
+          },
+        },
+      });
+    },
+  };
+  const tool = new PersistOutlineTool(prisma as never);
+  const craftBrief = {
+    visibleGoal: '拿到旧档案',
+    coreConflict: '档案室被封',
+    actionBeats: ['潜入', '交锋', '带走证据'],
+    concreteClues: [{ name: '湿钥匙' }],
+    irreversibleConsequence: '主角被监控拍下。',
+  };
+  const result = await tool.run(
+    {
+      preview: {
+        volume: { volumeNo: 1, title: '卷一', synopsis: '卷简介', objective: '卷目标', chapterCount: 3 },
+        chapters: [
+          { chapterNo: 1, title: '一', objective: '目标', conflict: '冲突', hook: '钩子', outline: '梗概', expectedWordCount: 2000, craftBrief },
+          { chapterNo: 2, title: '二', objective: '目标', conflict: '冲突', hook: '钩子', outline: '梗概', expectedWordCount: 2000, craftBrief: { ...craftBrief, visibleGoal: '确认档案被换' } },
+          { chapterNo: 3, title: '三', objective: '目标', conflict: '冲突', hook: '钩子', outline: '梗概', expectedWordCount: 2000, craftBrief: { ...craftBrief, visibleGoal: '不应覆盖 drafted' } },
+        ],
+        risks: [],
+      },
+    },
+    { agentRunId: 'run1', projectId: 'p1', mode: 'act', approved: true, outputs: {}, policy: {} },
+  );
+
+  assert.equal(result.createdCount, 1);
+  assert.equal(result.updatedCount, 1);
+  assert.equal(result.skippedCount, 1);
+  assert.equal((createdChapters[0].craftBrief as Record<string, unknown>).visibleGoal, '拿到旧档案');
+  assert.equal((updatedChapters[0].craftBrief as Record<string, unknown>).visibleGoal, '确认档案被换');
+  assert.equal(updatedChapters.some((chapter) => chapter.id === 'c3'), false);
+});
+
+test('PersistOutlineTool 兼容旧 outline_preview 缺 craftBrief，不覆盖 planned 章节既有执行卡', async () => {
+  const updatedChapters: Array<Record<string, unknown>> = [];
+  const prisma = {
+    async $transaction(callback: (tx: Record<string, unknown>) => Promise<unknown>) {
+      return callback({
+        volume: {
+          async upsert() { return { id: 'v1' }; },
+        },
+        chapter: {
+          async findUnique() { return { id: 'c1', status: 'planned', craftBrief: { visibleGoal: '旧执行卡' } }; },
+          async create() { throw new Error('不应创建章节'); },
+          async update(args: { where: { id: string }; data: Record<string, unknown> }) {
+            updatedChapters.push(args.data);
+            return { id: args.where.id };
+          },
+        },
+      });
+    },
+  };
+  const tool = new PersistOutlineTool(prisma as never);
+
+  await tool.run(
+    { preview: { volume: { volumeNo: 1, title: '卷一', synopsis: '卷简介', objective: '卷目标', chapterCount: 1 }, chapters: [{ chapterNo: 1, title: '一', objective: '目标', conflict: '冲突', hook: '钩子', outline: '梗概', expectedWordCount: 2000 }], risks: [] } },
+    { agentRunId: 'run1', projectId: 'p1', mode: 'act', approved: true, outputs: {}, policy: {} },
+  );
+
+  assert.equal(Object.prototype.hasOwnProperty.call(updatedChapters[0], 'craftBrief'), false);
+});
+
 test('GenerateOutlinePreviewTool keeps 500s outer timeout but bounds LLM call', async () => {
   let receivedOptions: Record<string, unknown> | undefined;
   const llmUsages: Array<{ model?: string }> = [];

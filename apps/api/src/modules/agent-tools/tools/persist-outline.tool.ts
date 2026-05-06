@@ -1,4 +1,5 @@
 import { BadRequestException, Injectable } from '@nestjs/common';
+import { Prisma } from '@prisma/client';
 import { PrismaService } from '../../../prisma/prisma.service';
 import { BaseTool, ToolContext } from '../base-tool';
 import { OutlinePreviewOutput } from './generate-outline-preview.tool';
@@ -51,7 +52,17 @@ export class PersistOutlineTool implements BaseTool<PersistOutlineInput, Record<
       let skippedCount = 0;
       for (const chapter of preview.chapters) {
         const existing = await tx.chapter.findUnique({ where: { projectId_chapterNo: { projectId: context.projectId, chapterNo: chapter.chapterNo } } });
-        const data = { volumeId: volume.id, title: chapter.title, objective: chapter.objective, conflict: chapter.conflict, revealPoints: chapter.hook, outline: chapter.outline, expectedWordCount: chapter.expectedWordCount };
+        const craftBrief = this.asInputJsonObject(chapter.craftBrief);
+        const data = {
+          volumeId: volume.id,
+          title: chapter.title,
+          objective: chapter.objective,
+          conflict: chapter.conflict,
+          revealPoints: chapter.hook,
+          outline: chapter.outline,
+          expectedWordCount: chapter.expectedWordCount,
+          ...(craftBrief ? { craftBrief } : {}),
+        };
         if (!existing) {
           await tx.chapter.create({ data: { projectId: context.projectId, chapterNo: chapter.chapterNo, ...data } });
           createdCount += 1;
@@ -76,5 +87,11 @@ export class PersistOutlineTool implements BaseTool<PersistOutlineInput, Record<
     if (chapterNos.some((chapterNo) => !Number.isFinite(chapterNo) || chapterNo <= 0)) throw new BadRequestException('章节编号必须是正数');
     const duplicated = chapterNos.filter((chapterNo, index) => chapterNos.indexOf(chapterNo) !== index);
     if (duplicated.length) throw new BadRequestException(`章节编号重复，已阻止写入：${[...new Set(duplicated)].join(', ')}`);
+  }
+
+  private asInputJsonObject(value: unknown): Prisma.InputJsonObject | undefined {
+    if (!value || typeof value !== 'object' || Array.isArray(value)) return undefined;
+    const record = value as Record<string, unknown>;
+    return Object.keys(record).length ? record as Prisma.InputJsonObject : undefined;
   }
 }
