@@ -55,6 +55,7 @@ import { GenerateStoryBiblePreviewTool } from '../agent-tools/tools/generate-sto
 import { ValidateStoryBibleTool } from '../agent-tools/tools/validate-story-bible.tool';
 import { PersistStoryBibleTool } from '../agent-tools/tools/persist-story-bible.tool';
 import { GenerateContinuityPreviewTool, PersistContinuityChangesTool, ValidateContinuityChangesTool } from '../agent-tools/tools/continuity-changes.tool';
+import { GenerateChapterCraftBriefPreviewTool } from '../agent-tools/tools/chapter-craft-brief-tools.tool';
 import { GenerateSceneCardsPreviewTool, ListSceneCardsTool, PersistSceneCardsTool, UpdateSceneCardTool, ValidateSceneCardsTool } from '../agent-tools/tools/scene-card-tools.tool';
 import { RelationshipGraphService } from '../agent-tools/relationship-graph.service';
 import { FactExtractorService } from '../facts/fact-extractor.service';
@@ -7288,6 +7289,145 @@ test('ScenesService create update remove validate refs and invalidate recall cac
     cache as never,
   );
   await assert.rejects(() => missingProjectService.create('missing-project', { title: 'No project' }), /Project not found/);
+});
+
+test('GenerateChapterCraftBriefPreviewTool creates chapter progress card preview without writing', async () => {
+  const progressPhases: string[] = [];
+  const context = {
+    agentRunId: 'run-craft-preview',
+    projectId: 'p1',
+    mode: 'plan' as const,
+    approved: false,
+    outputs: {},
+    policy: {},
+    async updateProgress(patch: { phase?: string }) {
+      if (patch.phase) progressPhases.push(patch.phase);
+    },
+  };
+  const prisma = {
+    project: { async findUnique() { return { id: 'p1' }; } },
+    volume: { async findFirst() { return { id: 'v1' }; } },
+    chapter: {
+      async findFirst(args: { where: Record<string, unknown> }) {
+        if (args.where.projectId !== 'p1') return null;
+        if (args.where.chapterNo === 3 || args.where.id === 'c3') {
+          return {
+            id: 'c3',
+            volumeId: 'v1',
+            chapterNo: 3,
+            title: 'Archive pressure',
+            objective: 'Find the sealed ledger.',
+            conflict: 'The archivist blocks access and tests the protagonist.',
+            outline: 'The protagonist enters the archive, bargains for access, and leaves with a dangerous clue.',
+            status: 'planned',
+            craftBrief: {},
+          };
+        }
+        return null;
+      },
+      async findMany() {
+        return [{
+          id: 'c3',
+          volumeId: 'v1',
+          chapterNo: 3,
+          title: 'Archive pressure',
+          objective: 'Find the sealed ledger.',
+          conflict: 'The archivist blocks access and tests the protagonist.',
+          outline: 'The protagonist enters the archive, bargains for access, and leaves with a dangerous clue.',
+          status: 'planned',
+          craftBrief: {},
+        }];
+      },
+    },
+  };
+  const llmCalls: Array<{ options: { timeoutMs?: number } }> = [];
+  const llm = {
+    async chatJson(_messages: unknown, options: { timeoutMs?: number }) {
+      llmCalls.push({ options });
+      return {
+        data: {
+          candidates: [{
+            chapterNo: 3,
+            title: 'Archive pressure',
+            proposedFields: {
+              objective: 'Secure proof that the ledger was replaced.',
+              conflict: 'The archivist delays access while a rival searches the same shelf.',
+              outline: 'A concrete archive confrontation turns a missing ledger into a public accusation.',
+              craftBrief: {
+                visibleGoal: 'Secure proof that the ledger was replaced.',
+                hiddenEmotion: 'He hides panic behind procedural confidence.',
+                coreConflict: 'The archivist delays access while a rival searches the same shelf.',
+                mainlineTask: 'Enter the restricted archive and identify the swapped ledger.',
+                subplotTasks: ['Test whether Shen will protect him under pressure.'],
+                actionBeats: ['Request access under a false pretext.', 'Notice the rival moving toward the same shelf.', 'Force the archivist to choose a side.'],
+                concreteClues: [{ name: 'salt-stained ledger thread', sensoryDetail: 'It leaves grit on his thumb.', laterUse: 'Matches the rope used in the bridge collapse file.' }],
+                dialogueSubtext: 'The archivist talks about humidity while warning him to leave.',
+                characterShift: 'He stops treating the archive as neutral ground.',
+                irreversibleConsequence: 'The rival sees him identify the swapped ledger and can now frame his next move.',
+                progressTypes: ['info', 'relationship'],
+              },
+            },
+          }],
+          assumptions: ['Chapter 3 remains planned.'],
+          risks: [],
+        },
+        result: { model: 'mock', usage: {} },
+      };
+    },
+  };
+
+  const tool = new GenerateChapterCraftBriefPreviewTool(llm as never, prisma as never);
+  const preview = await tool.run({ chapterNo: 3, instruction: 'Give chapter 3 a progress card.', context: { chapters: [{ id: 'c3', title: 'Archive pressure' }] } }, context);
+
+  assert.equal(preview.candidates.length, 1);
+  assert.equal(preview.candidates[0].chapterId, 'c3');
+  assert.equal(preview.candidates[0].proposedFields.craftBrief.visibleGoal, 'Secure proof that the ledger was replaced.');
+  assert.equal(preview.candidates[0].proposedFields.craftBrief.actionBeats.length, 3);
+  assert.equal(preview.candidates[0].proposedFields.craftBrief.concreteClues[0].name, 'salt-stained ledger thread');
+  assert.equal(preview.writePlan.target, 'Chapter.craftBrief');
+  assert.equal(preview.writePlan.requiresApprovalBeforePersist, true);
+  assert.equal(llmCalls[0].options.timeoutMs, 90_000);
+  assert.deepEqual(progressPhases, ['preparing_context', 'calling_llm', 'validating']);
+});
+
+test('GenerateChapterCraftBriefPreviewTool falls back to baseline craftBrief on LLM failure', async () => {
+  const context = { agentRunId: 'run-craft-fallback', projectId: 'p1', mode: 'plan' as const, approved: false, outputs: {}, policy: {} };
+  const prisma = {
+    project: { async findUnique() { return { id: 'p1' }; } },
+    volume: { async findFirst() { return { id: 'v1' }; } },
+    chapter: {
+      async findFirst() {
+        return {
+          id: 'c4',
+          volumeId: 'v1',
+          chapterNo: 4,
+          title: 'Locked gate',
+          objective: 'Open the locked gate.',
+          conflict: 'The guard refuses to honor the old pass.',
+          outline: 'The protagonist negotiates, improvises, and leaves marked by the guard.',
+          status: 'planned',
+          craftBrief: {},
+        };
+      },
+      async findMany() { return []; },
+    },
+  };
+  const llm = {
+    async chatJson() {
+      const error = new Error('LLM_TIMEOUT');
+      error.name = 'LlmTimeoutError';
+      throw error;
+    },
+  };
+
+  const tool = new GenerateChapterCraftBriefPreviewTool(llm as never, prisma as never);
+  const preview = await tool.run({ chapterId: 'c4', instruction: 'Make an execution card.' }, context);
+
+  assert.equal(preview.candidates.length, 1);
+  assert.equal(preview.candidates[0].proposedFields.craftBrief.visibleGoal, 'Open the locked gate.');
+  assert.ok(preview.candidates[0].proposedFields.craftBrief.actionBeats.length >= 3);
+  assert.ok(preview.candidates[0].proposedFields.craftBrief.concreteClues.length >= 1);
+  assert.match(preview.risks.join(' | '), /LLM_TIMEOUT/);
 });
 
 test('SceneCard agent tools preview validate persist and update with approval boundaries', async () => {
