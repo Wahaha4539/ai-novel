@@ -153,7 +153,7 @@
 
 ### TIP-P1-002 新增 generate_import_characters_preview
 
-- 状态：`[ ]`
+- 状态：`[x]`
 - 模块：API
 - 文件：新增 `apps/api/src/modules/agent-tools/tools/generate-import-characters-preview.tool.ts`
 - 任务：根据文档分析生成角色与人设预览。
@@ -163,6 +163,11 @@
   - Prompt 专注角色动机、关系、人物弧光和行为约束。
   - 不把世界设定塞进角色字段。
 - 验证：`pnpm --dir apps/api run test:agent`
+- 完成记录：
+  - 2026-05-06：新增 `GenerateImportCharactersPreviewTool`，输入包含 `analysis`、`instruction?`、`projectContext?`；专用 prompt 聚焦角色动机、关系、人物弧光和行为约束，输出只包含 `characters` 和 `risks`。
+  - 2026-05-06：补充归一化防御，处理 LLM 返回的对象/数组/数字/布尔字段，过滤空名角色，保持 `allowedModes=['plan','act']`、`requiresApproval=false`、`sideEffects=[]`、`riskLevel='low'`，不写库且不输出世界设定、写作规则或大纲字段。
+  - 修改文件：`apps/api/src/modules/agent-tools/tools/generate-import-characters-preview.tool.ts`、`apps/api/src/modules/agent-runs/agent-services.spec.ts`、`docs/architecture/targeted-import-preview-tools-development-plan.md`。
+  - 验证结果：`pnpm --dir apps/api run test:agent` 通过，164 项测试通过。
 
 ### TIP-P1-003 新增 generate_import_worldbuilding_preview
 
