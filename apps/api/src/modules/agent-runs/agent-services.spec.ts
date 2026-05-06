@@ -43,6 +43,7 @@ import { GenerateImportOutlinePreviewTool } from '../agent-tools/tools/generate-
 import { GenerateImportProjectProfilePreviewTool } from '../agent-tools/tools/generate-import-project-profile-preview.tool';
 import { GenerateImportWorldbuildingPreviewTool } from '../agent-tools/tools/generate-import-worldbuilding-preview.tool';
 import { GenerateImportWritingRulesPreviewTool } from '../agent-tools/tools/generate-import-writing-rules-preview.tool';
+import { CrossTargetConsistencyCheckTool } from '../agent-tools/tools/cross-target-consistency-check.tool';
 import { MergeImportPreviewsTool } from '../agent-tools/tools/merge-import-previews.tool';
 import { PersistProjectAssetsTool } from '../agent-tools/tools/persist-project-assets.tool';
 import { GenerateWorldbuildingPreviewTool } from '../agent-tools/tools/generate-worldbuilding-preview.tool';
@@ -113,6 +114,7 @@ function createProjectImportToolRegistry(targetToolNames = TARGETED_IMPORT_PREVI
     ...(includeBuildImportPreview ? ['build_import_preview'] : []),
     ...targetToolNames,
     'merge_import_previews',
+    'cross_target_consistency_check',
     'validate_imported_assets',
     'persist_project_assets',
   ];
@@ -4127,6 +4129,37 @@ test('BuildImportPreviewTool 只保留 requestedAssetTypes 指定的目标产物
   assert.equal(output.chapters.length, 1);
 });
 
+test('CrossTargetConsistencyCheckTool 检出角色动机冲突和目标混放', async () => {
+  const tool = new CrossTargetConsistencyCheckTool();
+  const output = await tool.run(
+    {
+      preview: {
+        requestedAssetTypes: ['outline', 'characters', 'worldbuilding', 'writingRules'],
+        projectProfile: { outline: '林澈拒绝杀人，但危机将迫使他面对底线。' },
+        characters: [{ name: '林澈', roleType: 'protagonist', motivation: '拒绝杀人，害怕再次动手。' }],
+        lorebookEntries: [{ title: '禁止现代网络词', entryType: 'style', content: '不要使用网络流行语，保持冷峻口吻。' }],
+        writingRules: [{ title: '雾城记忆规则', ruleType: 'setting', content: '雾城居民会记忆褪色。' }],
+        volumes: [],
+        chapters: [{ chapterNo: 1, title: '雨夜守卫', outline: '林澈主动杀死守卫并进入档案馆。' }],
+        risks: [],
+      },
+      instruction: '检查目标产物是否冲突',
+    },
+    { agentRunId: 'run1', projectId: 'p1', mode: 'plan', approved: false, outputs: {}, policy: {} },
+  );
+
+  assert.equal(tool.name, 'cross_target_consistency_check');
+  assert.deepEqual(tool.allowedModes, ['plan', 'act']);
+  assert.equal(tool.requiresApproval, false);
+  assert.deepEqual(tool.sideEffects, []);
+  assert.equal(tool.riskLevel, 'low');
+  assert.equal(output.valid, false);
+  assert.equal(output.summary.status, 'likely_conflict');
+  assert.ok(output.issues.some((issue) => issue.dimension === 'character_outline' && issue.severity === 'error' && issue.message.includes('林澈')));
+  assert.ok(output.issues.some((issue) => issue.dimension === 'worldbuilding_writing_rules' && issue.message.includes('写作规则')));
+  assert.ok(output.issues.some((issue) => issue.dimension === 'worldbuilding_writing_rules' && issue.message.includes('世界设定')));
+});
+
 test('MergeImportPreviewsTool 未选择目标产物时输出空预览', async () => {
   const tool = new MergeImportPreviewsTool();
   const output = await tool.run(
@@ -4568,13 +4601,14 @@ test('Planner 单选大纲只编排对应目标 Tool', () => {
     { session: { requestedAssetTypes: ['outline'] } },
   );
 
-  assert.deepEqual(plan.steps.map((step) => step.tool), ['read_source_document', 'analyze_source_text', 'build_import_brief', 'generate_import_outline_preview', 'merge_import_previews', 'validate_imported_assets', 'persist_project_assets']);
+  assert.deepEqual(plan.steps.map((step) => step.tool), ['read_source_document', 'analyze_source_text', 'build_import_brief', 'generate_import_outline_preview', 'merge_import_previews', 'cross_target_consistency_check', 'validate_imported_assets', 'persist_project_assets']);
   assert.deepEqual(plan.steps[2].args, { analysis: '{{steps.2.output}}', instruction: '{{context.userMessage}}', requestedAssetTypes: ['outline'], projectContext: '{{context.project}}' });
   assert.deepEqual(plan.steps[3].args, { analysis: '{{steps.2.output}}', importBrief: '{{steps.3.output}}', instruction: '{{context.userMessage}}', projectContext: '{{context.project}}' });
   assert.deepEqual(plan.steps[4].args, { requestedAssetTypes: ['outline'], outlinePreview: '{{steps.4.output}}' });
-  assert.deepEqual(plan.steps[5].args, { preview: '{{steps.5.output}}' });
+  assert.deepEqual(plan.steps[5].args, { preview: '{{steps.5.output}}', instruction: '{{context.userMessage}}' });
   assert.deepEqual(plan.steps[6].args, { preview: '{{steps.5.output}}' });
-  assert.equal(plan.steps[6].requiresApproval, true);
+  assert.deepEqual(plan.steps[7].args, { preview: '{{steps.5.output}}' });
+  assert.equal(plan.steps[7].requiresApproval, true);
   assert.deepEqual(plan.requiredApprovals[0].target?.tools, ['persist_project_assets']);
   assert.equal(plan.steps.some((step) => ['generate_import_characters_preview', 'generate_import_worldbuilding_preview', 'generate_import_writing_rules_preview', 'build_import_preview'].includes(step.tool)), false);
 });
@@ -4603,12 +4637,13 @@ test('Planner 替换 fallback 时保持 validate 后审批写入顺序', () => {
     { session: { requestedAssetTypes: ['outline'] } },
   );
 
-  assert.deepEqual(plan.steps.map((step) => step.tool), ['read_source_document', 'analyze_source_text', 'build_import_brief', 'generate_import_outline_preview', 'merge_import_previews', 'validate_imported_assets', 'persist_project_assets']);
+  assert.deepEqual(plan.steps.map((step) => step.tool), ['read_source_document', 'analyze_source_text', 'build_import_brief', 'generate_import_outline_preview', 'merge_import_previews', 'cross_target_consistency_check', 'validate_imported_assets', 'persist_project_assets']);
   assert.deepEqual(plan.steps[3].args, { analysis: '{{steps.2.output}}', importBrief: '{{steps.3.output}}', instruction: '{{context.userMessage}}', projectContext: '{{context.project}}' });
-  assert.deepEqual(plan.steps[5].args, { preview: '{{steps.5.output}}' });
+  assert.deepEqual(plan.steps[5].args, { preview: '{{steps.5.output}}', instruction: '{{context.userMessage}}' });
   assert.deepEqual(plan.steps[6].args, { preview: '{{steps.5.output}}' });
-  assert.equal(plan.steps[6].requiresApproval, true);
-  assert.deepEqual(plan.requiredApprovals[0].target?.stepNos, [7]);
+  assert.deepEqual(plan.steps[7].args, { preview: '{{steps.5.output}}' });
+  assert.equal(plan.steps[7].requiresApproval, true);
+  assert.deepEqual(plan.requiredApprovals[0].target?.stepNos, [8]);
 });
 
 test('Planner 双选大纲和写作规则只编排两个对应目标 Tool', () => {
@@ -4632,14 +4667,15 @@ test('Planner 双选大纲和写作规则只编排两个对应目标 Tool', () =
     { session: { requestedAssetTypes: ['outline', 'writingRules'] } },
   );
 
-  assert.deepEqual(plan.steps.map((step) => step.tool), ['read_source_document', 'analyze_source_text', 'build_import_brief', 'generate_import_outline_preview', 'generate_import_writing_rules_preview', 'merge_import_previews', 'validate_imported_assets', 'persist_project_assets']);
+  assert.deepEqual(plan.steps.map((step) => step.tool), ['read_source_document', 'analyze_source_text', 'build_import_brief', 'generate_import_outline_preview', 'generate_import_writing_rules_preview', 'merge_import_previews', 'cross_target_consistency_check', 'validate_imported_assets', 'persist_project_assets']);
   assert.deepEqual(plan.steps[2].args, { analysis: '{{steps.2.output}}', instruction: '{{context.userMessage}}', requestedAssetTypes: ['outline', 'writingRules'], projectContext: '{{context.project}}' });
   assert.deepEqual(plan.steps[3].args, { analysis: '{{steps.2.output}}', importBrief: '{{steps.3.output}}', instruction: '{{context.userMessage}}', projectContext: '{{context.project}}' });
   assert.deepEqual(plan.steps[4].args, { analysis: '{{steps.2.output}}', importBrief: '{{steps.3.output}}', instruction: '{{context.userMessage}}', projectContext: '{{context.project}}' });
   assert.deepEqual(plan.steps[5].args, { requestedAssetTypes: ['outline', 'writingRules'], outlinePreview: '{{steps.4.output}}', writingRulesPreview: '{{steps.5.output}}' });
-  assert.deepEqual(plan.steps[6].args, { preview: '{{steps.6.output}}' });
+  assert.deepEqual(plan.steps[6].args, { preview: '{{steps.6.output}}', instruction: '{{context.userMessage}}' });
   assert.deepEqual(plan.steps[7].args, { preview: '{{steps.6.output}}' });
-  assert.equal(plan.steps[7].requiresApproval, true);
+  assert.deepEqual(plan.steps[8].args, { preview: '{{steps.6.output}}' });
+  assert.equal(plan.steps[8].requiresApproval, true);
   assert.equal(plan.steps.some((step) => ['generate_import_project_profile_preview', 'generate_import_characters_preview', 'generate_import_worldbuilding_preview', 'build_import_preview'].includes(step.tool)), false);
 });
 
@@ -4675,6 +4711,7 @@ test('Planner 全套目标可编排五个专用导入 Tool', () => {
     'generate_import_worldbuilding_preview',
     'generate_import_writing_rules_preview',
     'merge_import_previews',
+    'cross_target_consistency_check',
     'validate_imported_assets',
     'persist_project_assets',
   ]);
@@ -4697,7 +4734,10 @@ test('Planner 全套目标可编排五个专用导入 Tool', () => {
     worldbuildingPreview: '{{steps.7.output}}',
     writingRulesPreview: '{{steps.8.output}}',
   });
-  assert.deepEqual(plan.requiredApprovals[0].target?.stepNos, [11]);
+  assert.deepEqual(plan.steps[9].args, { preview: '{{steps.9.output}}', instruction: '{{context.userMessage}}' });
+  assert.deepEqual(plan.steps[10].args, { preview: '{{steps.9.output}}' });
+  assert.deepEqual(plan.steps[11].args, { preview: '{{steps.9.output}}' });
+  assert.deepEqual(plan.requiredApprovals[0].target?.stepNos, [12]);
 });
 
 test('Planner 缺少专用目标 Tool 时回退到 build_import_preview 且保持目标范围', () => {
@@ -4721,11 +4761,12 @@ test('Planner 缺少专用目标 Tool 时回退到 build_import_preview 且保�
     { session: { requestedAssetTypes: ['outline', 'writingRules'] } },
   );
 
-  assert.deepEqual(plan.steps.map((step) => step.tool), ['read_source_document', 'analyze_source_text', 'build_import_preview', 'validate_imported_assets', 'persist_project_assets']);
+  assert.deepEqual(plan.steps.map((step) => step.tool), ['read_source_document', 'analyze_source_text', 'build_import_preview', 'cross_target_consistency_check', 'validate_imported_assets', 'persist_project_assets']);
   assert.deepEqual(plan.steps[2].args, { analysis: '{{steps.2.output}}', instruction: '{{context.userMessage}}', requestedAssetTypes: ['outline', 'writingRules'] });
-  assert.deepEqual(plan.steps[3].args, { preview: '{{steps.3.output}}' });
+  assert.deepEqual(plan.steps[3].args, { preview: '{{steps.3.output}}', instruction: '{{context.userMessage}}' });
   assert.deepEqual(plan.steps[4].args, { preview: '{{steps.3.output}}' });
-  assert.equal(plan.steps[4].requiresApproval, true);
+  assert.deepEqual(plan.steps[5].args, { preview: '{{steps.3.output}}' });
+  assert.equal(plan.steps[5].requiresApproval, true);
 });
 
 test('Planner 接受 LLM 语义判定的 taskType，不再被后端 baseline 锁死', () => {
@@ -7341,6 +7382,7 @@ test('AppModule compiles with phase4 CRUD and phase5 quality modules registered'
   assert.ok(registry.get('persist_continuity_changes'));
   assert.ok(registry.get('build_import_brief'));
   assert.ok(registry.get('merge_import_previews'));
+  assert.ok(registry.get('cross_target_consistency_check'));
   const manifests = registry.listManifestsForPlanner();
   const briefManifest = manifests.find((item) => item.name === 'build_import_brief');
   assert.ok(briefManifest);
@@ -7349,6 +7391,13 @@ test('AppModule compiles with phase4 CRUD and phase5 quality modules registered'
   assert.equal(briefManifest.requiresApproval, false);
   assert.deepEqual(briefManifest.sideEffects, []);
   assert.equal(briefManifest.riskLevel, 'low');
+  const consistencyManifest = manifests.find((item) => item.name === 'cross_target_consistency_check');
+  assert.ok(consistencyManifest);
+  assert.match(consistencyManifest.whenToUse.join('；'), /merge_import_previews|build_import_preview/);
+  assert.deepEqual(consistencyManifest.allowedModes, ['plan', 'act']);
+  assert.equal(consistencyManifest.requiresApproval, false);
+  assert.deepEqual(consistencyManifest.sideEffects, []);
+  assert.equal(consistencyManifest.riskLevel, 'low');
   const targetedImportTools = [
     ['generate_import_project_profile_preview', /项目资料|作品资料|书名/],
     ['generate_import_outline_preview', /剧情大纲|卷章结构|章节规划/],

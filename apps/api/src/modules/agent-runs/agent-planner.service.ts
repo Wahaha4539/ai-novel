@@ -71,6 +71,7 @@ const IMPORT_TARGET_ASSET_BY_TOOL = new Map<string, ImportAssetType>(
 );
 
 const BUILD_IMPORT_BRIEF_TOOL = 'build_import_brief';
+const CROSS_TARGET_CONSISTENCY_CHECK_TOOL = 'cross_target_consistency_check';
 
 const MERGE_PREVIEW_ARG_BY_ASSET_TYPE: Record<ImportAssetType, string> = {
   projectProfile: 'projectProfilePreview',
@@ -151,7 +152,7 @@ export class AgentPlannerService {
           '你需要根据 Available Tools 的 whenToUse/whenNotToUse/parameterHints/idPolicy 自主编排步骤和 args。',
           '导入类任务不是固定全量流程。用户指定目标产物时，build_import_preview.args.requestedAssetTypes 必须只包含用户明确要求的资产：projectProfile、outline、characters、worldbuilding、writingRules；例如只要故事大纲就只传 ["outline"]。',
           '导入类任务如果 agentContext.session.requestedAssetTypes 存在，它是最高优先级的结构化目标产物范围；只能为这些目标产物生成预览，不能因为有上传文档就扩成全套导入。',
-          '导入分目标优先链路：read_source_document -> analyze_source_text -> build_import_brief（若可用） -> 按 requestedAssetTypes 调用已注册的 generate_import_*_preview 专用工具 -> merge_import_previews -> validate_imported_assets -> persist_project_assets。',
+          '导入分目标优先链路：read_source_document -> analyze_source_text -> build_import_brief（若可用） -> 按 requestedAssetTypes 调用已注册的 generate_import_*_preview 专用工具 -> merge_import_previews -> cross_target_consistency_check（若可用） -> validate_imported_assets -> persist_project_assets。',
           '如果某个 generate_import_*_preview 专用工具未出现在 Available Tools，允许 fallback 到 build_import_preview；fallback 的 requestedAssetTypes 仍必须等于用户选择的目标范围。',
           '只要导入预览未来可写入，计划中必须包含 persist_project_assets，且它必须是需要审批的写入步骤；validate_imported_assets 必须读取 merge_import_previews 或 build_import_preview 的统一预览输出。',
           '可引用上下文：{{context.session.currentProjectId}}、{{context.session.currentChapterId}}、{{context.project.defaultWordCount}}、{{context.attachments.0}}、{{context.attachments.0.url}}、{{context.session.guided.currentStep}}、{{context.session.guided.currentStepData}}。',
@@ -255,7 +256,7 @@ export class AgentPlannerService {
             '必须修复 invalidPlan，使 taskType 来自 availableTaskTypes，steps[].tool 全部来自 registeredTools。',
             'taskType 由 userGoal 语义决定；不要依赖后端关键词分类。',
             '修复导入计划时必须保留用户指定的目标产物范围；build_import_preview.args.requestedAssetTypes 只能包含用户明确要求的资产，不能因为有上传文档就扩成全套导入。',
-            '修复导入分目标计划时，优先使用 build_import_brief（若可用）和已注册的 generate_import_*_preview 专用工具；目标专用预览后必须调用 merge_import_previews，再把合并结果传给 validate_imported_assets。',
+            '修复导入分目标计划时，优先使用 build_import_brief（若可用）和已注册的 generate_import_*_preview 专用工具；目标专用预览后必须调用 merge_import_previews、cross_target_consistency_check（若可用），再把合并结果传给 validate_imported_assets。',
             '如果专用目标工具未注册，使用 build_import_preview fallback，但 requestedAssetTypes 仍必须等于用户选择的目标范围；persist_project_assets 必须作为需审批写入步骤保留。',
             '如果 agentContext.session.guided.currentStep 存在，修复后的 taskType 仍应优先使用 guided_step_consultation、guided_step_generate 或 guided_step_finalize，不要修成 chapter_write。',
             'steps[].mode 是后端计划步骤字段，固定填 act；Plan/Act 运行时模式由后端注入，不由 LLM 决定。',
@@ -428,7 +429,9 @@ export class AgentPlannerService {
 
     const previewStep = this.findImportPreviewSourceStep(normalized);
     if (!previewStep) return normalized;
-    normalized = this.ensureValidateImportedAssetsStep(normalized, previewStep, registeredTools, requiresApproval);
+    normalized = this.ensureCrossTargetConsistencyCheckStep(normalized, previewStep, registeredTools, requiresApproval);
+    const consistencyStep = [...normalized].reverse().find((step) => step.tool === CROSS_TARGET_CONSISTENCY_CHECK_TOOL);
+    normalized = this.ensureValidateImportedAssetsStep(normalized, previewStep, registeredTools, requiresApproval, consistencyStep);
 
     const latestPreviewStep = this.findImportPreviewSourceStep(normalized) ?? previewStep;
     normalized = this.ensurePersistProjectAssetsStep(normalized, latestPreviewStep, registeredTools, requiresApproval);
@@ -614,19 +617,36 @@ export class AgentPlannerService {
     return args;
   }
 
-  private ensureValidateImportedAssetsStep(steps: AgentPlanStepSpec[], previewStep: AgentPlanStepSpec, registeredTools: Set<string>, requiresApproval: (tool: string) => boolean): AgentPlanStepSpec[] {
+  private ensureCrossTargetConsistencyCheckStep(steps: AgentPlanStepSpec[], previewStep: AgentPlanStepSpec, registeredTools: Set<string>, requiresApproval: (tool: string) => boolean): AgentPlanStepSpec[] {
+    if (!registeredTools.has(CROSS_TARGET_CONSISTENCY_CHECK_TOOL)) return steps;
+    const previewRef = `{{steps.${previewStep.stepNo}.output}}`;
+    const checkStep = steps.find((step) => step.tool === CROSS_TARGET_CONSISTENCY_CHECK_TOOL);
+    if (checkStep) {
+      if (checkStep.stepNo > previewStep.stepNo) {
+        return steps.map((step) => step.tool === CROSS_TARGET_CONSISTENCY_CHECK_TOOL ? { ...step, requiresApproval: requiresApproval(CROSS_TARGET_CONSISTENCY_CHECK_TOOL), args: { ...step.args, preview: previewRef, instruction: '{{context.userMessage}}' } } : step);
+      }
+      const withoutCheck = this.renumberSteps(steps.filter((step) => step.tool !== CROSS_TARGET_CONSISTENCY_CHECK_TOOL));
+      const nextPreviewStep = this.findImportPreviewSourceStep(withoutCheck);
+      return nextPreviewStep ? this.insertStepAfter(withoutCheck, nextPreviewStep.stepNo, this.createPlannedStep('跨目标一致性检查', CROSS_TARGET_CONSISTENCY_CHECK_TOOL, { preview: `{{steps.${nextPreviewStep.stepNo}.output}}`, instruction: '{{context.userMessage}}' }, requiresApproval)) : withoutCheck;
+    }
+    return this.insertStepAfter(steps, previewStep.stepNo, this.createPlannedStep('跨目标一致性检查', CROSS_TARGET_CONSISTENCY_CHECK_TOOL, { preview: previewRef, instruction: '{{context.userMessage}}' }, requiresApproval));
+  }
+
+  private ensureValidateImportedAssetsStep(steps: AgentPlanStepSpec[], previewStep: AgentPlanStepSpec, registeredTools: Set<string>, requiresApproval: (tool: string) => boolean, afterStep?: AgentPlanStepSpec): AgentPlanStepSpec[] {
     if (!registeredTools.has('validate_imported_assets')) return steps;
     const previewRef = `{{steps.${previewStep.stepNo}.output}}`;
+    const afterStepNo = afterStep?.stepNo ?? previewStep.stepNo;
     const validateStep = steps.find((step) => step.tool === 'validate_imported_assets');
     if (validateStep) {
-      if (validateStep.stepNo > previewStep.stepNo) {
+      if (validateStep.stepNo > afterStepNo) {
         return steps.map((step) => step.tool === 'validate_imported_assets' ? { ...step, requiresApproval: requiresApproval('validate_imported_assets'), args: { ...step.args, preview: previewRef } } : step);
       }
       const withoutValidate = this.renumberSteps(steps.filter((step) => step.tool !== 'validate_imported_assets'));
       const nextPreviewStep = this.findImportPreviewSourceStep(withoutValidate);
-      return nextPreviewStep ? this.insertStepAfter(withoutValidate, nextPreviewStep.stepNo, this.createPlannedStep('校验导入预览', 'validate_imported_assets', { preview: `{{steps.${nextPreviewStep.stepNo}.output}}` }, requiresApproval)) : withoutValidate;
+      const nextAfterStep = [...withoutValidate].reverse().find((step) => step.tool === CROSS_TARGET_CONSISTENCY_CHECK_TOOL && (!nextPreviewStep || step.stepNo > nextPreviewStep.stepNo));
+      return nextPreviewStep ? this.insertStepAfter(withoutValidate, nextAfterStep?.stepNo ?? nextPreviewStep.stepNo, this.createPlannedStep('校验导入预览', 'validate_imported_assets', { preview: `{{steps.${nextPreviewStep.stepNo}.output}}` }, requiresApproval)) : withoutValidate;
     }
-    return this.insertStepAfter(steps, previewStep.stepNo, this.createPlannedStep('校验导入预览', 'validate_imported_assets', { preview: previewRef }, requiresApproval));
+    return this.insertStepAfter(steps, afterStepNo, this.createPlannedStep('校验导入预览', 'validate_imported_assets', { preview: previewRef }, requiresApproval));
   }
 
   private ensurePersistProjectAssetsStep(steps: AgentPlanStepSpec[], previewStep: AgentPlanStepSpec, registeredTools: Set<string>, requiresApproval: (tool: string) => boolean): AgentPlanStepSpec[] {

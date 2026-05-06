@@ -319,7 +319,7 @@
 
 ### TIP-P2-002 增加 cross_target_consistency_check
 
-- 状态：`[ ]`
+- 状态：`[x]`
 - 模块：API
 - 文件：新增一致性校验 Tool 或扩展 `validate_imported_assets`
 - 任务：校验大纲、角色、世界设定、写作规则之间是否互相冲突。
@@ -328,6 +328,12 @@
   - 能发现世界设定和写作规则混放。
   - 校验只读，输出 warning/error。
 - 验证：`pnpm --dir apps/api run test:agent`
+- 完成记录：
+  - 2026-05-06：新增只读 `cross_target_consistency_check` Tool，基于统一导入预览输出 `valid`、`issues` 和检查摘要，覆盖角色动机与大纲行为冲突、世界设定/写作规则混放等 warning/error。
+  - 2026-05-06：Planner 在 `merge_import_previews` 或 fallback `build_import_preview` 后、`validate_imported_assets` 前自动插入跨目标一致性检查；校验和写入仍继续引用同一个受目标范围约束的统一预览。
+  - 2026-05-06：补充服务测试覆盖角色“拒绝杀人”与大纲“主动杀死”冲突、世界设定误入写作规则、写作规则误入世界设定，以及 Tool 注册和 Planner 编排。
+  - 修改文件：`apps/api/src/modules/agent-tools/tools/cross-target-consistency-check.tool.ts`、`apps/api/src/modules/agent-tools/agent-tools.module.ts`、`apps/api/src/modules/agent-tools/tool-registry.service.ts`、`apps/api/src/modules/agent-runs/agent-planner.service.ts`、`apps/api/src/modules/agent-runs/agent-services.spec.ts`、`docs/architecture/targeted-import-preview-tools-development-plan.md`。
+  - 验证结果：`pnpm --dir apps/api run test:agent` 通过，176 项测试通过。
 
 ### TIP-P2-003 支持单目标重新生成
 

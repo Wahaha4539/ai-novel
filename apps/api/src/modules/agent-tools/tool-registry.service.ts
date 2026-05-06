@@ -9,6 +9,7 @@ import { BuildImportPreviewTool } from './tools/build-import-preview.tool';
 import { CharacterConsistencyCheckTool } from './tools/character-consistency-check.tool';
 import { CollectChapterContextTool } from './tools/collect-chapter-context.tool';
 import { CollectTaskContextTool } from './tools/collect-task-context.tool';
+import { CrossTargetConsistencyCheckTool } from './tools/cross-target-consistency-check.tool';
 import { GenerateContinuityPreviewTool, PersistContinuityChangesTool, ValidateContinuityChangesTool } from './tools/continuity-changes.tool';
 import { EchoReportTool } from './tools/echo-report.tool';
 import { ExtractChapterFactsTool } from './tools/extract-chapter-facts.tool';
@@ -98,6 +99,7 @@ export class ToolRegistryService implements OnModuleInit {
     private readonly generateImportWorldbuildingPreviewTool: GenerateImportWorldbuildingPreviewTool,
     private readonly generateImportWritingRulesPreviewTool: GenerateImportWritingRulesPreviewTool,
     private readonly mergeImportPreviewsTool: MergeImportPreviewsTool,
+    private readonly crossTargetConsistencyCheckTool: CrossTargetConsistencyCheckTool,
     private readonly validateImportedAssetsTool: ValidateImportedAssetsTool,
     private readonly persistProjectAssetsTool: PersistProjectAssetsTool,
     private readonly reportResultTool: ReportResultTool,
@@ -146,6 +148,7 @@ export class ToolRegistryService implements OnModuleInit {
     this.register(this.generateImportWorldbuildingPreviewTool);
     this.register(this.generateImportWritingRulesPreviewTool);
     this.register(this.mergeImportPreviewsTool);
+    this.register(this.crossTargetConsistencyCheckTool);
     this.register(this.validateImportedAssetsTool);
     this.register(this.persistProjectAssetsTool);
     this.register(this.reportResultTool);
