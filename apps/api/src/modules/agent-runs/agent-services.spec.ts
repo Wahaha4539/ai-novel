@@ -277,6 +277,22 @@ test('GenerateChapterService 生成后质量门禁标记重复段落退化', () 
   assert.match(result.blockers.join('；'), /重复段落/);
 });
 
+test('GenerateChapterService 生成后质量门禁提示修辞堆叠的 AI 味', () => {
+  const service = new GenerateChapterService({} as never, {} as never, {} as never, {} as never, {} as never, {} as never) as unknown as {
+    assessGeneratedDraftQuality: (content: string, actualWordCount: number, targetWordCount: number) => { warnings: string[]; metrics: { aiTasteHitCount: number; ornamentalParagraphCount: number } };
+  };
+  const content = [
+    '刑车刚过西崖哨门，天上的海先落了一线。',
+    '不是雨。盐水从倒悬的垂海底部渗下来，细如断银，敲在车棚上，噼啪成片。车厢里霉草、汗臭和铁锈味搅在一处，脚镣被震得乱响。有人伸手去接那水，指腹立刻白了一层，像被薄刀刮过。',
+    '陆沉舟抬头。',
+    '垂海倒扣在天穹上，青黑色潮腹压得很低，边缘翻着白沫。按潮历，小归潮还有三日，流放营该有三日验桥、三日转运、三日封仓。',
+  ].join('\n\n');
+  const result = service.assessGeneratedDraftQuality(content, 650, 3000);
+  assert.ok(result.metrics.aiTasteHitCount >= 1);
+  assert.ok(result.metrics.ornamentalParagraphCount >= 1);
+  assert.match(result.warnings.join('；'), /AI 味|修辞|感官/);
+});
+
 test('GenerateChapterService maps pass and warning quality gates to QualityReport payloads', () => {
   const service = new GenerateChapterService({} as never, {} as never, {} as never, {} as never, {} as never, {} as never) as unknown as {
     buildGenerationQualityReportData: (input: Record<string, unknown>) => Record<string, unknown>;

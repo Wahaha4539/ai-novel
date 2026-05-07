@@ -50,6 +50,7 @@ export class PromptBuilderService {
       this.buildProjectSection(context),
       this.buildVolumeSection(context),
       this.buildStyleSection(context),
+      this.buildNaturalProseSection(),
       this.buildCharacterSection(context),
       this.buildChapterSection(context),
       this.buildCraftBriefSection(context),
@@ -120,6 +121,18 @@ export class PromptBuilderService {
   private buildStyleSection(data: ChapterPromptContext): string {
     const style = data.styleProfile ?? {};
     return ['【文风设定】', `视角：${style.pov || '第三人称限制'}`, `时态：${style.tense || '过去时'}`, `文风：${style.proseStyle || '冷峻、克制'}`, `节奏：${style.pacing || 'medium'}`].join('\n');
+  }
+
+  private buildNaturalProseSection(): string {
+    return [
+      '【自然正文约束】',
+      '- 这层约束用于修正“AI 味”：正文要先写人物在压力下做事，再写环境和修辞。',
+      '- 开场 500 字内必须落到人物目标、阻碍或可见行动；不要用漂亮空镜、天气/天象/世界观解释拖住第一场。',
+      '- 描写只保留会改变判断、行动、危险或代价的细节；同一段不要连续堆颜色、气味、触感和比喻。',
+      '- 压低修辞密度：少用“像、仿佛、似乎、好像、宛如、如同、细如”；能用器物反应、动作后果表达，就不用比喻。',
+      '- 避免独立成段的戏剧化反转短句，如“不是雨。”这类句式；如果必须保留，后一句必须立刻推动行动或选择。',
+      '- 语言允许粗粝、短促、不对称和口语化；不要让每句都像精修文案。',
+    ].join('\n');
   }
 
   private buildCharacterSection(data: ChapterPromptContext): string {

@@ -149,22 +149,28 @@ function truncateText(value: string, maxLength = 140) {
   return normalized.length > maxLength ? `${normalized.slice(0, maxLength - 1)}…` : normalized;
 }
 
-function compactValue(value: unknown) {
+function compactValue(value: unknown, maxLength = 140): string {
   if (value === undefined || value === null || value === '') return '—';
-  if (typeof value === 'string') return truncateText(value);
+  if (typeof value === 'string') return truncateText(value, maxLength);
   if (typeof value === 'number' || typeof value === 'boolean') return String(value);
-  if (Array.isArray(value)) return `${value.length} 项`;
+  if (Array.isArray(value)) {
+    const sample = value.slice(0, 3).map((item) => compactValue(item, 56)).filter((item) => item !== '—');
+    return sample.length ? `${value.length} 项：${sample.join('；')}` : `${value.length} 项`;
+  }
   const record = asRecord(value);
-  if (!record) return truncateText(safeJson(value), 180);
+  if (!record) return truncateText(safeJson(value), Math.max(maxLength, 180));
+  const countKeys = ['createdCount', 'updatedCount', 'issueCount', 'acceptedCount', 'wordCount'];
+  const matched = countKeys.find((key) => typeof record[key] === 'number');
+  if (matched) return `${record[matched]} (${matched})`;
   const entries = Object.entries(record).filter(([, item]) => item !== undefined && item !== null && item !== '');
   if (!entries.length) return '空对象';
-  return entries.slice(0, 3).map(([key, item]) => `${key}: ${displayValue(item)}`).join('；');
+  return entries.slice(0, 3).map(([key, item]) => `${key}: ${compactValue(item, 72)}`).join('；');
 }
 
 function previewRows(value: unknown) {
   if (value === undefined || value === null || value === '') return [];
   const record = asRecord(value);
-  if (!record || Array.isArray(value)) return [{ key: 'value', value: compactValue(value) }];
+  if (!record || Array.isArray(value)) return [{ key: Array.isArray(value) ? 'items' : 'value', value: compactValue(value) }];
   return Object.entries(record)
     .filter(([, item]) => item !== undefined && item !== null && item !== '')
     .slice(0, 5)
@@ -282,8 +288,8 @@ function SummaryRows({ value, emptyText }: { value: unknown; emptyText: string }
     <dl className="agent-tool-call-preview">
       {rows.map((row) => (
         <div key={row.key}>
-          <dt>{row.key}</dt>
-          <dd>{row.value}</dd>
+          <dt title={row.key}>{row.key}</dt>
+          <dd title={row.value}>{row.value}</dd>
         </div>
       ))}
     </dl>
@@ -619,6 +625,10 @@ export function AgentMissionWindow({
                             {step.error ? <pre className="agent-tool-call-error">{safeJson(step.error)}</pre> : <div className="agent-tool-call-empty">无错误。</div>}
                           </div>
                         </div>
+                        <details className="agent-mission-runlog__raw">
+                          <summary>原始记录</summary>
+                          <pre>{safeJson({ stepNo: step.stepNo, tool: toolName, phase: step.phase, input: step.input, output: step.output, error: step.error, metadata: step.metadata })}</pre>
+                        </details>
                       </div>
                     </details>
                   );

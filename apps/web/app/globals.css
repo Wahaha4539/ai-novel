@@ -1336,6 +1336,9 @@ textarea.input, textarea.input-field {
   grid-template-columns: minmax(0, 0.92fr) minmax(0, 1.08fr);
   gap: 0.75rem;
 }
+.agent-mission-grid:has(.agent-mission-card--execute .agent-mission-runlog__item[open]) {
+  grid-template-columns: minmax(0, 1fr);
+}
 .agent-mission-card {
   min-width: 0;
   border: 1px solid var(--agent-border);
@@ -1709,6 +1712,13 @@ textarea.input, textarea.input-field {
   border: 1px solid var(--agent-border);
   background: color-mix(in srgb, var(--bg-primary) 22%, transparent);
 }
+.agent-mission-runlog__item[open] {
+  border-color: color-mix(in srgb, var(--agent-accent) 34%, var(--agent-border));
+  background:
+    linear-gradient(180deg, color-mix(in srgb, var(--agent-accent) 7%, transparent), transparent 46%),
+    color-mix(in srgb, var(--bg-primary) 28%, transparent);
+  box-shadow: 0 18px 44px -36px var(--agent-shadow);
+}
 .agent-mission-runlog__summary {
   display: grid;
   grid-template-columns: auto minmax(0, 1fr) auto auto auto;
@@ -1718,6 +1728,10 @@ textarea.input, textarea.input-field {
   padding: 0.55rem;
   cursor: pointer;
   list-style: none;
+}
+.agent-mission-runlog__item[open] .agent-mission-runlog__summary {
+  border-bottom: 1px solid var(--agent-border);
+  background: color-mix(in srgb, var(--agent-glass) 52%, transparent);
 }
 .agent-mission-runlog__summary::-webkit-details-marker { display: none; }
 .agent-mission-runlog__summary::marker { content: ''; }
@@ -1782,14 +1796,22 @@ textarea.input, textarea.input-field {
 }
 .agent-mission-runlog__detail {
   display: grid;
-  gap: 0.55rem;
-  padding: 0 0.55rem 0.65rem 1.7rem;
+  gap: 0.7rem;
+  padding: 0.75rem;
 }
 .agent-mission-runlog__route-grid,
 .agent-mission-runlog__detail-grid {
   display: grid;
-  gap: 0.55rem;
-  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: 0.65rem;
+}
+.agent-mission-runlog__route-grid {
+  grid-template-columns: repeat(auto-fit, minmax(min(10.5rem, 100%), 1fr));
+}
+.agent-mission-runlog__detail-grid {
+  grid-template-columns: repeat(auto-fit, minmax(min(24rem, 100%), 1fr));
+}
+.agent-mission-runlog__detail-grid .agent-tool-call-detail:last-child {
+  grid-column: 1 / -1;
 }
 .agent-mission-runlog__route-grid div {
   min-width: 0;
@@ -1803,10 +1825,10 @@ textarea.input, textarea.input-field {
   display: block;
   min-width: 0;
   overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
 }
 .agent-mission-runlog__route-grid span {
+  text-overflow: ellipsis;
+  white-space: nowrap;
   color: var(--agent-text-label);
   font-size: 0.64rem;
   font-weight: 850;
@@ -1815,6 +1837,9 @@ textarea.input, textarea.input-field {
   margin-top: 0.16rem;
   color: var(--text-main);
   font-size: 0.72rem;
+  line-height: 1.45;
+  overflow-wrap: break-word;
+  word-break: normal;
 }
 .agent-tool-calls {
   overflow: hidden;
@@ -2012,6 +2037,7 @@ textarea.input, textarea.input-field {
 }
 .agent-tool-call-detail {
   min-width: 0;
+  overflow: hidden;
   border: 1px solid var(--agent-border);
   border-radius: 8px;
   background: color-mix(in srgb, var(--bg-primary) 28%, transparent);
@@ -2037,7 +2063,7 @@ textarea.input, textarea.input-field {
 .agent-tool-call-preview div {
   min-width: 0;
   display: grid;
-  grid-template-columns: minmax(5.2rem, 0.34fr) minmax(0, 1fr);
+  grid-template-columns: minmax(6.2rem, 0.28fr) minmax(0, 1fr);
   gap: 0.55rem;
   align-items: start;
 }
@@ -2045,16 +2071,44 @@ textarea.input, textarea.input-field {
 .agent-tool-call-preview dd {
   min-width: 0;
   margin: 0;
-  overflow-wrap: anywhere;
   font-size: 0.7rem;
   line-height: 1.5;
 }
 .agent-tool-call-preview dt {
+  overflow: hidden;
   color: var(--agent-text-label);
   font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+  text-overflow: ellipsis;
+  white-space: nowrap;
 }
 .agent-tool-call-preview dd {
   color: var(--text-muted);
+  overflow-wrap: break-word;
+  word-break: normal;
+}
+.agent-mission-runlog__detail-grid .agent-tool-call-detail {
+  background:
+    linear-gradient(180deg, color-mix(in srgb, var(--agent-glass) 56%, transparent), transparent 62%),
+    color-mix(in srgb, var(--bg-primary) 26%, transparent);
+}
+.agent-mission-runlog__detail-grid .agent-tool-call-detail h4 {
+  padding-bottom: 0.5rem;
+  border-bottom: 1px solid var(--agent-border);
+  color: var(--text-main);
+  letter-spacing: 0.02em;
+  text-transform: none;
+}
+.agent-mission-runlog__detail-grid .agent-tool-call-preview {
+  gap: 0;
+  padding: 0.2rem 0.75rem 0.75rem;
+}
+.agent-mission-runlog__detail-grid .agent-tool-call-preview div {
+  grid-template-columns: minmax(8rem, 0.24fr) minmax(0, 1fr);
+  padding: 0.45rem 0;
+  border-top: 1px solid color-mix(in srgb, var(--agent-border) 62%, transparent);
+}
+.agent-mission-runlog__detail-grid .agent-tool-call-preview div:first-child {
+  border-top: none;
 }
 .agent-tool-call-empty {
   padding: 0.5rem 0.65rem 0.65rem;
@@ -2078,6 +2132,49 @@ textarea.input, textarea.input-field {
 .agent-tool-call-error {
   color: var(--status-err);
   background: color-mix(in srgb, var(--status-err-bg) 58%, transparent);
+}
+.agent-mission-runlog__raw {
+  overflow: hidden;
+  border: 1px dashed var(--agent-border);
+  border-radius: 8px;
+  background: color-mix(in srgb, var(--agent-glass) 46%, transparent);
+}
+.agent-mission-runlog__raw > summary {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 0.5rem;
+  min-height: 2.35rem;
+  padding: 0.55rem 0.7rem;
+  cursor: pointer;
+  color: var(--agent-text-label);
+  font-size: 0.68rem;
+  font-weight: 850;
+  list-style: none;
+}
+.agent-mission-runlog__raw > summary::-webkit-details-marker { display: none; }
+.agent-mission-runlog__raw > summary::marker { content: ''; }
+.agent-mission-runlog__raw > summary::after {
+  content: '›';
+  color: var(--agent-text-label);
+  font-size: 1rem;
+  line-height: 1;
+  transition: transform 0.2s ease;
+}
+.agent-mission-runlog__raw[open] > summary::after {
+  transform: rotate(90deg);
+}
+.agent-mission-runlog__raw pre {
+  max-height: 18rem;
+  overflow: auto;
+  margin: 0;
+  padding: 0.7rem;
+  border-top: 1px dashed var(--agent-border);
+  color: var(--agent-text-label);
+  font-size: 0.68rem;
+  line-height: 1.55;
+  white-space: pre-wrap;
+  word-break: break-word;
 }
 .agent-mission-queue {
   display: grid;
@@ -2277,6 +2374,9 @@ textarea.input, textarea.input-field {
   .agent-tool-call-preview div {
     grid-template-columns: minmax(0, 1fr);
     gap: 0.15rem;
+  }
+  .agent-mission-runlog__detail-grid .agent-tool-call-preview div {
+    grid-template-columns: minmax(0, 1fr);
   }
   .agent-mission-todo__status,
   .agent-todo-list__status,

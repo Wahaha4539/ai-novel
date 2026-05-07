@@ -136,7 +136,21 @@ export interface GeneratedDraftQualityGateResult {
     hasWrapperOrMarkdown: boolean;
     hasRefusalPattern: boolean;
     hasTemplateMarker: boolean;
+    aiTasteHitCount: number;
+    aiTasteHits: string[];
+    simileCount: number;
+    ornamentalParagraphCount: number;
+    hasScenicOpeningRisk: boolean;
   };
+}
+
+interface AiTasteCheckResult {
+  warnings: string[];
+  hitCount: number;
+  hits: string[];
+  simileCount: number;
+  ornamentalParagraphCount: number;
+  hasScenicOpeningRisk: boolean;
 }
 
 export interface GenerateChapterResult {
@@ -502,6 +516,7 @@ export class GenerateChapterService {
     const hasWrapperOrMarkdown = /```|^#{1,6}\s|<\/?(?:rewrite|chapter|正文)>/im.test(content);
     const hasRefusalPattern = /作为(?:一个)?AI|我无法|不能完成(?:该|这个)?请求|以下是(?:你要的)?章节|当然可以/im.test(content);
     const hasTemplateMarker = /{{[^}]+}}|\[[^\]]*(?:待补充|TODO|占位)[^\]]*\]|TODO|待补充/im.test(content);
+    const aiTaste = this.assessAiTaste(content, paragraphs);
 
     const blockers = [
       ...(actualWordCount < Math.min(500, Math.max(120, targetWordCount * 0.18)) ? [`正文过短：${actualWordCount} 字，低于生产写入下限。`] : []),
@@ -514,6 +529,7 @@ export class GenerateChapterService {
       ...(targetRatio > 1.8 ? [`正文长度达到目标的 ${(targetRatio * 100).toFixed(0)}%，可能超出章节节奏。`] : []),
       ...(duplicateParagraphRatio >= 0.18 && duplicateParagraphRatio < 0.35 ? ['存在一定比例重复段落，建议检查节奏和表达。'] : []),
       ...(hasWrapperOrMarkdown ? ['输出包含 Markdown/包裹标签痕迹，后处理可能需要清理。'] : []),
+      ...aiTaste.warnings,
     ];
     const executionCardCoverage = chapter ? this.assessExecutionCardCoverage(content, chapter) : undefined;
     if (executionCardCoverage?.warnings.length) {
@@ -523,7 +539,8 @@ export class GenerateChapterService {
     if (sceneCardCoverage?.warnings.length) {
       warnings.push(...sceneCardCoverage.warnings);
     }
-    const score = Math.max(0, Math.min(100, 100 - blockers.length * 35 - warnings.length * 10 - Math.round(duplicateParagraphRatio * 40)));
+    const aiTastePenalty = Math.min(20, aiTaste.hitCount * 3 + aiTaste.ornamentalParagraphCount * 4 + (aiTaste.hasScenicOpeningRisk ? 6 : 0));
+    const score = Math.max(0, Math.min(100, 100 - blockers.length * 35 - warnings.length * 10 - Math.round(duplicateParagraphRatio * 40) - aiTastePenalty));
 
     return {
       valid: blockers.length === 0,
@@ -533,7 +550,66 @@ export class GenerateChapterService {
       warnings,
       ...(executionCardCoverage && { executionCardCoverage }),
       ...(sceneCardCoverage && { sceneCardCoverage }),
-      metrics: { actualWordCount, targetWordCount, targetRatio, paragraphCount: paragraphs.length, duplicateParagraphCount, duplicateParagraphRatio, hasWrapperOrMarkdown, hasRefusalPattern, hasTemplateMarker },
+      metrics: {
+        actualWordCount,
+        targetWordCount,
+        targetRatio,
+        paragraphCount: paragraphs.length,
+        duplicateParagraphCount,
+        duplicateParagraphRatio,
+        hasWrapperOrMarkdown,
+        hasRefusalPattern,
+        hasTemplateMarker,
+        aiTasteHitCount: aiTaste.hitCount,
+        aiTasteHits: aiTaste.hits,
+        simileCount: aiTaste.simileCount,
+        ornamentalParagraphCount: aiTaste.ornamentalParagraphCount,
+        hasScenicOpeningRisk: aiTaste.hasScenicOpeningRisk,
+      },
+    };
+  }
+
+  private assessAiTaste(content: string, paragraphs: string[]): AiTasteCheckResult {
+    const hits = new Set<string>();
+    const fatiguePatterns: Array<{ label: string; pattern: RegExp }> = [
+      { label: '独立成段的戏剧化反转短句', pattern: /(?:^|\n)\s*(?:不是|并非).{1,10}[。！？!?]\s*(?=\n|$)/m },
+      { label: '预告片式段尾或命运句', pattern: /(?:真正的风暴才刚刚开始|只是开始|再也回不去了|这一刻[，,].{0,12}终于明白|命运的齿轮)/ },
+      { label: '高修辞比喻句', pattern: /(?:细如|宛如|如同|仿佛|像被.{0,8}(?:刀|火|冰|针)|像.{0,12}(?:刮过|碾过|吞没|压下))/ },
+      { label: '空镜式天象开场', pattern: /^[\s\S]{0,220}(?:天上|天穹|云层|海面|潮腹|白沫|夜色|雨|雾)/ },
+    ];
+    for (const item of fatiguePatterns) {
+      if (item.pattern.test(content)) hits.add(item.label);
+    }
+
+    const simileCount = content.match(/像|仿佛|似乎|好像|宛如|如同|细如/g)?.length ?? 0;
+    const simileThreshold = Math.max(4, Math.floor(content.length / 1200));
+    if (simileCount > simileThreshold) hits.add('比喻词密度偏高');
+
+    const ornamentalParagraphCount = paragraphs.filter((paragraph) => {
+      const sensoryCount = paragraph.match(/盐|潮|雾|海|雨|水|白|青|黑|光|声|响|味|臭|腥|铁锈|血|冷|热|湿|泥|风|烟|尘|疼|痛/g)?.length ?? 0;
+      const paragraphSimiles = paragraph.match(/像|仿佛|似乎|好像|宛如|如同|细如/g)?.length ?? 0;
+      return sensoryCount >= 5 && (paragraphSimiles >= 1 || paragraph.length > 90);
+    }).length;
+    if (ornamentalParagraphCount >= 2) hits.add('感官/修辞堆叠段落偏多');
+
+    const opening = content.slice(0, 420);
+    const hasSceneryOpening = /天上|天穹|云层|海面|潮腹|白沫|夜色|雨|雾|风声|潮声/.test(opening);
+    const hasActionAnchor = /说|问|骂|吼|拽|推|抓|砍|拔|跑|走|退|递|抬头|低头|转身|伸手|撞|摔|跪|拉/.test(opening);
+    const hasPressureAnchor = /必须|不能|来不及|赶|阻|拦|逃|救|杀|抢|封|追|押|锁|链|刀|伤|塌|断|裂/.test(opening);
+    const hasScenicOpeningRisk = hasSceneryOpening && (!hasActionAnchor || !hasPressureAnchor);
+
+    const warnings = [
+      ...(hits.size ? [`疑似 AI 味表达：${[...hits].slice(0, 4).join('、')}。建议改成更朴素的动作后果和人物选择。`] : []),
+      ...(hasScenicOpeningRisk ? ['开场环境/天象气氛偏重，人物目标或选择压力不够靠前。'] : []),
+    ];
+
+    return {
+      warnings,
+      hitCount: hits.size,
+      hits: [...hits],
+      simileCount,
+      ornamentalParagraphCount,
+      hasScenicOpeningRisk,
     };
   }
 

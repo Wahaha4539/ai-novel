@@ -404,10 +404,10 @@ export class AgentPlannerService {
     const secondValidationRunIf: AgentStepCondition = { ref: `{{steps.${firstValidationStepNo}.output.createdCount}}`, operator: 'gt', value: 0 };
 
     const followups: AgentPlanStepSpec[] = [
-      this.createPlannedStep('初次润色章节草稿', 'polish_chapter', { chapterId, draftId, instruction: '在不改变剧情事实的前提下润色章节正文，统一文风、清理生硬表达，并保留章节目标和关键事件。' }, requiresApproval),
+      this.createPlannedStep('初次润色章节草稿', 'polish_chapter', { chapterId, draftId, instruction: '在不改变剧情事实的前提下润色章节正文，统一文风；重点减少过度修辞、漂亮空镜、感官堆叠和戏剧化短句，并保留章节目标和关键事件。' }, requiresApproval),
       this.createPlannedStep('初次事实一致性校验', 'fact_validation', { chapterId }, requiresApproval),
       this.createPlannedStep('按初次校验结果自动修复', 'auto_repair_chapter', { chapterId, draftId, issues: `{{steps.${firstValidationStepNo}.output.issues}}`, instruction: '根据事实校验问题做最小必要修复，不新增重大剧情、角色或设定。', maxRounds: 1 }, requiresApproval),
-      this.createPlannedStep('二次润色修复后草稿', 'polish_chapter', { chapterId, draftId, instruction: '仅在初次校验发现问题后，对修复后的章节做第二轮轻量润色，保持剧情事实不变。' }, requiresApproval, secondValidationRunIf),
+      this.createPlannedStep('二次润色修复后草稿', 'polish_chapter', { chapterId, draftId, instruction: '仅在初次校验发现问题后，对修复后的章节做第二轮轻量润色；不要新增画面感，优先删减多余修辞和模板化表达，保持剧情事实不变。' }, requiresApproval, secondValidationRunIf),
       this.createPlannedStep('二次事实一致性校验', 'fact_validation', { chapterId }, requiresApproval, secondValidationRunIf),
       this.createPlannedStep('按二次校验结果自动修复', 'auto_repair_chapter', { chapterId, draftId, issues: `{{steps.${firstValidationStepNo + 3}.output.issues}}`, instruction: '根据二次事实校验问题做最后一轮有界修复；若无可修复问题则跳过。', maxRounds: 1 }, requiresApproval, secondValidationRunIf),
       this.createPlannedStep('抽取章节事实', 'extract_chapter_facts', { chapterId, draftId }, requiresApproval),
