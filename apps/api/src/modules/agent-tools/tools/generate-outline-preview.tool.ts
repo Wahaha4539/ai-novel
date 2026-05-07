@@ -380,23 +380,30 @@ export class GenerateOutlinePreviewTool implements BaseTool<GenerateOutlinePrevi
   private createFallbackChapter(index: number, chapterCount: number, seed: ReturnType<GenerateOutlinePreviewTool['createFallbackSeed']>): OutlinePreviewOutput['chapters'][number] {
     const chapterNo = index + 1;
     const phases = [
-      { title: '压力入场', objective: '抛出核心危机与行动目标', conflict: '资源、时间和信任同时收紧', hook: '新的风险逼近' },
-      { title: '规则成形', objective: '建立解决问题的临时规则', conflict: '旧秩序与新方案发生碰撞', hook: '规则出现代价' },
-      { title: '试错破局', objective: '通过行动验证关键方案', conflict: '方案被现实条件反复撕扯', hook: '隐藏阻力浮出水面' },
-      { title: '联盟拉扯', objective: '让更多角色卷入共同承担', conflict: '利益分配与旧怨制造裂缝', hook: '盟友立场动摇' },
-      { title: '代价揭示', objective: '揭开阶段真相并放大牺牲', conflict: '胜利路径要求付出不可逆代价', hook: '更大的危机压来' },
-      { title: '阶段胜利', objective: '完成卷内目标并留下下一阶段入口', conflict: '胜利与新的责任同时到来', hook: '下一卷矛盾开启' },
+      { title: '压力入场', objective: '抛出核心危机与行动目标', conflict: '资源、时间和信任同时收紧', hook: '新的风险逼近', beats: ['警报落点', '旧债翻面', '险桥开局', '暗线触发', '误判逼近', '退路收紧', '筹码亮出', '试探交锋', '临界追问', '门槛坍塌', '孤注动身', '余波逼停'] },
+      { title: '规则成形', objective: '建立解决问题的临时规则', conflict: '旧秩序与新方案发生碰撞', hook: '规则出现代价', beats: ['临规立约', '边界试算', '人心校准', '代价签名', '异议压舱', '漏洞浮现', '新约试行', '旧令反扑', '责任分摊', '证据入局', '底线重画', '承诺落锁'] },
+      { title: '试错破局', objective: '通过行动验证关键方案', conflict: '方案被现实条件反复撕扯', hook: '隐藏阻力浮出水面', beats: ['首试失衡', '误差追踪', '反证显形', '假路拆除', '危局转手', '实证破面', '逆向开门', '故障回收', '线索咬合', '小胜换伤', '盲点亮灯', '陷阱反用'] },
+      { title: '联盟拉扯', objective: '让更多角色卷入共同承担', conflict: '利益分配与旧怨制造裂缝', hook: '盟友立场动摇', beats: ['同盟试温', '旧怨上桌', '利益拆账', '背书换筹', '裂缝外露', '旁支入局', '阵线重排', '承诺受审', '暗盟露影', '信任押注', '分歧加码', '共担成约'] },
+      { title: '代价揭示', objective: '揭开阶段真相并放大牺牲', conflict: '胜利路径要求付出不可逆代价', hook: '更大的危机压来', beats: ['真相缺口', '代价开价', '旧伤回潮', '牺牲点名', '选择逼宫', '证词反噬', '资源断流', '身份承压', '规则反咬', '胜利染尘', '底牌焚尽', '高墙迫近'] },
+      { title: '阶段胜利', objective: '完成卷内目标并留下下一阶段入口', conflict: '胜利与新的责任同时到来', hook: '下一卷矛盾开启', beats: ['终局合围', '最后交换', '败局翻盘', '责任交接', '余账清点', '新门开启', '功成留裂', '承诺兑现', '更高命令', '远雷落名', '胜局反照', '下一潮起'] },
     ];
-    const phase = phases[Math.min(phases.length - 1, Math.floor(index * phases.length / Math.max(1, chapterCount)))];
+    const phaseIndex = Math.min(phases.length - 1, Math.floor(index * phases.length / Math.max(1, chapterCount)));
+    const phase = phases[phaseIndex];
+    const phaseStart = Math.ceil((phaseIndex * chapterCount) / phases.length);
+    const localIndex = Math.max(0, index - phaseStart);
+    const beatCycle = Math.floor(localIndex / phase.beats.length);
+    const beat = phase.beats[localIndex % phase.beats.length];
+    const titleDetail = beatCycle > 0 ? `${beat}${beatCycle + 1}` : beat;
+    const title = `${phase.title}·${titleDetail}`;
     const progress = `${chapterNo}/${chapterCount}`;
     const chapter = {
       chapterNo,
       volumeNo: seed.volumeNo,
-      title: `第 ${chapterNo} 章：${phase.title}`,
-      objective: `${phase.objective}，服务《${seed.projectTitle}》${seed.volumeTitle}目标：${seed.objective}`,
+      title,
+      objective: `${phase.objective}（${titleDetail}），服务《${seed.projectTitle}》${seed.volumeTitle}目标：${seed.objective}`,
       conflict: `${phase.conflict}，主角团队必须在生存、连接与责任之间做选择。`,
       hook: `${phase.hook}，把矛盾推进到第 ${Math.min(chapterNo + 1, chapterCount)} 章。`,
-      outline: `卷内进度 ${progress}。本章围绕“${seed.objective}”推进：先承接上一章压力，再安排一次具体行动或谈判，让方案获得新证据，同时暴露新的成本，为后续章节继续升级冲突。`,
+      outline: `卷内进度 ${progress}。本章以“${titleDetail}”作为阶段动作，围绕“${seed.objective}”推进：先承接上一章压力，再安排一次具体行动或谈判，让方案获得新证据，同时暴露新的成本，为后续章节继续升级冲突。`,
       expectedWordCount: 2500,
     };
     return { ...chapter, craftBrief: this.createFallbackCraftBrief(chapter, index, chapterCount, seed) };

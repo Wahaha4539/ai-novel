@@ -1268,6 +1268,30 @@ test('ValidateOutlineTool 校验 craftBrief 行动链、线索和不可逆后果
   assert.equal(result.issues.some((issue) => /irreversibleConsequence/.test(issue.message)), true);
 });
 
+test('ValidateOutlineTool 对重复章节标题给出 warning', async () => {
+  const prisma = {
+    volume: { async findUnique() { return null; } },
+    chapter: { async findMany() { return []; } },
+  };
+  const tool = new ValidateOutlineTool(prisma as never);
+  const result = await tool.run(
+    {
+      preview: {
+        volume: { volumeNo: 1, title: '卷一', synopsis: '卷简介', objective: '卷目标', chapterCount: 2 },
+        chapters: [
+          { chapterNo: 1, title: '第 1 章：压力入场', objective: '目标', conflict: '冲突', hook: '钩子', outline: '梗概', expectedWordCount: 2000 },
+          { chapterNo: 2, title: '第 2 章：压力入场', objective: '目标', conflict: '冲突', hook: '钩子', outline: '梗概', expectedWordCount: 2000 },
+        ],
+        risks: [],
+      },
+    },
+    { agentRunId: 'run1', projectId: 'p1', mode: 'plan', approved: false, outputs: {}, policy: {} },
+  );
+
+  assert.equal(result.valid, true);
+  assert.equal(result.issues.some((issue) => /重复章节标题/.test(issue.message) && /压力入场/.test(issue.message)), true);
+});
+
 test('ValidateImportedAssetsTool 生成导入写入前 diff，并标记重复/已存在资产', async () => {
   const prisma = {
     character: { async findMany() { return [{ name: '林岚' }]; } },
@@ -4205,6 +4229,8 @@ test('GenerateOutlinePreviewTool falls back to a complete deterministic preview 
   assert.equal(output.chapters.length, 60);
   assert.equal(output.chapters[0].chapterNo, 1);
   assert.equal(output.chapters[59].chapterNo, 60);
+  assert.equal(new Set(output.chapters.map((chapter) => chapter.title)).size, 60);
+  assert.equal(output.chapters[0].title.startsWith('第 1 章'), false);
   assert.match(output.risks.join('\n'), /确定性章节骨架/);
 });
 
@@ -9096,6 +9122,24 @@ test('generate_outline_preview LLM timeout 使用确定性 fallback 且补齐 60
   assert.equal(progress[0].timeoutMs, DEFAULT_LLM_TIMEOUT_MS);
   assert.equal(progress.some((item) => String(item.phase) === 'fallback_generating'), true);
   assert.equal(result.risks.some((risk) => /工具 .*执行超时|工具执行超时/.test(risk)), false);
+});
+
+test('generate_outline_preview fallback 标题按章节区分阶段动作', async () => {
+  const llm = {
+    async chatJson() {
+      throw new LlmTimeoutError('LLM 在 450s 内未返回', 'planner', DEFAULT_LLM_TIMEOUT_MS);
+    },
+  };
+  const tool = new GenerateOutlinePreviewTool(llm as never);
+  const result = await tool.run(
+    { instruction: '卷 1 细纲，目标 60 章节', volumeNo: 1, chapterCount: 60 },
+    { agentRunId: 'run1', projectId: 'p1', mode: 'plan', approved: false, outputs: {}, policy: {} },
+  );
+
+  assert.equal(new Set(result.chapters.map((chapter) => chapter.title)).size, 60);
+  assert.match(result.chapters[0].title, /^压力入场·/);
+  assert.notEqual(result.chapters[0].title, result.chapters[1].title);
+  assert.equal(result.chapters.every((chapter) => /^第\s*\d+\s*章/.test(chapter.title) === false), true);
 });
 
 test('generate_outline_preview 为 60 章自动拆分批次生成', async () => {

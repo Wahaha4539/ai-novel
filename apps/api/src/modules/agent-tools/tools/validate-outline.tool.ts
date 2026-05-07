@@ -90,6 +90,15 @@ export class ValidateOutlineTool implements BaseTool<ValidateOutlineInput, Valid
       issues.push({ severity: 'warning', message: '章节编号不连续。', suggestion: '如需连续阅读体验，建议补齐缺失编号或重新排序。' });
     }
 
+    const duplicatedTitles = this.findDuplicatedTexts(chapters.map((chapter) => this.normalizeChapterTitle(this.text(chapter.title))));
+    if (duplicatedTitles.length) {
+      issues.push({
+        severity: 'warning',
+        message: `存在重复章节标题：${duplicatedTitles.join('、')}。`,
+        suggestion: '建议在写入前重新生成或手动区分标题，避免章节导航和后续定位混淆。',
+      });
+    }
+
     chapters.forEach((chapter, index) => {
       const label = `第 ${chapter.chapterNo || index + 1} 章`;
       if (!Number.isFinite(Number(chapter.chapterNo)) || Number(chapter.chapterNo) <= 0) {
@@ -170,6 +179,22 @@ export class ValidateOutlineTool implements BaseTool<ValidateOutlineInput, Valid
       seen.add(value);
     });
     return [...duplicated].sort((a, b) => a - b);
+  }
+
+  private findDuplicatedTexts(values: string[]): string[] {
+    const seen = new Set<string>();
+    const duplicated = new Set<string>();
+    values.forEach((value) => {
+      const normalized = value.trim();
+      if (!normalized) return;
+      if (seen.has(normalized)) duplicated.add(normalized);
+      seen.add(normalized);
+    });
+    return [...duplicated].sort((a, b) => a.localeCompare(b, 'zh-Hans-CN'));
+  }
+
+  private normalizeChapterTitle(value: string): string {
+    return value.trim().replace(/^第\s*\d+\s*章\s*[：:、.\-]?\s*/, '');
   }
 
   private validateCraftBrief(value: unknown, label: string, issues: OutlineValidationIssue[]) {
