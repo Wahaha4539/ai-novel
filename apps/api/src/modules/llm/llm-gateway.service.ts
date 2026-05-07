@@ -101,7 +101,7 @@ export class LlmGatewayService {
     try {
       return this.llmProviders.resolveForStep(appStep);
     } catch {
-      return { baseUrl: this.envBaseUrl, apiKey: this.envApiKey, model: this.envModel, params: {}, source: 'env_fallback' };
+      return { providerName: process.env.LLM_PROVIDER_NAME ?? 'env_fallback', baseUrl: this.envBaseUrl, apiKey: this.envApiKey, model: this.envModel, params: {}, source: 'env_fallback' };
     }
   }
 
@@ -112,6 +112,7 @@ export class LlmGatewayService {
 
     const startedAt = Date.now();
     const timeoutMs = options.timeoutMs ?? DEFAULT_LLM_TIMEOUT_MS;
+    const logContext = this.buildRequestLogContext(config, messages, options, timeoutMs, startedAt);
     let response: Response;
     try {
       response = await fetch(`${config.baseUrl.replace(/\/+$/, '')}/chat/completions`, {
@@ -128,21 +129,49 @@ export class LlmGatewayService {
         signal: AbortSignal.timeout(timeoutMs),
       });
     } catch (error) {
-      throw this.normalizeLlmError(error, { ...options, timeoutMs });
+      const normalized = this.normalizeLlmError(error, { ...options, timeoutMs });
+      this.logger.error('llm.gateway.chat.failed', normalized, {
+        ...logContext,
+        elapsedMs: Date.now() - startedAt,
+        cause: this.describeError(error),
+      });
+      throw normalized;
     }
 
     if (!response.ok) {
       const detail = await response.text();
       const message = `${response.status} ${detail.slice(0, 500)}`;
       if (response.status === 408 || response.status === 504 || /timeout|timed out|deadline exceeded/i.test(detail)) {
-        throw new LlmTimeoutError(`LLM 请求超时：${message}`, options.appStep, timeoutMs);
+        const error = new LlmTimeoutError(`LLM 请求超时：${message}`, options.appStep, timeoutMs);
+        this.logger.error('llm.gateway.chat.failed', error, {
+          ...logContext,
+          elapsedMs: Date.now() - startedAt,
+          httpStatus: response.status,
+          responseTextPreview: detail.slice(0, 500),
+        });
+        throw error;
       }
-      throw new LlmProviderError(`LLM 请求失败：${message}`, options.appStep);
+      const error = new LlmProviderError(`LLM 请求失败：${message}`, options.appStep);
+      this.logger.error('llm.gateway.chat.failed', error, {
+        ...logContext,
+        elapsedMs: Date.now() - startedAt,
+        httpStatus: response.status,
+        responseTextPreview: detail.slice(0, 500),
+      });
+      throw error;
     }
 
     const payload = (await response.json()) as Record<string, unknown>;
     const text = this.extractText(payload);
-    if (!text) throw new LlmProviderError(`LLM 返回内容为空：${JSON.stringify(payload).slice(0, 500)}`, options.appStep);
+    if (!text) {
+      const error = new LlmProviderError(`LLM 返回内容为空：${JSON.stringify(payload).slice(0, 500)}`, options.appStep);
+      this.logger.error('llm.gateway.chat.failed', error, {
+        ...logContext,
+        elapsedMs: Date.now() - startedAt,
+        rawPayloadSummary: { id: payload.id, model: payload.model, usage: payload.usage },
+      });
+      throw error;
+    }
 
     const result = {
       text,
@@ -151,8 +180,35 @@ export class LlmGatewayService {
       elapsedMs: Date.now() - startedAt,
       rawPayloadSummary: { id: payload.id, model: payload.model, usage: payload.usage },
     };
-    this.logger.log('llm.gateway.chat.completed', { appStep: options.appStep, model: result.model, tokenUsage: result.usage, elapsedMs: result.elapsedMs });
+    this.logger.log('llm.gateway.chat.completed', { ...logContext, model: result.model, tokenUsage: result.usage, elapsedMs: result.elapsedMs });
     return result;
+  }
+
+  private buildRequestLogContext(config: ResolvedLlmConfig, messages: LlmChatMessage[], options: LlmChatOptions, timeoutMs: number, startedAt: number): Record<string, unknown> {
+    return {
+      appStep: options.appStep,
+      providerName: config.providerName,
+      source: config.source,
+      baseUrl: config.baseUrl,
+      model: config.model,
+      timeoutMs,
+      maxTokens: options.maxTokens ?? 2000,
+      temperature: options.temperature ?? (config.params.temperature as number | undefined) ?? 0.2,
+      messageCount: messages.length,
+      totalMessageChars: messages.reduce((sum, message) => sum + message.content.length, 0),
+      startedAt: new Date(startedAt).toISOString(),
+    };
+  }
+
+  private describeError(error: unknown, depth = 0): Record<string, unknown> | string {
+    if (!error || typeof error !== 'object') return String(error);
+    const record = error as Record<string, unknown>;
+    const output: Record<string, unknown> = {};
+    if (typeof record.name === 'string') output.name = record.name;
+    if (typeof record.message === 'string') output.message = record.message;
+    if (typeof record.code === 'string' || typeof record.code === 'number') output.code = record.code;
+    if (depth < 2 && record.cause !== undefined) output.cause = this.describeError(record.cause, depth + 1);
+    return output;
   }
 
   private normalizeLlmError(error: unknown, options: LlmChatOptions): unknown {

@@ -7,7 +7,7 @@ import { recordToolLlmUsage } from './import-preview-llm-usage';
 
 const OUTLINE_PREVIEW_LLM_TIMEOUT_MS = DEFAULT_LLM_TIMEOUT_MS;
 const OUTLINE_PREVIEW_BATCH_THRESHOLD = 15;
-const OUTLINE_PREVIEW_BATCH_SIZE = 12;
+const OUTLINE_PREVIEW_BATCH_SIZE = 8;
 
 interface GenerateOutlinePreviewInput {
   context?: Record<string, unknown>;

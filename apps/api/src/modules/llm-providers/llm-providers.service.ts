@@ -23,6 +23,7 @@ function getErrorMessage(error: unknown): string {
  * Contains everything needed to make an OpenAI-Compatible request.
  */
 export interface ResolvedLlmConfig {
+  providerName?: string;
   baseUrl: string;
   apiKey: string;
   model: string;
@@ -290,6 +291,7 @@ export class LlmProvidersService implements OnModuleInit {
 
       if (routing?.provider?.isActive) {
         return {
+          providerName: routing.provider.name,
           baseUrl: routing.provider.baseUrl,
           apiKey: routing.provider.apiKey,
           model: routing.modelOverride ?? routing.provider.defaultModel,
@@ -304,6 +306,7 @@ export class LlmProvidersService implements OnModuleInit {
 
     if (defaultProvider) {
       return {
+        providerName: defaultProvider.name,
         baseUrl: defaultProvider.baseUrl,
         apiKey: defaultProvider.apiKey,
         model: defaultProvider.defaultModel,
@@ -319,6 +322,7 @@ export class LlmProvidersService implements OnModuleInit {
 
     if (envBaseUrl && envApiKey) {
       return {
+        providerName: process.env.LLM_PROVIDER_NAME ?? 'env_fallback',
         baseUrl: envBaseUrl,
         apiKey: envApiKey,
         model: envModel ?? 'gpt-4o',

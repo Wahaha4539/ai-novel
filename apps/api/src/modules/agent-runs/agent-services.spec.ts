@@ -4332,7 +4332,7 @@ test('GenerateOutlinePreviewTool keeps 500s outer timeout but bounds LLM call', 
     { agentRunId: 'run1', projectId: 'p1', mode: 'plan', approved: false, outputs: {}, policy: {}, recordLlmUsage: (usage) => llmUsages.push(usage) },
   );
 
-  assert.equal(tool.executionTimeoutMs, DEFAULT_LLM_TIMEOUT_MS * 7 + 60_000);
+  assert.equal(tool.executionTimeoutMs, DEFAULT_LLM_TIMEOUT_MS * 10 + 60_000);
   assert.equal(receivedOptions?.timeoutMs, DEFAULT_LLM_TIMEOUT_MS);
   assert.equal(receivedOptions?.retries, 0);
   assert.equal(receivedOptions?.maxTokens, 5000);
@@ -9227,6 +9227,57 @@ test('Executor 将 LLM timeout 分类为 LLM_TIMEOUT Observation', () => {
   assert.equal(executor.classifyObservationCode(error.message, error), 'LLM_TIMEOUT');
 });
 
+test('LlmGatewayService records provider context when fetch fails', async () => {
+  const originalFetch = globalThis.fetch;
+  const logged: Array<{ event: string; error: unknown; payload: Record<string, unknown> }> = [];
+  const gateway = new LlmGatewayService({
+    resolveForStep() {
+      return {
+        providerName: 'rxinai',
+        baseUrl: 'http://host.docker.internal:8317/v1',
+        apiKey: 'test-key',
+        model: 'gpt-5.5',
+        params: {},
+        source: 'default_provider',
+      };
+    },
+  } as never);
+  (gateway as unknown as { logger: { log: () => void; warn: () => void; error: (event: string, error: unknown, payload: Record<string, unknown>) => void } }).logger = {
+    log() {},
+    warn() {},
+    error(event, error, payload) {
+      logged.push({ event, error, payload });
+    },
+  };
+
+  const socketError = Object.assign(new Error('socket closed'), { code: 'UND_ERR_SOCKET' });
+  const fetchError = Object.assign(new TypeError('fetch failed'), { cause: socketError });
+  (globalThis as unknown as { fetch: typeof fetch }).fetch = (async () => {
+    throw fetchError;
+  }) as typeof fetch;
+
+  try {
+    await assert.rejects(
+      () => gateway.chat([{ role: 'user', content: 'hello' }], { appStep: 'planner', maxTokens: 123, timeoutMs: 1000, retries: 0 }),
+      /fetch failed/,
+    );
+  } finally {
+    (globalThis as unknown as { fetch: typeof fetch }).fetch = originalFetch;
+  }
+
+  assert.equal(logged.length, 1);
+  assert.equal(logged[0].event, 'llm.gateway.chat.failed');
+  assert.equal(logged[0].payload.appStep, 'planner');
+  assert.equal(logged[0].payload.providerName, 'rxinai');
+  assert.equal(logged[0].payload.source, 'default_provider');
+  assert.equal(logged[0].payload.baseUrl, 'http://host.docker.internal:8317/v1');
+  assert.equal(logged[0].payload.model, 'gpt-5.5');
+  assert.equal(logged[0].payload.maxTokens, 123);
+  assert.equal(logged[0].payload.timeoutMs, 1000);
+  assert.equal((logged[0].payload.cause as Record<string, unknown>).message, 'fetch failed');
+  assert.equal(((logged[0].payload.cause as Record<string, unknown>).cause as Record<string, unknown>).code, 'UND_ERR_SOCKET');
+});
+
 test('generate_outline_preview LLM timeout 直接抛错且不生成 fallback', async () => {
   const progress: Array<Record<string, unknown>> = [];
   const llm = {
@@ -9320,21 +9371,21 @@ test('generate_outline_preview 为 60 章自动拆分批次生成', async () => 
     },
   );
 
-  assert.equal(calls.length, 5);
-  assert.deepEqual(calls.map((call) => [call.start, call.end]), [[1, 12], [13, 24], [25, 36], [37, 48], [49, 60]]);
+  assert.equal(calls.length, 8);
+  assert.deepEqual(calls.map((call) => [call.start, call.end]), [[1, 8], [9, 16], [17, 24], [25, 32], [33, 40], [41, 48], [49, 56], [57, 60]]);
   assert.equal(calls.every((call) => call.options.timeoutMs === DEFAULT_LLM_TIMEOUT_MS), true);
   assert.equal(calls.every((call) => call.options.retries === 0), true);
-  assert.equal(calls.every((call) => call.options.maxTokens === 13960), true);
+  assert.deepEqual(calls.map((call) => call.options.maxTokens), [10040, 10040, 10040, 10040, 10040, 10040, 10040, 6120]);
   assert.match(calls[1].prompt, /本次运行已生成章节短表/);
-  assert.match(calls[1].prompt, /第 12 章钩子/);
-  assert.equal(llmUsages.length, 5);
+  assert.match(calls[1].prompt, /第 8 章钩子/);
+  assert.equal(llmUsages.length, 8);
   assert.equal(result.chapters.length, 60);
   assert.equal(result.volume.chapterCount, 60);
   assert.equal(result.chapters[0].chapterNo, 1);
   assert.equal(result.chapters[59].chapterNo, 60);
   assert.equal(result.chapters.every((chapter) => chapter.volumeNo === 1), true);
   assert.equal(result.chapters.every((chapter) => Boolean(chapter.craftBrief?.visibleGoal)), true);
-  assert.equal(progress.filter((item) => item.phase === 'calling_llm').length, 5);
+  assert.equal(progress.filter((item) => item.phase === 'calling_llm').length, 8);
   assert.equal(progress.some((item) => item.phase === 'merging_preview'), true);
 });
 
@@ -9349,7 +9400,7 @@ test('generate_outline_preview 单批 timeout 直接抛错并停止后续批次'
       const start = Number(match[1]);
       const end = Number(match[2]);
       calls.push([start, end]);
-      if (start === 13) throw new LlmTimeoutError('第二批超时', 'planner', DEFAULT_LLM_TIMEOUT_MS);
+      if (start === 9) throw new LlmTimeoutError('第二批超时', 'planner', DEFAULT_LLM_TIMEOUT_MS);
       return {
         data: {
           volume: { volumeNo: 1, title: '第一卷', synopsis: '卷简介', objective: '完成卷主线', chapterCount: 60 },
@@ -9388,7 +9439,7 @@ test('generate_outline_preview 单批 timeout 直接抛错并停止后续批次'
     /第二批超时/,
   );
 
-  assert.deepEqual(calls, [[1, 12], [13, 24]]);
+  assert.deepEqual(calls, [[1, 8], [9, 16]]);
   assert.equal(progress.filter((item) => item.phase === 'calling_llm').length, 2);
   assert.equal(progress.some((item) => item.phase === 'fallback_generating'), false);
   assert.equal(progress.some((item) => item.phase === 'merging_preview'), true);
