@@ -27,6 +27,7 @@ export interface ChapterCraftBrief {
   mainlineTask: string;
   subplotTasks: string[];
   actionBeats: string[];
+  sceneBeats: ChapterSceneBeat[];
   concreteClues: Array<{
     name: string;
     sensoryDetail?: string;
@@ -36,6 +37,35 @@ export interface ChapterCraftBrief {
   characterShift: string;
   irreversibleConsequence: string;
   progressTypes: string[];
+  entryState: string;
+  exitState: string;
+  openLoops: string[];
+  closedLoops: string[];
+  handoffToNextChapter: string;
+  continuityState: ChapterContinuityState;
+}
+
+export interface ChapterSceneBeat {
+  sceneArcId: string;
+  scenePart: string;
+  continuesFromChapterNo?: number | null;
+  continuesToChapterNo?: number | null;
+  location: string;
+  participants: string[];
+  localGoal: string;
+  visibleAction: string;
+  obstacle: string;
+  turningPoint: string;
+  partResult: string;
+  sensoryAnchor: string;
+}
+
+export interface ChapterContinuityState {
+  characterPositions?: string[];
+  activeThreats?: string[];
+  ownedClues?: string[];
+  relationshipChanges?: string[];
+  nextImmediatePressure: string;
 }
 
 export interface ChapterCraftBriefSourceTrace {
@@ -254,71 +284,52 @@ export class GenerateChapterCraftBriefPreviewTool implements BaseTool<GenerateCh
     const targets = targetResult.targets;
     if (!targets.length) throw new BadRequestException('generate_chapter_craft_brief_preview requires at least one target chapter.');
 
-    try {
-      await context.updateProgress?.({
-        phase: 'calling_llm',
-        phaseMessage: targets.length === 1 ? `Generating craft brief for chapter ${targets[0].chapterNo}` : `Generating craft briefs for ${targets.length} chapters`,
-        progressCurrent: 0,
-        progressTotal: targets.length,
-        timeoutMs: CHAPTER_CRAFT_BRIEF_LLM_TIMEOUT_MS,
-      });
-      const response = await this.llm.chatJson<Partial<GenerateChapterCraftBriefPreviewOutput> & { chapters?: unknown; chapter?: unknown }>(
-        [
-          {
-            role: 'system',
-            content: [
-              'You are the AI Novel chapter craft-brief planning agent. Return JSON only, no Markdown.',
-              'Generate chapter-level execution cards, not prose and not scene cards.',
-              'Each candidate must include chapterNo, title, proposedFields.objective, proposedFields.conflict, proposedFields.outline, and proposedFields.craftBrief.',
-              'craftBrief must include visibleGoal, hiddenEmotion, coreConflict, mainlineTask, subplotTasks, actionBeats, concreteClues, dialogueSubtext, characterShift, irreversibleConsequence, and progressTypes.',
-              'actionBeats must contain at least 3 concrete actions. concreteClues must contain at least 1 tangible clue or prop with sensory detail or later use.',
-              'irreversibleConsequence must name the concrete fact, relationship, resource, status, rule, or danger that changes by the end of the chapter.',
-            ].join('\n'),
-          },
-          {
-            role: 'user',
-            content: `Instruction: ${instruction}
+    await context.updateProgress?.({
+      phase: 'calling_llm',
+      phaseMessage: targets.length === 1 ? `Generating craft brief for chapter ${targets[0].chapterNo}` : `Generating craft briefs for ${targets.length} chapters`,
+      progressCurrent: 0,
+      progressTotal: targets.length,
+      timeoutMs: CHAPTER_CRAFT_BRIEF_LLM_TIMEOUT_MS,
+    });
+    const response = await this.llm.chatJson<Partial<GenerateChapterCraftBriefPreviewOutput> & { chapters?: unknown; chapter?: unknown }>(
+      [
+        {
+          role: 'system',
+          content: [
+            'You are the AI Novel chapter craft-brief planning agent. Return JSON only, no Markdown.',
+            'Generate chapter-level execution cards, not prose and not scene cards.',
+            'A chapter is a reading beat, not necessarily a scene boundary. A scene may continue across chapters if sceneArcId and handoff fields preserve continuity.',
+            'Each candidate must include chapterNo, title, proposedFields.objective, proposedFields.conflict, proposedFields.outline, and proposedFields.craftBrief.',
+            'craftBrief must include visibleGoal, hiddenEmotion, coreConflict, mainlineTask, subplotTasks, actionBeats, sceneBeats, concreteClues, dialogueSubtext, characterShift, irreversibleConsequence, progressTypes, entryState, exitState, openLoops, closedLoops, handoffToNextChapter, and continuityState.',
+            'sceneBeats must contain at least 3 concrete scene segments with sceneArcId, scenePart, location, participants, localGoal, visibleAction, obstacle, turningPoint, partResult, and sensoryAnchor. Use continuesFromChapterNo / continuesToChapterNo for cross-chapter scenes.',
+            'actionBeats must contain at least 3 concrete actions. concreteClues must contain at least 1 tangible clue or prop with sensory detail and later use.',
+            'irreversibleConsequence must name the concrete fact, relationship, resource, status, rule, or danger that changes by the end of the chapter.',
+          ].join('\n'),
+        },
+        {
+          role: 'user',
+          content: `Instruction: ${instruction}
 Targets:
 ${JSON.stringify(targets.map(compactChapterTarget), null, 2)}
 Project/chapter context:
 ${JSON.stringify(args.context ?? {}, null, 2).slice(0, 24000)}`,
-          },
-        ],
-        {
-          appStep: 'planner',
-          maxTokens: Math.min(12000, targets.length * 950 + 1600),
-          timeoutMs: CHAPTER_CRAFT_BRIEF_LLM_TIMEOUT_MS,
-          retries: 0,
         },
-      );
-      recordToolLlmUsage(context, 'planner', response.result);
-      await context.updateProgress?.({
-        phase: 'validating',
-        phaseMessage: 'Normalizing chapter craft brief preview',
-        progressCurrent: targets.length,
-        progressTotal: targets.length,
-      });
-      return this.normalize(response.data, args, context, targets, instruction, targetResult.risks);
-    } catch (error) {
-      await context.updateProgress?.({
-        phase: 'fallback_generating',
-        phaseMessage: 'Craft brief model call failed; generating deterministic preview',
-        progressCurrent: 0,
-        progressTotal: targets.length,
-      });
-      return this.normalize(
-        { candidates: [] },
-        args,
-        context,
-        targets,
-        instruction,
-        [
-          ...targetResult.risks,
-          `${isLlmTimeout(error) ? 'LLM_TIMEOUT' : 'LLM_PROVIDER_FALLBACK'}: generated baseline Chapter.craftBrief preview; manual review recommended.`,
-          text(error instanceof Error ? error.message : String(error), 'Unknown model error').slice(0, 180),
-        ],
-      );
-    }
+      ],
+      {
+        appStep: 'planner',
+        maxTokens: Math.min(12000, targets.length * 1250 + 1800),
+        timeoutMs: CHAPTER_CRAFT_BRIEF_LLM_TIMEOUT_MS,
+        retries: 0,
+      },
+    );
+    recordToolLlmUsage(context, 'planner', response.result);
+    await context.updateProgress?.({
+      phase: 'validating',
+      phaseMessage: 'Normalizing chapter craft brief preview',
+      progressCurrent: targets.length,
+      progressTotal: targets.length,
+    });
+    return this.normalize(response.data, args, context, targets, instruction, targetResult.risks);
   }
 
   private normalize(
@@ -881,14 +892,64 @@ function validateCraftBriefQuality(brief: Record<string, unknown>): string[] {
     'dialogueSubtext',
     'characterShift',
     'irreversibleConsequence',
+    'entryState',
+    'exitState',
+    'handoffToNextChapter',
   ];
   requiredTextFields.forEach((field) => {
     if (!optionalText(brief[field])) reasons.push(`craftBrief.${field} is required.`);
   });
   if (stringArray(brief.subplotTasks).length < 1) reasons.push('craftBrief.subplotTasks must contain at least 1 item.');
   if (stringArray(brief.actionBeats).length < 3) reasons.push('craftBrief.actionBeats must contain at least 3 concrete action beats.');
-  if (!normalizeClues(brief.concreteClues, []).length) reasons.push('craftBrief.concreteClues must contain at least 1 tangible clue.');
+  if (stringArray(brief.openLoops).length < 1) reasons.push('craftBrief.openLoops must contain at least 1 item.');
+  if (stringArray(brief.closedLoops).length < 1) reasons.push('craftBrief.closedLoops must contain at least 1 item.');
+  const sceneBeatReasons = validateSceneBeatQuality(brief.sceneBeats);
+  reasons.push(...sceneBeatReasons);
+  const clueReasons = validateClueQuality(brief.concreteClues);
+  reasons.push(...clueReasons);
+  const continuityReasons = validateContinuityStateQuality(brief.continuityState);
+  reasons.push(...continuityReasons);
   if (stringArray(brief.progressTypes).length < 1) reasons.push('craftBrief.progressTypes must contain at least 1 item.');
+  return reasons;
+}
+
+function validateSceneBeatQuality(value: unknown): string[] {
+  const reasons: string[] = [];
+  const beats = Array.isArray(value)
+    ? value.map((item) => asRecord(item)).filter((item): item is Record<string, unknown> => Boolean(item))
+    : [];
+  if (beats.length < 3) return ['craftBrief.sceneBeats must contain at least 3 concrete scene segments.'];
+  beats.forEach((beat, index) => {
+    ['sceneArcId', 'scenePart', 'location', 'localGoal', 'visibleAction', 'obstacle', 'turningPoint', 'partResult', 'sensoryAnchor'].forEach((field) => {
+      if (!optionalText(beat[field])) reasons.push(`craftBrief.sceneBeats[${index}].${field} is required.`);
+    });
+    if (stringArray(beat.participants).length < 1) reasons.push(`craftBrief.sceneBeats[${index}].participants must contain at least 1 item.`);
+  });
+  return reasons;
+}
+
+function validateClueQuality(value: unknown): string[] {
+  const clues = Array.isArray(value)
+    ? value.map((item) => asRecord(item)).filter((item): item is Record<string, unknown> => Boolean(item))
+    : [];
+  if (!clues.length) return ['craftBrief.concreteClues must contain at least 1 tangible clue.'];
+  const reasons: string[] = [];
+  clues.forEach((clue, index) => {
+    if (!optionalText(clue.name)) reasons.push(`craftBrief.concreteClues[${index}].name is required.`);
+    if (!optionalText(clue.sensoryDetail)) reasons.push(`craftBrief.concreteClues[${index}].sensoryDetail is required.`);
+    if (!optionalText(clue.laterUse)) reasons.push(`craftBrief.concreteClues[${index}].laterUse is required.`);
+  });
+  return reasons;
+}
+
+function validateContinuityStateQuality(value: unknown): string[] {
+  const record = asRecord(value);
+  if (!record) return ['craftBrief.continuityState is required.'];
+  const reasons: string[] = [];
+  if (!optionalText(record.nextImmediatePressure)) reasons.push('craftBrief.continuityState.nextImmediatePressure is required.');
+  const hasConcreteState = ['characterPositions', 'activeThreats', 'ownedClues', 'relationshipChanges']
+    .some((field) => stringArray(record[field]).length > 0);
+  if (!hasConcreteState) reasons.push('craftBrief.continuityState must include characterPositions, activeThreats, ownedClues, or relationshipChanges.');
   return reasons;
 }
 
@@ -954,41 +1015,85 @@ function buildChapterCraftBriefUpdateData(candidate: ChapterCraftBriefCandidate,
 }
 
 function normalizeCraftBrief(raw: Record<string, unknown> | undefined, base: { chapterNo: number; title: string; objective: string; conflict: string; outline: string }): ChapterCraftBrief {
-  const visibleGoal = text(raw?.visibleGoal, base.objective || `Clarify the concrete goal of chapter ${base.chapterNo}.`);
-  const coreConflict = text(raw?.coreConflict, base.conflict || 'A visible obstacle blocks the chapter goal.');
-  const mainlineTask = text(raw?.mainlineTask, base.objective || `Advance ${base.title}.`);
-  const clueName = compactText(`${base.title} clue`, 80);
+  if (!raw || !Object.keys(raw).length) throw new Error(`Chapter ${base.chapterNo} craftBrief is missing.`);
   return {
-    visibleGoal,
-    hiddenEmotion: text(raw?.hiddenEmotion, 'The viewpoint character hides fear, guilt, or desire behind practical action.'),
-    coreConflict,
-    mainlineTask,
-    subplotTasks: stringArray(raw?.subplotTasks).length ? stringArray(raw?.subplotTasks) : ['Advance one relationship, resource, or mystery thread tied to the chapter goal.'],
-    actionBeats: padStrings(stringArray(raw?.actionBeats), [
-      `Define the immediate move toward: ${visibleGoal}`,
-      `Force resistance through: ${coreConflict}`,
-      `End the attempt with a changed fact or relationship in chapter ${base.chapterNo}.`,
-    ], 3),
-    concreteClues: normalizeClues(raw?.concreteClues, [{ name: clueName, sensoryDetail: 'A tangible detail appears on page and can be noticed by a character.', laterUse: 'Use this clue to unlock or complicate a later choice.' }]),
-    dialogueSubtext: text(raw?.dialogueSubtext, 'At least one exchange hides the speaker intent behind a practical topic.'),
-    characterShift: text(raw?.characterShift, 'The protagonist leaves the chapter with a changed stance, debt, doubt, or commitment.'),
-    irreversibleConsequence: text(raw?.irreversibleConsequence, `By the end of chapter ${base.chapterNo}, a fact, relationship, resource, status, rule, or danger level changes and cannot cleanly reset.`),
-    progressTypes: stringArray(raw?.progressTypes).length ? stringArray(raw?.progressTypes) : ['plot'],
+    visibleGoal: requiredText(raw.visibleGoal, `Chapter ${base.chapterNo} craftBrief.visibleGoal`),
+    hiddenEmotion: requiredText(raw.hiddenEmotion, `Chapter ${base.chapterNo} craftBrief.hiddenEmotion`),
+    coreConflict: requiredText(raw.coreConflict, `Chapter ${base.chapterNo} craftBrief.coreConflict`),
+    mainlineTask: requiredText(raw.mainlineTask, `Chapter ${base.chapterNo} craftBrief.mainlineTask`),
+    subplotTasks: requiredStringArray(raw.subplotTasks, `Chapter ${base.chapterNo} craftBrief.subplotTasks`),
+    actionBeats: requiredMinStringArray(raw.actionBeats, 3, `Chapter ${base.chapterNo} craftBrief.actionBeats`),
+    sceneBeats: normalizeSceneBeats(raw.sceneBeats, base.chapterNo),
+    concreteClues: normalizeClues(raw.concreteClues, base.chapterNo),
+    dialogueSubtext: requiredText(raw.dialogueSubtext, `Chapter ${base.chapterNo} craftBrief.dialogueSubtext`),
+    characterShift: requiredText(raw.characterShift, `Chapter ${base.chapterNo} craftBrief.characterShift`),
+    irreversibleConsequence: requiredText(raw.irreversibleConsequence, `Chapter ${base.chapterNo} craftBrief.irreversibleConsequence`),
+    progressTypes: requiredStringArray(raw.progressTypes, `Chapter ${base.chapterNo} craftBrief.progressTypes`),
+    entryState: requiredText(raw.entryState, `Chapter ${base.chapterNo} craftBrief.entryState`),
+    exitState: requiredText(raw.exitState, `Chapter ${base.chapterNo} craftBrief.exitState`),
+    openLoops: requiredStringArray(raw.openLoops, `Chapter ${base.chapterNo} craftBrief.openLoops`),
+    closedLoops: requiredStringArray(raw.closedLoops, `Chapter ${base.chapterNo} craftBrief.closedLoops`),
+    handoffToNextChapter: requiredText(raw.handoffToNextChapter, `Chapter ${base.chapterNo} craftBrief.handoffToNextChapter`),
+    continuityState: normalizeContinuityState(raw.continuityState, base.chapterNo),
   };
 }
 
-function normalizeClues(value: unknown, fallback: ChapterCraftBrief['concreteClues']): ChapterCraftBrief['concreteClues'] {
-  if (!Array.isArray(value)) return fallback;
+function normalizeClues(value: unknown, chapterNo: number): ChapterCraftBrief['concreteClues'] {
+  if (!Array.isArray(value)) throw new Error(`Chapter ${chapterNo} craftBrief.concreteClues is required.`);
   const clues = value
     .map((item) => asRecord(item))
     .filter((item): item is Record<string, unknown> => Boolean(item))
-    .map((item) => ({
-      name: compactText(text(item.name, ''), 120),
-      ...(optionalText(item.sensoryDetail) ? { sensoryDetail: compactText(optionalText(item.sensoryDetail) ?? '', 240) } : {}),
-      ...(optionalText(item.laterUse) ? { laterUse: compactText(optionalText(item.laterUse) ?? '', 240) } : {}),
+    .map((item, index) => ({
+      name: compactText(requiredText(item.name, `Chapter ${chapterNo} craftBrief.concreteClues[${index}].name`), 120),
+      sensoryDetail: compactText(requiredText(item.sensoryDetail, `Chapter ${chapterNo} craftBrief.concreteClues[${index}].sensoryDetail`), 240),
+      laterUse: compactText(requiredText(item.laterUse, `Chapter ${chapterNo} craftBrief.concreteClues[${index}].laterUse`), 240),
     }))
     .filter((item) => item.name);
-  return clues.length ? clues : fallback;
+  if (!clues.length) throw new Error(`Chapter ${chapterNo} craftBrief.concreteClues is required.`);
+  return clues;
+}
+
+function normalizeSceneBeats(value: unknown, chapterNo: number): ChapterSceneBeat[] {
+  if (!Array.isArray(value)) throw new Error(`Chapter ${chapterNo} craftBrief.sceneBeats is required.`);
+  const beats = value
+    .map((item) => asRecord(item))
+    .filter((item): item is Record<string, unknown> => Boolean(item))
+    .map((item, index) => ({
+      sceneArcId: requiredText(item.sceneArcId, `Chapter ${chapterNo} craftBrief.sceneBeats[${index}].sceneArcId`),
+      scenePart: requiredText(item.scenePart, `Chapter ${chapterNo} craftBrief.sceneBeats[${index}].scenePart`),
+      continuesFromChapterNo: optionalChapterNo(item.continuesFromChapterNo),
+      continuesToChapterNo: optionalChapterNo(item.continuesToChapterNo),
+      location: requiredText(item.location, `Chapter ${chapterNo} craftBrief.sceneBeats[${index}].location`),
+      participants: requiredStringArray(item.participants, `Chapter ${chapterNo} craftBrief.sceneBeats[${index}].participants`),
+      localGoal: requiredText(item.localGoal, `Chapter ${chapterNo} craftBrief.sceneBeats[${index}].localGoal`),
+      visibleAction: requiredText(item.visibleAction, `Chapter ${chapterNo} craftBrief.sceneBeats[${index}].visibleAction`),
+      obstacle: requiredText(item.obstacle, `Chapter ${chapterNo} craftBrief.sceneBeats[${index}].obstacle`),
+      turningPoint: requiredText(item.turningPoint, `Chapter ${chapterNo} craftBrief.sceneBeats[${index}].turningPoint`),
+      partResult: requiredText(item.partResult, `Chapter ${chapterNo} craftBrief.sceneBeats[${index}].partResult`),
+      sensoryAnchor: requiredText(item.sensoryAnchor, `Chapter ${chapterNo} craftBrief.sceneBeats[${index}].sensoryAnchor`),
+    }));
+  if (beats.length < 3) throw new Error(`Chapter ${chapterNo} craftBrief.sceneBeats must contain at least 3 concrete scene segments.`);
+  return beats;
+}
+
+function normalizeContinuityState(value: unknown, chapterNo: number): ChapterContinuityState {
+  const record = asRecord(value);
+  if (!record) throw new Error(`Chapter ${chapterNo} craftBrief.continuityState is required.`);
+  const continuityState = {
+    characterPositions: stringArray(record.characterPositions),
+    activeThreats: stringArray(record.activeThreats),
+    ownedClues: stringArray(record.ownedClues),
+    relationshipChanges: stringArray(record.relationshipChanges),
+    nextImmediatePressure: requiredText(record.nextImmediatePressure, `Chapter ${chapterNo} craftBrief.continuityState.nextImmediatePressure`),
+  };
+  const hasConcreteState = [
+    continuityState.characterPositions,
+    continuityState.activeThreats,
+    continuityState.ownedClues,
+    continuityState.relationshipChanges,
+  ].some((items) => items.length > 0);
+  if (!hasConcreteState) throw new Error(`Chapter ${chapterNo} craftBrief.continuityState lacks concrete state.`);
+  return continuityState;
 }
 
 function compactChapterTarget(target: ChapterTarget) {
@@ -1051,8 +1156,26 @@ function optionalText(value: unknown): string | undefined {
   return valueText || undefined;
 }
 
+function requiredText(value: unknown, label: string): string {
+  const valueText = optionalText(value);
+  if (!valueText) throw new Error(`${label} is required.`);
+  return valueText;
+}
+
 function stringArray(value: unknown): string[] {
   return Array.isArray(value) ? [...new Set(value.filter((item): item is string => typeof item === 'string' && item.trim().length > 0).map((item) => item.trim()))] : [];
+}
+
+function requiredStringArray(value: unknown, label: string): string[] {
+  const items = stringArray(value);
+  if (!items.length) throw new Error(`${label} is required.`);
+  return items;
+}
+
+function requiredMinStringArray(value: unknown, minLength: number, label: string): string[] {
+  const items = requiredStringArray(value, label);
+  if (items.length < minLength) throw new Error(`${label} must contain at least ${minLength} items.`);
+  return items;
 }
 
 function numberArray(value: unknown): number[] {
@@ -1068,6 +1191,11 @@ function positiveInt(value: unknown): number | undefined {
   return Number.isInteger(numeric) && numeric >= 1 ? numeric : undefined;
 }
 
+function optionalChapterNo(value: unknown): number | null {
+  const numeric = typeof value === 'number' ? value : typeof value === 'string' && value.trim() ? Number(value) : NaN;
+  return Number.isInteger(numeric) && numeric >= 1 ? numeric : null;
+}
+
 function asRecord(value: unknown): Record<string, unknown> | undefined {
   return value && typeof value === 'object' && !Array.isArray(value) ? value as Record<string, unknown> : undefined;
 }
@@ -1075,15 +1203,6 @@ function asRecord(value: unknown): Record<string, unknown> | undefined {
 function hasRecordContent(value: unknown): boolean {
   const record = asRecord(value);
   return Boolean(record && Object.keys(record).length > 0);
-}
-
-function padStrings(values: string[], fallback: string[], minLength: number): string[] {
-  const merged = [...values];
-  for (const item of fallback) {
-    if (merged.length >= minLength) break;
-    merged.push(item);
-  }
-  return merged.slice(0, Math.max(minLength, merged.length));
 }
 
 function compactText(value: string, maxLength: number): string {
@@ -1095,13 +1214,6 @@ function clampInt(value: unknown, fallback: number, min: number, max: number): n
   const numeric = Number(value);
   if (!Number.isInteger(numeric)) return fallback;
   return Math.min(max, Math.max(min, numeric));
-}
-
-function isLlmTimeout(error: unknown): boolean {
-  const record = asRecord(error);
-  const name = text(record?.name, '');
-  const message = error instanceof Error ? error.message : text(error, '');
-  return /timeout/i.test(name) || /timeout|timed out|LLM_TIMEOUT/i.test(message);
 }
 
 function toInputJsonValue(value: unknown): Prisma.InputJsonValue {

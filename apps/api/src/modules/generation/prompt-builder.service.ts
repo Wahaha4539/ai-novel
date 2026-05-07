@@ -148,6 +148,24 @@ export class PromptBuilderService {
   private buildCraftBriefSection(data: ChapterPromptContext): string {
     const brief = this.asRecord(data.chapter.craftBrief);
     if (brief && Object.keys(brief).length > 0) {
+      const sceneBeats = this.asRecordArray(brief.sceneBeats)
+        .map((item, index) => {
+          const participants = this.stringArray(item.participants).join('、');
+          const continuity = [
+            this.text(item.continuesFromChapterNo) ? `承接第${this.text(item.continuesFromChapterNo)}章` : '',
+            this.text(item.continuesToChapterNo) ? `延续到第${this.text(item.continuesToChapterNo)}章` : '',
+          ].filter(Boolean).join('，');
+          return [
+            `${index + 1}. [${this.text(item.sceneArcId) || 'scene'} ${this.text(item.scenePart) || ''}] ${this.text(item.location) || '未标地点'}${participants ? `｜人物：${participants}` : ''}${continuity ? `｜${continuity}` : ''}`,
+            `   局部目标：${this.text(item.localGoal) || '未写'}`,
+            `   可见行动：${this.text(item.visibleAction) || '未写'}`,
+            `   阻力：${this.text(item.obstacle) || '未写'}`,
+            `   转折：${this.text(item.turningPoint) || '未写'}`,
+            `   场景段结果：${this.text(item.partResult) || '未写'}`,
+            `   感官锚点：${this.text(item.sensoryAnchor) || '未写'}`,
+          ].join('\n');
+        });
+      const continuityState = this.asRecord(brief.continuityState);
       const clues = this.asRecordArray(brief.concreteClues)
         .map((item) => {
           const name = this.text(item.name);
@@ -163,11 +181,27 @@ export class PromptBuilderService {
         this.text(brief.coreConflict) ? `核心冲突：${this.text(brief.coreConflict)}` : '',
         this.text(brief.mainlineTask) ? `主线任务：${this.text(brief.mainlineTask)}` : '',
         this.stringArray(brief.subplotTasks).length ? `支线任务：${this.stringArray(brief.subplotTasks).join('；')}` : '',
+        this.text(brief.entryState) ? `入场状态：${this.text(brief.entryState)}` : '',
+        sceneBeats.length ? ['场景链：', ...sceneBeats].join('\n') : '',
         this.stringArray(brief.actionBeats).length ? ['行动链：', ...this.stringArray(brief.actionBeats).map((item, index) => `${index + 1}. ${item}`)].join('\n') : '',
         clues.length ? ['物证/线索：', ...clues].join('\n') : '',
         this.text(brief.dialogueSubtext) ? `对话潜台词：${this.text(brief.dialogueSubtext)}` : '',
         this.text(brief.characterShift) ? `人物变化：${this.text(brief.characterShift)}` : '',
         this.text(brief.irreversibleConsequence) ? `不可逆后果：${this.text(brief.irreversibleConsequence)}` : '',
+        this.text(brief.exitState) ? `离场状态：${this.text(brief.exitState)}` : '',
+        this.stringArray(brief.closedLoops).length ? `本章闭合问题：${this.stringArray(brief.closedLoops).join('；')}` : '',
+        this.stringArray(brief.openLoops).length ? `留给后文的问题：${this.stringArray(brief.openLoops).join('；')}` : '',
+        this.text(brief.handoffToNextChapter) ? `下一章交接：${this.text(brief.handoffToNextChapter)}` : '',
+        continuityState && Object.keys(continuityState).length
+          ? [
+            '连续状态：',
+            this.stringArray(continuityState.characterPositions).length ? `- 角色位置：${this.stringArray(continuityState.characterPositions).join('；')}` : '',
+            this.stringArray(continuityState.activeThreats).length ? `- 有效威胁：${this.stringArray(continuityState.activeThreats).join('；')}` : '',
+            this.stringArray(continuityState.ownedClues).length ? `- 已持有线索：${this.stringArray(continuityState.ownedClues).join('；')}` : '',
+            this.stringArray(continuityState.relationshipChanges).length ? `- 关系变化：${this.stringArray(continuityState.relationshipChanges).join('；')}` : '',
+            this.text(continuityState.nextImmediatePressure) ? `- 下一紧迫压力：${this.text(continuityState.nextImmediatePressure)}` : '',
+          ].filter(Boolean).join('\n')
+          : '',
         this.stringArray(brief.progressTypes).length ? `推进类型：${this.stringArray(brief.progressTypes).join(' / ')}` : '',
       ].filter(Boolean).join('\n');
     }
@@ -352,7 +386,9 @@ export class PromptBuilderService {
   }
 
   private text(value: unknown): string | undefined {
-    return typeof value === 'string' && value.trim() ? value.trim() : undefined;
+    if (typeof value === 'string' && value.trim()) return value.trim();
+    if (typeof value === 'number' || typeof value === 'boolean') return String(value);
+    return undefined;
   }
 
   private hasRecordContent(value: unknown): boolean {

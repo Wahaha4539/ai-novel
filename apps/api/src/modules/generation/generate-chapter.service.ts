@@ -666,15 +666,18 @@ export class GenerateChapterService {
     const brief = this.asRecord(chapter.craftBrief);
     const outline = chapter.outline ?? '';
     const actionBeats = this.stringArray(brief?.actionBeats);
+    const sceneBeatCount = this.asRecordArray(brief?.sceneBeats).length;
     const clueCount = this.asRecordArray(brief?.concreteClues).filter((item) => this.text(item.name)).length;
-    const hasStructuredBrief = actionBeats.length > 0 || clueCount > 0 || Boolean(this.text(brief?.irreversibleConsequence));
+    const hasStructuredBrief = actionBeats.length > 0 || sceneBeatCount > 0 || clueCount > 0 || Boolean(this.text(brief?.irreversibleConsequence));
     const metrics = {
       outlineLength: outline.replace(/\s+/g, '').length,
       actionBeatCount: actionBeats.length,
+      sceneBeatCount,
       clueCount,
       hasObjective: Boolean(chapter.objective?.trim() || this.text(brief?.visibleGoal)),
       hasConflict: Boolean(chapter.conflict?.trim() || this.text(brief?.coreConflict)),
       hasIrreversibleConsequence: Boolean(this.text(brief?.irreversibleConsequence) || /不可逆后果|后果|代价/.test(outline)),
+      hasChapterHandoff: Boolean(this.text(brief?.entryState) && this.text(brief?.exitState) && this.text(brief?.handoffToNextChapter)),
     };
 
     const missing = [
@@ -682,8 +685,10 @@ export class GenerateChapterService {
       ...(!metrics.hasConflict ? ['conflict'] : []),
       ...(metrics.outlineLength < 50 && !hasStructuredBrief ? ['outline_density'] : []),
       ...(actionBeats.length === 0 && !/行动链|关键行动|场景行动/.test(outline) ? ['action_beats'] : []),
+      ...(sceneBeatCount === 0 && !/场景链|场景段|入场状态|下一章交接/.test(outline) ? ['scene_beats'] : []),
       ...(clueCount === 0 && !/物证|线索|证据|道具/.test(outline) ? ['concrete_clues'] : []),
       ...(!metrics.hasIrreversibleConsequence ? ['irreversible_consequence'] : []),
+      ...(!metrics.hasChapterHandoff ? ['chapter_handoff'] : []),
     ];
     const messages = missing.map((item) => {
       switch (item) {
@@ -691,8 +696,10 @@ export class GenerateChapterService {
         case 'conflict': return '细纲缺少明确冲突或阻力来源。';
         case 'outline_density': return '章节细纲过短，缺少可执行场景密度。';
         case 'action_beats': return '执行卡缺少行动链。';
+        case 'scene_beats': return '执行卡缺少场景链 sceneBeats，正文可能无法保持场面连续。';
         case 'concrete_clues': return '执行卡缺少物证/线索。';
         case 'irreversible_consequence': return '执行卡缺少不可逆后果。';
+        case 'chapter_handoff': return '执行卡缺少入场状态、离场状态或下一章交接。';
         default: return `细纲缺少 ${item}。`;
       }
     });

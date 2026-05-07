@@ -1,4 +1,4 @@
-import { Injectable, NotFoundException } from '@nestjs/common';
+﻿import { BadRequestException, Injectable, NotFoundException } from '@nestjs/common';
 import { Prisma } from '@prisma/client';
 import { NovelCacheService } from '../../common/cache/novel-cache.service';
 import { PrismaService } from '../../prisma/prisma.service';
@@ -185,11 +185,16 @@ ${INTERACTION_STYLE}
 - 每章至少领到 1 个本卷主线任务，并至少推进 1 条卷内支线
 - 每章 objective 必须具体可检验，不能只写「推进剧情」或「调查线索」
 - 每章 conflict 必须写清阻力来源和阻力方式
-- 每章 outline 必须包含具体场景、关键行动和阶段结果
+- 每章 outline 必须写成 3-5 个连续场景段，包含具体地点、出场人物、可被镜头拍到的动作、阻力、阶段结果和下一章交接
 - 每章必须输出 craftBrief 结构化对象，后端会写入 Chapter.craftBrief
 - craftBrief 必须包含 visibleGoal、hiddenEmotion、coreConflict、mainlineTask、subplotTasks、actionBeats、concreteClues、dialogueSubtext、characterShift、irreversibleConsequence、progressTypes
+- craftBrief 还必须包含 sceneBeats、entryState、exitState、openLoops、closedLoops、handoffToNextChapter、continuityState
+- sceneBeats 至少 3 个场景段；跨章节场景必须沿用同一个 sceneArcId，并用 scenePart、continuesFromChapterNo、continuesToChapterNo 标明这是第几段
+- entryState 必须接住上一章 exitState / handoffToNextChapter；handoffToNextChapter 必须给出下一章可直接接续的动作、地点、压力或未解决问题
+- continuityState 必须写清角色位置、仍在生效的威胁、已持有线索/资源、关系变化和下一章最紧迫压力
 - 每 3-4 章至少发生一次信息揭示、关系反转、资源得失、地位变化或规则升级
 - 卷末章节必须收束本卷主线，并留下清晰的下一卷交接
+- 禁止只写「推进、建立、完成、探索、揭示、面对、选择、升级、铺垫、承接、形成雏形」等抽象词；如果使用，必须绑定具体地点、人物、动作、物件和后果
 
 ## 配角设计规则（与核心角色同等严格）
 ### 起名
@@ -208,7 +213,7 @@ ${INTERACTION_STYLE}
 
 ${INTERACTION_STYLE}
 完成时输出的 JSON 格式：
-\`[STEP_COMPLETE]\`{"chapters":[{"chapterNo":1,"volumeNo":1,"title":"章节标题","objective":"本章目标","conflict":"核心冲突","outline":"含主线任务/支线任务/具体场景行动/阶段结果的章节大纲","craftBrief":{"visibleGoal":"表层目标","hiddenEmotion":"隐藏情绪","coreConflict":"核心冲突","mainlineTask":"本章主线任务","subplotTasks":["支线任务"],"actionBeats":["行动链节点"],"concreteClues":[{"name":"物证或线索","sensoryDetail":"感官细节","laterUse":"后续用途"}],"dialogueSubtext":"对话潜台词","characterShift":"人物变化","irreversibleConsequence":"不可逆后果","progressTypes":["info"]}}],"supportingCharacters":[{"name":"角色名","roleType":"supporting","personalityCore":"性格核心(含内在矛盾)","motivation":"具体动机","firstAppearChapter":1}]}`,
+\`[STEP_COMPLETE]\`{"chapters":[{"chapterNo":1,"volumeNo":1,"title":"章节标题","objective":"本章目标","conflict":"核心冲突","outline":"含主线任务/支线任务/3-5个具体场景段/阶段结果/下一章交接的章节大纲","craftBrief":{"visibleGoal":"表层目标","hiddenEmotion":"隐藏情绪","coreConflict":"核心冲突","mainlineTask":"本章主线任务","subplotTasks":["支线任务"],"actionBeats":["行动链节点"],"sceneBeats":[{"sceneArcId":"跨章场景ID","scenePart":"1/3","continuesFromChapterNo":null,"continuesToChapterNo":2,"location":"具体地点","participants":["角色名"],"localGoal":"本场局部目标","visibleAction":"可被镜头拍到的动作","obstacle":"阻力来源和方式","turningPoint":"反转或新信息","partResult":"场景段结果","sensoryAnchor":"感官锚点"}],"concreteClues":[{"name":"物证或线索","sensoryDetail":"感官细节","laterUse":"后续用途"}],"dialogueSubtext":"对话潜台词","characterShift":"人物变化","irreversibleConsequence":"不可逆后果","progressTypes":["info"],"entryState":"接住上一章压力","exitState":"本章结束状态","openLoops":["未解决问题"],"closedLoops":["阶段性解决问题"],"handoffToNextChapter":"下一章接续动作和压力","continuityState":{"characterPositions":["角色位置"],"activeThreats":["仍在生效的威胁"],"ownedClues":["已持有线索"],"relationshipChanges":["关系变化"],"nextImmediatePressure":"下一章最紧迫压力"}}}],"supportingCharacters":[{"name":"角色名","roleType":"supporting","personalityCore":"性格核心(含内在矛盾)","motivation":"具体动机","firstAppearChapter":1}]}`,
 
   guided_foreshadow: `你是一个资深小说创作顾问，精通叙事悬念构建与伏笔编排。你正在引导用户完成「伏笔设计」规划步骤。
 
@@ -690,19 +695,20 @@ export class GuidedService {
       : [];
 
     if (chapters.length === 0) {
-      warnings.push('模型未返回 chapters 数组，已生成空章节兜底对象');
+      throw new BadRequestException('单章细化失败：模型未返回 chapters 数组。请重试或缩小上下文。');
     }
     if (chapters.length > 1) {
-      warnings.push(`模型返回了 ${chapters.length} 个 chapter，已按单章细化要求截断为 1 个`);
+      throw new BadRequestException(`单章细化失败：模型返回了 ${chapters.length} 个 chapter，必须只返回 1 个。`);
     }
 
-    const firstChapter = chapters[0] ?? {};
+    const firstChapter = chapters[0] as Record<string, unknown>;
+    this.assertGuidedChapterQuality(firstChapter, `第 ${chapterNo} 章`);
     const normalizedChapter: Record<string, unknown> = {
       ...firstChapter,
       volumeNo,
       chapterNo,
-      outline: ensureExecutionCardOutline(firstChapter),
-      craftBrief: normalizeChapterCraftBrief(firstChapter),
+      outline: asString(firstChapter.outline),
+      craftBrief: asInputJsonObject(firstChapter.craftBrief),
     };
 
     if (asNumber(firstChapter.chapterNo) !== undefined && asNumber(firstChapter.chapterNo) !== chapterNo) {
@@ -720,6 +726,78 @@ export class GuidedService {
       },
       warnings,
     };
+  }
+
+  private assertGuidedChaptersQuality(value: unknown) {
+    if (!Array.isArray(value) || !value.length) {
+      throw new BadRequestException('章节细纲生成失败：模型未返回 chapters 数组。');
+    }
+    value.forEach((item, index) => this.assertGuidedChapterQuality(asRecord(item) ?? {}, `第 ${asNumber((asRecord(item) ?? {}).chapterNo) ?? index + 1} 章`));
+  }
+
+  private assertGuidedChapterQuality(chapter: Record<string, unknown>, label: string) {
+    const craftBrief = asRecord(chapter.craftBrief);
+    if (!craftBrief || Object.keys(craftBrief).length === 0) {
+      throw new BadRequestException(`${label} 章节细纲生成失败：缺少 craftBrief。`);
+    }
+    const outline = asString(chapter.outline) ?? '';
+    if (outline.trim().length < 60) {
+      throw new BadRequestException(`${label} 章节细纲生成失败：outline 过短，缺少具体场景链。`);
+    }
+    const requiredTextFields = [
+      'visibleGoal',
+      'hiddenEmotion',
+      'coreConflict',
+      'mainlineTask',
+      'dialogueSubtext',
+      'characterShift',
+      'irreversibleConsequence',
+      'entryState',
+      'exitState',
+      'handoffToNextChapter',
+    ];
+    requiredTextFields.forEach((field) => {
+      if (!asString(craftBrief[field])?.trim()) {
+        throw new BadRequestException(`${label} 章节细纲生成失败：craftBrief.${field} 为空。`);
+      }
+    });
+    if (!stringArray(craftBrief.subplotTasks).length) {
+      throw new BadRequestException(`${label} 章节细纲生成失败：craftBrief.subplotTasks 为空。`);
+    }
+    if (stringArray(craftBrief.actionBeats).length < 3) {
+      throw new BadRequestException(`${label} 章节细纲生成失败：craftBrief.actionBeats 少于 3 个节点。`);
+    }
+    if (!stringArray(craftBrief.openLoops).length || !stringArray(craftBrief.closedLoops).length) {
+      throw new BadRequestException(`${label} 章节细纲生成失败：openLoops / closedLoops 不能为空。`);
+    }
+    const clues = asRecordArray(craftBrief.concreteClues);
+    if (!clues.length || clues.some((clue) => !asString(clue.name)?.trim() || !asString(clue.sensoryDetail)?.trim() || !asString(clue.laterUse)?.trim())) {
+      throw new BadRequestException(`${label} 章节细纲生成失败：concreteClues 必须包含 name、sensoryDetail 和 laterUse。`);
+    }
+    const sceneBeats = asRecordArray(craftBrief.sceneBeats);
+    if (sceneBeats.length < 3) {
+      throw new BadRequestException(`${label} 章节细纲生成失败：sceneBeats 少于 3 个场景段。`);
+    }
+    const sceneRequiredFields = ['sceneArcId', 'scenePart', 'location', 'localGoal', 'visibleAction', 'obstacle', 'turningPoint', 'partResult', 'sensoryAnchor'];
+    sceneBeats.forEach((beat, index) => {
+      sceneRequiredFields.forEach((field) => {
+        if (!asString(beat[field])?.trim()) {
+          throw new BadRequestException(`${label} 章节细纲生成失败：sceneBeats[${index}].${field} 为空。`);
+        }
+      });
+      if (!stringArray(beat.participants).length) {
+        throw new BadRequestException(`${label} 章节细纲生成失败：sceneBeats[${index}].participants 为空。`);
+      }
+    });
+    const continuityState = asRecord(craftBrief.continuityState);
+    if (!continuityState || !asString(continuityState.nextImmediatePressure)?.trim()) {
+      throw new BadRequestException(`${label} 章节细纲生成失败：continuityState.nextImmediatePressure 为空。`);
+    }
+    const hasConcreteState = ['characterPositions', 'activeThreats', 'ownedClues', 'relationshipChanges']
+      .some((field) => stringArray(continuityState[field]).length > 0);
+    if (!hasConcreteState) {
+      throw new BadRequestException(`${label} 章节细纲生成失败：continuityState 缺少角色位置、威胁、线索或关系变化。`);
+    }
   }
 
   /** One-shot generation: generate all structured data for a step without Q&A */
@@ -823,9 +901,15 @@ export class GuidedService {
 - 每章必须至少推进 1 条卷内支线，写清支线名称和本章推进结果
 - 每章 objective 必须具体可检验，不能只写「调查线索」「推进主线」
 - 每章 conflict 必须写清阻力来源和阻力方式，例如谁阻止、用什么手段、主角付出什么代价
-- 每章 outline 必须包含具体场景、关键行动和阶段结果，不能只写一句剧情摘要
+- 每章 outline 必须写成 3-5 个连续场景段，包含具体地点、出场人物、可被镜头拍到的动作、阻力、阶段结果和下一章交接，不能只写一句剧情摘要
+- 章节不是场景边界，而是阅读节奏边界；一个大场景可以跨多个章节，但每章必须完成一个阶段动作，并把压力交接给下一章
+- craftBrief 必须额外包含 sceneBeats、entryState、exitState、openLoops、closedLoops、handoffToNextChapter、continuityState
+- sceneBeats 至少 3 个场景段；跨章节场景必须沿用同一个 sceneArcId，并用 scenePart、continuesFromChapterNo、continuesToChapterNo 标明这是第几段
+- entryState 必须接住上一章 exitState / handoffToNextChapter；handoffToNextChapter 必须给出下一章可直接接续的动作、地点、压力或未解决问题
+- continuityState 必须写清角色位置、仍在生效的威胁、已持有线索/资源、关系变化和下一章最紧迫压力
 - 每 3-4 章至少发生一次信息揭示、关系反转、资源得失、地位变化或规则升级
 - 卷末章节必须收束本卷主线，并留下下一卷交接
+- 禁止只写「推进、建立、完成、探索、揭示、面对、选择、升级、铺垫、承接、形成雏形」等抽象词；如果使用，必须绑定具体地点、人物、动作、物件和后果
 
 ### 配角设计规则（与核心角色同等严格）
 #### 起名
@@ -851,7 +935,7 @@ export class GuidedService {
 ### 质量标准
 - outline 至少 50 字，要包含具体的场景、行为和结果
 - objective 要具体可检验（如「读者了解了 X 的真实身份」而非「推进剧情」）
-- 每个 chapter 必须输出 craftBrief 对象，包含 visibleGoal、hiddenEmotion、coreConflict、mainlineTask、subplotTasks、actionBeats、concreteClues、dialogueSubtext、characterShift、irreversibleConsequence、progressTypes
+- 每个 chapter 必须输出 craftBrief 对象，包含 visibleGoal、hiddenEmotion、coreConflict、mainlineTask、subplotTasks、actionBeats、sceneBeats、concreteClues、dialogueSubtext、characterShift、irreversibleConsequence、progressTypes、entryState、exitState、openLoops、closedLoops、handoffToNextChapter、continuityState
 - 不生成正文，不写单章执行卡；这里生成的是整卷章节细纲`,
       guided_foreshadow: `请根据已完成的卷纲和章节细纲，设计一套完整的伏笔体系。
 伏笔数量公式：主线 2-3 条 + 每卷 1-2 条卷级伏笔 + 适量章节级伏笔。
@@ -979,8 +1063,10 @@ ${schema}
 仅细化 **第 ${dto.volumeNo} 卷第 ${dto.chapterNo} 章**，不生成正文，不新增章节，不删除章节，不重排整卷章节。
 你必须只返回 chapters 数组中的 **1** 个 chapter 对象；对象的 volumeNo 必须是 ${dto.volumeNo}，chapterNo 必须是 ${dto.chapterNo}。
 保留当前章节标题、目标和冲突的核心意图，除非它们明显空泛；可以把它们改得更具体、更可执行。
-outline 必须写成 Markdown，并且必须以 \`## 本章执行卡\` 开头，至少包含这些小节或标签：表层目标、隐藏情绪、核心冲突、行动链、物证/线索、对话潜台词、人物变化、不可逆后果。
+outline 必须写成 Markdown，并且必须以 \`## 本章执行卡\` 开头，至少包含这些小节或标签：表层目标、隐藏情绪、核心冲突、入场状态、场景链、行动链、物证/线索、对话潜台词、人物变化、不可逆后果、离场状态、下一章交接。
 craftBrief 必须输出同一执行卡的结构化版本，字段与 Markdown 内容一致，供正文生成直接读取。
+craftBrief 必须包含 sceneBeats、entryState、exitState、openLoops、closedLoops、handoffToNextChapter、continuityState；sceneBeats 至少 3 个场景段，跨章场景用同一 sceneArcId 串联。
+entryState 必须接住前一章状态；handoffToNextChapter 必须给出下一章可直接接续的动作、地点、压力或未解决问题。
 如果前文或模板要求生成整卷章节，请忽略该要求，以本节单章细化规则为准。
 
 ## 当前卷信息
@@ -1015,7 +1101,7 @@ ${singleChapterContext.chapterPositionContext}`;
           chapterRangeStr = `${rangeMatch[1]}-${rangeMatch[2]}`;
         }
 
-        systemPrompt += `\n\n## ⚠️ 当前生成目标（最高优先级）\n仅为 **第 ${dto.volumeNo} 卷** 生成章节细纲。${volumeContext}\n\n所有生成的 chapter 对象中 volumeNo 字段必须为 ${dto.volumeNo}。请为本卷规划 **${chapterRangeStr}** 个章节（不多不少）。`;
+        systemPrompt += `\n\n## ⚠️ 当前生成目标（最高优先级）\n仅为 **第 ${dto.volumeNo} 卷** 生成章节细纲。${volumeContext}\n\n所有生成的 chapter 对象中 volumeNo 字段必须为 ${dto.volumeNo}。请为本卷规划 **${chapterRangeStr}** 个章节（不多不少）。每一章的 entryState 必须接住上一章的 exitState / handoffToNextChapter；允许同一 sceneArcId 跨章节延续，但每章必须有自己的阶段结果。`;
       }
     }
 
@@ -1091,6 +1177,9 @@ ${singleChapterContext.chapterPositionContext}`;
       );
       structuredData = normalized.structuredData;
       warnings.push(...normalized.warnings);
+    }
+    if (dto.currentStep === 'guided_chapter') {
+      this.assertGuidedChaptersQuality(structuredData.chapters);
     }
 
     // Extract the summary text (everything before the JSON)
@@ -1485,6 +1574,12 @@ function asRecord(val: unknown): Record<string, unknown> | undefined {
     : undefined;
 }
 
+function asRecordArray(val: unknown): Array<Record<string, unknown>> {
+  return Array.isArray(val)
+    ? val.map((item) => asRecord(item)).filter((item): item is Record<string, unknown> => Boolean(item))
+    : [];
+}
+
 function stringArray(val: unknown): string[] {
   return Array.isArray(val)
     ? val.map((item) => (typeof item === 'string' ? item.trim() : '')).filter(Boolean)
@@ -1512,52 +1607,7 @@ function normalizeChapterCraftBrief(chapter: Record<string, unknown>): Prisma.In
   const existing = asRecord(chapter.craftBrief);
   if (existing && Object.keys(existing).length > 0) return asInputJsonObject(existing);
 
-  const outline = asString(chapter.outline) ?? '';
-  const fallback: Record<string, unknown> = {};
-  const visibleGoal = asString(chapter.objective) ?? extractExecutionCardSection(outline, '表层目标');
-  const coreConflict = asString(chapter.conflict) ?? extractExecutionCardSection(outline, '核心冲突');
-  const irreversibleConsequence = extractExecutionCardSection(outline, '不可逆后果');
-  const dialogueSubtext = extractExecutionCardSection(outline, '对话潜台词');
-  const characterShift = extractExecutionCardSection(outline, '人物变化');
-  const actionBeats = extractExecutionCardList(outline, '行动链');
-  const clueLines = extractExecutionCardList(outline, '物证/线索');
-
-  if (visibleGoal) fallback.visibleGoal = visibleGoal;
-  if (coreConflict) fallback.coreConflict = coreConflict;
-  if (irreversibleConsequence) fallback.irreversibleConsequence = irreversibleConsequence;
-  if (dialogueSubtext) fallback.dialogueSubtext = dialogueSubtext;
-  if (characterShift) fallback.characterShift = characterShift;
-  if (actionBeats.length > 0) fallback.actionBeats = actionBeats;
-  if (clueLines.length > 0) {
-    fallback.concreteClues = clueLines.map((line) => ({
-      name: line.replace(/^名称[:：]\s*/, '').split(/[；;，,]/)[0]?.trim() || line,
-      sensoryDetail: line,
-      laterUse: '',
-    }));
-  }
-
-  return asInputJsonObject(fallback);
-}
-
-function extractExecutionCardSection(outline: string, label: string): string | undefined {
-  if (!outline.includes(label)) return undefined;
-  const labels = ['表层目标', '隐藏情绪', '核心冲突', '行动链', '物证/线索', '物证', '线索', '对话潜台词', '人物变化', '不可逆后果'];
-  const escapedLabel = label.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
-  const otherLabels = labels
-    .filter((item) => item !== label)
-    .map((item) => item.replace(/[.*+?^${}()|[\]\\]/g, '\\$&'))
-    .join('|');
-  const match = outline.match(new RegExp(`${escapedLabel}\\s*[:：]?\\s*([\\s\\S]*?)(?=\\n\\s*(?:${otherLabels})\\s*[:：]|$)`, 'i'));
-  return match?.[1]?.trim().replace(/^\s*[-\d.、]+\s*/gm, '').trim() || undefined;
-}
-
-function extractExecutionCardList(outline: string, label: string): string[] {
-  const section = extractExecutionCardSection(outline, label);
-  if (!section) return [];
-  return section
-    .split(/\n+/)
-    .map((line) => line.replace(/^\s*(?:[-*]|\d+[.、])\s*/, '').trim())
-    .filter(Boolean);
+  throw new BadRequestException('章节细纲缺少 craftBrief，已阻止写入。请重新生成或补齐完整执行卡。');
 }
 
 function formatChapterContext(ch: Record<string, unknown>, outlineLimit = 500): string {
@@ -1575,43 +1625,6 @@ function formatChapterContext(ch: Record<string, unknown>, outlineLimit = 500): 
     `- outline：${trimmedOutline}`,
     craftBrief && Object.keys(craftBrief).length > 0 ? `- craftBrief：${JSON.stringify(craftBrief).slice(0, 800)}` : '',
   ].filter(Boolean).join('\n');
-}
-
-function ensureExecutionCardOutline(chapter: Record<string, unknown>): string {
-  const outline = asString(chapter.outline) ?? '';
-  const requiredMarkers = ['本章执行卡', '行动链', '物证', '潜台词', '不可逆后果'];
-
-  if (requiredMarkers.every((marker) => outline.includes(marker))) {
-    return outline;
-  }
-
-  const objective = asString(chapter.objective) ?? '围绕当前章节目标推进一个可检验的行动结果。';
-  const conflict = asString(chapter.conflict) ?? '让阻力来源、阻力方式和主角代价在场景中具体发生。';
-  const originalOutline = outline || '保留原章节核心意图，扩展为可执行场景链。';
-
-  return `## 本章执行卡
-
-表层目标：${objective}
-
-隐藏情绪：补足主角在本章不愿明说但会影响选择的情绪压力。
-
-核心冲突：${conflict}
-
-行动链：
-1. ${originalOutline}
-2. 让主角采取一个具体行动，并遭遇可见阻力。
-3. 让行动产生阶段结果，为下一章留下事实、关系、资源、规则或危险变化。
-
-物证/线索：
-- 名称：补足可被看见、触碰或听见的具体线索；写清感官细节与后续用途。
-
-对话潜台词：
-让角色通过试探、隐瞒、威胁、安抚或误导推进冲突，不用解释性对白替代行动。
-
-人物变化：写清本章结束时角色认知、关系、立场或情绪的具体变化。
-
-不可逆后果：
-写清本章造成的事实、关系、资源、地位、规则或危险变化，保证后续章节不能轻易退回原状。`;
 }
 
 function hasChapterFieldChange(

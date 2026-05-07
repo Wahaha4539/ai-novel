@@ -117,12 +117,68 @@ function createOutlineCraftBrief(overrides: Record<string, unknown> = {}) {
     coreConflict: '外部阻力迫使主角正面选择',
     mainlineTask: '推进卷内主线',
     subplotTasks: ['推进卷内支线'],
-    actionBeats: ['起手行动', '正面受阻', '阶段结果'],
+    actionBeats: ['林澈在旧闸棚翻开潮蚀账册', '巡检员当场扣住账册并逼他交出通行牌', '同伴撕下半页账册塞进工具箱带离现场'],
+    sceneBeats: [
+      {
+        sceneArcId: 'archive_pressure',
+        scenePart: '1/3',
+        continuesFromChapterNo: null,
+        continuesToChapterNo: null,
+        location: '旧闸棚账房',
+        participants: ['林澈', '巡检员'],
+        localGoal: '确认账册里是否有被改过的船籍号',
+        visibleAction: '林澈用油灯照出账页边缘的新墨痕',
+        obstacle: '巡检员夺走账册并要求他立刻离开',
+        turningPoint: '账页夹层掉出一枚带盐霜的铜扣',
+        partResult: '林澈确认有人刚刚替换过账页',
+        sensoryAnchor: '铜扣上有刺手盐霜和湿铁味',
+      },
+      {
+        sceneArcId: 'archive_pressure',
+        scenePart: '2/3',
+        continuesFromChapterNo: null,
+        continuesToChapterNo: null,
+        location: '账房后门',
+        participants: ['林澈', '同伴'],
+        localGoal: '把账册证据带出账房',
+        visibleAction: '同伴假装摔倒，把半页账纸压进工具箱夹层',
+        obstacle: '巡检员锁上后门并检查每个人的袖口',
+        turningPoint: '工具箱底部的旧印泥暴露了另一枚章印',
+        partResult: '林澈带走半页账纸却失去通行牌',
+        sensoryAnchor: '印泥有辛辣桐油味',
+      },
+      {
+        sceneArcId: 'archive_pressure',
+        scenePart: '3/3',
+        continuesFromChapterNo: null,
+        continuesToChapterNo: 2,
+        location: '闸棚外雨廊',
+        participants: ['林澈', '同伴', '巡检员'],
+        localGoal: '离开封锁线前确认下一步去向',
+        visibleAction: '林澈把铜扣藏进靴筒，转身走向东闸',
+        obstacle: '巡检员命人把他的名字写进临检记录',
+        turningPoint: '同伴发现东闸只剩一刻钟开放',
+        partResult: '林澈必须立刻穿过东闸，不能再回到账房',
+        sensoryAnchor: '雨廊木梁不断滴下咸涩黑水',
+      },
+    ],
     concreteClues: [{ name: '关键线索', sensoryDetail: '带有可辨认质感', laterUse: '后续回收' }],
     dialogueSubtext: '对话表面交换信息，潜台词试探立场。',
     characterShift: '角色从犹疑转向主动承担。',
     irreversibleConsequence: '本章结尾改变资源、关系或危险等级。',
     progressTypes: ['info'],
+    entryState: '上一章留下的压力压到现场，主角必须立刻验证关键线索。',
+    exitState: '主角带走半页证据，但身份进入临检记录。',
+    openLoops: ['谁替换了账页仍未查明'],
+    closedLoops: ['确认账页确实被人动过手脚'],
+    handoffToNextChapter: '下一章从主角赶往东闸、通行时间即将失效接起。',
+    continuityState: {
+      characterPositions: ['林澈在旧闸棚外雨廊'],
+      activeThreats: ['临检记录已经写入他的名字'],
+      ownedClues: ['带盐霜的铜扣', '半页账纸'],
+      relationshipChanges: ['同伴为他冒险藏证据'],
+      nextImmediatePressure: '必须在东闸关闭前离开封锁线',
+    },
     ...overrides,
   };
 }
@@ -437,8 +493,10 @@ test('GenerateChapterService 生成前细纲密度检查标记缺失执行卡字
   assert.ok(result.warnings.length >= 4);
   assert.ok(result.missing.includes('objective'));
   assert.ok(result.missing.includes('action_beats'));
+  assert.ok(result.missing.includes('scene_beats'));
   assert.ok(result.missing.includes('concrete_clues'));
   assert.ok(result.missing.includes('irreversible_consequence'));
+  assert.ok(result.missing.includes('chapter_handoff'));
 });
 
 test('GenerateChapterService 完整 craftBrief 通过细纲密度检查', () => {
@@ -452,13 +510,13 @@ test('GenerateChapterService 完整 craftBrief 通过细纲密度检查', () => 
     objective: '确认井边湿红线来自失踪者衣物',
     conflict: '守井人阻止主角靠近后院',
     outline: '短纲',
-    craftBrief: {
+    craftBrief: createOutlineCraftBrief({
       visibleGoal: '确认失踪者最后出现位置',
       coreConflict: '守井人阻止主角靠近',
       actionBeats: ['主角绕到井后', '守井人故意打翻灯油', '主角抢在火起前捡走湿红线'],
       concreteClues: [{ name: '湿红线', sensoryDetail: '冰凉，带井水泥腥味', laterUse: '证明失踪者来过井边' }],
       irreversibleConsequence: '主角拿走木珠后，井开始叫他的名字',
-    },
+    }),
   }, { outlineQualityGate: 'warning' });
   assert.equal(result.valid, true);
   assert.equal(result.warnings.length, 0);
@@ -1245,7 +1303,28 @@ test('ValidateOutlineTool 容忍 LLM 返回非字符串章节梗概', async () =
   };
   const tool = new ValidateOutlineTool(prisma as never);
   const result = await tool.run(
-    { preview: { volume: { volumeNo: 1, title: '卷一', synopsis: '', objective: '', chapterCount: 1 }, chapters: [{ chapterNo: 1, title: '一', objective: '目标', conflict: '冲突', hook: '钩子', outline: { beats: ['起', '承'] } as unknown as string, expectedWordCount: 2000 }], risks: [] } },
+    {
+      preview: {
+        volume: { volumeNo: 1, title: '卷一', synopsis: '', objective: '', chapterCount: 1 },
+        chapters: [{
+          chapterNo: 1,
+          title: '一',
+          objective: '目标',
+          conflict: '冲突',
+          hook: '钩子',
+          outline: {
+            beats: [
+              '林澈在旧档案室用油灯照到账册边缘的新墨痕，确认有人刚替换过账页。',
+              '馆方掌柜锁住木门拦住他搜身，同伴把湿账纸压进工具箱夹层。',
+              '巡检员在门外登记他的名字，林澈带着铜扣赶往即将关闭的东闸。',
+            ],
+          } as unknown as string,
+          expectedWordCount: 2000,
+          craftBrief: createOutlineCraftBrief(),
+        }],
+        risks: [],
+      },
+    },
     { agentRunId: 'run1', projectId: 'p1', mode: 'plan', approved: false, outputs: {}, policy: {} },
   );
 
@@ -1253,7 +1332,7 @@ test('ValidateOutlineTool 容忍 LLM 返回非字符串章节梗概', async () =
   assert.equal(result.writePreview?.chapters[0].title, '一');
 });
 
-test('ValidateOutlineTool 兼容旧 outline_preview 缺 craftBrief，仅产生 warning', async () => {
+test('ValidateOutlineTool 拦截旧 outline_preview 缺 craftBrief', async () => {
   const prisma = {
     volume: { async findUnique() { return null; } },
     chapter: { async findMany() { return []; } },
@@ -1264,10 +1343,10 @@ test('ValidateOutlineTool 兼容旧 outline_preview 缺 craftBrief，仅产生 w
     { agentRunId: 'run1', projectId: 'p1', mode: 'plan', approved: false, outputs: {}, policy: {} },
   );
 
-  assert.equal(result.valid, true);
+  assert.equal(result.valid, false);
   assert.equal(result.stats.craftBriefCount, 0);
   assert.equal(result.stats.craftBriefMissingCount, 1);
-  assert.equal(result.issues.some((issue) => issue.severity === 'warning' && /缺少 craftBrief/.test(issue.message)), true);
+  assert.equal(result.issues.some((issue) => issue.severity === 'error' && /缺少 craftBrief/.test(issue.message)), true);
 });
 
 test('ValidateOutlineTool 校验 craftBrief 行动链、线索和不可逆后果质量', async () => {
@@ -1298,7 +1377,7 @@ test('ValidateOutlineTool 校验 craftBrief 行动链、线索和不可逆后果
     { agentRunId: 'run1', projectId: 'p1', mode: 'plan', approved: false, outputs: {}, policy: {} },
   );
 
-  assert.equal(result.valid, true);
+  assert.equal(result.valid, false);
   assert.equal(result.stats.craftBriefCount, 1);
   assert.equal(result.stats.craftBriefMissingCount, 0);
   assert.equal(result.issues.some((issue) => /coreConflict/.test(issue.message)), true);
@@ -1318,8 +1397,20 @@ test('ValidateOutlineTool 对重复章节标题给出 warning', async () => {
       preview: {
         volume: { volumeNo: 1, title: '卷一', synopsis: '卷简介', objective: '卷目标', chapterCount: 2 },
         chapters: [
-          { chapterNo: 1, title: '第 1 章：压力入场', objective: '目标', conflict: '冲突', hook: '钩子', outline: '梗概', expectedWordCount: 2000 },
-          { chapterNo: 2, title: '第 2 章：压力入场', objective: '目标', conflict: '冲突', hook: '钩子', outline: '梗概', expectedWordCount: 2000 },
+          createOutlineChapter(1, 1, {
+            title: '第 1 章：压力入场',
+            objective: '在旧闸棚核对被换过的船籍账页',
+            conflict: '巡检员扣住账册并把主角姓名写入临检记录',
+            hook: '东闸只剩一刻钟开放，主角无法回头取证',
+            outline: '林澈在旧闸棚账房用油灯照出账页边缘的新墨痕，巡检员夺走账册并锁门搜身；同伴假装摔倒，把半页账纸压进工具箱夹层；门外雨廊里，林澈把盐霜铜扣藏进靴筒，听见东闸即将关闭，只能带着残缺证据离开。',
+          }),
+          createOutlineChapter(2, 1, {
+            title: '第 2 章：压力入场',
+            objective: '穿过东闸前确认铜扣来自哪艘船',
+            conflict: '闸口守卫按临检记录盘查主角并拖延放行',
+            hook: '铜扣上的船号指向已经沉没的白灯号',
+            outline: '林澈赶到东闸闸口，把盐霜铜扣递给守闸老人辨认，守卫按临检记录拦住他反复盘问；同伴在货车阴影里打开工具箱，发现湿账纸背面残留白灯号船印；闸门绞链开始下落，林澈必须在暴露铜扣来源和错过闸门之间立刻取舍。',
+          }),
         ],
         risks: [],
       },
@@ -4228,9 +4319,11 @@ test('GenerateOutlinePreviewTool keeps 500s outer timeout but bounds LLM call', 
   assert.equal(tool.executionTimeoutMs, DEFAULT_LLM_TIMEOUT_MS * 7 + 60_000);
   assert.equal(receivedOptions?.timeoutMs, DEFAULT_LLM_TIMEOUT_MS);
   assert.equal(receivedOptions?.retries, 0);
-  assert.equal(receivedOptions?.maxTokens, 4000);
+  assert.equal(receivedOptions?.maxTokens, 5000);
   assert.match(receivedMessages?.[0]?.content ?? '', /actionBeats 至少 3 个节点/);
   assert.match(receivedMessages?.[0]?.content ?? '', /concreteClues 至少 1 个/);
+  assert.match(receivedMessages?.[0]?.content ?? '', /sceneBeats/);
+  assert.match(receivedMessages?.[0]?.content ?? '', /handoffToNextChapter/);
   assert.match(receivedMessages?.[0]?.content ?? '', /不可逆后果/);
   assert.match(receivedMessages?.[1]?.content ?? '', /目标卷纲/);
   assert.match(receivedMessages?.[1]?.content ?? '', /夺取通路权/);
@@ -7667,19 +7760,19 @@ test('GenerateChapterCraftBriefPreviewTool creates chapter progress card preview
               objective: 'Secure proof that the ledger was replaced.',
               conflict: 'The archivist delays access while a rival searches the same shelf.',
               outline: 'A concrete archive confrontation turns a missing ledger into a public accusation.',
-              craftBrief: {
+              craftBrief: createOutlineCraftBrief({
                 visibleGoal: 'Secure proof that the ledger was replaced.',
                 hiddenEmotion: 'He hides panic behind procedural confidence.',
                 coreConflict: 'The archivist delays access while a rival searches the same shelf.',
                 mainlineTask: 'Enter the restricted archive and identify the swapped ledger.',
                 subplotTasks: ['Test whether Shen will protect him under pressure.'],
-                actionBeats: ['Request access under a false pretext.', 'Notice the rival moving toward the same shelf.', 'Force the archivist to choose a side.'],
+                actionBeats: ['Lin requests access under a false pretext.', 'The rival moves toward the same shelf before Lin reaches it.', 'Lin forces the archivist to choose a side in front of witnesses.'],
                 concreteClues: [{ name: 'salt-stained ledger thread', sensoryDetail: 'It leaves grit on his thumb.', laterUse: 'Matches the rope used in the bridge collapse file.' }],
                 dialogueSubtext: 'The archivist talks about humidity while warning him to leave.',
                 characterShift: 'He stops treating the archive as neutral ground.',
                 irreversibleConsequence: 'The rival sees him identify the swapped ledger and can now frame his next move.',
                 progressTypes: ['info', 'relationship'],
-              },
+              }),
             },
           }],
           assumptions: ['Chapter 3 remains planned.'],
@@ -7704,7 +7797,7 @@ test('GenerateChapterCraftBriefPreviewTool creates chapter progress card preview
   assert.deepEqual(progressPhases, ['preparing_context', 'calling_llm', 'validating']);
 });
 
-test('GenerateChapterCraftBriefPreviewTool falls back to baseline craftBrief on LLM failure', async () => {
+test('GenerateChapterCraftBriefPreviewTool LLM failure 直接抛错，不生成 baseline craftBrief', async () => {
   const context = { agentRunId: 'run-craft-fallback', projectId: 'p1', mode: 'plan' as const, approved: false, outputs: {}, policy: {} };
   const prisma = {
     project: { async findUnique() { return { id: 'p1' }; } },
@@ -7735,13 +7828,10 @@ test('GenerateChapterCraftBriefPreviewTool falls back to baseline craftBrief on 
   };
 
   const tool = new GenerateChapterCraftBriefPreviewTool(llm as never, prisma as never);
-  const preview = await tool.run({ chapterId: 'c4', instruction: 'Make an execution card.' }, context);
-
-  assert.equal(preview.candidates.length, 1);
-  assert.equal(preview.candidates[0].proposedFields.craftBrief.visibleGoal, 'Open the locked gate.');
-  assert.ok(preview.candidates[0].proposedFields.craftBrief.actionBeats.length >= 3);
-  assert.ok(preview.candidates[0].proposedFields.craftBrief.concreteClues.length >= 1);
-  assert.match(preview.risks.join(' | '), /LLM_TIMEOUT/);
+  await assert.rejects(
+    () => tool.run({ chapterId: 'c4', instruction: 'Make an execution card.' }, context),
+    /LLM_TIMEOUT/,
+  );
 });
 
 test('ValidateChapterCraftBriefTool checks field completeness and drafted skip preview', async () => {
@@ -7755,19 +7845,19 @@ test('ValidateChapterCraftBriefTool checks field completeness and drafted skip p
     chapterNo: 3,
     contextSources: [],
   };
-  const completeCraftBrief = {
+  const completeCraftBrief = createOutlineCraftBrief({
     visibleGoal: 'Find the ledger.',
     hiddenEmotion: 'He hides fear behind procedure.',
     coreConflict: 'The archivist blocks access.',
     mainlineTask: 'Enter the archive and identify the ledger.',
     subplotTasks: ['Test an ally.'],
-    actionBeats: ['Ask for access.', 'Spot the rival.', 'Force a choice.'],
+    actionBeats: ['Lin asks for archive access under seal.', 'The archivist blocks him while the rival approaches the shelf.', 'Lin forces the archivist to expose the fake key.'],
     concreteClues: [{ name: 'salt thread', sensoryDetail: 'Grit on the thumb.', laterUse: 'Links to the bridge file.' }],
     dialogueSubtext: 'Humidity talk hides a threat.',
     characterShift: 'He distrusts the archive.',
     irreversibleConsequence: 'The rival sees the clue and can frame him.',
     progressTypes: ['info'],
-  };
+  });
   const preview = {
     candidates: [
       {
@@ -7852,19 +7942,19 @@ test('PersistChapterCraftBriefTool writes planned craftBrief and skips drafted b
     chapterNo: 3,
     contextSources: [],
   };
-  const craftBrief = {
+  const craftBrief = createOutlineCraftBrief({
     visibleGoal: 'Find the ledger.',
     hiddenEmotion: 'He hides fear behind procedure.',
     coreConflict: 'The archivist blocks access.',
     mainlineTask: 'Enter the archive and identify the ledger.',
     subplotTasks: ['Test an ally.'],
-    actionBeats: ['Ask for access.', 'Spot the rival.', 'Force a choice.'],
+    actionBeats: ['Lin asks for archive access under seal.', 'The archivist blocks him while the rival approaches the shelf.', 'Lin forces the archivist to expose the fake key.'],
     concreteClues: [{ name: 'salt thread', sensoryDetail: 'Grit on the thumb.', laterUse: 'Links to the bridge file.' }],
     dialogueSubtext: 'Humidity talk hides a threat.',
     characterShift: 'He distrusts the archive.',
     irreversibleConsequence: 'The rival sees the clue and can frame him.',
     progressTypes: ['info'],
-  };
+  });
   const preview = {
     candidates: [
       {
@@ -9218,7 +9308,7 @@ test('generate_outline_preview 为 60 章自动拆分批次生成', async () => 
   assert.deepEqual(calls.map((call) => [call.start, call.end]), [[1, 12], [13, 24], [25, 36], [37, 48], [49, 60]]);
   assert.equal(calls.every((call) => call.options.timeoutMs === DEFAULT_LLM_TIMEOUT_MS), true);
   assert.equal(calls.every((call) => call.options.retries === 0), true);
-  assert.equal(calls.every((call) => call.options.maxTokens === 9240), true);
+  assert.equal(calls.every((call) => call.options.maxTokens === 13960), true);
   assert.match(calls[1].prompt, /本次运行已生成章节短表/);
   assert.match(calls[1].prompt, /第 12 章钩子/);
   assert.equal(llmUsages.length, 5);
@@ -9316,19 +9406,19 @@ test('generate_outline_preview 保留 LLM craftBrief', async () => {
               hook: '档案袋里掉出湿钥匙',
               outline: '主角潜入档案室，逼问守夜人并拿到关键档案。',
               expectedWordCount: 3200,
-              craftBrief: {
+              craftBrief: createOutlineCraftBrief({
                 visibleGoal: '拿到失踪档案',
                 hiddenEmotion: '害怕旧案牵连家人',
                 coreConflict: '馆长锁门并销毁调阅记录',
                 mainlineTask: '证明旧案没有结案',
                 subplotTasks: ['守夜人隐瞒线'],
-                actionBeats: ['潜入档案室', '逼问守夜人', '拿到湿钥匙'],
+                actionBeats: ['主角从后窗潜入档案室', '馆长锁门并逼守夜人销毁调阅记录', '主角抢在记录烧毁前拿到湿钥匙'],
                 concreteClues: [{ name: '湿钥匙', sensoryDetail: '带铁锈味', laterUse: '打开旧库房' }],
                 dialogueSubtext: '守夜人用推脱掩盖恐惧。',
                 characterShift: '主角从怀疑转为主动越界。',
                 irreversibleConsequence: '主角拿走钥匙后被监控拍下。',
                 progressTypes: ['info'],
-              },
+              }),
             },
             {
               chapterNo: 2,

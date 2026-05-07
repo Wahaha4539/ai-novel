@@ -26,6 +26,8 @@ export interface ValidateOutlineOutput {
     totalExpectedWordCount: number;
     craftBriefCount: number;
     craftBriefMissingCount: number;
+    sceneBeatCount: number;
+    continuityMissingCount: number;
   };
   sourceRisks: string[];
   writePreview?: {
@@ -76,7 +78,7 @@ export class ValidateOutlineTool implements BaseTool<ValidateOutlineInput, Valid
 
     const expectedChapterCount = preview.volume?.chapterCount;
     if (expectedChapterCount && expectedChapterCount !== chapters.length) {
-      issues.push({ severity: 'warning', message: `卷声明章节数为 ${expectedChapterCount}，但实际预览为 ${chapters.length} 章。`, suggestion: '确认是否需要补齐或删减章节。' });
+      issues.push({ severity: 'error', message: `卷声明章节数为 ${expectedChapterCount}，但实际预览为 ${chapters.length} 章。`, suggestion: '请重新生成完整章节细纲，不要写入数量不一致的预览。' });
     }
 
     const chapterNos = chapters.map((chapter) => Number(chapter.chapterNo));
@@ -87,7 +89,7 @@ export class ValidateOutlineTool implements BaseTool<ValidateOutlineInput, Valid
 
     const sortedNos = [...new Set(chapterNos.filter((value) => Number.isFinite(value) && value > 0))].sort((a, b) => a - b);
     if (sortedNos.length > 1 && sortedNos.some((value, index) => index > 0 && value !== sortedNos[index - 1] + 1)) {
-      issues.push({ severity: 'warning', message: '章节编号不连续。', suggestion: '如需连续阅读体验，建议补齐缺失编号或重新排序。' });
+      issues.push({ severity: 'error', message: '章节编号不连续。', suggestion: '请重新生成连续 chapterNo，避免跨章交接和持久化错位。' });
     }
 
     const duplicatedTitles = this.findDuplicatedTexts(chapters.map((chapter) => this.normalizeChapterTitle(this.text(chapter.title))));
@@ -104,12 +106,13 @@ export class ValidateOutlineTool implements BaseTool<ValidateOutlineInput, Valid
       if (!Number.isFinite(Number(chapter.chapterNo)) || Number(chapter.chapterNo) <= 0) {
         issues.push({ severity: 'error', message: `${label} 的 chapterNo 必须是正数。` });
       }
-      if (!this.text(chapter.title).trim()) issues.push({ severity: 'warning', message: `${label} 缺少标题。`, suggestion: '补充标题可提升后续章节定位和导航体验。' });
-      if (!this.text(chapter.objective).trim()) issues.push({ severity: 'warning', message: `${label} 缺少目标。`, suggestion: '补充 objective 便于正文生成保持主线推进。' });
-      if (!this.text(chapter.conflict).trim()) issues.push({ severity: 'warning', message: `${label} 缺少冲突。`, suggestion: '补充 conflict 可避免章节节奏过平。' });
-      if (!this.text(chapter.outline).trim()) issues.push({ severity: 'warning', message: `${label} 缺少章节梗概。`, suggestion: '补充 outline 后再写入更利于后续生成正文。' });
+      if (!this.text(chapter.title).trim()) issues.push({ severity: 'error', message: `${label} 缺少标题。`, suggestion: '请重新生成或补充标题。' });
+      if (!this.text(chapter.objective).trim()) issues.push({ severity: 'error', message: `${label} 缺少目标。`, suggestion: '请补充具体可检验的 objective。' });
+      if (!this.text(chapter.conflict).trim()) issues.push({ severity: 'error', message: `${label} 缺少冲突。`, suggestion: '请补充阻力来源和阻力方式。' });
+      if (!this.text(chapter.outline).trim()) issues.push({ severity: 'error', message: `${label} 缺少章节梗概。`, suggestion: '请补充具体场景链后再写入。' });
+      this.validateOutlineDensity(chapter.outline, label, issues);
       if (!Number.isFinite(Number(chapter.expectedWordCount)) || Number(chapter.expectedWordCount) <= 0) {
-        issues.push({ severity: 'warning', message: `${label} 的 expectedWordCount 无效。`, suggestion: '建议设置一个正数字数目标。' });
+        issues.push({ severity: 'error', message: `${label} 的 expectedWordCount 无效。`, suggestion: '请设置一个正数字数目标。' });
       } else if (Number(chapter.expectedWordCount) < 500) {
         issues.push({ severity: 'warning', message: `${label} 的预期字数偏低。`, suggestion: '如非短篇/片段，建议提高到更合理的章节字数。' });
       }
@@ -124,6 +127,8 @@ export class ValidateOutlineTool implements BaseTool<ValidateOutlineInput, Valid
   private buildOutput(issues: OutlineValidationIssue[], chapters: OutlinePreviewOutput['chapters'], expectedChapterCount: number | undefined, sourceRisks: string[], writePreview?: ValidateOutlineOutput['writePreview']): ValidateOutlineOutput {
     const duplicatedChapterNos = this.findDuplicatedNumbers(chapters.map((chapter) => Number(chapter.chapterNo)));
     const craftBriefCount = chapters.filter((chapter) => Object.keys(this.asRecord(chapter.craftBrief)).length > 0).length;
+    const sceneBeatCount = chapters.reduce((sum, chapter) => sum + this.asRecordArray(this.asRecord(chapter.craftBrief).sceneBeats).length, 0);
+    const continuityMissingCount = chapters.filter((chapter) => !this.hasContinuityFields(this.asRecord(chapter.craftBrief))).length;
     return {
       valid: !issues.some((issue) => issue.severity === 'error'),
       issueCount: issues.length,
@@ -135,6 +140,8 @@ export class ValidateOutlineTool implements BaseTool<ValidateOutlineInput, Valid
         totalExpectedWordCount: chapters.reduce((sum, chapter) => sum + (Number(chapter.expectedWordCount) || 0), 0),
         craftBriefCount,
         craftBriefMissingCount: Math.max(0, chapters.length - craftBriefCount),
+        sceneBeatCount,
+        continuityMissingCount,
       },
       sourceRisks,
       ...(writePreview ? { writePreview } : {}),
@@ -201,29 +208,122 @@ export class ValidateOutlineTool implements BaseTool<ValidateOutlineInput, Valid
     const brief = this.asRecord(value);
     if (!Object.keys(brief).length) {
       issues.push({
-        severity: 'warning',
+        severity: 'error',
         message: `${label} 缺少 craftBrief 执行卡。`,
-        suggestion: '旧 outline_preview 可以继续写入，但建议补齐 visibleGoal/coreConflict/actionBeats/concreteClues/irreversibleConsequence 后再用于正文生成。',
+        suggestion: '请重新生成包含 craftBrief 的章节细纲；不要把缺执行卡的内容写入审批链路。',
       });
       return;
     }
     if (!this.text(brief.visibleGoal).trim()) {
-      issues.push({ severity: 'warning', message: `${label} 的 craftBrief.visibleGoal 为空。`, suggestion: '补充可被正文检验的表层目标。' });
+      issues.push({ severity: 'error', message: `${label} 的 craftBrief.visibleGoal 为空。`, suggestion: '补充可被正文检验的表层目标。' });
     }
     if (!this.text(brief.coreConflict).trim()) {
-      issues.push({ severity: 'warning', message: `${label} 的 craftBrief.coreConflict 为空。`, suggestion: '补充阻力来源和阻力方式。' });
+      issues.push({ severity: 'error', message: `${label} 的 craftBrief.coreConflict 为空。`, suggestion: '补充阻力来源和阻力方式。' });
     }
     const actionBeats = this.stringArray(brief.actionBeats);
     if (actionBeats.length < 3) {
-      issues.push({ severity: 'warning', message: `${label} 的 craftBrief.actionBeats 少于 3 个节点。`, suggestion: '行动链建议至少包含起手行动、正面受阻、阶段结果。' });
+      issues.push({ severity: 'error', message: `${label} 的 craftBrief.actionBeats 少于 3 个节点。`, suggestion: '行动链必须至少包含起手行动、正面受阻、阶段结果。' });
     }
+    actionBeats.forEach((beat, index) => {
+      if (this.isGenericPlanningText(beat)) {
+        issues.push({
+          severity: 'error',
+          message: `${label} 的 craftBrief.actionBeats[${index}] 过于空泛。`,
+          suggestion: '行动链必须写出具体人物、可见动作、对象和结果，不能只写推进/建立/完成等抽象任务。',
+        });
+      }
+    });
+    this.validateSceneBeats(brief.sceneBeats, label, issues);
     const clues = this.asRecordArray(brief.concreteClues).filter((item) => this.text(item.name).trim());
     if (!clues.length) {
-      issues.push({ severity: 'warning', message: `${label} 缺少 craftBrief.concreteClues。`, suggestion: '至少补 1 个具象线索、物证或可回收细节。' });
+      issues.push({ severity: 'error', message: `${label} 缺少 craftBrief.concreteClues。`, suggestion: '至少补 1 个具象线索、物证或可回收细节。' });
     }
+    clues.forEach((clue, index) => {
+      if (!this.text(clue.sensoryDetail).trim()) issues.push({ severity: 'error', message: `${label} 的 craftBrief.concreteClues[${index}].sensoryDetail 为空。`, suggestion: '线索必须有可见、可触、可听或可闻的感官细节。' });
+      if (!this.text(clue.laterUse).trim()) issues.push({ severity: 'error', message: `${label} 的 craftBrief.concreteClues[${index}].laterUse 为空。`, suggestion: '线索必须说明后续用途或回收方式。' });
+    });
     if (!this.text(brief.irreversibleConsequence).trim()) {
-      issues.push({ severity: 'warning', message: `${label} 的 craftBrief.irreversibleConsequence 为空。`, suggestion: '结尾后果应改变事实、关系、资源、地位、规则或危险等级之一。' });
+      issues.push({ severity: 'error', message: `${label} 的 craftBrief.irreversibleConsequence 为空。`, suggestion: '结尾后果应改变事实、关系、资源、地位、规则或危险等级之一。' });
     }
+    this.validateContinuityFields(brief, label, issues);
+  }
+
+  private validateOutlineDensity(value: unknown, label: string, issues: OutlineValidationIssue[]) {
+    const outline = this.text(value).trim();
+    if (!outline) return;
+    if (outline.length < 60) {
+      issues.push({ severity: 'error', message: `${label} 的 outline 过短，缺少可执行场景链。`, suggestion: 'outline 至少写出 3 个场景段，每段包含地点、行动、阻力和结果。' });
+    }
+    if (this.isGenericPlanningText(outline)) {
+      issues.push({ severity: 'error', message: `${label} 的 outline 仍是抽象目标说明。`, suggestion: '请改成具体场景链：谁在哪里做了什么、被谁阻止、得到什么结果。' });
+    }
+  }
+
+  private validateSceneBeats(value: unknown, label: string, issues: OutlineValidationIssue[]) {
+    const sceneBeats = this.asRecordArray(value);
+    if (sceneBeats.length < 3) {
+      issues.push({ severity: 'error', message: `${label} 的 craftBrief.sceneBeats 少于 3 个场景段。`, suggestion: '每章至少拆成 3 个可连续写正文的场景段；跨章场景用 sceneArcId 串联。' });
+      return;
+    }
+    const requiredFields = ['sceneArcId', 'scenePart', 'location', 'localGoal', 'visibleAction', 'obstacle', 'turningPoint', 'partResult', 'sensoryAnchor'];
+    sceneBeats.forEach((beat, index) => {
+      requiredFields.forEach((field) => {
+        if (!this.text(beat[field]).trim()) {
+          issues.push({ severity: 'error', message: `${label} 的 craftBrief.sceneBeats[${index}].${field} 为空。`, suggestion: '场景段必须能回答地点、动作、阻力、转折、结果和感官锚点。' });
+        }
+      });
+      if (!this.stringArray(beat.participants).length) {
+        issues.push({ severity: 'error', message: `${label} 的 craftBrief.sceneBeats[${index}].participants 为空。`, suggestion: '场景段必须列出参与人物。' });
+      }
+      if (this.isGenericPlanningText(this.text(beat.visibleAction))) {
+        issues.push({ severity: 'error', message: `${label} 的 craftBrief.sceneBeats[${index}].visibleAction 过于空泛。`, suggestion: 'visibleAction 必须是可被镜头拍到的具体动作。' });
+      }
+    });
+  }
+
+  private validateContinuityFields(brief: Record<string, unknown>, label: string, issues: OutlineValidationIssue[]) {
+    const requiredTextFields = ['entryState', 'exitState', 'handoffToNextChapter'];
+    requiredTextFields.forEach((field) => {
+      if (!this.text(brief[field]).trim()) {
+        issues.push({ severity: 'error', message: `${label} 的 craftBrief.${field} 为空。`, suggestion: '章节必须写清入场状态、离场状态和下一章交接。' });
+      }
+    });
+    if (!this.stringArray(brief.openLoops).length) {
+      issues.push({ severity: 'error', message: `${label} 的 craftBrief.openLoops 为空。`, suggestion: '请列出至少 1 个留给后续章节的问题或压力。' });
+    }
+    if (!this.stringArray(brief.closedLoops).length) {
+      issues.push({ severity: 'error', message: `${label} 的 craftBrief.closedLoops 为空。`, suggestion: '请列出至少 1 个本章阶段性解决的问题。' });
+    }
+    const continuityState = this.asRecord(brief.continuityState);
+    if (!this.text(continuityState.nextImmediatePressure).trim()) {
+      issues.push({ severity: 'error', message: `${label} 的 craftBrief.continuityState.nextImmediatePressure 为空。`, suggestion: '请写清下一章最紧迫压力。' });
+    }
+    const hasConcreteState = ['characterPositions', 'activeThreats', 'ownedClues', 'relationshipChanges']
+      .some((field) => this.stringArray(continuityState[field]).length > 0);
+    if (!hasConcreteState) {
+      issues.push({ severity: 'error', message: `${label} 的 craftBrief.continuityState 缺少连续状态。`, suggestion: '请至少提供角色位置、有效威胁、已持有线索或关系变化之一。' });
+    }
+  }
+
+  private hasContinuityFields(brief: Record<string, unknown>) {
+    return Boolean(
+      this.text(brief.entryState).trim()
+      && this.text(brief.exitState).trim()
+      && this.text(brief.handoffToNextChapter).trim()
+      && this.asRecordArray(brief.sceneBeats).length >= 3
+      && this.text(this.asRecord(brief.continuityState).nextImmediatePressure).trim(),
+    );
+  }
+
+  private isGenericPlanningText(value: string): boolean {
+    const normalized = value.trim();
+    if (!normalized) return false;
+    const genericTerms = ['推进', '建立', '完成', '探索', '揭示', '面对', '选择', '升级', '铺垫', '承接', '形成', '安排', '明确', '获取证据'];
+    const hasGenericTerm = genericTerms.some((term) => normalized.includes(term));
+    if (!hasGenericTerm) return false;
+    const hasSceneSignal = /在|到|进入|翻开|拿出|递给|撞见|拦住|扣押|闯入|交换|偷换|打开|撕下|藏进|带走|逼问|追|逃|烧|砸|抬|交给/.test(normalized);
+    const hasConcretePunctuation = /[，。；、]/.test(normalized) && normalized.length >= 24;
+    return !(hasSceneSignal && hasConcretePunctuation);
   }
 
   /** 将上游 LLM 预览字段安全转换为文本，避免非字符串内容导致校验阶段 500。 */

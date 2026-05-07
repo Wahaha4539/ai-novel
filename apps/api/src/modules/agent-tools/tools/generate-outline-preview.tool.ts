@@ -31,6 +31,7 @@ export interface ChapterCraftBrief {
   mainlineTask?: string;
   subplotTasks?: string[];
   actionBeats?: string[];
+  sceneBeats?: ChapterSceneBeat[];
   concreteClues?: Array<{
     name: string;
     sensoryDetail?: string;
@@ -40,6 +41,35 @@ export interface ChapterCraftBrief {
   characterShift?: string;
   irreversibleConsequence?: string;
   progressTypes?: string[];
+  entryState?: string;
+  exitState?: string;
+  openLoops?: string[];
+  closedLoops?: string[];
+  handoffToNextChapter?: string;
+  continuityState?: ChapterContinuityState;
+}
+
+export interface ChapterSceneBeat {
+  sceneArcId: string;
+  scenePart: string;
+  continuesFromChapterNo?: number | null;
+  continuesToChapterNo?: number | null;
+  location: string;
+  participants: string[];
+  localGoal: string;
+  visibleAction: string;
+  obstacle: string;
+  turningPoint: string;
+  partResult: string;
+  sensoryAnchor: string;
+}
+
+export interface ChapterContinuityState {
+  characterPositions?: string[];
+  activeThreats?: string[];
+  ownedClues?: string[];
+  relationshipChanges?: string[];
+  nextImmediatePressure?: string;
 }
 
 export interface OutlinePreviewOutput {
@@ -321,8 +351,8 @@ export class GenerateOutlinePreviewTool implements BaseTool<GenerateOutlinePrevi
     const clues = this.asRecordArray(record.concreteClues)
       .map((item, clueIndex) => ({
         name: this.requiredText(item.name, `${label}.craftBrief.concreteClues[${clueIndex}].name`),
-        sensoryDetail: this.text(item.sensoryDetail, ''),
-        laterUse: this.text(item.laterUse, ''),
+        sensoryDetail: this.requiredText(item.sensoryDetail, `${label}.craftBrief.concreteClues[${clueIndex}].sensoryDetail`),
+        laterUse: this.requiredText(item.laterUse, `${label}.craftBrief.concreteClues[${clueIndex}].laterUse`),
       }))
       .filter((item) => item.name.trim());
     if (!clues.length) {
@@ -334,6 +364,8 @@ export class GenerateOutlinePreviewTool implements BaseTool<GenerateOutlinePrevi
       throw new Error(`generate_outline_preview ${label} craftBrief.actionBeats 少于 3 个节点，未生成完整细纲。`);
     }
     const progressTypes = this.requiredStringArray(record.progressTypes, `${label}.craftBrief.progressTypes`);
+    const sceneBeats = this.normalizeSceneBeats(record.sceneBeats, label);
+    const continuityState = this.normalizeContinuityState(record.continuityState, label);
     return {
       visibleGoal: this.requiredText(record.visibleGoal, `${label}.craftBrief.visibleGoal`),
       hiddenEmotion: this.requiredText(record.hiddenEmotion, `${label}.craftBrief.hiddenEmotion`),
@@ -341,12 +373,70 @@ export class GenerateOutlinePreviewTool implements BaseTool<GenerateOutlinePrevi
       mainlineTask: this.requiredText(record.mainlineTask, `${label}.craftBrief.mainlineTask`),
       subplotTasks,
       actionBeats,
+      sceneBeats,
       concreteClues: clues,
       dialogueSubtext: this.requiredText(record.dialogueSubtext, `${label}.craftBrief.dialogueSubtext`),
       characterShift: this.requiredText(record.characterShift, `${label}.craftBrief.characterShift`),
       irreversibleConsequence: this.requiredText(record.irreversibleConsequence, `${label}.craftBrief.irreversibleConsequence`),
       progressTypes,
+      entryState: this.requiredText(record.entryState, `${label}.craftBrief.entryState`),
+      exitState: this.requiredText(record.exitState, `${label}.craftBrief.exitState`),
+      openLoops: this.requiredStringArray(record.openLoops, `${label}.craftBrief.openLoops`),
+      closedLoops: this.requiredStringArray(record.closedLoops, `${label}.craftBrief.closedLoops`),
+      handoffToNextChapter: this.requiredText(record.handoffToNextChapter, `${label}.craftBrief.handoffToNextChapter`),
+      continuityState,
     };
+  }
+
+  private normalizeSceneBeats(value: unknown, label: string): ChapterSceneBeat[] {
+    const beats = this.asRecordArray(value).map((item, index) => ({
+      sceneArcId: this.requiredText(item.sceneArcId, `${label}.craftBrief.sceneBeats[${index}].sceneArcId`),
+      scenePart: this.requiredText(item.scenePart, `${label}.craftBrief.sceneBeats[${index}].scenePart`),
+      continuesFromChapterNo: this.optionalChapterNo(item.continuesFromChapterNo),
+      continuesToChapterNo: this.optionalChapterNo(item.continuesToChapterNo),
+      location: this.requiredText(item.location, `${label}.craftBrief.sceneBeats[${index}].location`),
+      participants: this.requiredStringArray(item.participants, `${label}.craftBrief.sceneBeats[${index}].participants`),
+      localGoal: this.requiredText(item.localGoal, `${label}.craftBrief.sceneBeats[${index}].localGoal`),
+      visibleAction: this.requiredText(item.visibleAction, `${label}.craftBrief.sceneBeats[${index}].visibleAction`),
+      obstacle: this.requiredText(item.obstacle, `${label}.craftBrief.sceneBeats[${index}].obstacle`),
+      turningPoint: this.requiredText(item.turningPoint, `${label}.craftBrief.sceneBeats[${index}].turningPoint`),
+      partResult: this.requiredText(item.partResult, `${label}.craftBrief.sceneBeats[${index}].partResult`),
+      sensoryAnchor: this.requiredText(item.sensoryAnchor, `${label}.craftBrief.sceneBeats[${index}].sensoryAnchor`),
+    }));
+    if (beats.length < 3) {
+      throw new Error(`generate_outline_preview ${label} craftBrief.sceneBeats 少于 3 个场景段，未生成完整细纲。`);
+    }
+    return beats;
+  }
+
+  private normalizeContinuityState(value: unknown, label: string): ChapterContinuityState {
+    const record = this.asRecord(value);
+    if (!Object.keys(record).length) {
+      throw new Error(`generate_outline_preview ${label} 缺少 craftBrief.continuityState，未生成完整细纲。`);
+    }
+    const continuityState = {
+      characterPositions: this.stringArray(record.characterPositions, []),
+      activeThreats: this.stringArray(record.activeThreats, []),
+      ownedClues: this.stringArray(record.ownedClues, []),
+      relationshipChanges: this.stringArray(record.relationshipChanges, []),
+      nextImmediatePressure: this.requiredText(record.nextImmediatePressure, `${label}.craftBrief.continuityState.nextImmediatePressure`),
+    };
+    const hasConcreteState = [
+      continuityState.characterPositions,
+      continuityState.activeThreats,
+      continuityState.ownedClues,
+      continuityState.relationshipChanges,
+    ].some((items) => items.length > 0);
+    if (!hasConcreteState) {
+      throw new Error(`generate_outline_preview ${label} craftBrief.continuityState 缺少角色位置、威胁、线索或关系变化，未生成完整细纲。`);
+    }
+    return continuityState;
+  }
+
+  private optionalChapterNo(value: unknown): number | null {
+    if (value === null || value === undefined || value === '') return null;
+    const numeric = Number(value);
+    return Number.isInteger(numeric) && numeric >= 1 ? numeric : null;
   }
 
   private requiredStringArray(value: unknown, label: string): string[] {
@@ -362,21 +452,30 @@ export class GenerateOutlinePreviewTool implements BaseTool<GenerateOutlinePrevi
       '你是小说章节细纲设计 Agent。只输出严格 JSON，不要 Markdown、解释或代码块。',
       '本工具生成的是卷/章节细纲与章级执行卡，不是正文，不要写正文段落。',
       '输出字段必须包含 volume、chapters、risks；每章必须包含 chapterNo、volumeNo、title、objective、conflict、hook、outline、expectedWordCount、craftBrief。',
+      '章节不是场景边界，而是阅读节奏边界。一个大场景可以跨多个章节，但每章必须完成一个阶段动作，并把压力交接给下一章。',
       '',
       '高密度章节细纲规则：',
       '- 每章至少领取 1 个本卷主线任务，并至少推进 1 条卷内支线。',
       '- objective 必须具体可检验，不能只写“推进主线”“调查线索”。',
       '- conflict 必须写清阻力来源和阻力方式。',
-      '- outline 必须包含具体场景、关键行动、阶段结果，不要写泛泛剧情摘要。',
+      '- outline 必须写成 3-5 个连续场景段，包含具体地点、出场人物、可被镜头拍到的动作、阻力、阶段结果，不要写泛泛剧情摘要。',
       '- craftBrief 必填，必须包含 visibleGoal、hiddenEmotion、coreConflict、mainlineTask、subplotTasks、actionBeats、concreteClues、dialogueSubtext、characterShift、irreversibleConsequence、progressTypes。',
-      '- craftBrief.actionBeats 至少 3 个节点，形成“起手行动 -> 正面受阻 -> 阶段结果”的行动链。',
-      '- craftBrief.concreteClues 至少 1 个具象线索或物证，写清 name，可补 sensoryDetail 和 laterUse。',
+      '- craftBrief 还必须包含 entryState、exitState、openLoops、closedLoops、handoffToNextChapter、continuityState、sceneBeats。',
+      '- craftBrief.sceneBeats 至少 3 个场景段；每段包含 sceneArcId、scenePart、location、participants、localGoal、visibleAction、obstacle、turningPoint、partResult、sensoryAnchor。跨章场景用相同 sceneArcId，并填写 continuesFromChapterNo / continuesToChapterNo。',
+      '- craftBrief.actionBeats 至少 3 个节点，形成“起手行动 -> 正面受阻 -> 阶段结果”的行动链；每个节点都要有具体人物、动作和对象。',
+      '- craftBrief.concreteClues 至少 1 个具象线索或物证，必须写清 name、sensoryDetail 和 laterUse。',
       '- craftBrief.irreversibleConsequence 必须具体，且改变事实、关系、资源、地位、规则或危险等级之一。',
+      '- craftBrief.entryState 必须接住上一章的 exitState / handoffToNextChapter；craftBrief.handoffToNextChapter 必须给出下一章可直接接续的动作、地点、压力或未解决问题。',
+      '- craftBrief.continuityState 必须包含角色位置、仍在生效的威胁、已持有线索/资源、关系变化和 nextImmediatePressure。',
       '- 每 3-4 章至少出现一次信息揭示、关系反转、资源得失、地位变化或规则升级。',
       '- 卷末章节必须收束本卷主线，并留下下一卷或下一阶段交接。',
       '',
+      '反空泛规则：',
+      '- 禁止只写“推进、建立、完成、探索、揭示、面对、选择、升级、铺垫、承接、形成雏形”等抽象词。',
+      '- 如果使用这些词，必须同时绑定具体地点、人物、动作、物件和后果。',
+      '',
       'JSON 输出示例骨架：',
-      '{"volume":{"volumeNo":1,"title":"卷名","synopsis":"卷概要","objective":"可检验卷目标","chapterCount":10,"narrativePlan":{}},"chapters":[{"chapterNo":1,"volumeNo":1,"title":"章节标题","objective":"本章可检验目标","conflict":"阻力来源与方式","hook":"章末钩子","outline":"具体场景、关键行动、阶段结果","expectedWordCount":2500,"craftBrief":{"visibleGoal":"表层目标","hiddenEmotion":"隐藏情绪","coreConflict":"核心冲突","mainlineTask":"本章主线任务","subplotTasks":["支线任务"],"actionBeats":["行动1","行动2","行动3"],"concreteClues":[{"name":"线索","sensoryDetail":"感官细节","laterUse":"后续用途"}],"dialogueSubtext":"潜台词","characterShift":"人物变化","irreversibleConsequence":"不可逆后果","progressTypes":["info"]}}],"risks":[]}',
+      '{"volume":{"volumeNo":1,"title":"卷名","synopsis":"卷概要","objective":"可检验卷目标","chapterCount":10,"narrativePlan":{}},"chapters":[{"chapterNo":1,"volumeNo":1,"title":"章节标题","objective":"本章可检验目标","conflict":"阻力来源与方式","hook":"章末交接钩子","outline":"1. 具体场景段...\\n2. 具体场景段...\\n3. 具体场景段...","expectedWordCount":2500,"craftBrief":{"visibleGoal":"表层目标","hiddenEmotion":"隐藏情绪","coreConflict":"核心冲突","mainlineTask":"本章主线任务","subplotTasks":["支线任务"],"actionBeats":["行动1","行动2","行动3"],"sceneBeats":[{"sceneArcId":"dock_escape","scenePart":"1/3","continuesFromChapterNo":null,"continuesToChapterNo":2,"location":"具体地点","participants":["角色名"],"localGoal":"本场局部目标","visibleAction":"角色做出的可见动作","obstacle":"阻力来源和方式","turningPoint":"反转或新信息","partResult":"本场结束后的变化","sensoryAnchor":"可写入正文的感官锚点"}],"concreteClues":[{"name":"线索","sensoryDetail":"感官细节","laterUse":"后续用途"}],"dialogueSubtext":"潜台词","characterShift":"人物变化","irreversibleConsequence":"不可逆后果","progressTypes":["info"],"entryState":"接住上一章压力","exitState":"本章结束状态","openLoops":["未解决问题"],"closedLoops":["阶段性解决问题"],"handoffToNextChapter":"下一章接续动作和压力","continuityState":{"characterPositions":["角色在何处"],"activeThreats":["仍在生效的威胁"],"ownedClues":["已持有线索"],"relationshipChanges":["关系变化"],"nextImmediatePressure":"下一章最紧迫压力"}}}],"risks":[]}',
     ].join('\n');
   }
 
@@ -397,12 +496,27 @@ export class GenerateOutlinePreviewTool implements BaseTool<GenerateOutlinePrevi
     const rangeStart = batch?.startChapterNo ?? 1;
     const rangeEnd = batch?.endChapterNo ?? chapterCount;
     const requestChapterCount = batch?.chapterCount ?? chapterCount;
-    const generatedSummary = previousChapters.slice(-12).map((chapter) => ({
+    const generatedSummary = previousChapters.slice(-8).reverse().map((chapter) => ({
       chapterNo: chapter.chapterNo,
       title: chapter.title,
       objective: chapter.objective,
       hook: chapter.hook,
+      exitState: chapter.craftBrief?.exitState,
+      handoffToNextChapter: chapter.craftBrief?.handoffToNextChapter,
+      openLoops: chapter.craftBrief?.openLoops?.slice(0, 2),
       consequence: chapter.craftBrief?.irreversibleConsequence,
+      nextImmediatePressure: chapter.craftBrief?.continuityState?.nextImmediatePressure,
+      activeThreats: chapter.craftBrief?.continuityState?.activeThreats?.slice(0, 2),
+      ownedClues: chapter.craftBrief?.continuityState?.ownedClues?.slice(0, 2),
+      activeSceneArcs: chapter.craftBrief?.sceneBeats
+        ?.filter((beat) => beat.continuesToChapterNo !== null && beat.continuesToChapterNo !== undefined)
+        .slice(-2)
+        .map((beat) => ({
+          sceneArcId: beat.sceneArcId,
+          scenePart: beat.scenePart,
+          continuesToChapterNo: beat.continuesToChapterNo,
+          partResult: beat.partResult,
+        })),
     }));
     return [
       `用户目标：${args.instruction ?? '生成章节细纲'}`,
@@ -432,8 +546,9 @@ export class GenerateOutlinePreviewTool implements BaseTool<GenerateOutlinePrevi
       '已有章节摘要（避免重复编号、标题和目标）：',
       this.safeJson(existingChapters, 6000),
       '',
-      '本次运行已生成章节短表（保持连续性，避免重复）：',
+      '本次运行已生成章节短表（最近章节在前，保持连续性，避免重复）：',
       this.safeJson(generatedSummary, 4000),
+      '连续性硬要求：本批第一章必须接住上方最后一章的 exitState、openLoops、handoffToNextChapter 和 continuityState；同一个跨章场景必须沿用 sceneArcId，并递增 scenePart。',
       '',
       '角色摘要：',
       this.safeJson(characters, 4000),
@@ -447,7 +562,7 @@ export class GenerateOutlinePreviewTool implements BaseTool<GenerateOutlinePrevi
   }
 
   private estimateMaxTokens(chapterCount: number): number {
-    return Math.min(16_000, Math.max(4000, chapterCount * 620 + 1800));
+    return Math.min(16_000, Math.max(5000, chapterCount * 980 + 2200));
   }
 
   private createBatches(chapterCount: number): OutlinePreviewBatch[] {

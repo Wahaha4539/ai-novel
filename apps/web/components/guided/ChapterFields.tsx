@@ -42,12 +42,25 @@ const emptyCraftBrief = (): ChapterCraftBrief => ({
   coreConflict: '',
   mainlineTask: '',
   subplotTasks: [],
-  actionBeats: [],
-  concreteClues: [],
-  dialogueSubtext: '',
-  characterShift: '',
-  irreversibleConsequence: '',
-  progressTypes: [],
+    actionBeats: [],
+    sceneBeats: [],
+    concreteClues: [],
+    dialogueSubtext: '',
+    characterShift: '',
+    irreversibleConsequence: '',
+    progressTypes: [],
+    entryState: '',
+    exitState: '',
+    openLoops: [],
+    closedLoops: [],
+    handoffToNextChapter: '',
+    continuityState: {
+      characterPositions: [],
+      activeThreats: [],
+      ownedClues: [],
+      relationshipChanges: [],
+      nextImmediatePressure: '',
+    },
 });
 
 const stringListToText = (value?: string[]) => Array.isArray(value) ? value.join('\n') : '';
@@ -65,6 +78,16 @@ const textToClues = (value: string): ChapterCraftBrief['concreteClues'] => textT
   const [name = '', sensoryDetail = '', laterUse = ''] = line.split(/[；;]/).map((item) => item.trim());
   return { name: name || line, sensoryDetail, laterUse };
 });
+
+const jsonToText = (value: unknown) => value === undefined ? '' : JSON.stringify(value, null, 2);
+
+const parseJsonField = <T,>(value: string, fallback: T): T => {
+  try {
+    return JSON.parse(value) as T;
+  } catch {
+    return fallback;
+  }
+};
 
 /** Parse volumes from guided_volume step data */
 function parseVolumes(volumeData: Record<string, unknown>): VolumeInfo[] {
@@ -658,6 +681,13 @@ function ChapterCard({
                 placeholder="主线任务…"
                 style={{ fontSize: '0.74rem' }}
               />
+              <input
+                className="input-field"
+                value={craftBrief?.entryState ?? ''}
+                onChange={(e) => onUpdateCraftBrief({ entryState: e.target.value })}
+                placeholder="入场状态：接住上一章留下的压力…"
+                style={{ fontSize: '0.74rem' }}
+              />
               <textarea
                 className="input-field"
                 rows={3}
@@ -665,6 +695,16 @@ function ChapterCard({
                 onChange={(e) => onUpdateCraftBrief({ actionBeats: textToStringList(e.target.value) })}
                 placeholder="行动链，每行一个节点…"
                 style={{ fontSize: '0.74rem', lineHeight: 1.55, resize: 'vertical' }}
+              />
+              <textarea
+                className="input-field"
+                rows={5}
+                value={jsonToText(craftBrief?.sceneBeats)}
+                onChange={(e) => onUpdateCraftBrief({
+                  sceneBeats: parseJsonField(e.target.value, craftBrief?.sceneBeats ?? []),
+                })}
+                placeholder="场景链 JSON：sceneArcId / scenePart / location / participants / visibleAction / partResult…"
+                style={{ fontSize: '0.72rem', lineHeight: 1.45, resize: 'vertical', fontFamily: 'ui-monospace, SFMono-Regular, Menlo, monospace' }}
               />
               <textarea
                 className="input-field"
@@ -681,6 +721,46 @@ function ChapterCard({
                 onChange={(e) => onUpdateCraftBrief({ irreversibleConsequence: e.target.value })}
                 placeholder="不可逆后果…"
                 style={{ fontSize: '0.74rem', lineHeight: 1.55, resize: 'vertical' }}
+              />
+              <input
+                className="input-field"
+                value={craftBrief?.exitState ?? ''}
+                onChange={(e) => onUpdateCraftBrief({ exitState: e.target.value })}
+                placeholder="离场状态：本章结束后事实/关系/资源如何变化…"
+                style={{ fontSize: '0.74rem' }}
+              />
+              <textarea
+                className="input-field"
+                rows={2}
+                value={stringListToText(craftBrief?.openLoops)}
+                onChange={(e) => onUpdateCraftBrief({ openLoops: textToStringList(e.target.value) })}
+                placeholder="未解决问题，每行一个…"
+                style={{ fontSize: '0.74rem', lineHeight: 1.55, resize: 'vertical' }}
+              />
+              <textarea
+                className="input-field"
+                rows={2}
+                value={stringListToText(craftBrief?.closedLoops)}
+                onChange={(e) => onUpdateCraftBrief({ closedLoops: textToStringList(e.target.value) })}
+                placeholder="本章阶段性解决的问题，每行一个…"
+                style={{ fontSize: '0.74rem', lineHeight: 1.55, resize: 'vertical' }}
+              />
+              <input
+                className="input-field"
+                value={craftBrief?.handoffToNextChapter ?? ''}
+                onChange={(e) => onUpdateCraftBrief({ handoffToNextChapter: e.target.value })}
+                placeholder="下一章交接：接续动作、地点、压力或未解决问题…"
+                style={{ fontSize: '0.74rem' }}
+              />
+              <textarea
+                className="input-field"
+                rows={4}
+                value={jsonToText(craftBrief?.continuityState)}
+                onChange={(e) => onUpdateCraftBrief({
+                  continuityState: parseJsonField(e.target.value, craftBrief?.continuityState ?? { nextImmediatePressure: '' }),
+                })}
+                placeholder="连续状态 JSON：characterPositions / activeThreats / ownedClues / relationshipChanges / nextImmediatePressure…"
+                style={{ fontSize: '0.72rem', lineHeight: 1.45, resize: 'vertical', fontFamily: 'ui-monospace, SFMono-Regular, Menlo, monospace' }}
               />
             </div>
           )}

@@ -239,12 +239,79 @@ export class ValidateGuidedStepPreviewTool implements BaseTool<ValidateGuidedSte
         }
       }
       if (!this.text(chapter.title)) issues.push({ severity: 'warning', message: `${label} 缺少 title。`, path: `${path}.title` });
-      if (!this.text(chapter.objective)) issues.push({ severity: 'warning', message: `${label} 缺少 objective。`, path: `${path}.objective` });
-      if (!this.text(chapter.conflict)) issues.push({ severity: 'warning', message: `${label} 缺少 conflict。`, path: `${path}.conflict` });
-      if (!this.text(chapter.outline)) issues.push({ severity: 'warning', message: `${label} 缺少 outline。`, path: `${path}.outline` });
+      if (!this.text(chapter.objective)) issues.push({ severity: 'error', message: `${label} 缺少 objective。`, path: `${path}.objective` });
+      if (!this.text(chapter.conflict)) issues.push({ severity: 'error', message: `${label} 缺少 conflict。`, path: `${path}.conflict` });
+      if (!this.text(chapter.outline)) issues.push({ severity: 'error', message: `${label} 缺少 outline。`, path: `${path}.outline` });
+      if (this.text(chapter.outline) && this.text(chapter.outline).length < 60) {
+        issues.push({ severity: 'error', message: `${label} 的 outline 过短，缺少具体场景链。`, path: `${path}.outline` });
+      }
+      this.validateChapterCraftBrief(chapter.craftBrief, label, `${path}.craftBrief`, issues);
     });
 
     this.validateSupportingCharacters(data, volumeNo, issues);
+  }
+
+  private validateChapterCraftBrief(value: unknown, label: string, path: string, issues: GuidedStepValidationIssue[]) {
+    const brief = this.asRecord(value);
+    if (!brief || !Object.keys(brief).length) {
+      issues.push({ severity: 'error', message: `${label} 缺少 craftBrief 执行卡。`, path });
+      return;
+    }
+    const requiredTextFields = [
+      'visibleGoal',
+      'hiddenEmotion',
+      'coreConflict',
+      'mainlineTask',
+      'dialogueSubtext',
+      'characterShift',
+      'irreversibleConsequence',
+      'entryState',
+      'exitState',
+      'handoffToNextChapter',
+    ];
+    requiredTextFields.forEach((field) => {
+      if (!this.text(brief[field])) {
+        issues.push({ severity: 'error', message: `${label} 的 craftBrief.${field} 为空。`, path: `${path}.${field}` });
+      }
+    });
+    if (!this.stringArray(brief.subplotTasks).length) {
+      issues.push({ severity: 'error', message: `${label} 的 craftBrief.subplotTasks 为空。`, path: `${path}.subplotTasks` });
+    }
+    if (this.stringArray(brief.actionBeats).length < 3) {
+      issues.push({ severity: 'error', message: `${label} 的 craftBrief.actionBeats 少于 3 个节点。`, path: `${path}.actionBeats` });
+    }
+    if (!this.stringArray(brief.openLoops).length || !this.stringArray(brief.closedLoops).length) {
+      issues.push({ severity: 'error', message: `${label} 的 craftBrief.openLoops / closedLoops 不能为空。`, path });
+    }
+    const sceneBeats = this.arrayOfRecords(brief.sceneBeats);
+    if (sceneBeats.length < 3) {
+      issues.push({ severity: 'error', message: `${label} 的 craftBrief.sceneBeats 少于 3 个场景段。`, path: `${path}.sceneBeats` });
+    }
+    sceneBeats.forEach((beat, index) => {
+      ['sceneArcId', 'scenePart', 'location', 'localGoal', 'visibleAction', 'obstacle', 'turningPoint', 'partResult', 'sensoryAnchor'].forEach((field) => {
+        if (!this.text(beat[field])) issues.push({ severity: 'error', message: `${label} 的 sceneBeats[${index}].${field} 为空。`, path: `${path}.sceneBeats[${index}].${field}` });
+      });
+      if (!this.stringArray(beat.participants).length) issues.push({ severity: 'error', message: `${label} 的 sceneBeats[${index}].participants 为空。`, path: `${path}.sceneBeats[${index}].participants` });
+    });
+    const clues = this.arrayOfRecords(brief.concreteClues);
+    if (!clues.length) {
+      issues.push({ severity: 'error', message: `${label} 缺少 craftBrief.concreteClues。`, path: `${path}.concreteClues` });
+    }
+    clues.forEach((clue, index) => {
+      if (!this.text(clue.name)) issues.push({ severity: 'error', message: `${label} 的 concreteClues[${index}].name 为空。`, path: `${path}.concreteClues[${index}].name` });
+      if (!this.text(clue.sensoryDetail)) issues.push({ severity: 'error', message: `${label} 的 concreteClues[${index}].sensoryDetail 为空。`, path: `${path}.concreteClues[${index}].sensoryDetail` });
+      if (!this.text(clue.laterUse)) issues.push({ severity: 'error', message: `${label} 的 concreteClues[${index}].laterUse 为空。`, path: `${path}.concreteClues[${index}].laterUse` });
+    });
+    const continuityState = this.asRecord(brief.continuityState);
+    if (!continuityState || !this.text(continuityState.nextImmediatePressure)) {
+      issues.push({ severity: 'error', message: `${label} 的 craftBrief.continuityState.nextImmediatePressure 为空。`, path: `${path}.continuityState.nextImmediatePressure` });
+      return;
+    }
+    const hasConcreteState = ['characterPositions', 'activeThreats', 'ownedClues', 'relationshipChanges']
+      .some((field) => this.stringArray(continuityState[field]).length > 0);
+    if (!hasConcreteState) {
+      issues.push({ severity: 'error', message: `${label} 的 craftBrief.continuityState 缺少角色位置、威胁、线索或关系变化。`, path: `${path}.continuityState` });
+    }
   }
 
   private validateSupportingCharacters(data: Record<string, unknown>, volumeNo: number | undefined, issues: GuidedStepValidationIssue[]) {
@@ -515,6 +582,12 @@ export class ValidateGuidedStepPreviewTool implements BaseTool<ValidateGuidedSte
   private arrayOfRecords(value: unknown): Array<Record<string, unknown>> {
     return Array.isArray(value)
       ? value.filter((item): item is Record<string, unknown> => Boolean(item) && typeof item === 'object' && !Array.isArray(item))
+      : [];
+  }
+
+  private stringArray(value: unknown): string[] {
+    return Array.isArray(value)
+      ? value.map((item) => this.text(item)).filter(Boolean)
       : [];
   }
 
