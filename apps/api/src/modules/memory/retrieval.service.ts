@@ -82,6 +82,7 @@ export interface RetrieveContext {
   characters?: string[];
   chapterId?: string;
   chapterNo?: number;
+  excludeCurrentChapter?: boolean;
   requestId?: string;
   jobId?: string;
   plannerQueries?: {
@@ -172,6 +173,7 @@ interface RetrievalQuerySpec {
   projectId: string;
   chapterId?: string | null;
   chapterNo?: number | null;
+  excludeCurrentChapter?: boolean;
   includeLorebook: boolean;
   includeMemory: boolean;
   queryText?: string | null;
@@ -194,7 +196,7 @@ export interface RetrievalBenchmarkCase {
 @Injectable()
 export class RetrievalService {
   private readonly logger = new StructuredLogger(RetrievalService.name);
-  private static readonly CACHE_VERSION = 3;
+  private static readonly CACHE_VERSION = 4;
 
   constructor(private readonly prisma: PrismaService, private readonly embeddings: EmbeddingGatewayService, private readonly cacheService: NovelCacheService) {}
 
@@ -241,7 +243,7 @@ export class RetrievalService {
       return { ...cached, cache };
     }
 
-    const memoryAvailableCount = includeMemory ? await this.countAvailableMemory(projectId) : 0;
+    const memoryAvailableCount = includeMemory ? await this.countAvailableMemory(projectId, context) : 0;
     const vectorAttempt = includeMemory ? await this.tryEmbedQuery(context) : { vector: undefined, error: undefined };
     const [lorebookHits, memoryHits] = await Promise.all([
       includeLorebook ? this.retrieveLorebook(projectId, context) : Promise.resolve([]),
@@ -367,21 +369,22 @@ export class RetrievalService {
     ];
     if (queryVector?.length) {
       try {
-        return await this.retrieveMemoryViaPgvector(projectId, keywords, queryVector, plannedQueries, context.chapterNo);
+        return await this.retrieveMemoryViaPgvector(projectId, keywords, queryVector, plannedQueries, context);
       } catch (error) {
-        return this.retrieveMemoryViaKeyword(projectId, keywords, `pgvector_failed: ${error instanceof Error ? error.message : String(error)}`, plannedQueries, context.chapterNo);
+        return this.retrieveMemoryViaKeyword(projectId, keywords, `pgvector_failed: ${error instanceof Error ? error.message : String(error)}`, plannedQueries, context);
       }
     }
 
-    return this.retrieveMemoryViaKeyword(projectId, keywords, vectorError ? `embedding_failed: ${vectorError}` : 'embedding_unavailable', plannedQueries, context.chapterNo);
+    return this.retrieveMemoryViaKeyword(projectId, keywords, vectorError ? `embedding_failed: ${vectorError}` : 'embedding_unavailable', plannedQueries, context);
   }
 
   /**
    * 优先使用数据库侧 pgvector 排序，避免长期在应用层扫描 MemoryChunk embedding。
    * embeddingVector 是正式检索列；旧 JSON embedding 仅作为迁移期回填来源保留。
    */
-  private async retrieveMemoryViaPgvector(projectId: string, keywords: string[], queryVector: number[], plannedQueries: RetrievalPlannedQuery[], chapterNo?: number): Promise<RetrievalHit[]> {
+  private async retrieveMemoryViaPgvector(projectId: string, keywords: string[], queryVector: number[], plannedQueries: RetrievalPlannedQuery[], context: RetrieveContext): Promise<RetrievalHit[]> {
     const vectorLiteral = `[${queryVector.join(',')}]`;
+    const excludeCurrentChapter = context.excludeCurrentChapter === true;
     const rows = await this.prisma.$queryRawUnsafe<MemoryVectorRow[]>(
       `SELECT id,
               "sourceType",
@@ -402,7 +405,19 @@ export class RetrievalService {
           AND (
             $3::integer IS NULL
             OR "sourceTrace"->>'chapterNo' IS NULL
-            OR (("sourceTrace"->>'chapterNo') ~ '^[0-9]+$' AND ("sourceTrace"->>'chapterNo')::integer <= $3::integer)
+            OR (
+              ("sourceTrace"->>'chapterNo') ~ '^[0-9]+$'
+              AND (
+                ($4::boolean = true AND ("sourceTrace"->>'chapterNo')::integer < $3::integer)
+                OR ($4::boolean = false AND ("sourceTrace"->>'chapterNo')::integer <= $3::integer)
+              )
+            )
+          )
+          AND (
+            $4::boolean = false
+            OR $5::text IS NULL
+            OR "sourceTrace"->>'chapterId' IS NULL
+            OR "sourceTrace"->>'chapterId' <> $5::text
           )
         ORDER BY "embeddingVector" <=> $2::vector ASC,
                  "importanceScore" DESC,
@@ -410,11 +425,13 @@ export class RetrievalService {
         LIMIT 20`,
       projectId,
       vectorLiteral,
-      chapterNo ?? null,
+      context.chapterNo ?? null,
+      excludeCurrentChapter,
+      context.chapterId ?? null,
     );
 
     return rows
-      .filter((row) => this.isMemoryVisibleAtChapter(row.sourceTrace, chapterNo))
+      .filter((row) => this.isMemoryVisibleAtChapter(row.sourceTrace, context))
       .map((row) => {
         const distance = Number(row.vectorDistance ?? 1);
         const vectorScore = Math.round(Math.max(0, 1 - distance) * 10000) / 10000;
@@ -445,15 +462,15 @@ export class RetrievalService {
   }
 
   /** embedding/pgvector 失败时的确定性兜底，保证生成链路仍能拿到可解释的上下文。 */
-  private async retrieveMemoryViaKeyword(projectId: string, keywords: string[], fallbackReason: string, plannedQueries: RetrievalPlannedQuery[], chapterNo?: number): Promise<RetrievalHit[]> {
+  private async retrieveMemoryViaKeyword(projectId: string, keywords: string[], fallbackReason: string, plannedQueries: RetrievalPlannedQuery[], context: RetrieveContext): Promise<RetrievalHit[]> {
     const rows = await this.prisma.memoryChunk.findMany({
       where: { projectId, status: { in: ['auto', 'user_confirmed'] } },
       orderBy: [{ importanceScore: 'desc' }, { recencyScore: 'desc' }, { updatedAt: 'desc' }],
-      take: 80,
+      take: 160,
     });
 
     return rows
-      .filter((row) => this.isMemoryVisibleAtChapter(row.sourceTrace, chapterNo))
+      .filter((row) => this.isMemoryVisibleAtChapter(row.sourceTrace, context))
       .map((row) => {
         const searchableText = `${row.summary ?? ''}\n${row.content}\n${JSON.stringify(row.tags)}`;
         const keywordScore = this.scoreText(searchableText, keywords);
@@ -513,12 +530,14 @@ export class RetrievalService {
 
   private async retrieveStoryEvents(projectId: string, context: RetrieveContext): Promise<RetrievalHit[]> {
     const keywords = this.extractKeywords(context);
+    const chapterNoWhere = this.chapterNoWhere(context);
     const rows = await this.prisma.storyEvent.findMany({
-      where: { projectId, ...(typeof context.chapterNo === 'number' ? { chapterNo: { lte: context.chapterNo } } : {}) },
+      where: { projectId, ...(chapterNoWhere ? { chapterNo: chapterNoWhere } : {}) },
       orderBy: [{ chapterNo: 'desc' }, { updatedAt: 'desc' }],
       take: 80,
     });
     return rows
+      .filter((row) => this.isStructuredFactVisibleAtChapter(row, context))
       .map((row) => {
         const content = `${row.description}\n参与者：${JSON.stringify(row.participants)}`;
         const searchableText = `${row.title}\n${row.eventType}\n${content}`;
@@ -549,12 +568,14 @@ export class RetrievalService {
   private async retrieveCharacterStates(projectId: string, context: RetrieveContext): Promise<RetrievalHit[]> {
     const keywords = this.extractKeywords(context);
     const queries = context.plannerQueries?.relationship ?? [];
+    const chapterNoWhere = this.chapterNoWhere(context);
     const rows = await this.prisma.characterStateSnapshot.findMany({
-      where: { projectId, ...(typeof context.chapterNo === 'number' ? { chapterNo: { lte: context.chapterNo } } : {}) },
+      where: { projectId, ...(chapterNoWhere ? { chapterNo: chapterNoWhere } : {}) },
       orderBy: [{ chapterNo: 'desc' }, { updatedAt: 'desc' }],
       take: 80,
     });
     return rows
+      .filter((row) => this.isStructuredFactVisibleAtChapter(row, context))
       .map((row) => {
         const content = `${row.characterName}｜${row.stateType}：${row.stateValue}${row.summary ? `\n摘要：${row.summary}` : ''}`;
         const searchableText = `${row.characterName}\n${row.stateType}\n${row.stateValue}\n${row.summary ?? ''}`;
@@ -585,12 +606,14 @@ export class RetrievalService {
   private async retrieveForeshadows(projectId: string, context: RetrieveContext): Promise<RetrievalHit[]> {
     const keywords = this.extractKeywords(context);
     const queries = context.plannerQueries?.foreshadow ?? [];
+    const chapterNoWhere = this.chapterNoWhere(context);
     const rows = await this.prisma.foreshadowTrack.findMany({
-      where: { projectId, ...(typeof context.chapterNo === 'number' ? { OR: [{ chapterNo: { lte: context.chapterNo } }, { firstSeenChapterNo: { lte: context.chapterNo } }] } : {}) },
+      where: { projectId, ...(chapterNoWhere ? { OR: [{ chapterNo: chapterNoWhere }, { firstSeenChapterNo: chapterNoWhere }] } : {}) },
       orderBy: [{ status: 'asc' }, { updatedAt: 'desc' }],
       take: 80,
     });
     return rows
+      .filter((row) => this.isForeshadowVisibleAtChapter(row, context))
       .map((row) => {
         const content = `${row.detail ?? ''}\n状态：${row.status}｜范围：${row.scope}`;
         const searchableText = `${row.title}\n${row.detail ?? ''}\n${row.status}\n${row.scope}`;
@@ -630,7 +653,7 @@ export class RetrievalService {
     });
 
     return rows
-      .filter((row) => this.isRelationshipVisibleAtChapter(row.turnChapterNos, context.chapterNo))
+      .filter((row) => this.isRelationshipVisibleAtChapter(row.turnChapterNos, context))
       .map((row) => {
         const customMetadata = this.asRecord(row.metadata);
         const turnChapterNos = this.readNumberArray(row.turnChapterNos);
@@ -675,17 +698,19 @@ export class RetrievalService {
 
     const keywords = this.extractKeywords(context);
     const queries = context.plannerQueries?.timeline ?? [];
+    const chapterNoWhere = this.chapterNoWhere(context);
     const rows = await client.findMany({
       where: {
         projectId,
         eventStatus: 'active',
-        ...(typeof context.chapterNo === 'number' ? { chapterNo: { lte: context.chapterNo } } : {}),
+        ...(chapterNoWhere ? { chapterNo: chapterNoWhere } : {}),
       },
       orderBy: [{ chapterNo: 'desc' }, { updatedAt: 'desc' }],
       take: 80,
     });
 
     return rows
+      .filter((row) => this.isStructuredFactVisibleAtChapter(row, context))
       .map((row) => {
         const participants = this.readStringArray(row.participants);
         const knownBy = this.readStringArray(row.knownBy);
@@ -794,8 +819,16 @@ export class RetrievalService {
     return [...lorebookHits, ...memoryHits, ...structuredHits].sort((a, b) => b.score - a.score).slice(0, 12);
   }
 
-  private async countAvailableMemory(projectId: string) {
-    return this.prisma.memoryChunk.count({ where: { projectId, status: { in: ['auto', 'user_confirmed'] } } });
+  private async countAvailableMemory(projectId: string, context: RetrieveContext) {
+    if (!context.excludeCurrentChapter && typeof context.chapterNo !== 'number') {
+      return this.prisma.memoryChunk.count({ where: { projectId, status: { in: ['auto', 'user_confirmed'] } } });
+    }
+    const rows = await this.prisma.memoryChunk.findMany({
+      where: { projectId, status: { in: ['auto', 'user_confirmed'] } },
+      select: { sourceTrace: true },
+      take: 5000,
+    });
+    return rows.filter((row) => this.isMemoryVisibleAtChapter(row.sourceTrace, context)).length;
   }
 
   private async tryGetCachedBundle(projectId: string, querySpecHash: string): Promise<RetrievalBundle | null> {
@@ -824,6 +857,7 @@ export class RetrievalService {
       projectId,
       chapterId: context.chapterId ?? null,
       chapterNo: context.chapterNo ?? null,
+      excludeCurrentChapter: context.excludeCurrentChapter === true,
       includeLorebook,
       includeMemory,
       queryText: context.queryText ?? null,
@@ -949,16 +983,39 @@ export class RetrievalService {
       : [];
   }
 
-  private isRelationshipVisibleAtChapter(turnChapterNos: unknown, chapterNo: number | undefined): boolean {
-    if (typeof chapterNo !== 'number') return true;
-    const turns = this.readNumberArray(turnChapterNos);
-    return turns.length === 0 || turns.some((item) => item <= chapterNo);
+  private chapterNoWhere(context: RetrieveContext): { lt: number } | { lte: number } | undefined {
+    if (typeof context.chapterNo !== 'number') return undefined;
+    return context.excludeCurrentChapter ? { lt: context.chapterNo } : { lte: context.chapterNo };
   }
 
-  private isMemoryVisibleAtChapter(sourceTrace: unknown, chapterNo: number | undefined): boolean {
-    if (typeof chapterNo !== 'number') return true;
-    const traceChapterNo = this.readNumber(this.asRecord(sourceTrace).chapterNo);
-    return typeof traceChapterNo !== 'number' || traceChapterNo <= chapterNo;
+  private isStructuredFactVisibleAtChapter(row: { chapterId?: string | null; chapterNo?: number | null }, context: RetrieveContext): boolean {
+    if (context.excludeCurrentChapter && context.chapterId && row.chapterId === context.chapterId) return false;
+    if (typeof context.chapterNo !== 'number' || typeof row.chapterNo !== 'number') return true;
+    return context.excludeCurrentChapter ? row.chapterNo < context.chapterNo : row.chapterNo <= context.chapterNo;
+  }
+
+  private isForeshadowVisibleAtChapter(row: { chapterId?: string | null; chapterNo?: number | null; firstSeenChapterNo?: number | null }, context: RetrieveContext): boolean {
+    if (context.excludeCurrentChapter && context.chapterId && row.chapterId === context.chapterId) return false;
+    if (typeof context.chapterNo !== 'number') return true;
+    const chapterNos = [row.chapterNo, row.firstSeenChapterNo].filter((item): item is number => typeof item === 'number');
+    if (!chapterNos.length) return true;
+    return chapterNos.some((chapterNo) => context.excludeCurrentChapter ? chapterNo < context.chapterNo! : chapterNo <= context.chapterNo!);
+  }
+
+  private isRelationshipVisibleAtChapter(turnChapterNos: unknown, context: RetrieveContext): boolean {
+    if (typeof context.chapterNo !== 'number') return true;
+    const turns = this.readNumberArray(turnChapterNos);
+    return turns.length === 0 || turns.some((item) => context.excludeCurrentChapter ? item < context.chapterNo! : item <= context.chapterNo!);
+  }
+
+  private isMemoryVisibleAtChapter(sourceTrace: unknown, context: RetrieveContext): boolean {
+    const trace = this.asRecord(sourceTrace);
+    const traceChapterId = this.readString(trace.chapterId);
+    if (context.excludeCurrentChapter && context.chapterId && traceChapterId === context.chapterId) return false;
+    if (typeof context.chapterNo !== 'number') return true;
+    const traceChapterNo = this.readNumber(trace.chapterNo);
+    if (typeof traceChapterNo !== 'number') return true;
+    return context.excludeCurrentChapter ? traceChapterNo < context.chapterNo : traceChapterNo <= context.chapterNo;
   }
 
   private severityRank(value: unknown): number {

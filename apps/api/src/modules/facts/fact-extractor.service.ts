@@ -110,9 +110,9 @@ export class FactExtractorService {
     const created = await this.prisma.$transaction(async (tx) => {
       // 仅替换同一草稿由 Agent 自动抽取的事实，避免删除人工维护或其他草稿来源的事实层数据。
       await Promise.all([
-        tx.storyEvent.deleteMany({ where: { projectId, chapterId, sourceDraftId: draft.id, metadata: { path: ['generatedBy'], equals: 'agent_fact_extractor' } } }),
-        tx.characterStateSnapshot.deleteMany({ where: { projectId, chapterId, sourceDraftId: draft.id, metadata: { path: ['generatedBy'], equals: 'agent_fact_extractor' } } }),
-        tx.foreshadowTrack.deleteMany({ where: { projectId, chapterId, sourceDraftId: draft.id, metadata: { path: ['generatedBy'], equals: 'agent_fact_extractor' } } }),
+        tx.storyEvent.deleteMany({ where: { projectId, chapterId, metadata: { path: ['generatedBy'], equals: 'agent_fact_extractor' } } }),
+        tx.characterStateSnapshot.deleteMany({ where: { projectId, chapterId, metadata: { path: ['generatedBy'], equals: 'agent_fact_extractor' } } }),
+        tx.foreshadowTrack.deleteMany({ where: { projectId, chapterId, metadata: { path: ['generatedBy'], equals: 'agent_fact_extractor' } } }),
       ]);
 
       // 批量写入可显著缩短 interactive transaction 时间，避免 Prisma 默认事务超时后 tx 被关闭。

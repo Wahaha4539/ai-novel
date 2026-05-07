@@ -24,7 +24,6 @@ services:
     build:
       context: .
       dockerfile_inline: |
-        # syntax=docker/dockerfile:1.7
         FROM postgres:17
         RUN apt-get update \
             && apt-get install -y --no-install-recommends postgresql-17-pgvector \
@@ -76,17 +75,19 @@ services:
       retries: 20
 
   embedding:
-    image: ghcr.io/huggingface/text-embeddings-inference:cpu-1.9
+    image: ai-novel-embedding:local
+    pull_policy: never
     container_name: novel-embedding
     command:
       - --model-id
-      - ${EMBEDDING_MODEL_PATH:-BAAI/bge-base-zh-v1.5}
+      - ${EMBEDDING_MODEL_PATH:-/models/bge-base-zh-v1.5}
+      - --served-model-name
+      - ${EMBEDDING_MODEL:-Xenova/bge-base-zh-v1.5}
     environment:
       HF_ENDPOINT: ${HF_ENDPOINT:-https://huggingface.co}
+      HF_HUB_OFFLINE: "1"
     ports:
       - "${EMBEDDING_PORT:-18319}:80"
-    volumes:
-      - embedding_models:/data
     healthcheck:
       test:
         [
@@ -185,4 +186,3 @@ volumes:
   postgres_data:
   redis_data:
   minio_data:
-  embedding_models:

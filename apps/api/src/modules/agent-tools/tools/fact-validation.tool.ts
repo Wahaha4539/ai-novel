@@ -34,7 +34,7 @@ export class FactValidationTool implements BaseTool<FactValidationInput, Record<
     riskLevel: this.riskLevel,
     requiresApproval: this.requiresApproval,
     sideEffects: this.sideEffects,
-    idPolicy: { forbiddenToInvent: ['chapterId'], allowedSources: ['context.session.currentChapterId', 'runtime.currentChapterId', 'resolve_chapter.output.chapterId', 'write_chapter.output.chapterId', 'polish_chapter.output.chapterId'] },
+    idPolicy: { forbiddenToInvent: ['chapterId'], allowedSources: ['context.session.currentChapterId', 'runtime.currentChapterId', 'resolve_chapter.output.chapterId', 'write_chapter.output.chapterId', 'rewrite_chapter.output.chapterId', 'polish_chapter.output.chapterId'] },
   };
 
   constructor(private readonly validation: ValidationService) {}

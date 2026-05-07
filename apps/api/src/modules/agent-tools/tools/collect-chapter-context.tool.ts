@@ -66,7 +66,7 @@ export class CollectChapterContextTool implements BaseTool<CollectChapterContext
     const chapter = await this.prisma.chapter.findFirst({ where: { id: chapterId, projectId: context.projectId }, include: { project: true } });
     if (!chapter) throw new NotFoundException(`章节不存在或不属于当前项目：${chapterId}`);
 
-    const [previousChapters, characters, lorebookEntries, memoryChunks, currentDraft, factCounts, autoMemoryCount, openIssues] = await Promise.all([
+    const [previousChapters, characters, lorebookEntries, rawMemoryChunks, currentDraft, factCounts, autoMemoryCount, openIssues] = await Promise.all([
       this.prisma.chapter.findMany({
         where: { projectId: context.projectId, chapterNo: { lt: chapter.chapterNo } },
         orderBy: { chapterNo: 'desc' },
@@ -75,12 +75,13 @@ export class CollectChapterContextTool implements BaseTool<CollectChapterContext
       }),
       this.prisma.character.findMany({ where: { projectId: context.projectId }, orderBy: { createdAt: 'asc' }, take: 20 }),
       this.prisma.lorebookEntry.findMany({ where: { projectId: context.projectId, status: 'active' }, orderBy: [{ priority: 'desc' }, { createdAt: 'asc' }], take: 20 }),
-      this.prisma.memoryChunk.findMany({ where: { projectId: context.projectId }, orderBy: [{ importanceScore: 'desc' }, { recencyScore: 'desc' }], take: 12 }),
+      this.prisma.memoryChunk.findMany({ where: { projectId: context.projectId }, orderBy: [{ importanceScore: 'desc' }, { recencyScore: 'desc' }], take: 80 }),
       this.prisma.chapterDraft.findFirst({ where: { chapterId, isCurrent: true }, orderBy: { versionNo: 'desc' } }),
       this.countCurrentDraftFacts(context.projectId, chapterId),
       this.prisma.memoryChunk.count({ where: { projectId: context.projectId, sourceType: 'chapter', sourceId: chapterId, metadata: { path: ['generatedBy'], equals: 'agent_memory_rebuild' } } }),
       this.prisma.validationIssue.findMany({ where: { projectId: context.projectId, chapterId, status: 'open' }, select: { severity: true } }),
     ]);
+    const memoryChunks = this.visibleMemoryChunksBeforeChapter(rawMemoryChunks, chapter).slice(0, 12);
     const writePreview = this.buildWritePreview(currentDraft, factCounts, autoMemoryCount, openIssues);
 
     return {
@@ -149,5 +150,31 @@ export class CollectChapterContextTool implements BaseTool<CollectChapterContext
     const cjk = content.match(/[\u4e00-\u9fff]/g)?.length ?? 0;
     const words = content.match(/[A-Za-z0-9]+/g)?.length ?? 0;
     return cjk + words;
+  }
+
+  private visibleMemoryChunksBeforeChapter<T extends { sourceType: string; sourceId: string; sourceTrace: unknown }>(chunks: T[], chapter: { id: string; chapterNo: number }): T[] {
+    return chunks.filter((chunk) => {
+      if (chunk.sourceType === 'chapter' && chunk.sourceId === chapter.id) return false;
+      const trace = this.asRecord(chunk.sourceTrace);
+      if (this.readString(trace.chapterId) === chapter.id) return false;
+      const traceChapterNo = this.readNumber(trace.chapterNo);
+      return typeof traceChapterNo !== 'number' || traceChapterNo < chapter.chapterNo;
+    });
+  }
+
+  private asRecord(value: unknown): Record<string, unknown> {
+    return value !== null && typeof value === 'object' && !Array.isArray(value)
+      ? value as Record<string, unknown>
+      : {};
+  }
+
+  private readString(value: unknown): string | undefined {
+    return typeof value === 'string' && value.trim() ? value : undefined;
+  }
+
+  private readNumber(value: unknown): number | undefined {
+    if (typeof value === 'number' && Number.isFinite(value)) return value;
+    if (typeof value === 'string' && value.trim() && Number.isFinite(Number(value))) return Number(value);
+    return undefined;
   }
 }

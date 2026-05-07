@@ -32,18 +32,20 @@ export class MemoryReviewService {
       queue.map((item) => ({ id: item.id, memoryType: item.memoryType, content: item.content.slice(0, 1000), summary: item.summary, sourceTrace: item.sourceTrace })),
     );
     const allowedIds = new Set(queue.map((item) => item.id));
+    const queueById = new Map(queue.map((item) => [item.id, item]));
     const applied = decisions.filter((item) => allowedIds.has(item.id));
 
     await this.prisma.$transaction(
-      applied.map((decision) =>
-        this.prisma.memoryChunk.update({
+      applied.map((decision) => {
+        const previousMetadata = this.asRecord(queueById.get(decision.id)?.metadata);
+        return this.prisma.memoryChunk.update({
           where: { id: decision.id },
           data: {
             status: decision.action === 'confirm' ? 'user_confirmed' : 'rejected',
-            metadata: { reviewedBy: 'agent_memory_review', decision: decision.action, reason: decision.reason ?? '' },
+            metadata: { ...previousMetadata, reviewedBy: 'agent_memory_review', decision: decision.action, reason: decision.reason ?? '' },
           },
-        }),
-      ),
+        });
+      }),
     );
 
     const confirmedCount = applied.filter((item) => item.action === 'confirm').length;
@@ -76,5 +78,9 @@ export class MemoryReviewService {
       const action = record.action === 'confirm' ? 'confirm' : record.action === 'reject' ? 'reject' : undefined;
       return typeof record.id === 'string' && action ? [{ id: record.id, action, reason: typeof record.reason === 'string' ? record.reason : undefined }] : [];
     });
+  }
+
+  private asRecord(value: unknown): Record<string, unknown> {
+    return value && typeof value === 'object' && !Array.isArray(value) ? value as Record<string, unknown> : {};
   }
 }

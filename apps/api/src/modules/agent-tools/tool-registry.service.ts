@@ -40,6 +40,7 @@ import { RebuildMemoryTool } from './tools/rebuild-memory.tool';
 import { ReviewMemoryTool } from './tools/review-memory.tool';
 import { ResolveChapterTool } from './tools/resolve-chapter.tool';
 import { ResolveCharacterTool } from './tools/resolve-character.tool';
+import { RewriteChapterTool } from './tools/rewrite-chapter.tool';
 import { GenerateSceneCardsPreviewTool, ListSceneCardsTool, PersistSceneCardsTool, UpdateSceneCardTool, ValidateSceneCardsTool } from './tools/scene-card-tools.tool';
 import { ValidateGuidedStepPreviewTool } from './tools/validate-guided-step-preview.tool';
 import { ValidateImportedAssetsTool } from './tools/validate-imported-assets.tool';
@@ -69,6 +70,7 @@ export class ToolRegistryService implements OnModuleInit {
     private readonly validateContinuityChangesTool: ValidateContinuityChangesTool,
     private readonly persistContinuityChangesTool: PersistContinuityChangesTool,
     private readonly writeChapterTool: WriteChapterTool,
+    private readonly rewriteChapterTool: RewriteChapterTool,
     private readonly writeChapterSeriesTool: WriteChapterSeriesTool,
     private readonly postProcessChapterTool: PostProcessChapterTool,
     private readonly polishChapterTool: PolishChapterTool,
@@ -126,6 +128,7 @@ export class ToolRegistryService implements OnModuleInit {
     this.register(this.validateContinuityChangesTool);
     this.register(this.persistContinuityChangesTool);
     this.register(this.writeChapterTool);
+    this.register(this.rewriteChapterTool);
     this.register(this.writeChapterSeriesTool);
     this.register(this.postProcessChapterTool);
     this.register(this.polishChapterTool);

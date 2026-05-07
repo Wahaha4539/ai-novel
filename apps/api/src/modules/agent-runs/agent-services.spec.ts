@@ -61,7 +61,9 @@ import { GenerateChapterCraftBriefPreviewTool, PersistChapterCraftBriefTool, Val
 import { GenerateSceneCardsPreviewTool, ListSceneCardsTool, PersistSceneCardsTool, UpdateSceneCardTool, ValidateSceneCardsTool } from '../agent-tools/tools/scene-card-tools.tool';
 import { RelationshipGraphService } from '../agent-tools/relationship-graph.service';
 import { FactExtractorService } from '../facts/fact-extractor.service';
+import { ChapterRewriteCleanupService } from '../generation/chapter-rewrite-cleanup.service';
 import { WriteChapterTool } from '../agent-tools/tools/write-chapter.tool';
+import { RewriteChapterTool } from '../agent-tools/tools/rewrite-chapter.tool';
 import { PolishChapterTool } from '../agent-tools/tools/polish-chapter.tool';
 import { WriteChapterSeriesTool } from '../agent-tools/tools/write-chapter-series.tool';
 import { AutoRepairChapterTool } from '../agent-tools/tools/auto-repair-chapter.tool';
@@ -1309,6 +1311,36 @@ test('CollectChapterContextTool 生成章节草稿、事实和记忆写入前预
   assert.equal(result.writePreview.memory.existingAutoMemoryCount, 2);
   assert.equal(result.writePreview.validation.openErrorCount, 1);
   assert.ok(result.writePreview.approvalRiskHints.some((item) => item.includes('切换为当前版本')));
+});
+
+test('CollectChapterContextTool excludes current chapter MemoryChunk rows from write context preview', async () => {
+  const prisma = {
+    chapter: {
+      async findFirst() { return { id: 'c1', projectId: 'p1', chapterNo: 1, title: 'Chapter 1', objective: null, conflict: null, outline: null, expectedWordCount: 3000, project: { id: 'p1', title: 'Project', genre: null, theme: null, tone: null, synopsis: null, outline: null } }; },
+      async findMany() { return []; },
+    },
+    character: { async findMany() { return []; } },
+    lorebookEntry: { async findMany() { return []; } },
+    memoryChunk: {
+      async findMany() {
+        return [
+          { id: 'm-current', sourceType: 'chapter', sourceId: 'c1', memoryType: 'summary', summary: 'old chapter one', content: 'old chapter one content', importanceScore: 100, recencyScore: 100, sourceTrace: { chapterId: 'c1', chapterNo: 1 } },
+          { id: 'm-future', sourceType: 'chapter', sourceId: 'c2', memoryType: 'summary', summary: 'future chapter', content: 'future chapter content', importanceScore: 90, recencyScore: 90, sourceTrace: { chapterId: 'c2', chapterNo: 2 } },
+          { id: 'm-global', sourceType: 'manual', sourceId: '00000000-0000-0000-0000-000000000000', memoryType: 'setting', summary: 'global setting', content: 'global setting content', importanceScore: 80, recencyScore: 80, sourceTrace: {} },
+        ];
+      },
+      async count() { return 1; },
+    },
+    chapterDraft: { async findFirst() { return null; } },
+    storyEvent: { async count() { return 0; } },
+    characterStateSnapshot: { async count() { return 0; } },
+    foreshadowTrack: { async count() { return 0; } },
+    validationIssue: { async findMany() { return []; } },
+  };
+  const tool = new CollectChapterContextTool(prisma as never);
+  const result = await tool.run({ chapterId: 'c1' }, { agentRunId: 'run1', projectId: 'p1', mode: 'plan', approved: false, outputs: {}, policy: {} });
+
+  assert.deepEqual(result.memoryChunks.map((chunk) => chunk.summary), ['global setting']);
 });
 
 test('CollectTaskContextTool 为角色一致性检查收集角色、章节和约束', async () => {
@@ -6679,6 +6711,26 @@ test('RetrievalService returns phase2 structured hits and filters future chapter
   assert.equal(timelineHit?.sourceTrace.chapterNo, 3);
   assert.equal(timelineHit?.metadata.chapterNo, 3);
   assert.equal(bundle.diagnostics.qualityStatus, 'ok');
+
+  const generationBundle = await service.retrieveBundleWithCacheMeta(
+    'p1',
+    {
+      queryText: 'Lin Che Shen Yan stolen key true name',
+      chapterId: 'c3',
+      chapterNo: 3,
+      excludeCurrentChapter: true,
+      characters: ['Lin Che', 'Shen Yan'],
+      plannerQueries: {
+        relationship: [{ query: 'Lin Che Shen Yan trust state', type: 'relationship_state', importance: 'should', reason: 'Need previous relationship.' }],
+        timeline: [{ query: 'stolen key event order and who knows it', type: 'timeline_event', importance: 'must', reason: 'Need previous timeline.' }],
+        writingRule: [{ query: 'true name ban for Shen Yan', type: 'writing_rule', importance: 'must', reason: 'Need writing rule.' }],
+      },
+    },
+    { includeLorebook: false, includeMemory: false },
+  );
+
+  assert.deepEqual(generationBundle.structuredHits.map((hit) => hit.sourceId).sort(), ['rel-visible', 'rule-visible']);
+  assert.equal(generationBundle.structuredHits.some((hit) => hit.sourceId === 'time-visible'), false);
 });
 
 test('RetrievalPlannerService normalizes timeline and writing rule queries', async () => {
@@ -7170,6 +7222,55 @@ test('RetrievalService filters future MemoryChunk hits by sourceTrace chapterNo'
 
   assert.deepEqual(bundle.memoryHits.map((hit) => hit.sourceId), ['mem-past']);
   assert.equal(bundle.memoryHits.some((hit) => hit.sourceId === 'mem-future'), false);
+});
+
+test('RetrievalService treats current chapter MemoryChunk rows as unavailable for generation recall', async () => {
+  const prisma = {
+    lorebookEntry: { async findMany() { return []; } },
+    memoryChunk: {
+      async count() { return 1; },
+      async findMany() {
+        return [
+          {
+            id: 'mem-current',
+            sourceType: 'chapter',
+            sourceId: 'c1',
+            memoryType: 'summary',
+            content: 'Old chapter one draft content should not return.',
+            summary: 'old chapter one',
+            tags: [],
+            status: 'auto',
+            importanceScore: 100,
+            recencyScore: 100,
+            sourceTrace: { chapterNo: 1, chapterId: 'c1' },
+          },
+        ];
+      },
+    },
+    storyEvent: { async findMany() { return []; } },
+    characterStateSnapshot: { async findMany() { return []; } },
+    foreshadowTrack: { async findMany() { return []; } },
+  };
+  const embeddings = {
+    async embedTexts() {
+      throw new Error('embedding unavailable');
+    },
+  };
+  const cache = {
+    async getRecallResult() { return null; },
+    async setRecallResult() {},
+  };
+  const service = new RetrievalService(prisma as never, embeddings as never, cache as never);
+
+  const bundle = await service.retrieveBundleWithCacheMeta(
+    'p1',
+    { queryText: 'old chapter one', chapterId: 'c1', chapterNo: 1, excludeCurrentChapter: true },
+    { includeLorebook: false, includeMemory: true },
+  );
+
+  assert.deepEqual(bundle.memoryHits, []);
+  assert.equal(bundle.diagnostics.memoryAvailableCount, 0);
+  assert.notEqual(bundle.diagnostics.qualityStatus, 'blocked');
 });
 
 test('RelationshipsService rejects character ids outside the current project', async () => {
@@ -9659,6 +9760,115 @@ test('AgentRuntime maps chapter craft brief preview, validation and persist arti
 
   assert.deepEqual(artifacts.map((item) => item.artifactType), ['chapter_craft_brief_preview', 'chapter_craft_brief_validation_report', 'chapter_craft_brief_persist_result']);
   assert.deepEqual(artifacts.map((item) => item.content), [preview, validation, persist]);
+});
+
+test('Planner 为 rewrite_chapter 强制追加章节质量门禁链路', () => {
+  const toolNames = ['resolve_chapter', 'collect_chapter_context', 'rewrite_chapter', 'polish_chapter', 'fact_validation', 'auto_repair_chapter', 'extract_chapter_facts', 'rebuild_memory', 'review_memory'];
+  const tools = { list: () => toolNames.map((name) => createTool({ name, requiresApproval: !['resolve_chapter', 'collect_chapter_context'].includes(name), sideEffects: name === 'resolve_chapter' || name === 'collect_chapter_context' ? [] : ['write'] })) } as unknown as ToolRegistryService;
+  const planner = new AgentPlannerService(new SkillRegistryService(), tools, new RuleEngineService(), {} as LlmGatewayService) as unknown as {
+    validateAndNormalizeLlmPlan: (data: unknown, baseline: { taskType: string; summary: string; assumptions: string[]; risks: string[] }) => { steps: Array<{ stepNo: number; tool: string; args: Record<string, unknown>; runIf?: { ref: string; operator: string; value?: unknown } }> };
+  };
+
+  const plan = planner.validateAndNormalizeLlmPlan(
+    {
+      taskType: 'chapter_write',
+      summary: '重写章节正文计划',
+      assumptions: [],
+      risks: [],
+      steps: [
+        { stepNo: 1, name: '解析章节', tool: 'resolve_chapter', mode: 'act', requiresApproval: false, args: { chapterNo: 1 } },
+        { stepNo: 2, name: '收集上下文', tool: 'collect_chapter_context', mode: 'act', requiresApproval: false, args: { chapterId: '{{steps.1.output.chapterId}}' } },
+        { stepNo: 3, name: '重写正文', tool: 'rewrite_chapter', mode: 'act', requiresApproval: true, args: { chapterId: '{{steps.1.output.chapterId}}', context: '{{steps.2.output}}', instruction: '重写第一章，不沿用旧稿' } },
+      ],
+    },
+    { taskType: 'general', summary: 'fallback', assumptions: [], risks: [] },
+  );
+
+  assert.deepEqual(plan.steps.map((step) => step.tool), [
+    'resolve_chapter',
+    'collect_chapter_context',
+    'rewrite_chapter',
+    'polish_chapter',
+    'fact_validation',
+    'auto_repair_chapter',
+    'polish_chapter',
+    'fact_validation',
+    'auto_repair_chapter',
+    'extract_chapter_facts',
+    'rebuild_memory',
+    'review_memory',
+  ]);
+  assert.equal(plan.steps[3].args.draftId, '{{runtime.currentDraftId}}');
+  assert.deepEqual(plan.steps[6].runIf, { ref: '{{steps.5.output.createdCount}}', operator: 'gt', value: 0 });
+});
+
+test('RewriteChapterTool 调用生成服务时使用 rewrite mode', async () => {
+  const calls: Array<[string, string, Record<string, unknown>]> = [];
+  const generateChapter = {
+    async run(projectId: string, chapterId: string, input: Record<string, unknown>) {
+      calls.push([projectId, chapterId, input]);
+      return { draftId: 'd1', chapterId, versionNo: 1, actualWordCount: 1200 };
+    },
+  };
+  const tool = new RewriteChapterTool(generateChapter as never);
+
+  const result = await tool.run(
+    { chapterId: 'c1', instruction: '重写第一章', wordCount: 2000 },
+    { agentRunId: 'run1', projectId: 'p1', mode: 'act', approved: true, outputs: {}, policy: {}, userId: 'u1' },
+  );
+
+  assert.equal(result.draftId, 'd1');
+  assert.equal(calls[0][0], 'p1');
+  assert.equal(calls[0][1], 'c1');
+  assert.equal(calls[0][2].mode, 'rewrite');
+  assert.equal(calls[0][2].instruction, '重写第一章');
+  assert.equal(calls[0][2].wordCount, 2000);
+});
+
+test('ChapterRewriteCleanupService 删除章节正文派生产物并清理缓存', async () => {
+  const deletes: Array<{ model: string; args: Record<string, unknown> }> = [];
+  const updates: Record<string, unknown>[] = [];
+  const cacheCalls: string[] = [];
+  const deleteMany = (model: string, count: number) => async (args: Record<string, unknown>) => {
+    deletes.push({ model, args });
+    return { count };
+  };
+  const tx = {
+    qualityReport: { deleteMany: deleteMany('qualityReport', 1) },
+    validationIssue: { deleteMany: deleteMany('validationIssue', 2) },
+    memoryChunk: { deleteMany: deleteMany('memoryChunk', 3) },
+    storyEvent: { deleteMany: deleteMany('storyEvent', 4) },
+    characterStateSnapshot: { deleteMany: deleteMany('characterStateSnapshot', 5) },
+    foreshadowTrack: { deleteMany: deleteMany('foreshadowTrack', 6) },
+    character: { deleteMany: deleteMany('character', 7) },
+    lorebookEntry: { deleteMany: deleteMany('lorebookEntry', 8) },
+    chapterDraft: { deleteMany: deleteMany('chapterDraft', 9) },
+    chapter: { async update(args: Record<string, unknown>) { updates.push(args); return {}; } },
+  };
+  const prisma = {
+    chapter: {
+      async findFirst() {
+        return { id: 'c1', chapterNo: 1 };
+      },
+    },
+    async $transaction(fn: (txArg: typeof tx) => Promise<unknown>) {
+      return fn(tx);
+    },
+  };
+  const cache = {
+    async deleteChapterContext(projectId: string, chapterId: string) { cacheCalls.push(`chapter:${projectId}:${chapterId}`); },
+    async deleteProjectRecallResults(projectId: string) { cacheCalls.push(`recall:${projectId}`); },
+  };
+  const service = new ChapterRewriteCleanupService(prisma as never, cache as never);
+
+  const result = await service.cleanupChapter('p1', 'c1');
+
+  assert.equal(result.deletedDrafts, 9);
+  assert.equal(result.deletedMemoryChunks, 3);
+  assert.deepEqual(deletes.find((item) => item.model === 'memoryChunk')?.args.where, { projectId: 'p1', sourceType: 'chapter', sourceId: 'c1' });
+  assert.deepEqual(deletes.find((item) => item.model === 'chapterDraft')?.args.where, { chapterId: 'c1' });
+  assert.deepEqual(updates[0], { where: { id: 'c1' }, data: { status: 'planned', actualWordCount: null } });
+  assert.deepEqual(cacheCalls.sort(), ['chapter:p1:c1', 'recall:p1']);
 });
 
 async function main() {

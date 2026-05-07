@@ -74,7 +74,7 @@ export class AiQualityReviewTool implements BaseTool<AiQualityReviewToolInput, A
     sideEffects: this.sideEffects,
     idPolicy: {
       forbiddenToInvent: ['chapterId', 'draftId'],
-      allowedSources: ['context.session.currentChapterId', 'runtime.currentChapterId', 'runtime.currentDraftId', 'resolve_chapter.output.chapterId', 'write_chapter.output.draftId', 'polish_chapter.output.draftId', 'auto_repair_chapter.output.draftId'],
+      allowedSources: ['context.session.currentChapterId', 'runtime.currentChapterId', 'runtime.currentDraftId', 'resolve_chapter.output.chapterId', 'write_chapter.output.draftId', 'rewrite_chapter.output.draftId', 'polish_chapter.output.draftId', 'auto_repair_chapter.output.draftId'],
     },
   };
 

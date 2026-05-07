@@ -8,11 +8,13 @@ import { LlmGatewayService } from '../llm/llm-gateway.service';
 import { RetrievalBundle, RetrievalBundleWithCacheMeta, RetrievalService } from '../memory/retrieval.service';
 import { RetrievalPlan, RetrievalPlannerDiagnostics } from '../memory/retrieval-plan.types';
 import { ValidationService } from '../validation/validation.service';
+import { ChapterRewriteCleanupResult, ChapterRewriteCleanupService } from './chapter-rewrite-cleanup.service';
 import { ChapterContextPack, SceneExecutionPlan } from './context-pack.types';
 import { PromptBuilderService } from './prompt-builder.service';
 import { RetrievalPlannerService } from './retrieval-planner.service';
 
 export interface GenerateChapterInput {
+  mode?: 'draft' | 'rewrite';
   instruction?: string;
   wordCount?: number;
   includeLorebook?: boolean;
@@ -164,6 +166,7 @@ export interface GenerateChapterResult {
   qualityGate: GeneratedDraftQualityGateResult;
   promptDebug: Record<string, unknown>;
   modelInfo: Record<string, unknown>;
+  rewriteCleanup?: ChapterRewriteCleanupResult;
 }
 
 /**
@@ -182,6 +185,7 @@ export class GenerateChapterService {
     private readonly retrievalPlanner: RetrievalPlannerService,
     private readonly validation: ValidationService,
     private readonly cacheService?: NovelCacheService,
+    private readonly rewriteCleanup?: ChapterRewriteCleanupService,
   ) {}
 
   /** 同步生成章节正文，并把生成上下文、召回结果和模型信息记录到草稿元数据。 */
@@ -196,6 +200,7 @@ export class GenerateChapterService {
     const targetWordCount = this.resolveTargetWordCount(input, chapter, generationProfile);
     if (targetWordCount < 200) throw new BadRequestException('章节目标字数不能低于 200。');
 
+    const rewriteCleanup = input.mode === 'rewrite' ? await this.resetChapterForRewrite(projectId, chapterId) : undefined;
     const latest = await this.prisma.chapterDraft.findFirst({ where: { chapterId }, orderBy: { versionNo: 'desc' } });
     await input.progress?.heartbeat?.({ phase: 'preflight', phaseMessage: '正在进行章节生成前检查' });
     const preflight = await this.runPreflight(projectId, chapter, latest?.versionNo, input, generationProfile);
@@ -240,6 +245,7 @@ export class GenerateChapterService {
         characters: this.mergeCharactersForRetrieval(characters.map((item) => item.name), retrievalPlanResult.plan.entities.characters),
         chapterId,
         chapterNo: chapter.chapterNo,
+        excludeCurrentChapter: true,
         requestId: input.requestId,
         jobId: input.jobId,
         plannerQueries: {
@@ -324,7 +330,7 @@ export class GenerateChapterService {
       throw new BadRequestException(`生成后质量门禁未通过：${qualityGate.blockers.join('；')}`);
     }
     const modelInfo = { model: llmResult.model, usage: llmResult.usage, rawPayloadSummary: llmResult.rawPayloadSummary };
-    const retrievalPayload = { contextPack, generationProfile, retrievalPlan: retrievalPlanResult.plan, plannerDiagnostics: retrievalPlanResult.diagnostics, retrievalCache: retrievalBundle.cache, lorebookHits: retrievalBundle.lorebookHits, memoryHits: retrievalBundle.memoryHits, structuredHits: retrievalBundle.structuredHits, rankedHits: retrievalBundle.rankedHits, diagnostics: retrievalBundle.diagnostics, preflight, qualityGate };
+    const retrievalPayload = { contextPack, generationProfile, retrievalPlan: retrievalPlanResult.plan, plannerDiagnostics: retrievalPlanResult.diagnostics, retrievalCache: retrievalBundle.cache, lorebookHits: retrievalBundle.lorebookHits, memoryHits: retrievalBundle.memoryHits, structuredHits: retrievalBundle.structuredHits, rankedHits: retrievalBundle.rankedHits, diagnostics: retrievalBundle.diagnostics, preflight, qualityGate, rewriteCleanup };
 
     await input.progress?.updateProgress?.({ phase: 'persisting', phaseMessage: '正在写入章节草稿与质量报告', progressCurrent: 0, progressTotal: 1, timeoutMs: 60_000 });
     const draft = await this.prisma.$transaction(async (tx) => {
@@ -338,7 +344,7 @@ export class GenerateChapterService {
           content,
           source: 'agent_generate_service',
           modelInfo: modelInfo as Prisma.InputJsonValue,
-          generationContext: { agentRunId: input.agentRunId, instruction: input.instruction, targetWordCount, generationProfile, preflight, qualityGate, promptDebug: prompt.debug, retrievalPayload } as unknown as Prisma.InputJsonValue,
+          generationContext: { agentRunId: input.agentRunId, mode: input.mode ?? 'draft', instruction: input.instruction, targetWordCount, generationProfile, preflight, qualityGate, promptDebug: prompt.debug, retrievalPayload, rewriteCleanup } as unknown as Prisma.InputJsonValue,
           isCurrent: true,
           createdBy: input.userId,
         },
@@ -363,7 +369,14 @@ export class GenerateChapterService {
     await input.progress?.heartbeat?.({ phase: 'persisting', phaseMessage: '章节草稿写入完成', progressCurrent: 1, progressTotal: 1 });
     this.logger.log('generation.draft.persisted', { ...logContext, stage: 'draft_persisted', draftId: draft.id, versionNo: draft.versionNo, actualWordCount, model: llmResult.model, tokenUsage: llmResult.usage, elapsedMs: Date.now() - runStartedAt });
 
-    return { draftId: draft.id, chapterId, versionNo: draft.versionNo, actualWordCount, summary: content.slice(0, 160), retrievalPayload, preflight, qualityGate, promptDebug: prompt.debug, modelInfo };
+    return { draftId: draft.id, chapterId, versionNo: draft.versionNo, actualWordCount, summary: content.slice(0, 160), retrievalPayload, preflight, qualityGate, promptDebug: prompt.debug, modelInfo, rewriteCleanup };
+  }
+
+  private async resetChapterForRewrite(projectId: string, chapterId: string): Promise<ChapterRewriteCleanupResult> {
+    if (!this.rewriteCleanup) {
+      throw new BadRequestException('rewrite mode requires ChapterRewriteCleanupService.');
+    }
+    return this.rewriteCleanup.cleanupChapter(projectId, chapterId);
   }
 
   /**

@@ -7,6 +7,7 @@ import { LlmModule } from '../llm/llm.module';
 import { MemoryModule } from '../memory/memory.module';
 import { ValidationModule } from '../validation/validation.module';
 import { ChapterAutoRepairService } from './chapter-auto-repair.service';
+import { ChapterRewriteCleanupService } from './chapter-rewrite-cleanup.service';
 import { GenerateChapterService } from './generate-chapter.service';
 import { GenerationController } from './generation.controller';
 import { GenerationService } from './generation.service';
@@ -17,8 +18,8 @@ import { RetrievalPlannerService } from './retrieval-planner.service';
 
 @Module({
   imports: [PrismaModule, ChaptersModule, JobsModule, LlmModule, MemoryModule, FactsModule, ValidationModule],
-  providers: [GenerationService, PostProcessChapterService, PolishChapterService, PromptBuilderService, GenerateChapterService, ChapterAutoRepairService, RetrievalPlannerService],
-  exports: [PostProcessChapterService, PolishChapterService, PromptBuilderService, GenerateChapterService, ChapterAutoRepairService, RetrievalPlannerService],
+  providers: [GenerationService, PostProcessChapterService, PolishChapterService, PromptBuilderService, GenerateChapterService, ChapterAutoRepairService, ChapterRewriteCleanupService, RetrievalPlannerService],
+  exports: [PostProcessChapterService, PolishChapterService, PromptBuilderService, GenerateChapterService, ChapterAutoRepairService, ChapterRewriteCleanupService, RetrievalPlannerService],
   controllers: [GenerationController],
 })
 export class GenerationModule {}

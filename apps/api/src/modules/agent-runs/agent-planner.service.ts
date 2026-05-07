@@ -161,6 +161,7 @@ export class AgentPlannerService {
           '如果 agentContext.session.guided.currentStep 存在，说明用户正在创作引导页；当前步骤问答优先选择 guided_step_consultation，当前步骤生成优先选择 guided_step_generate，确认保存/写入优先选择 guided_step_finalize，不要误判成普通章节正文写作。',
           '用户要求“卷细纲 / 章节细纲 / 60 章细纲 / 等长细纲 / 章节规划”时选择 outline_design，并优先编排 inspect_project_context -> generate_outline_preview -> validate_outline -> persist_outline；不要误判为 write_chapter。',
           '用户明确说“写正文 / 生成正文 / 续写正文”才选择 chapter_write 或 multi_chapter_write；用户说“拆成场景 / 场景卡 / SceneCard”时选择 scene_card_planning。',
+          '用户明确说“重写章节 / 重新生成章节 / 从头写 / 推倒重来 / 不沿用旧稿”时必须使用 rewrite_chapter；不要使用 polish_chapter。',
           '可引用前序步骤：{{steps.N.output.field}} 或 {{steps.step_id.output.field}}；不要引用当前或未来步骤。',
           '章节写作或修改必须保留用户给出的风格、氛围、字数、禁改项和剧情约束，例如“别改结局”。',
         ].join('\n'),
@@ -175,12 +176,12 @@ export class AgentPlannerService {
             stepModeContract: 'steps[].mode 固定为 act；Plan/Act 运行时模式由后端 AgentRuntimeService 注入，不由 LLM 决定。',
             availableTaskTypes,
             taskTypeGuidance: {
-              chapter_write: '写某一章正文、章节内容、目标字数、续写正文。',
+              chapter_write: '写某一章正文、章节内容、目标字数、续写正文；若明确要求重写旧章节，应使用 rewrite_chapter。',
               multi_chapter_write: '连续生成多章正文，例如接下来三章、第 1-5 章、多个指定章节；应优先使用 write_chapter_series，不要展开多个 write_chapter。默认设置 qualityPipeline=full，除非用户明确要求只要草稿。',
-              chapter_polish: '润色、修改、改稿、优化文风、去 AI 味。',
+              chapter_polish: '润色、局部修改、改稿、优化文风、去 AI 味；不用于从头重写章节。',
               outline_design: '设计大纲、卷细纲、章节细纲、60章细纲、等长细纲、拆卷、把某卷拆成多章、章节规划；应使用 generate_outline_preview 生成卷/章节细纲与执行卡预览，大章节数会自动分批；不要误判为写正文。',
               project_import_preview: '拆解导入文案，并按用户指定目标产物生成预览。只要大纲时不要生成角色/世界观/写作规则；要求全套时才生成项目资料、剧情大纲、角色、世界观和写作规则。',
-              chapter_revision: '修改当前章或已有章节草稿、增强节奏/压迫感、保留结局等禁改约束。',
+              chapter_revision: '修改当前章或已有章节草稿、增强节奏/压迫感、保留结局等禁改约束；若用户要求重写或不沿用旧稿，使用 rewrite_chapter。',
               character_consistency_check: '检查人设是否崩、角色动机/对话是否符合设定。',
               worldbuilding_expand: '扩展世界观、宗门、城市、能力体系，且不覆盖已确认剧情。',
               story_bible_expand: '批量扩展 Story Bible 设定资产；必须先 generate_story_bible_preview，再 validate_story_bible，写入步骤 persist_story_bible 必须等待审批。',
@@ -267,7 +268,7 @@ export class AgentPlannerService {
             '修复导入分目标计划时，优先使用 build_import_brief（若可用）和已注册的 generate_import_*_preview 专用工具；目标专用预览后必须调用 merge_import_previews、cross_target_consistency_check（若可用），再把合并结果传给 validate_imported_assets。',
             '如果专用目标工具未注册，使用 build_import_preview fallback，但 requestedAssetTypes 仍必须等于用户选择的目标范围；persist_project_assets 必须作为需审批写入步骤保留。',
             '如果 agentContext.session.guided.currentStep 存在，修复后的 taskType 仍应优先使用 guided_step_consultation、guided_step_generate 或 guided_step_finalize，不要修成 chapter_write。',
-            '修复卷细纲、章节细纲、60 章细纲或等长细纲计划时，taskType 应为 outline_design，并使用 generate_outline_preview；只有写正文/生成正文才使用 chapter_write，拆成场景/SceneCard 才使用 scene_card_planning。',
+            '修复卷细纲、章节细纲、60 章细纲或等长细纲计划时，taskType 应为 outline_design，并使用 generate_outline_preview；只有写正文/生成正文才使用 chapter_write，明确重写/不沿用旧稿时使用 rewrite_chapter，拆成场景/SceneCard 才使用 scene_card_planning。',
             'steps[].mode 是后端计划步骤字段，固定填 act；Plan/Act 运行时模式由后端注入，不由 LLM 决定。',
             '引用前序步骤输出时，完整对象用 {{steps.N.output}}，对象字段用 {{steps.N.output.field}}；不要把对象序列化成字符串。',
             '连续生成多章正文时必须使用 write_chapter_series；不要把多个 write_chapter 展开为多套步骤。',
@@ -391,10 +392,10 @@ export class AgentPlannerService {
 
   /**
    * 章节写作必须走固定质量门禁：写稿后润色、事实校验、最多二轮修复，再沉淀事实和记忆。
-   * 这里覆盖 LLM 在 write_chapter 之后给出的自由编排，避免漏掉后置校验或产生无限修复循环。
+   * 这里覆盖 LLM 在 write_chapter/rewrite_chapter 之后给出的自由编排，避免漏掉后置校验或产生无限修复循环。
    */
   private enforceChapterWriteQualityPipeline(steps: AgentPlanStepSpec[], requiresApproval: (tool: string) => boolean): AgentPlanStepSpec[] {
-    const writeIndex = steps.findIndex((step) => step.tool === 'write_chapter');
+    const writeIndex = steps.findIndex((step) => step.tool === 'write_chapter' || step.tool === 'rewrite_chapter');
     if (writeIndex < 0) return steps;
 
     const baseSteps = steps.slice(0, writeIndex + 1);

@@ -1082,7 +1082,7 @@ export class AgentRuntimeService {
 
     if (taskType === 'chapter_write' || taskType === 'multi_chapter_write') {
       const series = this.latestOutputByTools(outputs, steps, ['write_chapter_series']);
-      const draft = this.latestOutputByTools(outputs, steps, ['auto_repair_chapter', 'polish_chapter', 'postprocess_chapter', 'write_chapter']);
+      const draft = this.latestOutputByTools(outputs, steps, ['auto_repair_chapter', 'polish_chapter', 'postprocess_chapter', 'rewrite_chapter', 'write_chapter']);
       const validation = this.latestOutputByTools(outputs, steps, ['fact_validation']);
       const autoRepair = this.latestOutputByTools(outputs, steps, ['auto_repair_chapter']);
       const facts = this.latestOutputByTools(outputs, steps, ['extract_chapter_facts']);

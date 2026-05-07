@@ -59,6 +59,7 @@ export class GenerationService {
       this.logger.log('generation.job.running', logContext);
 
       const draft = await this.generateChapterService.run(chapter.projectId, chapterId, {
+        mode: dto.mode,
         instruction: dto.instruction,
         wordCount: dto.wordCount,
         includeLorebook: dto.includeLorebook,
