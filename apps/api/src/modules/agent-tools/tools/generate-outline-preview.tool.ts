@@ -49,8 +49,8 @@ export interface OutlinePreviewOutput {
 }
 
 /**
- * 大纲预览生成工具：优先请求 LLM 输出结构化 JSON。
- * LLM 超时或失败时降级为确定性章节骨架，保证 Plan 阶段不中断；输出仅作为预览传给后续审批，不直接写正式业务表。
+ * 大纲预览生成工具：请求 LLM 输出结构化 JSON。
+ * LLM 超时、失败或返回不完整结构时直接抛错，避免用模板骨架拉低细纲质量。
  */
 @Injectable()
 export class GenerateOutlinePreviewTool implements BaseTool<GenerateOutlinePreviewInput, OutlinePreviewOutput> {
@@ -83,7 +83,7 @@ export class GenerateOutlinePreviewTool implements BaseTool<GenerateOutlinePrevi
       context: { source: 'previous_step', description: '通常来自 inspect_project_context.output，包含项目、目标卷、已有章节、角色和设定摘要。' },
       instruction: { source: 'user_message', description: '保留用户对卷号、章节数、节奏、风格和结构的要求。' },
       volumeNo: { source: 'user_message', description: '用户指定“第 N 卷”时填入；未指定时默认第 1 卷。' },
-      chapterCount: { source: 'user_message', description: '用户指定“60 章”等目标数量时填入；超过 15 章会自动分批，单批 timeout/fallback 不影响其余批次。' },
+      chapterCount: { source: 'user_message', description: '用户指定“60 章”等目标数量时填入；超过 15 章会自动分批，任一批 timeout 会直接失败。' },
     },
     examples: [
       {
@@ -97,7 +97,8 @@ export class GenerateOutlinePreviewTool implements BaseTool<GenerateOutlinePrevi
       },
     ],
     failureHints: [
-      { code: 'LLM_TIMEOUT', meaning: '单批 LLM 未在内部 timeoutMs 内稳定返回', suggestedRepair: '保留已生成批次，对 timeout 批次使用 fallback 并在 risks 中提示人工复核。' },
+      { code: 'LLM_TIMEOUT', meaning: '单批 LLM 未在内部 timeoutMs 内稳定返回', suggestedRepair: '重新执行或缩小章节范围；工具不会生成 fallback 章节。' },
+      { code: 'INCOMPLETE_OUTLINE_PREVIEW', meaning: 'LLM 返回章节数、编号或 craftBrief 不完整', suggestedRepair: '重新生成完整细纲，或先补足提示上下文后再运行。' },
     ],
     allowedModes: this.allowedModes,
     riskLevel: this.riskLevel,
@@ -116,20 +117,15 @@ export class GenerateOutlinePreviewTool implements BaseTool<GenerateOutlinePrevi
   }
 
   private async runSingleBatch(args: GenerateOutlinePreviewInput, context: ToolContext, volumeNo: number, chapterCount: number): Promise<OutlinePreviewOutput> {
-    try {
-      await context.updateProgress?.({
-        phase: 'calling_llm',
-        phaseMessage: '正在生成卷章节预览',
-        timeoutMs: OUTLINE_PREVIEW_LLM_TIMEOUT_MS,
-      });
-      const response = await this.callOutlineLlm(args, volumeNo, chapterCount);
-      recordToolLlmUsage(context, 'planner', response.result);
-      await context.updateProgress?.({ phase: 'validating', phaseMessage: '正在校验章节预览', progressCurrent: chapterCount, progressTotal: chapterCount });
-      return this.normalize(response.data, volumeNo, chapterCount, args);
-    } catch (error) {
-      await context.updateProgress?.({ phase: 'fallback_generating', phaseMessage: '模型未稳定返回，正在生成确定性章节骨架', progressCurrent: 0, progressTotal: chapterCount });
-      return this.fallback(args, volumeNo, chapterCount, error);
-    }
+    await context.updateProgress?.({
+      phase: 'calling_llm',
+      phaseMessage: '正在生成卷章节预览',
+      timeoutMs: OUTLINE_PREVIEW_LLM_TIMEOUT_MS,
+    });
+    const response = await this.callOutlineLlm(args, volumeNo, chapterCount);
+    recordToolLlmUsage(context, 'planner', response.result);
+    await context.updateProgress?.({ phase: 'validating', phaseMessage: '正在校验章节预览', progressCurrent: chapterCount, progressTotal: chapterCount });
+    return this.normalize(response.data, volumeNo, chapterCount);
   }
 
   private async runBatched(
@@ -142,76 +138,32 @@ export class GenerateOutlinePreviewTool implements BaseTool<GenerateOutlinePrevi
     const chapters: OutlinePreviewOutput['chapters'] = [];
     const risks: string[] = [`已按 ${OUTLINE_PREVIEW_BATCH_SIZE} 章以内自动分批生成，共 ${batches.length} 批，避免单次 LLM 请求承载 ${chapterCount} 章。`];
     let volume: OutlinePreviewOutput['volume'] | undefined;
-    try {
-      for (const batch of batches) {
-        await context.updateProgress?.({
-          phase: 'calling_llm',
-          phaseMessage: `正在生成第 ${batch.startChapterNo}-${batch.endChapterNo} 章细纲`,
-          progressCurrent: batch.batchIndex,
-          progressTotal: batch.batchCount,
-          timeoutMs: OUTLINE_PREVIEW_LLM_TIMEOUT_MS,
-        });
-        let normalized: OutlinePreviewOutput;
-        try {
-          const response = await this.callOutlineLlm(args, volumeNo, chapterCount, batch, chapters);
-          recordToolLlmUsage(context, 'planner', response.result);
-          normalized = this.normalize(response.data, volumeNo, batch.chapterCount, args, {
-            chapterStart: batch.startChapterNo,
-            totalChapterCount: chapterCount,
-          });
-        } catch (error) {
-          await context.updateProgress?.({
-            phase: 'fallback_generating',
-            phaseMessage: `第 ${batch.startChapterNo}-${batch.endChapterNo} 章模型未稳定返回，正在生成该批 fallback`,
-            progressCurrent: batch.batchIndex,
-            progressTotal: batch.batchCount,
-          });
-          normalized = this.createFallbackBatch(args, volumeNo, chapterCount, batch, error);
-        }
-        volume ??= normalized.volume;
-        chapters.push(...normalized.chapters);
-        risks.push(...normalized.risks.map((risk) => this.prefixBatchRisk(batch, risk)));
-        await context.heartbeat?.({
-          phase: 'merging_preview',
-          phaseMessage: `已合并 ${chapters.length}/${chapterCount} 章细纲`,
-          progressCurrent: batch.batchIndex,
-          progressTotal: batch.batchCount,
-        });
-      }
-      await context.updateProgress?.({ phase: 'validating', phaseMessage: '正在校验批次合并后的章节预览', progressCurrent: chapterCount, progressTotal: chapterCount });
-      return this.finalizeBatchedPreview(volume, chapters, risks, args, volumeNo, chapterCount);
-    } catch (error) {
-      await context.updateProgress?.({ phase: 'fallback_generating', phaseMessage: '模型批次返回不稳定，正在生成确定性章节骨架', progressCurrent: chapters.length, progressTotal: chapterCount });
-      return this.fallback(args, volumeNo, chapterCount, error);
+    for (const batch of batches) {
+      await context.updateProgress?.({
+        phase: 'calling_llm',
+        phaseMessage: `正在生成第 ${batch.startChapterNo}-${batch.endChapterNo} 章细纲`,
+        progressCurrent: batch.batchIndex,
+        progressTotal: batch.batchCount,
+        timeoutMs: OUTLINE_PREVIEW_LLM_TIMEOUT_MS,
+      });
+      const response = await this.callOutlineLlm(args, volumeNo, chapterCount, batch, chapters);
+      recordToolLlmUsage(context, 'planner', response.result);
+      const normalized = this.normalize(response.data, volumeNo, batch.chapterCount, {
+        chapterStart: batch.startChapterNo,
+        totalChapterCount: chapterCount,
+      });
+      volume ??= normalized.volume;
+      chapters.push(...normalized.chapters);
+      risks.push(...normalized.risks.map((risk) => this.prefixBatchRisk(batch, risk)));
+      await context.heartbeat?.({
+        phase: 'merging_preview',
+        phaseMessage: `已合并 ${chapters.length}/${chapterCount} 章细纲`,
+        progressCurrent: batch.batchIndex,
+        progressTotal: batch.batchCount,
+      });
     }
-  }
-
-  private createFallbackBatch(
-    args: GenerateOutlinePreviewInput,
-    volumeNo: number,
-    chapterCount: number,
-    batch: OutlinePreviewBatch,
-    error: unknown,
-  ): OutlinePreviewOutput {
-    const seed = this.createFallbackSeed(args.context, args.instruction, volumeNo);
-    return {
-      volume: {
-        volumeNo,
-        title: seed.volumeTitle,
-        synopsis: seed.synopsis,
-        objective: seed.objective,
-        chapterCount,
-      },
-      chapters: Array.from(
-        { length: batch.chapterCount },
-        (_item, index) => this.createFallbackChapter(batch.startChapterNo + index - 1, chapterCount, seed),
-      ),
-      risks: [
-        `${this.isLlmTimeout(error) ? 'LLM_TIMEOUT' : 'LLM_PROVIDER_FALLBACK'}：第 ${batch.startChapterNo}-${batch.endChapterNo} 章批次未稳定返回，已仅对该批使用确定性章节骨架，其他批次继续生成。`,
-        `第 ${batch.startChapterNo}-${batch.endChapterNo} 章批次降级原因：${this.text(error instanceof Error ? error.message : String(error), '未知错误').slice(0, 160)}`,
-        `第 ${batch.startChapterNo}-${batch.endChapterNo} 章 fallback 已生成基础 craftBrief；请重点复核该批行动链、线索和不可逆后果。`,
-      ],
-    };
+    await context.updateProgress?.({ phase: 'validating', phaseMessage: '正在校验批次合并后的章节预览', progressCurrent: chapterCount, progressTotal: chapterCount });
+    return this.finalizeBatchedPreview(volume, chapters, risks, volumeNo, chapterCount);
   }
 
   private prefixBatchRisk(batch: OutlinePreviewBatch, risk: string): string {
@@ -239,41 +191,62 @@ export class GenerateOutlinePreviewTool implements BaseTool<GenerateOutlinePrevi
     data: OutlinePreviewOutput,
     volumeNo: number,
     chapterCount: number,
-    args: GenerateOutlinePreviewInput,
     options: { chapterStart?: number; totalChapterCount?: number } = {},
   ): OutlinePreviewOutput {
-    const seed = this.createFallbackSeed(args.context, args.instruction, volumeNo);
+    const output = this.asRecord(data);
     const chapterStart = options.chapterStart ?? 1;
     const totalChapterCount = options.totalChapterCount ?? chapterCount;
-    const returnedCount = Array.isArray(data.chapters) ? Math.min(data.chapters.length, chapterCount) : 0;
-    const chapters: OutlinePreviewOutput['chapters'] = (data.chapters ?? []).slice(0, chapterCount).map((item, index) => {
+    const rawChapters = Array.isArray(output.chapters) ? output.chapters : undefined;
+    if (!rawChapters) {
+      throw new Error('generate_outline_preview 返回缺少 chapters 数组，未生成完整细纲。');
+    }
+    if (rawChapters.length !== chapterCount) {
+      throw new Error(`generate_outline_preview 返回章节数 ${rawChapters.length}/${chapterCount}，未生成完整细纲。`);
+    }
+    const chapters: OutlinePreviewOutput['chapters'] = rawChapters.map((item, index) => {
+      const record = this.asRecord(item);
       const chapterNo = chapterStart + index;
+      const returnedChapterNo = Number(record.chapterNo);
+      if (!Number.isFinite(returnedChapterNo) || returnedChapterNo !== chapterNo) {
+        throw new Error(`generate_outline_preview 第 ${chapterNo} 章 chapterNo 不匹配，未生成完整细纲。`);
+      }
+      const returnedVolumeNo = Number(record.volumeNo);
+      if (!Number.isFinite(returnedVolumeNo) || returnedVolumeNo !== volumeNo) {
+        throw new Error(`generate_outline_preview 第 ${chapterNo} 章 volumeNo 不匹配，未生成完整细纲。`);
+      }
+      const expectedWordCount = Number(record.expectedWordCount);
+      if (!Number.isFinite(expectedWordCount) || expectedWordCount <= 0) {
+        throw new Error(`generate_outline_preview 第 ${chapterNo} 章 expectedWordCount 无效，未生成完整细纲。`);
+      }
       const chapter = {
         chapterNo,
-        volumeNo: Number(item.volumeNo) || volumeNo,
-        title: this.text(item.title, `第 ${chapterNo} 章`),
-        objective: this.text(item.objective, '推进主线目标'),
-        conflict: this.text(item.conflict, '制造角色选择压力'),
-        hook: this.text(item.hook, '留下下一章悬念'),
-        outline: this.text(item.outline, this.text(item.objective, '待扩写')),
-        expectedWordCount: Number(item.expectedWordCount) || 2500,
+        volumeNo,
+        title: this.requiredText(record.title, `第 ${chapterNo} 章 title`),
+        objective: this.requiredText(record.objective, `第 ${chapterNo} 章 objective`),
+        conflict: this.requiredText(record.conflict, `第 ${chapterNo} 章 conflict`),
+        hook: this.requiredText(record.hook, `第 ${chapterNo} 章 hook`),
+        outline: this.requiredText(record.outline, `第 ${chapterNo} 章 outline`),
+        expectedWordCount,
       };
-      return { ...chapter, craftBrief: this.normalizeCraftBrief(item.craftBrief, chapter, chapterNo - 1, totalChapterCount, seed) };
+      return { ...chapter, craftBrief: this.normalizeCraftBrief(record.craftBrief, `第 ${chapterNo} 章`) };
     });
-    while (chapters.length < chapterCount) {
-      chapters.push(this.createFallbackChapter(chapterStart + chapters.length - 1, totalChapterCount, seed));
+    const volumeRecord = this.asRecord(output.volume);
+    const returnedVolumeNo = Number(volumeRecord.volumeNo);
+    if (!Number.isFinite(returnedVolumeNo) || returnedVolumeNo !== volumeNo) {
+      throw new Error(`generate_outline_preview volume.volumeNo 与目标卷 ${volumeNo} 不匹配，未生成完整细纲。`);
     }
-    const risks = [
-      ...(data.risks ?? []),
-      ...(chapters.length > returnedCount ? ['LLM 返回章节数少于目标章节数，已用确定性章节骨架补齐缺口；请在审批前重点复核补齐章节。'] : []),
-    ];
-    const narrativePlan = this.asRecord(data.volume?.narrativePlan);
+    const returnedVolumeChapterCount = Number(volumeRecord.chapterCount);
+    if (!Number.isFinite(returnedVolumeChapterCount) || returnedVolumeChapterCount !== totalChapterCount) {
+      throw new Error(`generate_outline_preview volume.chapterCount 与目标章节数 ${totalChapterCount} 不匹配，未生成完整细纲。`);
+    }
+    const risks = this.stringArray(output.risks, []);
+    const narrativePlan = this.asRecord(volumeRecord.narrativePlan);
     return {
       volume: {
         volumeNo,
-        title: this.text(data.volume?.title, seed.volumeTitle),
-        synopsis: this.text(data.volume?.synopsis, seed.synopsis),
-        objective: this.text(data.volume?.objective, seed.objective),
+        title: this.requiredText(volumeRecord.title, 'volume.title'),
+        synopsis: this.requiredText(volumeRecord.synopsis, 'volume.synopsis'),
+        objective: this.requiredText(volumeRecord.objective, 'volume.objective'),
         chapterCount: totalChapterCount,
         ...(Object.keys(narrativePlan).length ? { narrativePlan } : {}),
       },
@@ -286,198 +259,102 @@ export class GenerateOutlinePreviewTool implements BaseTool<GenerateOutlinePrevi
     volume: OutlinePreviewOutput['volume'] | undefined,
     chapters: OutlinePreviewOutput['chapters'],
     risks: string[],
-    args: GenerateOutlinePreviewInput,
     volumeNo: number,
     chapterCount: number,
   ): OutlinePreviewOutput {
-    const seed = this.createFallbackSeed(args.context, args.instruction, volumeNo);
-    const mergeRisks = this.validateMergedChapters(chapters, volumeNo, chapterCount);
-    const normalizedChapters: OutlinePreviewOutput['chapters'] = chapters.slice(0, chapterCount).map((chapter, index) => {
-      const nextChapter = { ...chapter, chapterNo: index + 1, volumeNo };
-      return {
-        ...nextChapter,
-        craftBrief: nextChapter.craftBrief ?? this.createFallbackCraftBrief(nextChapter, index, chapterCount, seed),
-      };
-    });
-    while (normalizedChapters.length < chapterCount) {
-      normalizedChapters.push({ ...this.createFallbackChapter(normalizedChapters.length, chapterCount, seed), volumeNo });
-    }
+    if (!volume) throw new Error('generate_outline_preview 未返回卷信息，未生成完整细纲。');
+    this.assertMergedChapters(chapters, volumeNo, chapterCount);
     return {
       volume: {
         volumeNo,
-        title: this.text(volume?.title, seed.volumeTitle),
-        synopsis: this.text(volume?.synopsis, seed.synopsis),
-        objective: this.text(volume?.objective, seed.objective),
+        title: volume.title,
+        synopsis: volume.synopsis,
+        objective: volume.objective,
         chapterCount,
         ...(volume?.narrativePlan ? { narrativePlan: volume.narrativePlan } : {}),
       },
-      chapters: normalizedChapters,
-      risks: [...risks, ...mergeRisks],
+      chapters,
+      risks,
     };
   }
 
-  private validateMergedChapters(chapters: OutlinePreviewOutput['chapters'], volumeNo: number, chapterCount: number): string[] {
-    const risks: string[] = [];
+  private assertMergedChapters(chapters: OutlinePreviewOutput['chapters'], volumeNo: number, chapterCount: number): void {
     if (chapters.length !== chapterCount) {
-      risks.push(`批次合并章节数为 ${chapters.length}/${chapterCount}，已用确定性章节骨架补齐或裁剪；请复核章节完整性。`);
+      throw new Error(`generate_outline_preview 批次合并章节数为 ${chapters.length}/${chapterCount}，未生成完整细纲。`);
     }
     const chapterNos = chapters.map((chapter) => Number(chapter.chapterNo)).filter((chapterNo) => Number.isFinite(chapterNo));
     if (new Set(chapterNos).size !== chapterNos.length) {
-      risks.push('批次合并发现重复章节编号，已按目标范围重新连续编号；请复核重复批次内容。');
+      throw new Error('generate_outline_preview 批次合并发现重复章节编号，未生成完整细纲。');
     }
     if (chapterNos.length !== chapterCount || chapterNos.some((chapterNo, index) => chapterNo !== index + 1)) {
-      risks.push('批次合并发现章节编号不连续，已按目标范围重新连续编号；请复核跨批衔接。');
+      throw new Error('generate_outline_preview 批次合并发现章节编号不连续，未生成完整细纲。');
     }
     if (chapters.some((chapter) => Number(chapter.volumeNo) !== volumeNo)) {
-      risks.push(`批次合并发现 volumeNo 与目标卷 ${volumeNo} 不一致，已统一修正为目标卷；请复核跨卷内容。`);
+      throw new Error(`generate_outline_preview 批次合并发现 volumeNo 与目标卷 ${volumeNo} 不一致，未生成完整细纲。`);
     }
     if (chapters.some((chapter) => !chapter.craftBrief || !chapter.craftBrief.visibleGoal || !chapter.craftBrief.coreConflict)) {
-      risks.push('批次合并发现部分章节 craftBrief 不完整，已补齐基础执行卡；请复核行动链、线索和不可逆后果。');
+      throw new Error('generate_outline_preview 批次合并发现部分章节 craftBrief 不完整，未生成完整细纲。');
     }
-    return risks;
   }
 
   /** 将 LLM 可能返回的非字符串字段收敛为字符串，避免后续 Tool 对 trim 等字符串方法崩溃。 */
-  private text(value: unknown, fallback: string): string {
-    if (typeof value === 'string') return value.trim() || fallback;
+  private text(value: unknown, defaultValue: string): string {
+    if (typeof value === 'string') return value.trim() || defaultValue;
     if (typeof value === 'number' || typeof value === 'boolean') return String(value);
     if (value && typeof value === 'object') return JSON.stringify(value);
-    return fallback;
+    return defaultValue;
   }
 
-  private fallback(args: GenerateOutlinePreviewInput, volumeNo: number, chapterCount: number, error: unknown): OutlinePreviewOutput {
-    const seed = this.createFallbackSeed(args.context, args.instruction, volumeNo);
-    return {
-      volume: {
-        volumeNo,
-        title: seed.volumeTitle,
-        synopsis: seed.synopsis,
-        objective: seed.objective,
-        chapterCount,
-      },
-      chapters: Array.from({ length: chapterCount }, (_item, index) => this.createFallbackChapter(index, chapterCount, seed)),
-      risks: [
-        `${this.isLlmTimeout(error) ? 'LLM_TIMEOUT' : 'LLM_PROVIDER_FALLBACK'}：LLM 大纲预览未在 ${OUTLINE_PREVIEW_LLM_TIMEOUT_MS / 1000}s 内稳定返回，已使用确定性章节骨架保证计划不中断。`,
-        `降级原因：${this.text(error instanceof Error ? error.message : String(error), '未知错误').slice(0, 160)}`,
-        'fallback 已为每章生成基础 craftBrief，但这些执行卡只用于占位和审批起点，需人工复核行动链、线索和不可逆后果。',
-        '确定性骨架适合先进入审批和人工调整；建议重点复核章节标题、关键反转和卷内高潮位置。',
-      ],
-    };
+  private requiredText(value: unknown, label: string): string {
+    const text = this.text(value, '');
+    if (!text.trim()) {
+      throw new Error(`generate_outline_preview 返回缺少 ${label}，未生成完整细纲。`);
+    }
+    return text;
   }
 
-  private createFallbackSeed(context: unknown, instruction: string | undefined, volumeNo: number) {
-    const record = this.asRecord(context);
-    const project = this.asRecord(record.project);
-    const volumes = Array.isArray(record.volumes) ? record.volumes.map((item) => this.asRecord(item)) : [];
-    const volume = volumes.find((item) => Number(item.volumeNo) === volumeNo) ?? {};
-    const projectTitle = this.text(project.title, '当前项目');
-    const volumeTitle = this.text(volume.title, `第 ${volumeNo} 卷`);
-    const objective = this.text(volume.objective, this.text(instruction, this.text(project.outline, '推进卷内主线并形成阶段性胜利')));
-    const synopsis = this.text(volume.synopsis, this.text(project.synopsis, objective).slice(0, 240));
-    return { projectTitle, volumeTitle, objective, synopsis, instruction: instruction ?? '', volumeNo };
-  }
-
-  private createFallbackChapter(index: number, chapterCount: number, seed: ReturnType<GenerateOutlinePreviewTool['createFallbackSeed']>): OutlinePreviewOutput['chapters'][number] {
-    const chapterNo = index + 1;
-    const phases = [
-      { title: '压力入场', objective: '抛出核心危机与行动目标', conflict: '资源、时间和信任同时收紧', hook: '新的风险逼近', beats: ['警报落点', '旧债翻面', '险桥开局', '暗线触发', '误判逼近', '退路收紧', '筹码亮出', '试探交锋', '临界追问', '门槛坍塌', '孤注动身', '余波逼停'] },
-      { title: '规则成形', objective: '建立解决问题的临时规则', conflict: '旧秩序与新方案发生碰撞', hook: '规则出现代价', beats: ['临规立约', '边界试算', '人心校准', '代价签名', '异议压舱', '漏洞浮现', '新约试行', '旧令反扑', '责任分摊', '证据入局', '底线重画', '承诺落锁'] },
-      { title: '试错破局', objective: '通过行动验证关键方案', conflict: '方案被现实条件反复撕扯', hook: '隐藏阻力浮出水面', beats: ['首试失衡', '误差追踪', '反证显形', '假路拆除', '危局转手', '实证破面', '逆向开门', '故障回收', '线索咬合', '小胜换伤', '盲点亮灯', '陷阱反用'] },
-      { title: '联盟拉扯', objective: '让更多角色卷入共同承担', conflict: '利益分配与旧怨制造裂缝', hook: '盟友立场动摇', beats: ['同盟试温', '旧怨上桌', '利益拆账', '背书换筹', '裂缝外露', '旁支入局', '阵线重排', '承诺受审', '暗盟露影', '信任押注', '分歧加码', '共担成约'] },
-      { title: '代价揭示', objective: '揭开阶段真相并放大牺牲', conflict: '胜利路径要求付出不可逆代价', hook: '更大的危机压来', beats: ['真相缺口', '代价开价', '旧伤回潮', '牺牲点名', '选择逼宫', '证词反噬', '资源断流', '身份承压', '规则反咬', '胜利染尘', '底牌焚尽', '高墙迫近'] },
-      { title: '阶段胜利', objective: '完成卷内目标并留下下一阶段入口', conflict: '胜利与新的责任同时到来', hook: '下一卷矛盾开启', beats: ['终局合围', '最后交换', '败局翻盘', '责任交接', '余账清点', '新门开启', '功成留裂', '承诺兑现', '更高命令', '远雷落名', '胜局反照', '下一潮起'] },
-    ];
-    const phaseIndex = Math.min(phases.length - 1, Math.floor(index * phases.length / Math.max(1, chapterCount)));
-    const phase = phases[phaseIndex];
-    const phaseStart = Math.ceil((phaseIndex * chapterCount) / phases.length);
-    const localIndex = Math.max(0, index - phaseStart);
-    const beatCycle = Math.floor(localIndex / phase.beats.length);
-    const beat = phase.beats[localIndex % phase.beats.length];
-    const titleDetail = beatCycle > 0 ? `${beat}${beatCycle + 1}` : beat;
-    const title = `${phase.title}·${titleDetail}`;
-    const progress = `${chapterNo}/${chapterCount}`;
-    const chapter = {
-      chapterNo,
-      volumeNo: seed.volumeNo,
-      title,
-      objective: `${phase.objective}（${titleDetail}），服务《${seed.projectTitle}》${seed.volumeTitle}目标：${seed.objective}`,
-      conflict: `${phase.conflict}，主角团队必须在生存、连接与责任之间做选择。`,
-      hook: `${phase.hook}，把矛盾推进到第 ${Math.min(chapterNo + 1, chapterCount)} 章。`,
-      outline: `卷内进度 ${progress}。本章以“${titleDetail}”作为阶段动作，围绕“${seed.objective}”推进：先承接上一章压力，再安排一次具体行动或谈判，让方案获得新证据，同时暴露新的成本，为后续章节继续升级冲突。`,
-      expectedWordCount: 2500,
-    };
-    return { ...chapter, craftBrief: this.createFallbackCraftBrief(chapter, index, chapterCount, seed) };
-  }
-
-  private normalizeCraftBrief(
-    value: unknown,
-    chapter: Pick<OutlinePreviewOutput['chapters'][number], 'chapterNo' | 'title' | 'objective' | 'conflict' | 'outline'>,
-    index: number,
-    chapterCount: number,
-    seed: ReturnType<GenerateOutlinePreviewTool['createFallbackSeed']>,
-  ): ChapterCraftBrief {
-    const fallback = this.createFallbackCraftBrief(chapter, index, chapterCount, seed);
+  private normalizeCraftBrief(value: unknown, label: string): ChapterCraftBrief {
     const record = this.asRecord(value);
-    if (!Object.keys(record).length) return fallback;
+    if (!Object.keys(record).length) {
+      throw new Error(`generate_outline_preview ${label} 缺少 craftBrief，未生成完整细纲。`);
+    }
     const clues = this.asRecordArray(record.concreteClues)
       .map((item, clueIndex) => ({
-        name: this.text(item.name, fallback.concreteClues?.[clueIndex]?.name ?? '待复核线索'),
-        sensoryDetail: this.text(item.sensoryDetail, fallback.concreteClues?.[clueIndex]?.sensoryDetail ?? ''),
-        laterUse: this.text(item.laterUse, fallback.concreteClues?.[clueIndex]?.laterUse ?? ''),
+        name: this.requiredText(item.name, `${label}.craftBrief.concreteClues[${clueIndex}].name`),
+        sensoryDetail: this.text(item.sensoryDetail, ''),
+        laterUse: this.text(item.laterUse, ''),
       }))
       .filter((item) => item.name.trim());
-    const actionBeats = this.stringArray(record.actionBeats, []);
+    if (!clues.length) {
+      throw new Error(`generate_outline_preview ${label} craftBrief.concreteClues 为空，未生成完整细纲。`);
+    }
+    const subplotTasks = this.requiredStringArray(record.subplotTasks, `${label}.craftBrief.subplotTasks`);
+    const actionBeats = this.requiredStringArray(record.actionBeats, `${label}.craftBrief.actionBeats`);
+    if (actionBeats.length < 3) {
+      throw new Error(`generate_outline_preview ${label} craftBrief.actionBeats 少于 3 个节点，未生成完整细纲。`);
+    }
+    const progressTypes = this.requiredStringArray(record.progressTypes, `${label}.craftBrief.progressTypes`);
     return {
-      visibleGoal: this.text(record.visibleGoal, fallback.visibleGoal ?? chapter.objective),
-      hiddenEmotion: this.text(record.hiddenEmotion, fallback.hiddenEmotion ?? '角色在行动中暴露真实担忧。'),
-      coreConflict: this.text(record.coreConflict, fallback.coreConflict ?? chapter.conflict),
-      mainlineTask: this.text(record.mainlineTask, fallback.mainlineTask ?? seed.objective),
-      subplotTasks: this.stringArray(record.subplotTasks, fallback.subplotTasks ?? []),
-      actionBeats: (actionBeats.length >= 3 ? actionBeats : [...actionBeats, ...(fallback.actionBeats ?? [])]).slice(0, 8),
-      concreteClues: clues.length ? clues : fallback.concreteClues,
-      dialogueSubtext: this.text(record.dialogueSubtext, fallback.dialogueSubtext ?? '对话表面推进信息，实际试探立场和隐瞒代价。'),
-      characterShift: this.text(record.characterShift, fallback.characterShift ?? '角色从被动承受转向主动选择。'),
-      irreversibleConsequence: this.text(record.irreversibleConsequence, fallback.irreversibleConsequence ?? '本章结尾改变资源、关系或危险等级。'),
-      progressTypes: this.stringArray(record.progressTypes, fallback.progressTypes ?? ['info']),
+      visibleGoal: this.requiredText(record.visibleGoal, `${label}.craftBrief.visibleGoal`),
+      hiddenEmotion: this.requiredText(record.hiddenEmotion, `${label}.craftBrief.hiddenEmotion`),
+      coreConflict: this.requiredText(record.coreConflict, `${label}.craftBrief.coreConflict`),
+      mainlineTask: this.requiredText(record.mainlineTask, `${label}.craftBrief.mainlineTask`),
+      subplotTasks,
+      actionBeats,
+      concreteClues: clues,
+      dialogueSubtext: this.requiredText(record.dialogueSubtext, `${label}.craftBrief.dialogueSubtext`),
+      characterShift: this.requiredText(record.characterShift, `${label}.craftBrief.characterShift`),
+      irreversibleConsequence: this.requiredText(record.irreversibleConsequence, `${label}.craftBrief.irreversibleConsequence`),
+      progressTypes,
     };
   }
 
-  private createFallbackCraftBrief(
-    chapter: Pick<OutlinePreviewOutput['chapters'][number], 'chapterNo' | 'title' | 'objective' | 'conflict' | 'outline'>,
-    index: number,
-    chapterCount: number,
-    seed: ReturnType<GenerateOutlinePreviewTool['createFallbackSeed']>,
-  ): ChapterCraftBrief {
-    const chapterNo = Number(chapter.chapterNo) || index + 1;
-    const progressRatio = (index + 1) / Math.max(1, chapterCount);
-    const irreversibleConsequence = progressRatio >= 0.85
-      ? '阶段目标完成，但胜利同时打开下一卷或下一阶段的更高风险。'
-      : progressRatio >= 0.55
-        ? '关键线索或关系被改写，后续章节必须承担新的代价。'
-        : '角色获得新证据，同时失去原本安全的退路。';
-    return {
-      visibleGoal: chapter.objective,
-      hiddenEmotion: '害怕目标失败会让既有关系、承诺或安全感崩塌。',
-      coreConflict: chapter.conflict,
-      mainlineTask: seed.objective,
-      subplotTasks: [`补齐第 ${chapterNo} 章与卷内支线的连接点`],
-      actionBeats: [
-        `明确本章目标：${chapter.objective}`,
-        `安排一次具体行动或谈判，让阻力正面出现：${chapter.conflict}`,
-        `以新证据、关系变化或风险升级收束：${chapter.outline}`,
-      ],
-      concreteClues: [
-        {
-          name: `第 ${chapterNo} 章待复核线索`,
-          sensoryDetail: '需要人工补充可见、可听或可触的细节。',
-          laterUse: '用于后续章节回收或反转。',
-        },
-      ],
-      dialogueSubtext: '角色表面讨论行动方案，潜台词是试探信任、隐瞒代价或争夺主动权。',
-      characterShift: '角色从承接压力转向做出更具体的选择。',
-      irreversibleConsequence,
-      progressTypes: progressRatio >= 0.85 ? ['info', 'status'] : progressRatio >= 0.55 ? ['info', 'relationship'] : ['info', 'foreshadow'],
-    };
+  private requiredStringArray(value: unknown, label: string): string[] {
+    const items = this.stringArray(value, []);
+    if (!items.length) {
+      throw new Error(`generate_outline_preview 返回缺少 ${label}，未生成完整细纲。`);
+    }
+    return items;
   }
 
   private buildSystemPrompt(): string {
@@ -600,15 +477,11 @@ export class GenerateOutlinePreviewTool implements BaseTool<GenerateOutlinePrevi
       : [];
   }
 
-  private stringArray(value: unknown, fallback: string[]): string[] {
+  private stringArray(value: unknown, defaultValue: string[]): string[] {
     const items = Array.isArray(value)
       ? value.map((item) => this.text(item, '')).filter(Boolean)
       : [];
-    return items.length ? items : fallback;
-  }
-
-  private isLlmTimeout(error: unknown) {
-    return Boolean(error && typeof error === 'object' && (error as Record<string, unknown>).code === 'LLM_TIMEOUT');
+    return items.length ? items : defaultValue;
   }
 
 }
