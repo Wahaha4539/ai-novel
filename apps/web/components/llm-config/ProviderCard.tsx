@@ -17,6 +17,20 @@ interface Props {
   testResult: ConnectivityResult | null;
 }
 
+function providerParamText(provider: LlmProvider): string {
+  const pieces: string[] = [];
+  const thinking = provider.extraConfig?.thinking;
+  const thinkingType = thinking && typeof thinking === 'object'
+    ? (thinking as Record<string, unknown>).type
+    : undefined;
+  const reasoningEffort = provider.extraConfig?.reasoning_effort ?? provider.extraConfig?.reasoningEffort;
+
+  if (typeof thinkingType === 'string') pieces.push(`thinking=${thinkingType}`);
+  if (typeof reasoningEffort === 'string') pieces.push(`reasoning=${reasoningEffort}`);
+
+  return pieces.join(' · ');
+}
+
 export function ProviderCard({
   provider,
   onEdit,
@@ -31,6 +45,7 @@ export function ProviderCard({
 
   /** Show inline delete confirmation before removing a provider. */
   const handleDelete = () => setIsConfirmingDelete(true);
+  const paramsText = providerParamText(provider);
 
   return (
     <div
@@ -114,6 +129,7 @@ export function ProviderCard({
         </span>
         <span>🤖 {provider.defaultModel}</span>
         <span>🔑 {provider.apiKey}</span>
+        {paramsText && <span>🧠 {paramsText}</span>}
       </div>
 
       {/* Row 3: Action buttons */}

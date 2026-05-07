@@ -3,6 +3,7 @@ import { PrismaService } from '../../prisma/prisma.service';
 import { CreateLlmProviderDto } from './dto/create-llm-provider.dto';
 import { UpdateLlmProviderDto } from './dto/update-llm-provider.dto';
 import { SetRoutingDto } from './dto/set-routing.dto';
+import { buildProviderChatParams } from '../llm/llm-chat-params';
 
 /** Allowed app steps for LLM routing — Agent-Centric API 内链路会复用这些步骤做模型路由。 */
 const VALID_APP_STEPS = ['guided', 'agent_planner', 'generate', 'polish', 'summary', 'memory_review', 'fact_extractor.events', 'fact_extractor.states', 'fact_extractor.foreshadows'] as const;
@@ -162,7 +163,13 @@ export class LlmProvidersService implements OnModuleInit {
       const response = await fetch(`${provider.baseUrl.replace(/\/+$/, '')}/chat/completions`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${provider.apiKey}` },
-        body: JSON.stringify({ model, messages: [{ role: 'user', content: '测试连通性，请只回复 OK。' }], temperature: 0, max_tokens: 16 }),
+        body: JSON.stringify({
+          model,
+          messages: [{ role: 'user', content: '测试连通性，请只回复 OK。' }],
+          ...buildProviderChatParams(provider.extraConfig),
+          temperature: 0,
+          max_tokens: 64,
+        }),
         signal: AbortSignal.timeout(30_000),
       });
       if (!response.ok) {

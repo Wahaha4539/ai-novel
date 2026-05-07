@@ -19,6 +19,12 @@ export function LlmProviderPanel() {
   const [showForm, setShowForm] = useState(false);
   const [editingProvider, setEditingProvider] = useState<LlmProvider | null>(null);
 
+  /** Open create mode for a new provider */
+  const handleCreate = useCallback(() => {
+    setEditingProvider(null);
+    setShowForm(true);
+  }, []);
+
   /** Handle create or update submission */
   const handleSubmit = useCallback(async (input: CreateLlmProviderInput) => {
     if (editingProvider) {
@@ -62,7 +68,7 @@ export function LlmProviderPanel() {
           🔧 LLM 配置
         </h1>
         <button
-          onClick={() => { setEditingProvider(null); setShowForm(true); }}
+          onClick={handleCreate}
           style={{
             padding: '0.4rem 1rem',
             borderRadius: '0.5rem',
@@ -109,24 +115,50 @@ export function LlmProviderPanel() {
 
         {/* ── Section 1: Provider List ── */}
         <section style={{ marginBottom: '2rem' }}>
-          <h2
+          <div
             style={{
-              fontSize: '0.9rem',
-              fontWeight: 700,
-              color: 'var(--text-main)',
               marginBottom: '0.8rem',
               display: 'flex',
               alignItems: 'center',
-              gap: '0.5rem',
+              justifyContent: 'space-between',
+              gap: '0.75rem',
+              flexWrap: 'wrap',
             }}
           >
-            📡 Provider 列表
-            {llm.loading && (
-              <span className="animate-pulse" style={{ fontSize: '0.7rem', color: 'var(--text-dim)' }}>
-                加载中…
-              </span>
-            )}
-          </h2>
+            <h2
+              style={{
+                fontSize: '0.9rem',
+                fontWeight: 700,
+                color: 'var(--text-main)',
+                display: 'flex',
+                alignItems: 'center',
+                gap: '0.5rem',
+              }}
+            >
+              📡 Provider 列表
+              {llm.loading && (
+                <span className="animate-pulse" style={{ fontSize: '0.7rem', color: 'var(--text-dim)' }}>
+                  加载中…
+                </span>
+              )}
+            </h2>
+            <button
+              onClick={handleCreate}
+              style={{
+                padding: '0.35rem 0.85rem',
+                borderRadius: '0.5rem',
+                fontSize: '0.75rem',
+                fontWeight: 600,
+                cursor: 'pointer',
+                border: '1px solid var(--accent-cyan)',
+                background: 'rgba(6,182,212,0.1)',
+                color: 'var(--accent-cyan)',
+                transition: 'all 0.2s ease',
+              }}
+            >
+              + 新建 Provider
+            </button>
+          </div>
 
           {llm.providers.length === 0 && !llm.loading && (
             <div
@@ -140,7 +172,7 @@ export function LlmProviderPanel() {
                 border: '1px dashed var(--border-light)',
               }}
             >
-              暂无 Provider。点击上方「新建 Provider」添加第一个 LLM 服务。
+              暂无 Provider。点击「新建 Provider」添加第一个 LLM 服务。
             </div>
           )}
 

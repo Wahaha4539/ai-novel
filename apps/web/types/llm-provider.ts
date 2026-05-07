@@ -65,10 +65,12 @@ export interface UpdateLlmProviderInput {
   defaultModel?: string;
   isDefault?: boolean;
   isActive?: boolean;
+  extraConfig?: Record<string, unknown>;
 }
 
 /** DTO for setting step routing */
 export interface SetRoutingInput {
   providerId: string;
   modelOverride?: string;
+  paramsOverride?: Record<string, unknown>;
 }

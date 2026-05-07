@@ -13,6 +13,46 @@ interface Props {
   onCancel: () => void;
 }
 
+type ThinkingType = '' | 'enabled' | 'disabled';
+type ReasoningEffort = '' | 'none' | 'minimal' | 'low' | 'medium' | 'high' | 'max' | 'xhigh';
+
+const REASONING_EFFORT_OPTIONS: Array<{ value: ReasoningEffort; label: string }> = [
+  { value: '', label: '不设置' },
+  { value: 'none', label: 'none' },
+  { value: 'minimal', label: 'minimal' },
+  { value: 'low', label: 'low' },
+  { value: 'medium', label: 'medium' },
+  { value: 'high', label: 'high' },
+  { value: 'max', label: 'max' },
+  { value: 'xhigh', label: 'xhigh' },
+];
+
+function initialThinkingType(provider: LlmProvider | null): ThinkingType {
+  const thinking = provider?.extraConfig?.thinking;
+  const type = thinking && typeof thinking === 'object'
+    ? (thinking as Record<string, unknown>).type
+    : undefined;
+  return type === 'enabled' || type === 'disabled' ? type : '';
+}
+
+function initialReasoningEffort(provider: LlmProvider | null): ReasoningEffort {
+  const value = provider?.extraConfig?.reasoning_effort ?? provider?.extraConfig?.reasoningEffort;
+  if (typeof value !== 'string') return '';
+  return REASONING_EFFORT_OPTIONS.some((item) => item.value === value) ? value as ReasoningEffort : '';
+}
+
+function buildExtraConfig(provider: LlmProvider | null, thinkingType: ThinkingType, reasoningEffort: ReasoningEffort) {
+  const extraConfig: Record<string, unknown> = { ...(provider?.extraConfig ?? {}) };
+  delete extraConfig.thinking;
+  delete extraConfig.reasoning_effort;
+  delete extraConfig.reasoningEffort;
+
+  if (thinkingType) extraConfig.thinking = { type: thinkingType };
+  if (reasoningEffort) extraConfig.reasoning_effort = reasoningEffort;
+
+  return extraConfig;
+}
+
 export function ProviderForm({ provider, onSubmit, onCancel }: Props) {
   const isEditing = provider !== null;
 
@@ -22,6 +62,8 @@ export function ProviderForm({ provider, onSubmit, onCancel }: Props) {
   const [apiKey, setApiKey] = useState(''); // Never prefill masked key
   const [defaultModel, setDefaultModel] = useState(provider?.defaultModel ?? '');
   const [isDefault, setIsDefault] = useState(provider?.isDefault ?? false);
+  const [thinkingType, setThinkingType] = useState<ThinkingType>(initialThinkingType(provider));
+  const [reasoningEffort, setReasoningEffort] = useState<ReasoningEffort>(initialReasoningEffort(provider));
   const [submitting, setSubmitting] = useState(false);
   const [formError, setFormError] = useState('');
 
@@ -44,6 +86,7 @@ export function ProviderForm({ provider, onSubmit, onCancel }: Props) {
         apiKey: apiKey.trim() || undefined as unknown as string, // undefined = don't update key
         defaultModel: defaultModel.trim(),
         isDefault,
+        extraConfig: buildExtraConfig(provider, thinkingType, reasoningEffort),
       };
 
       // When editing and key is empty, don't send apiKey (keep existing)
@@ -125,6 +168,32 @@ export function ProviderForm({ provider, onSubmit, onCancel }: Props) {
           maxLength={200}
         />
       </FormField>
+
+      <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(12rem, 1fr))', gap: '0.75rem' }}>
+        <FormField label="thinking">
+          <select
+            className="input-field"
+            value={thinkingType}
+            onChange={(e) => setThinkingType(e.target.value as ThinkingType)}
+          >
+            <option value="">不设置</option>
+            <option value="enabled">enabled</option>
+            <option value="disabled">disabled</option>
+          </select>
+        </FormField>
+
+        <FormField label="reasoning_effort">
+          <select
+            className="input-field"
+            value={reasoningEffort}
+            onChange={(e) => setReasoningEffort(e.target.value as ReasoningEffort)}
+          >
+            {REASONING_EFFORT_OPTIONS.map((option) => (
+              <option key={option.value || 'unset'} value={option.value}>{option.label}</option>
+            ))}
+          </select>
+        </FormField>
+      </div>
 
       {/* Default toggle */}
       <label className="flex items-center gap-2" style={{ fontSize: '0.8rem', color: 'var(--text-muted)', cursor: 'pointer' }}>

@@ -1,5 +1,6 @@
 import { Injectable } from '@nestjs/common';
 import { LlmProvidersService, ResolvedLlmConfig } from '../llm-providers/llm-providers.service';
+import { buildProviderChatParams } from '../llm/llm-chat-params';
 
 interface ChatMessage {
   role: 'system' | 'user' | 'assistant';
@@ -43,6 +44,7 @@ export class LlmService {
     const body = JSON.stringify({
       model: config.model,
       messages,
+      ...buildProviderChatParams(config.params),
       temperature: options?.temperature ?? (config.params.temperature as number | undefined) ?? 0.8,
       max_tokens: options?.maxTokens ?? 2000,
     });
@@ -122,6 +124,9 @@ export class LlmService {
         .map((item: Record<string, unknown>) => item.text as string)
         .join('');
     }
+
+    const reasoningContent = message.reasoning_content ?? message.reasoningContent;
+    if (typeof reasoningContent === 'string') return reasoningContent;
 
     return '';
   }

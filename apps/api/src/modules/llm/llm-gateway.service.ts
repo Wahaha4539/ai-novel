@@ -2,6 +2,7 @@ import { Injectable } from '@nestjs/common';
 import { StructuredLogger } from '../../common/logging/structured-logger';
 import { LlmProvidersService, ResolvedLlmConfig } from '../llm-providers/llm-providers.service';
 import { LlmChatMessage, LlmChatOptions, LlmChatResult } from './dto/llm-chat.dto';
+import { buildProviderChatParams } from './llm-chat-params';
 
 export class LlmTimeoutError extends Error {
   readonly code = 'LLM_TIMEOUT';
@@ -118,6 +119,7 @@ export class LlmGatewayService {
         body: JSON.stringify({
           model: config.model,
           messages,
+          ...buildProviderChatParams(config.params),
           temperature: options.temperature ?? (config.params.temperature as number | undefined) ?? 0.2,
           max_tokens: options.maxTokens ?? 2000,
           ...(options.tools ? { tools: options.tools } : {}),
