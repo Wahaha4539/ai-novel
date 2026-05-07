@@ -6522,7 +6522,7 @@ test('AgentRunsService 全选 requiredApprovals 时将重试审批提升为整�
     agentApproval: { async create() { return {}; } },
   };
   const runtime = {
-    async act(_id: string, approvedStepNos?: number[]) {
+    async resumeFromFailedStep(_id: string, approvedStepNos?: number[]) {
       receivedApprovedStepNos = approvedStepNos;
       return { id: 'run1', status: 'succeeded' };
     },
@@ -9750,6 +9750,75 @@ test('AgentRuntime Plan 后台完成后可轮询到 waiting_approval 和 outline
   assert.equal(updates.some((item) => item.status === 'waiting_approval'), true);
   assert.equal(artifactBatches.flat().some((artifact) => artifact.artifactType === 'outline_preview'), true);
   assert.equal(result.artifacts.some((artifact: { artifactType?: string }) => artifact.artifactType === 'outline_preview'), true);
+});
+
+test('AgentRuntime resumeFromFailedStep resumes failed Plan preview without entering Act', async () => {
+  const updates: Array<Record<string, unknown>> = [];
+  const artifactBatches: Array<Record<string, unknown>[]> = [];
+  let executorOptions: Record<string, unknown> | undefined;
+  let currentRun: Record<string, unknown> = {
+    id: 'run1',
+    projectId: 'p1',
+    chapterId: null,
+    goal: 'generate 60 chapter outline',
+    status: 'failed',
+    input: { contextSnapshot: { schemaVersion: 2, session: { currentProjectId: 'p1' }, availableTools: [] } },
+  };
+  const plan = {
+    id: 'plan1',
+    version: 1,
+    taskType: 'outline_design',
+    steps: [
+      { stepNo: 1, id: 'inspect', name: 'inspect context', tool: 'inspect_project_context', mode: 'act' as const, requiresApproval: false, args: {} },
+      { stepNo: 2, id: 'outline', name: 'generate outline preview', tool: 'generate_outline_preview', mode: 'act' as const, requiresApproval: false, args: {} },
+      { stepNo: 3, id: 'validate', name: 'validate outline', tool: 'validate_outline', mode: 'act' as const, requiresApproval: false, args: { preview: '{{steps.2.output}}' } },
+      { stepNo: 4, id: 'persist', name: 'persist outline', tool: 'persist_outline', mode: 'act' as const, requiresApproval: true, args: { preview: '{{steps.2.output}}', validation: '{{steps.3.output}}' } },
+    ],
+  };
+  const prisma = {
+    agentPlan: { async findFirst() { return plan; } },
+    agentRun: {
+      async findUnique() { return currentRun; },
+      async updateMany(args: { data: Record<string, unknown> }) {
+        updates.push(args.data);
+        currentRun = { ...currentRun, ...args.data };
+        return { count: 1 };
+      },
+    },
+    agentStep: {
+      async findFirst() { return { stepNo: 2, mode: 'plan', toolName: 'generate_outline_preview' }; },
+    },
+    agentArtifact: {
+      async createMany(args: { data: Record<string, unknown>[] }) {
+        artifactBatches.push(args.data);
+        return { count: args.data.length };
+      },
+    },
+  };
+  const executor = {
+    async execute(_agentRunId: string, _steps: unknown[], options: Record<string, unknown>) {
+      executorOptions = options;
+      return {
+        1: { inspected: true },
+        2: { volume: { volumeNo: 1, title: 'Volume 1', chapterCount: 60 }, chapters: [{ chapterNo: 1, title: 'Chapter 1' }], risks: [] },
+        3: { valid: true },
+      };
+    },
+  };
+  const runtime = new AgentRuntimeService(prisma as never, {} as never, {} as never, executor as never, {} as never, {} as never);
+
+  const result = await runtime.resumeFromFailedStep('run1', [4], { confirmHighRisk: true });
+
+  assert.equal(executorOptions?.mode, 'plan');
+  assert.equal(executorOptions?.previewOnly, true);
+  assert.equal(executorOptions?.reuseSucceeded, true);
+  assert.equal(executorOptions?.approved, false);
+  assert.ok(result);
+  assert.equal(result.status, 'waiting_approval');
+  assert.equal(currentRun.mode, 'plan');
+  assert.equal(updates.some((item) => item.status === 'acting'), false);
+  assert.equal(updates.some((item) => item.status === 'succeeded'), false);
+  assert.equal(artifactBatches.flat().some((artifact) => artifact.artifactType === 'outline_preview'), true);
 });
 
 test('AgentRuntime cancel 后迟到执行结果不会覆盖 cancelled', async () => {

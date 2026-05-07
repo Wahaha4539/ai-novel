@@ -89,6 +89,17 @@ function findStepRecord(records: AgentRunStepRecord[], stepNo: number, planVersi
   return matching.find((item) => item.mode === 'act') ?? matching.find((item) => item.mode === 'plan') ?? matching[0];
 }
 
+function findLatestFailedStepRecord(records: AgentRunStepRecord[], planVersion: number) {
+  return records
+    .filter((item) => (item.planVersion ?? 1) === planVersion && isFailedStatus(item.status))
+    .sort((left, right) => {
+      const rightTime = new Date(right.finishedAt ?? right.startedAt ?? 0).getTime();
+      const leftTime = new Date(left.finishedAt ?? left.startedAt ?? 0).getTime();
+      if (rightTime !== leftTime) return rightTime - leftTime;
+      return right.stepNo - left.stepNo;
+    })[0];
+}
+
 function findExecutionStepRecord(records: AgentRunStepRecord[], stepNo: number, planVersion: number) {
   const matching = records.filter((item) => item.stepNo === stepNo && (item.planVersion ?? 1) === planVersion);
   return matching.find((item) => item.mode === 'act') ?? matching.find((item) => item.mode !== 'plan');
@@ -474,7 +485,10 @@ export function AgentMissionWindow({
   const phaseStates = buildPhaseStates(currentRun, plan);
   const progress = progressPercent(currentRun, plan, activePlanVersion);
   const completedSteps = planSteps.filter((step) => isFinishedStatus(findStepRecord(runSteps, step.stepNo, activePlanVersion)?.status)).length;
-  const failedStep = planSteps.find((step) => isFailedStatus(findStepRecord(runSteps, step.stepNo, activePlanVersion)?.status));
+  const failedStepRecord = findLatestFailedStepRecord(runSteps, activePlanVersion);
+  const failedStep = planSteps.find((step) => step.stepNo === failedStepRecord?.stepNo)
+    ?? planSteps.find((step) => isFailedStatus(findStepRecord(runSteps, step.stepNo, activePlanVersion)?.status));
+  const failedStepLabel = failedStep ? `步骤 ${failedStep.stepNo}: ${failedStep.name ?? failedStep.tool ?? '未命名步骤'}` : undefined;
   const outputRows = resultRows(currentRun?.output);
   const status = currentRun?.status ?? 'idle';
   const shouldShowApproval = Boolean(currentRun && currentRun.status !== 'succeeded' && currentRun.status !== 'cancelled');
@@ -654,6 +668,14 @@ export function AgentMissionWindow({
             <div className="agent-mission-error">
               <strong>{failedStep ? `失败步骤：${failedStep.name ?? failedStep.stepNo}` : '执行失败'}</strong>
               <pre>{safeJson(currentRun.error)}</pre>
+              {canRetry && failedStepRecord?.mode === 'plan' && (
+                <div className="agent-mission-resume">
+                  <span>可从{failedStepLabel ?? '失败步骤'}重新生成预览，写入仍会停在审批前。</span>
+                  <button type="button" onClick={() => void onRetry()} disabled={loading}>
+                    从失败步骤重新开始
+                  </button>
+                </div>
+              )}
             </div>
           ) : outputRows.length ? (
             <dl className="agent-mission-result-list">
@@ -686,6 +708,8 @@ export function AgentMissionWindow({
           hasCurrentRun={!!currentRun}
           plan={plan}
           riskSummary={riskSummary}
+          failedStepLabel={failedStepLabel}
+          failedStepMode={failedStepRecord?.mode}
           onCancel={onCancel}
           onRetry={onRetry}
           onAct={onAct}

@@ -461,21 +461,21 @@ export function useAgentRun() {
   const retry = useCallback(async (agentRunId: string, approvedStepNos?: number[]) => {
     setLoading(true);
     setError('');
-    setActionMessage('正在重试执行，已成功步骤会尽量复用…');
+    setActionMessage('正在从失败步骤重新开始，已成功步骤会复用。');
     try {
       await apiFetch<AgentRun>(`/agent-runs/${agentRunId}/retry`, {
         method: 'POST',
-        body: JSON.stringify({ approval: true, approvedStepNos, confirmation: { confirmHighRisk: true }, comment: '用户在 Agent Workspace 触发失败重试' }),
+        body: JSON.stringify({ approval: true, approvedStepNos, confirmation: { confirmHighRisk: true }, comment: '用户在 Agent Workspace 触发从失败步骤重新开始' }),
       });
       // retry 同样可能产生新的 Observation/Replan Artifact，必须刷新完整聚合视图。
       const fullRun = await apiFetch<AgentRun>(`/agent-runs/${agentRunId}`);
       setCurrentRun(fullRun);
       await loadAudit(agentRunId);
       if (!POLLING_STOP_STATUSES.has(fullRun.status)) startPolling(agentRunId);
-      setActionMessage(fullRun.status === 'succeeded' ? 'Agent 重试执行完成。' : `Agent 当前状态：${fullRun.status}`);
+      setActionMessage(fullRun.status === 'succeeded' ? 'Agent 已从失败步骤恢复并执行完成。' : `Agent 当前状态：${fullRun.status}`);
       return fullRun;
     } catch (retryError) {
-      const messageText = retryError instanceof Error ? retryError.message : '重试 Agent 失败';
+      const messageText = retryError instanceof Error ? retryError.message : '从失败步骤重新开始失败';
       setError(messageText);
       setActionMessage(messageText);
       throw retryError;

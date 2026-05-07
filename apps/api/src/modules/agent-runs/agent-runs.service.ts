@@ -323,7 +323,9 @@ export class AgentRunsService {
 
     const effectiveApprovedStepNos = await this.normalizeApprovedStepScope(id, dto.approvedStepNos);
     await this.prisma.agentApproval.create({ data: { agentRunId: id, approvalType: 'retry', status: 'approved', target: this.buildApprovalTarget(dto.approvedStepNos, dto.confirmation, 'all'), approvedAt: new Date(), comment: dto.comment } });
-    return this.runtime.act(id, effectiveApprovedStepNos, dto.confirmation);
+    return run.status === 'failed'
+      ? this.runtime.resumeFromFailedStep(id, effectiveApprovedStepNos, dto.confirmation)
+      : this.runtime.act(id, effectiveApprovedStepNos, dto.confirmation);
   }
 
   /** 兼容设计文档中的步骤级审批接口：记录审批范围，真正执行仍由 /act 触发。 */

@@ -12,6 +12,8 @@ interface AgentApprovalDialogProps {
   hasCurrentRun: boolean;
   plan?: AgentPlanPayload;
   riskSummary?: string[];
+  failedStepLabel?: string;
+  failedStepMode?: string;
   onCancel: () => void | Promise<void>;
   onRetry: () => void | Promise<void>;
   onAct: () => void | Promise<void>;
@@ -22,14 +24,15 @@ interface AgentApprovalDialogProps {
  * 使用 agent-panel-section 保持与其他面板一致的卡片风格，
  * 按钮使用 CSS 类以统一主题适配。
  */
-export function AgentApprovalDialog({ canAct, canRetry, loading, status, hasCurrentRun, plan, riskSummary = [], onCancel, onRetry, onAct }: AgentApprovalDialogProps) {
+export function AgentApprovalDialog({ canAct, canRetry, loading, status, hasCurrentRun, plan, riskSummary = [], failedStepLabel, failedStepMode, onCancel, onRetry, onAct }: AgentApprovalDialogProps) {
   const terminal = status === 'succeeded' || status === 'failed' || status === 'cancelled';
-  const requiresSecondConfirm = canAct || canRetry;
+  const retryPreviewOnly = canRetry && failedStepMode === 'plan';
+  const requiresSecondConfirm = canAct || (canRetry && !retryPreviewOnly);
   const [secondConfirmed, setSecondConfirmed] = useState(false);
   const writeInfo = useMemo(() => planWriteInfo(plan), [plan]);
   const scopeText = writeInfo.projectImportAssetLabels.length ? writeInfo.projectImportAssetLabels.join('、') : '当前导入预览中的项目资产';
   const writeStepText = writeInfo.writeToolLabels.length ? writeInfo.writeToolLabels.join('、') : '写入步骤';
-  const approvalTitle = writeInfo.hasWriteSteps ? '写入确认' : '审批控制台';
+  const approvalTitle = retryPreviewOnly ? '失败步骤恢复' : writeInfo.hasWriteSteps ? '写入确认' : '审批控制台';
   const approvalDescription = writeInfo.hasProjectImportWrite
     ? `这是写入确认。确认后会把导入预览写入当前项目：${scopeText}。未被选择的目标产物不会写入。`
     : writeInfo.hasWriteSteps
@@ -42,7 +45,12 @@ export function AgentApprovalDialog({ canAct, canRetry, loading, status, hasCurr
     : writeInfo.hasWriteSteps
       ? '我确认执行上述写入步骤。'
       : '我确认继续执行当前需审批步骤。';
-  const confirmationSignature = [status, writeInfo.writeTools.join(','), writeInfo.projectImportAssetLabels.join(','), riskSummary.join('\n')].join('|');
+  const confirmationSignature = [status, failedStepLabel, failedStepMode, writeInfo.writeTools.join(','), writeInfo.projectImportAssetLabels.join(','), riskSummary.join('\n')].join('|');
+  const retryDescription = retryPreviewOnly
+    ? `会复用已完成步骤，从${failedStepLabel ?? '失败步骤'}重新生成预览；写入步骤仍会停在审批前。`
+    : failedStepLabel
+      ? `会复用已完成步骤，并从${failedStepLabel}继续执行。`
+      : '会复用已完成步骤，并从失败步骤继续执行。';
 
   useEffect(() => {
     setSecondConfirmed(false);
@@ -73,7 +81,7 @@ export function AgentApprovalDialog({ canAct, canRetry, loading, status, hasCurr
 
       {/* 说明文字 */}
       <p className="text-xs leading-5 mb-3" style={{ color: 'var(--text-muted)' }}>
-        {approvalDescription}
+        {canRetry ? retryDescription : approvalDescription}
       </p>
 
       {/* 显式二次确认入口：避免把普通“执行”误解为已确认事实层覆盖/删除风险。 */}
@@ -131,7 +139,7 @@ export function AgentApprovalDialog({ canAct, canRetry, loading, status, hasCurr
           disabled={!canRetry || actionDisabled}
           className="agent-approval-btn agent-approval-btn--ghost agent-approval-btn--warn"
         >
-          {status === 'waiting_review' ? '补充确认' : '失败重试'}
+          {status === 'waiting_review' ? '补充确认' : retryPreviewOnly ? '从失败步骤重新开始' : '从失败步骤继续执行'}
         </button>
         <button
           type="button"

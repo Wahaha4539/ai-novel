@@ -253,6 +253,96 @@ export class AgentRuntimeService {
     }
   }
 
+  async resumeFromFailedStep(agentRunId: string, approvedStepNos?: number[], confirmation?: { confirmHighRisk?: boolean; confirmedRiskIds?: string[] }) {
+    const latestPlan = await this.prisma.agentPlan.findFirst({ where: { agentRunId }, orderBy: { version: 'desc' } });
+    if (!latestPlan) throw new Error('缺少可恢复执行的计划');
+    const run = await this.prisma.agentRun.findUnique({ where: { id: agentRunId } });
+    if (!run) throw new Error(`AgentRun 不存在：${agentRunId}`);
+    const failedStep = await this.prisma.agentStep.findFirst({
+      where: { agentRunId, planVersion: latestPlan.version, status: 'failed' },
+      orderBy: [{ finishedAt: 'desc' }, { createdAt: 'desc' }, { stepNo: 'desc' }],
+      select: { stepNo: true, mode: true, toolName: true },
+    });
+    if (!failedStep) throw new Error('当前 Run 没有可从步骤恢复的失败记录，请重新规划或重新发起任务');
+    if (failedStep.mode === 'plan') return this.resumePlanPreviewFromFailedStep(agentRunId, run, latestPlan, failedStep);
+    return this.act(agentRunId, approvedStepNos, confirmation);
+  }
+
+  private async resumePlanPreviewFromFailedStep(
+    agentRunId: string,
+    run: { id: string; projectId: string; chapterId?: string | null; goal: string; input: unknown },
+    latestPlan: { id: string; version: number; taskType: string; steps: unknown },
+    failedStep: { stepNo: number; mode: string; toolName: string | null },
+  ) {
+    const spec = { steps: latestPlan.steps } as unknown as Pick<AgentPlanSpec, 'steps'>;
+    const startedAt = Date.now();
+    this.logger.log('agent.runtime.resume_plan_preview.started', { agentRunId, planVersion: latestPlan.version, failedStepNo: failedStep.stepNo, failedTool: failedStep.toolName });
+    try {
+      const leaseStartedAt = new Date();
+      const lease = await this.prisma.agentRun.updateMany({
+        where: { id: agentRunId, status: 'failed' },
+        data: {
+          status: 'planning',
+          mode: 'plan',
+          error: null,
+          currentStepNo: failedStep.stepNo,
+          currentTool: failedStep.toolName,
+          currentPhase: 'resume_failed_step',
+          heartbeatAt: leaseStartedAt,
+          leaseExpiresAt: new Date(leaseStartedAt.getTime() + 120_000),
+          deadlineAt: new Date(leaseStartedAt.getTime() + 15 * 60_000),
+        },
+      });
+      if (lease.count !== 1) throw new AgentRunStateChangedError('AgentRun 当前状态已不允许恢复 Plan 预览', 'changed');
+
+      const context = await this.loadContextForExecution(run);
+      const previewOutputs = await this.executor.execute(agentRunId, spec.steps, { mode: 'plan', planVersion: latestPlan.version, approved: false, previewOnly: true, reuseSucceeded: true, agentContext: context });
+      const previewArtifacts = this.buildPreviewArtifacts(String(latestPlan.taskType), previewOutputs, spec.steps);
+      this.logger.log('agent.runtime.resume_plan_preview.completed_steps', { agentRunId, planVersion: latestPlan.version, failedStepNo: failedStep.stepNo, outputStepNos: Object.keys(previewOutputs).map(Number), previewArtifactCount: previewArtifacts.length });
+      if (previewArtifacts.length) {
+        await this.prisma.agentArtifact.createMany({
+          data: previewArtifacts.map((preview) => ({
+            agentRunId,
+            artifactType: preview.artifactType,
+            title: preview.title,
+            content: preview.content as Prisma.InputJsonValue,
+            status: 'preview',
+          })),
+        });
+      }
+
+      const completed = await this.prisma.agentRun.updateMany({
+        where: { id: agentRunId, status: 'planning' },
+        data: {
+          status: 'waiting_approval',
+          mode: 'plan',
+          taskType: String(latestPlan.taskType),
+          error: null,
+          output: { planId: latestPlan.id, resumedFromFailedStep: { stepNo: failedStep.stepNo, mode: failedStep.mode, tool: failedStep.toolName } } as unknown as Prisma.InputJsonValue,
+          currentStepNo: null,
+          currentTool: null,
+          currentPhase: null,
+          leaseExpiresAt: null,
+        },
+      });
+      const updated = await this.findRunOrThrow(agentRunId);
+      if (completed.count !== 1) {
+        this.logger.warn('agent.runtime.resume_plan_preview.late_completion_ignored', { agentRunId, planVersion: latestPlan.version, currentStatus: updated.status });
+      }
+      this.logger.log('agent.runtime.resume_plan_preview.completed', { agentRunId, planVersion: latestPlan.version, elapsedMs: Date.now() - startedAt, status: updated.status });
+      return updated;
+    } catch (error) {
+      if (error instanceof AgentCancelledError || error instanceof AgentRunStateChangedError) {
+        const current = await this.prisma.agentRun.findUnique({ where: { id: agentRunId } });
+        this.logger.warn('agent.runtime.resume_plan_preview.aborted_after_run_state_change', { agentRunId, elapsedMs: Date.now() - startedAt, message: error.message, currentStatus: current?.status });
+        return current;
+      }
+      await this.recordPlannerFailure(agentRunId, error);
+      this.logger.error('agent.runtime.resume_plan_preview.failed', error, { agentRunId, planVersion: latestPlan.version, failedStepNo: failedStep.stepNo, elapsedMs: Date.now() - startedAt });
+      throw error;
+    }
+  }
+
   async replan(agentRunId: string, goal?: string) {
     const run = await this.prisma.agentRun.findUnique({ where: { id: agentRunId } });
     if (!run) throw new Error(`AgentRun 不存在：${agentRunId}`);
