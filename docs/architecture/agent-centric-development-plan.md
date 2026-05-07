@@ -30,7 +30,7 @@
 | 阶段 6：project_import_preview / outline_design | 主链路已开始并补充校验、写入前 Diff 与 Artifact 拆分 | outline_design 已新增 `inspect_project_context`、`generate_outline_preview`、`validate_outline`、`persist_outline` Tools；project_import_preview 已新增 `analyze_source_text`、`build_import_preview`、`validate_imported_assets`、`persist_project_assets` Tools，支持文案分析、导入预览、写入前只读校验和审批后写入项目资料/角色/设定/卷/章节；`validate_outline` / `validate_imported_assets` 已派生只读 `writePreview` diff，标记将创建、更新、跳过的卷/章节/角色/设定；持久化 Tool 已增加重复编号最终阻断和同批次去重保护；Runtime 已在 Plan 阶段提前生成预览类 Artifact，并在 Act 成功后生成写入结果等细分 Artifact。 |
 | 阶段 7：逐步迁移 Worker Pipeline 到 API Service | 主链路已不再依赖 Worker，MemoryWriter/embedding 召回已迁入 API 并补强质量门禁 | 已新增 API 内 `PostProcessChapterService`、`ValidationService.runFactRules()` 过渡校验、`MemoryRebuildService`、`PolishChapterService`、`FactExtractorService`、`MemoryReviewService`、`RetrievalService`、`PromptBuilderService`、`GenerateChapterService` 和 `ChapterAutoRepairService`；`write_chapter` 已改为调用 API 内生成主链路；旧生成/润色/memory rebuild HTTP 入口已改为 API 内同步执行，删除 `GenerationQueueService` Worker dispatch，并移除 LLM 配置变更通知 Worker reload；`MemoryWriterService` 与 `EmbeddingGatewayService` 已迁入 API，记忆重建可生成章节摘要/关键场景多 chunk 并附加 embedding；本轮新增生成前 preflight、召回质量诊断与阻断、embedding/pgvector 失败关键词降级、正式 `embeddingVector` pgvector 列与 HNSW 索引迁移、支持 cursor/force 的批量 embedding backfill，以及单次/批量召回 benchmark API；继续新增生成后质量门禁和事务内版本号读取，降低异常输出入库与并发草稿版本冲突风险。 |
 | 阶段 8：前端 Agent Workspace | 基础入口已落地并增强失败恢复/Artifact/历史/审批/质量报告/审计/Diff 体验 | 已新增 `apps/web/hooks/useAgentRun.ts` 与 `apps/web/components/agent/AgentWorkspace.tsx`，接入侧边栏“Agent 工作台”和主页视图，支持输入目标、生成计划、展示风险/步骤/Artifact、确认执行、取消、刷新、失败重试和重新规划；ArtifactPanel 已支持按 artifactType 展示大纲、校验报告、项目资料、角色、设定、写入结果、草稿、润色结果、章节上下文、事实抽取、自动修复、记忆重建和记忆复核摘要卡片；工作台左侧已新增项目内历史 Run 列表，可选择最近 Run 恢复详情；已新增多版本 Plan 标签、Artifact 去重和步骤级审批勾选；本轮补充 Plan 版本差异摘要、Artifact 搜索和原始 JSON 二级折叠，并在需审批步骤上展示写入风险提示；新增 `chapter_generation_quality_report` 生成前、生成后与召回质量报告卡片；校验报告卡片已展示大纲/导入写入前 diff 摘要，章节上下文卡片已展示草稿版本、事实层和记忆层写入前 diff；审批台文案已明确“确认执行”同时作为高风险/事实覆盖/删除类副作用二次确认；本轮新增“审计轨迹”面板，展示计划、审批、步骤、产物和状态事件。组件当前仍以 `AgentWorkspace.tsx` 聚合为主，后续再按设计拆分为独立视图组件。已通过 `pnpm --dir apps/web build`。 |
-| 阶段 9：清理 Worker 依赖与文档更新 | 持续推进 | `.env.example` 已移除 `WORKER_PORT` / `WORKER_BASE_URL` 并新增 `EMBEDDING_*`；README 已改为 Web + API 单体启动、API 内 MemoryWriter/embedding 召回说明，并说明 Worker 仅作为历史参考；根 `package.json` 已移除 `dev:worker`；代码层已清除 API 对 Worker internal route 的主链路调用。 |
+| 阶段 9：清理 Worker 依赖与文档更新 | 已完成 | `.env.example` 已移除 `WORKER_PORT` / `WORKER_BASE_URL` 并新增 `EMBEDDING_*`；README 已改为 Web + API 单体启动、API 内 MemoryWriter/embedding 召回说明；根 `package.json` 已移除 `dev:worker`；代码层已清除 API 对 Worker internal route 的主链路调用；Python Worker 源码已删除。 |
 
 当前建议下一步：以 `chapter_write` 作为生产级样板链路，先收敛可靠性、安全边界和质量门禁，再复制到大纲、导入和润色场景。第一批 P0 已开始落地：`POST /agent-runs/plan` 支持 `clientRequestId` 请求级幂等复用，避免前端超时重试重复创建 Run；`/act` 增加状态守卫，防止 succeeded/acting/cancelled 等状态被重复执行；`/cancel` 增加终态保护，Executor 每个步骤前检查取消状态，尽量阻止后续写入；轻量 Tool Schema 新增整数、字符串最大长度、正则格式、数组长度等字段级约束，并补充对应测试。第二批 P0 继续加固执行可靠性：Runtime 进入 Act 前通过条件更新获取轻量执行租约，防止并发 `/act` 或 `/retry` 同时执行同一计划；Executor 取消检测改为结构化 `AgentCancelledError`，Runtime 不再把用户取消误标成 failed；Act 执行完成后再次读取 Run 状态，避免取消发生在最后一个长 Tool 执行期间时被 succeeded 覆盖。第三批 P0 已收敛失败续跑安全性：Executor 重试复用成功步骤输出时，必须匹配当前计划的 `stepNo + toolName`，并重新校验 cached output 的 Tool Schema；如果 replan 后相同步骤号对应不同工具，或旧输出不再符合契约，则跳过复用并重新执行该步骤。第四批 P0 已缓解 Plan/Act trace 覆盖问题：在不改库表的前提下，Plan 预览工具步骤使用负 `stepNo` 存储，Act 执行步骤继续使用正 `stepNo`，让预览 trace 和执行 trace 可以并存。第五批 P0 已补充 Policy/Rule 安全边界测试，覆盖 Plan 禁写、Act 禁止未计划工具、步骤数上限、高风险二次确认和风险 ID 精准确认路径。第六批 P0 已接通前端请求幂等：`useAgentRun.createPlan()` 会生成并提交 `clientRequestId`，让后端幂等能力真正进入 Agent Workspace 主链路；本轮继续修正前端幂等键复用语义，同一项目/章节/消息在成功返回前会复用同一个 key，成功返回后释放，避免后续主动创建相同任务被错误复用。第七批 P0 已增强审批风险说明：审批控制台会按计划中的审批工具展示草稿写入、事实层写入、记忆写入、项目资产写入和未勾选审批步骤提示。第八批 P0 已将 AgentStep trace 升级为正式 `mode + planVersion + stepNo` 唯一维度，新增 `planVersion` 字段和迁移，Plan 预览、Act 执行、retry 与 replan trace 不再依赖负 `stepNo` 规避覆盖；Executor 续跑复用限定到当前 Plan 版本，前端时间线也按最新 planVersion 展示对应 trace。已重新生成 Prisma Client，并通过 `pnpm --dir apps/api test:agent`、`pnpm --dir apps/api build` 与 `pnpm --dir apps/web build`。
 
@@ -233,7 +233,7 @@ apps/api/src/modules/llm/
 参考：
 
 ```text
-apps/worker/app/services/llm_gateway.py
+旧 Python Worker LLM Gateway（已删除，可从 git 历史查看）
 apps/api/src/modules/guided/llm.service.ts
 ```
 
@@ -589,7 +589,7 @@ GenerateChapterPipeline → GenerateChapterService
 - `write_chapter` Tool 不再通过 Worker 路由；
 - 章节生成、后处理、校验、记忆回写都在 API 内完成；
 - 生成结果与迁移前字段兼容；
-- 旧 Worker 代码只作为参考或过渡实现存在。
+- 旧 Worker 代码已在迁移稳定后删除。
 
 ---
 
@@ -664,7 +664,7 @@ apps/web/hooks/useAgentRun.ts
 - Docker 编排去掉 Worker 服务；
 - `.env.example` 清理 Worker 专用变量；
 - 文档更新为 Agent-Centric Backend Monolith 同步执行架构；
-- 保留旧 Worker 代码一段时间作为参考，确认稳定后移除。
+- 删除旧 Python Worker 源码，必要时通过 git 历史查看迁移前实现。
 
 ### 验收标准
 

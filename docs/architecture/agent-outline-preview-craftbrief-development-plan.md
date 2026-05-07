@@ -330,6 +330,117 @@ pnpm --dir apps/web build
 - 产物区展示 `craftBrief` 摘要。
 - 审批后写入，卷管理页展开能看到执行卡摘要。
 
+### P4：章节推进卡独立 Agent Tool
+
+目标：让用户不必进入 AI 引导页，也能在 Agent 工作台用自然语言为某一章或一组章节创建/补齐 `Chapter.craftBrief`。
+
+自然语言触发示例：
+
+- “给第 3 章生成章节推进卡。”
+- “把当前章细化成 craftBrief。”
+- “为第 12 章补行动链、线索、潜台词和不可逆后果。”
+- “把第 1 卷所有 planned 章节补齐推进卡。”
+- “这个章节细纲太粗了，帮我补成本章执行卡。”
+
+推荐工具链：
+
+```text
+resolve_chapter / list target chapters
+  -> collect_chapter_context / collect_task_context
+  -> generate_chapter_craft_brief_preview
+  -> validate_chapter_craft_brief
+  -> persist_chapter_craft_brief
+```
+
+拟新增 Tool：
+
+| Tool | 模式 | 风险 | 作用 |
+|---|---|---|---|
+| `generate_chapter_craft_brief_preview` | `plan/act` | low | 只读生成单章或多章推进卡预览，不写库。 |
+| `validate_chapter_craft_brief` | `plan/act` | low | 校验推进卡字段完整性、行动链密度、线索和不可逆后果。 |
+| `persist_chapter_craft_brief` | `act` | high | 用户审批后写入 `Chapter.craftBrief`，可选同步更新 `objective/conflict/outline`。 |
+
+建议输出契约：
+
+```ts
+type ChapterCraftBriefPreview = {
+  chapterId: string;
+  chapterNo: number;
+  title: string;
+  proposedFields: {
+    objective?: string;
+    conflict?: string;
+    outline?: string;
+    craftBrief: ChapterCraftBrief;
+  };
+  risks: string[];
+  writePlan: {
+    mode: 'preview_only';
+    target: 'Chapter.craftBrief';
+    requiresValidation: true;
+    requiresApprovalBeforePersist: true;
+  };
+};
+```
+
+Planner guidance：
+
+1. 新增或扩展 taskType：`chapter_craft_brief` / `chapter_progress_card`。
+2. 触发词包括：
+   - “章节推进卡”
+   - “推进卡”
+   - “执行卡”
+   - “craftBrief”
+   - “行动链”
+   - “本章执行卡”
+   - “补齐章节细纲”
+   - “细化当前章”
+   - “细化第 N 章”
+   - “给第 N 章补线索/潜台词/不可逆后果”
+3. 如果用户说“写正文/生成正文”，仍走 `write_chapter`，不要误选推进卡工具。
+4. 如果用户说“拆成场景/场景卡/SceneCard”，走现有 `generate_scene_cards_preview`，不要误选推进卡工具。
+
+和 SceneCard 的边界：
+
+| 能力 | 数据位置 | 粒度 | 典型用户说法 |
+|---|---|---|---|
+| 章节推进卡 / `craftBrief` | `Chapter.craftBrief` | 单章规划 | “给第 3 章补执行卡/推进卡/行动链。” |
+| SceneCard | `SceneCard` 表 | 章内场景 | “把第 3 章拆成 5 个场景。” |
+
+写入策略：
+
+1. `planned` 章节：
+   - 审批后允许写入 `craftBrief`。
+   - 可同步更新更具体的 `objective/conflict/outline`。
+2. `drafted` 或已有正文章节：
+   - 默认只预览，不自动覆盖。
+   - 如果用户明确要求更新已写章节推进卡，必须在审批文案中说明不会改正文，只改规划字段。
+3. 单章写入后清理章节上下文缓存，让后续正文生成读取最新 `craftBrief`。
+4. 批量补齐时逐章记录 `created/updated/skipped` 审计。
+
+Agent Artifact：
+
+- 新增 `chapter_craft_brief_preview`。
+- 新增 `chapter_craft_brief_validation_report`。
+- 新增 `chapter_craft_brief_persist_result`。
+- 展示字段：
+  - 目标章节。
+  - `visibleGoal/coreConflict/mainlineTask`。
+  - `actionBeats`。
+  - `concreteClues`。
+  - `dialogueSubtext`。
+  - `characterShift`。
+  - `irreversibleConsequence`。
+  - 写入前风险和已起草章节跳过说明。
+
+测试：
+
+- 自然语言“给第 3 章生成推进卡”生成计划：`resolve_chapter -> collect_chapter_context -> generate_chapter_craft_brief_preview -> validate_chapter_craft_brief`。
+- 审批后 `persist_chapter_craft_brief` 写入 `Chapter.craftBrief`。
+- `drafted` 章节默认跳过或需要明确审批语义，不覆盖正文。
+- “把第 3 章拆成 5 个场景”仍走 SceneCard 链路。
+- 正文生成读取该章时 `hasCraftBrief=true`，`craftBriefSource='chapter.craftBrief'`。
+
 ## 8. 验收标准
 
 - 用户在 Agent 工作台输入“为第 1 卷生成 60 章细纲”后：
@@ -341,6 +452,11 @@ pnpm --dir apps/web build
   - 风险中明确标记 fallback 批次和原因。
   - 审批写入后，`Chapter.craftBrief` 有内容。
   - 正文生成 prompt debug 中 `hasCraftBrief=true`，`craftBriefSource='chapter.craftBrief'`。
+- 用户在 Agent 工作台输入“给第 3 章生成章节推进卡”后：
+  - Planner 不误判为正文写作。
+  - Plan 中包含章节解析、上下文收集、推进卡预览和校验。
+  - 审批写入后目标章 `Chapter.craftBrief` 有内容。
+  - 如果目标章已 `drafted`，默认不覆盖正文，写入计划必须明确风险和范围。
 - 用户取消 Run 后，后台迟到批次结果不能覆盖 cancelled。
 - 已 drafted 章节不会被 outline 写入覆盖。
 
@@ -354,13 +470,16 @@ pnpm --dir apps/web build
 | 批次之间重复或断裂 | 章节连续性变差 | 每批带前序摘要，合并后校验重复/连续 |
 | 写入覆盖用户正文计划 | 破坏已有内容 | 保留 `planned` 才更新策略 |
 | Planner 误选正文写作工具 | 用户意图偏移 | 更新 Manifest 和 task guidance，补 planner eval |
+| 推进卡与 SceneCard 边界混淆 | 用户得到错误粒度的规划产物 | Planner guidance 明确“推进卡=章级，SceneCard=场景级”，补意图回归测试 |
+| 批量补卡覆盖已写章节规划 | 影响既有正文一致性 | 默认跳过 drafted，除非用户明确要求且审批文案说明只改规划字段 |
 
 ## 10. 推荐实现顺序
 
 1. 先做 P0：契约、fallback、写库、校验和测试。
 2. 再做 P1：Prompt 对齐 guided 质量要求。
 3. 再做 P2：批次生成和进度展示。
-4. 最后做 P3：Artifact/审批体验和文档补充。
+4. 再做 P3：Artifact/审批体验和文档补充。
+5. 最后做 P4：章节推进卡独立 Agent Tool，自然语言触发单章/批量补卡。
 
 这样每一步都可独立验证，不需要一次性大重构。
 
@@ -374,7 +493,10 @@ pnpm --dir apps/web build
 | `apps/api/src/modules/guided/guided.service.ts` | AI 引导 `guided_chapter` 高质量提示词和写库逻辑 |
 | `apps/api/src/modules/guided/guided-step-schemas.ts` | guided step JSON schema |
 | `apps/api/src/modules/generation/prompt-builder.service.ts` | 正文生成读取 `Chapter.craftBrief` 的 prompt 拼装 |
+| `apps/api/src/modules/agent-tools/tools/scene-card-tools.tool.ts` | SceneCard 链路参考，用于区分章级推进卡和场景级卡片 |
+| `apps/api/src/modules/agent-tools/tool-registry.service.ts` | 新增推进卡 Tool 注册入口 |
+| `apps/api/src/modules/agent-tools/agent-tools.module.ts` | 新增推进卡 Tool provider 入口 |
+| `apps/api/src/modules/agent-runs/agent-planner.service.ts` | Planner taskType guidance 与自然语言触发规则 |
 | `apps/web/components/agent/AgentArtifactPanel.tsx` | Agent Artifact 展示 |
 | `apps/web/components/VolumePanel.tsx` | 写入后章节细纲展示 |
 | `apps/web/components/EditorPanel.tsx` | 当前章正文编辑与细纲摘要展示 |
-

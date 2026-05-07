@@ -3,7 +3,7 @@
 > 最后更新：2026-05-05  
 > 状态：开发设计文档，供后续实现拆解使用  
 > 范围：`apps/api`、`apps/web`、`apps/api/prisma`、`packages/*`、`docs/*`  
-> 明确排除：`apps/worker` 已弃用，不作为开发范围、验收范围或架构依赖。
+> 明确排除：Python Worker 源码已删除，不作为开发范围、验收范围或架构依赖。
 
 ## 1. 背景
 
@@ -20,7 +20,7 @@
 ## 2. 设计原则
 
 1. **不依赖弃用 Worker**  
-   所有新增能力都进入 `apps/api` 同步服务、Agent Tool、Prisma 模型和 `apps/web` UI。`apps/worker` 仅作为历史参考，不改、不测、不作为文档实现依据。
+   所有新增能力都进入 `apps/api` 同步服务、Agent Tool、Prisma 模型和 `apps/web` UI。旧 Python Worker 源码已删除，不改、不测、不作为文档实现依据。
 
 2. **复用现有事实层，不重复造孤岛**  
    世界观、势力、地点、物品、规则等优先复用 `LorebookEntry` 与召回链路；关系、时间线、规则校验这类需要强结构的模块再新增专用表。

@@ -1,6 +1,6 @@
 # generate_chapter 时序草图
 
-> 历史说明：旧版时序曾由 API 调用 Worker `/internal/jobs/generate-chapter`。当前 Agent-Centric Backend Monolith 架构已改为 API 内同步 Service 链路，Worker 只作为参考实现保留。
+> 历史说明：旧版时序曾由 API 调用 Worker `/internal/jobs/generate-chapter`。当前 Agent-Centric Backend Monolith 架构已改为 API 内同步 Service 链路，Python Worker 源码已删除。
 
 ```text
 用户请求生成章节

@@ -1,6 +1,6 @@
 # 架构概览
 
-> 2026-05-05 补充：`apps/worker` 已弃用。后续新增能力默认以 `apps/api` 的 Agent-Centric 同步服务、Prisma 数据模型和 `apps/web` 前端为实现边界，不再把 Worker 作为开发或验收依赖。
+> 2026-05-07 补充：Python Worker 源码已从仓库删除。后续新增能力默认以 `apps/api` 的 Agent-Centric 同步服务、Prisma 数据模型和 `apps/web` 前端为实现边界，不再把 Worker 作为开发或验收依赖。
 
 > 历史说明：本文已按 Agent-Centric Backend Monolith 同步执行架构更新。早期“API 投递任务到 Python Worker”的设计只作为迁移参考，不再代表当前主链路。
 
@@ -8,7 +8,6 @@
 
 - `apps/web`：面向用户的管理后台与编辑器 UI
 - `apps/api`：资源型 API、Agent Runtime、ToolRegistry、LLM Gateway、生成 / 校验 / 记忆等同步业务 Service
-- `apps/worker`：历史 Python pipeline 参考实现；当前核心生成、召回、校验、摘要、回写主链路已迁入 `apps/api`
 - `packages/shared-types`：跨端共享类型
 - `packages/prompt-templates`：Prompt 模板目录
 
@@ -23,4 +22,4 @@
 
 - API 层已接入 Prisma + PostgreSQL，AgentRun / AgentPlan / AgentStep / AgentArtifact / AgentApproval 用于追踪自然语言任务。
 - 章节生成、润色、事实校验、记忆重建和 embedding 召回均以 API 内 Service 为主链路。
-- Worker 仅保留为历史迁移参考，验证脚本和启动脚本不应再依赖 Worker 健康检查或 internal route。
+- Python Worker 源码已删除，验证脚本和启动脚本不应再依赖 Worker 健康检查或 internal route。
