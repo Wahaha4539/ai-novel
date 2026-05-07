@@ -4351,6 +4351,68 @@ test('GenerateOutlinePreviewTool keeps 500s outer timeout but bounds LLM call', 
   assert.equal(llmUsages[0].model, 'mock-outline-model');
 });
 
+test('generate_outline_preview 重新规划时不把原有卷纲、章节细纲和 craftBrief 传给 LLM', async () => {
+  const prompts: string[] = [];
+  const oldChapters = Array.from({ length: 20 }, (_item, index) => {
+    const chapterNo = index + 1;
+    return {
+      chapterNo,
+      volumeNo: 1,
+      title: `旧第 ${chapterNo} 章`,
+      objective: `第${chapterNo}章旧目标`,
+      conflict: `第${chapterNo}章旧冲突`,
+      outline: `旧第 ${chapterNo} 章细纲：陆沉舟在旧桥墩下检查盐蚀铆钉，曹钧拦住催工的差役，闻青栀拿出被浮税盟涂改的料账，章末留下第${chapterNo}个旧伏笔。`,
+      craftBrief: createOutlineCraftBrief({
+        visibleGoal: `第${chapterNo}章旧执行目标`,
+        handoffToNextChapter: `第${chapterNo}章旧交接压力`,
+      }),
+    };
+  });
+  const llm = {
+    async chatJson(messages: Array<{ role: string; content: string }>) {
+      const prompt = messages[1]?.content ?? '';
+      prompts.push(prompt);
+      const match = prompt.match(/章节范围：第 (\d+)-(\d+) 章/);
+      assert.ok(match, '批次 prompt 应包含本批章节范围');
+      const start = Number(match[1]);
+      const end = Number(match[2]);
+      return {
+        data: {
+          volume: { volumeNo: 1, title: '罪桥初潮', synopsis: '重写后卷简介', objective: '重写后卷目标', chapterCount: 20, narrativePlan: { storyUnits: [{ unitId: 'new_unit_01', title: '逃生桥试压' }] } },
+          chapters: Array.from({ length: end - start + 1 }, (_chapter, index) => createOutlineChapter(start + index, 1)),
+          risks: [],
+        },
+        result: { model: 'mock-outline' },
+      };
+    },
+  };
+  const tool = new GenerateOutlinePreviewTool(llm as never);
+
+  await tool.run(
+    {
+      instruction: '重新编写第 1 卷 20 章细纲',
+      volumeNo: 1,
+      chapterCount: 20,
+      context: {
+        project: { title: '逆潮脊梁', outline: '修成逆潮脊梁，但最终改为活承网。' },
+        volumes: [{ volumeNo: 1, title: '罪桥初潮', synopsis: '旧卷简介', objective: '旧卷目标', chapterCount: 20, narrativePlan: { storyUnits: [{ unitId: 'old_unit_01', title: '旧单元总图' }] } }],
+        existingChapters: oldChapters,
+      },
+    },
+    { agentRunId: 'run1', projectId: 'p1', mode: 'plan', approved: false, outputs: {}, policy: {} },
+  );
+
+  assert.match(prompts[0], /目标卷信息（重规划模式/);
+  assert.match(prompts[0], /已省略原有卷纲、章节 outline 和 craftBrief/);
+  assert.doesNotMatch(prompts[0], /旧卷简介/);
+  assert.doesNotMatch(prompts[0], /旧卷目标/);
+  assert.doesNotMatch(prompts[0], /旧单元总图/);
+  assert.doesNotMatch(prompts[0], /旧第 1 章细纲/);
+  assert.doesNotMatch(prompts[0], /旧第 20 章细纲/);
+  assert.doesNotMatch(prompts[0], /第1章旧执行目标/);
+  assert.doesNotMatch(prompts[0], /第20章旧执行目标/);
+});
+
 test('GenerateOutlinePreviewTool LLM failure 直接抛错，不生成确定性预览', async () => {
   const llm = {
     async chatJson() {

@@ -555,12 +555,13 @@ export class GenerateOutlinePreviewTool implements BaseTool<GenerateOutlinePrevi
     const project = this.asRecord(record.project);
     const volumes = Array.isArray(record.volumes) ? record.volumes.map((item) => this.asRecord(item)) : [];
     const targetVolume = volumes.find((item) => Number(item.volumeNo) === volumeNo) ?? {};
-    const existingChapters = Array.isArray(record.existingChapters) ? record.existingChapters.slice(0, 160) : [];
-    const characters = Array.isArray(record.characters) ? record.characters.slice(0, 30) : [];
-    const lorebookEntries = Array.isArray(record.lorebookEntries) ? record.lorebookEntries.slice(0, 30) : [];
+    const isReplanning = this.isReplanningInstruction(args.instruction);
     const rangeStart = batch?.startChapterNo ?? 1;
     const rangeEnd = batch?.endChapterNo ?? chapterCount;
     const requestChapterCount = batch?.chapterCount ?? chapterCount;
+    const existingChapters = !isReplanning && Array.isArray(record.existingChapters) ? record.existingChapters.slice(0, 160) : [];
+    const characters = Array.isArray(record.characters) ? record.characters.slice(0, 30) : [];
+    const lorebookEntries = Array.isArray(record.lorebookEntries) ? record.lorebookEntries.slice(0, 30) : [];
     const generatedSummary = previousChapters.slice(-8).reverse().map((chapter) => ({
       chapterNo: chapter.chapterNo,
       title: chapter.title,
@@ -608,21 +609,34 @@ export class GenerateOutlinePreviewTool implements BaseTool<GenerateOutlinePrevi
         outline: project.outline,
       }, 3000),
       '',
-      '目标卷纲：',
-      this.safeJson({
-        volumeNo,
-        title: targetVolume.title,
-        synopsis: targetVolume.synopsis,
-        objective: targetVolume.objective,
-        narrativePlan: targetVolume.narrativePlan,
-      }, 4000),
-      '',
-      '已有章节摘要（避免重复编号、标题和目标）：',
-      this.safeJson(existingChapters, 6000),
+      ...(isReplanning
+        ? [
+          '目标卷信息（重规划模式；只保留定位字段，不注入旧卷纲或旧细纲）：',
+          this.safeJson({
+            volumeNo,
+            title: targetVolume.title,
+            chapterCount: targetVolume.chapterCount,
+          }, 2000),
+          '重规划输入净化：已省略原有卷纲、章节 outline 和 craftBrief，避免旧规划污染新细纲；请只依据项目总纲、角色、设定与用户目标重新生成。',
+        ]
+        : [
+          '目标卷纲：',
+          this.safeJson({
+            volumeNo,
+            title: targetVolume.title,
+            synopsis: targetVolume.synopsis,
+            objective: targetVolume.objective,
+            narrativePlan: targetVolume.narrativePlan,
+          }, 4000),
+          '',
+          '已有章节摘要（避免重复编号、标题和目标）：',
+          this.safeJson(existingChapters, 6000),
+        ]),
       '',
       '本次运行已生成章节短表（最近章节在前，保持连续性，避免重复）：',
       this.safeJson(generatedSummary, 4000),
       '连续性硬要求：本批第一章必须接住上方最后一章的 exitState、openLoops、handoffToNextChapter 和 continuityState；同一个跨章场景必须沿用 sceneArcId，并递增 scenePart。',
+      ...(isReplanning ? ['重规划硬要求：不要沿用旧标题、旧目标、旧章节 outline 或旧 craftBrief；输出必须是新的完整高密度卷/章节细纲。'] : []),
       '',
       '角色摘要：',
       this.safeJson(characters, 4000),
@@ -633,6 +647,10 @@ export class GenerateOutlinePreviewTool implements BaseTool<GenerateOutlinePrevi
       `请严格只返回第 ${rangeStart}-${rangeEnd} 章，共 ${requestChapterCount} 个 chapters；chapterNo 必须使用全卷绝对章号。`,
       '若上下文不足，把风险写入 risks，但仍输出完整章节和 craftBrief。',
     ].join('\n');
+  }
+
+  private isReplanningInstruction(instruction: string | undefined): boolean {
+    return /重新|重编|重写|重做|重排|再规划|推倒|replan|regenerate|rewrite/i.test(instruction ?? '');
   }
 
   private estimateMaxTokens(chapterCount: number): number {
