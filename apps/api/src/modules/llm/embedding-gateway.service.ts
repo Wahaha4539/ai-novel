@@ -3,6 +3,8 @@ import { StructuredLogger } from '../../common/logging/structured-logger';
 import type { ResolvedLlmConfig } from '../llm-providers/llm-providers.service';
 import { LlmEmbeddingOptions, LlmEmbeddingResult } from './dto/llm-chat.dto';
 
+const DEFAULT_EMBEDDING_BATCH_SIZE = 32;
+
 /**
  * API 内统一 Embedding 网关，兼容 OpenAI /embeddings。
  * 输入文本数组；输出向量数组；不产生业务写库副作用。
@@ -13,6 +15,7 @@ export class EmbeddingGatewayService {
   private readonly envBaseUrl = process.env.EMBEDDING_BASE_URL ?? 'http://localhost:18319/v1';
   private readonly envApiKey = process.env.EMBEDDING_API_KEY ?? '';
   private readonly envModel = process.env.EMBEDDING_MODEL ?? 'local-hash-zh-768';
+  private readonly envMaxBatchSize = this.positiveInteger(process.env.EMBEDDING_MAX_BATCH_SIZE, DEFAULT_EMBEDDING_BATCH_SIZE);
 
   /** 批量生成文本向量；调用失败会抛出统一错误，上层不得静默降级到低质量召回。 */
   async embedTexts(texts: string[], options: LlmEmbeddingOptions = {}): Promise<LlmEmbeddingResult> {
@@ -26,7 +29,7 @@ export class EmbeddingGatewayService {
 
     for (let attempt = 0; attempt <= retries; attempt += 1) {
       try {
-        return await this.requestEmbedding(config, normalizedTexts, options, { appStep, attemptNo: attempt + 1, maxAttempts: retries + 1 });
+        return await this.requestEmbeddingBatches(config, normalizedTexts, options, { appStep, attemptNo: attempt + 1, maxAttempts: retries + 1 });
       } catch (error) {
         lastError = error;
       }
@@ -39,6 +42,32 @@ export class EmbeddingGatewayService {
   private resolveConfig(): ResolvedLlmConfig {
     // 与 Worker 对齐：embedding 是独立 BGE OpenAI-Compatible 服务，API Key 可为空。
     return { baseUrl: this.envBaseUrl, apiKey: this.envApiKey, model: this.envModel, params: {}, source: 'env_fallback' };
+  }
+
+  private async requestEmbeddingBatches(config: ResolvedLlmConfig, input: string[], options: LlmEmbeddingOptions, trace: { appStep: string; attemptNo: number; maxAttempts: number }): Promise<LlmEmbeddingResult> {
+    const batchSize = this.envMaxBatchSize;
+    if (input.length <= batchSize) return this.requestEmbedding(config, input, options, trace);
+
+    const vectors: number[][] = [];
+    const usage: Record<string, number> = {};
+    let model = config.model;
+    let batchCount = 0;
+
+    for (let offset = 0; offset < input.length; offset += batchSize) {
+      batchCount += 1;
+      const batch = input.slice(offset, offset + batchSize);
+      const result = await this.requestEmbedding(config, batch, options, trace);
+      vectors.push(...result.vectors);
+      model = result.model || model;
+      this.mergeUsage(usage, result.usage);
+    }
+
+    return {
+      vectors,
+      model,
+      usage: Object.keys(usage).length ? usage : undefined,
+      rawPayloadSummary: { model, count: vectors.length, batchCount, batchSize },
+    };
   }
 
   private async requestEmbedding(config: ResolvedLlmConfig, input: string[], options: LlmEmbeddingOptions, trace: { appStep: string; attemptNo: number; maxAttempts: number }): Promise<LlmEmbeddingResult> {
@@ -107,5 +136,17 @@ export class EmbeddingGatewayService {
       });
       throw error;
     }
+  }
+
+  private mergeUsage(target: Record<string, number>, usage?: Record<string, number>) {
+    if (!usage) return;
+    for (const [key, value] of Object.entries(usage)) {
+      if (typeof value === 'number' && Number.isFinite(value)) target[key] = (target[key] ?? 0) + value;
+    }
+  }
+
+  private positiveInteger(value: string | undefined, fallback: number) {
+    const parsed = Number.parseInt(value ?? '', 10);
+    return Number.isInteger(parsed) && parsed > 0 ? parsed : fallback;
   }
 }

@@ -46,6 +46,7 @@ interface WriteChapterSeriesItem {
   actualWordCount?: number;
   summary?: string;
   pipeline?: WriteChapterQualityPipelineOutput;
+  pipelineError?: string;
   error?: string;
 }
 
@@ -162,20 +163,29 @@ export class WriteChapterSeriesTool implements BaseTool<WriteChapterSeriesInput,
           progressCurrent: index,
           progressTotal: chapterNos.length,
         });
-        // 严格串行生成：前一章草稿落库后，后一章的 PromptBuilder 才能召回最新前文。
+        // 前一章草稿落库后再写后一章，确保 PromptBuilder 能召回最新前文。
         const generated = await this.generateSingleChapter(context, chapter.id, args);
         const pipeline: WriteChapterQualityPipelineOutput = { generated };
         let currentDraftId = generated.draftId;
+        let pipelineError: string | undefined;
         if ((args.qualityPipeline ?? 'full') === 'full') {
-          currentDraftId = await this.runFullQualityPipeline(context, chapter.id, currentDraftId, pipeline);
+          try {
+            currentDraftId = await this.runFullQualityPipeline(context, chapter.id, currentDraftId, pipeline);
+          } catch (error) {
+            pipelineError = error instanceof Error ? error.message : String(error);
+          }
         }
-        results.push(this.toSuccessItem(chapter, generated, currentDraftId, pipeline));
+        results.push(this.toSuccessItem(chapter, generated, currentDraftId, pipeline, pipelineError));
         await context.heartbeat?.({
           phase: 'writing_chapter',
-          phaseMessage: `第 ${chapter.chapterNo} 章连续生成完成`,
+          phaseMessage: pipelineError ? `第 ${chapter.chapterNo} 章正文已生成，后处理失败` : `第 ${chapter.chapterNo} 章连续生成完成`,
           progressCurrent: index + 1,
           progressTotal: chapterNos.length,
         });
+        if (pipelineError && args.continueOnError === false) {
+          stoppedEarly = true;
+          break;
+        }
       } catch (error) {
         results.push({ chapterId: chapter.id, chapterNo: chapter.chapterNo, title: chapter.title, status: 'failed', error: error instanceof Error ? error.message : String(error) });
         await context.heartbeat?.({
@@ -198,10 +208,12 @@ export class WriteChapterSeriesTool implements BaseTool<WriteChapterSeriesInput,
 
   /** 将用户给出的范围或编号列表归一化为去重升序章节号，并施加批量上限。 */
   private resolveChapterNos(args: WriteChapterSeriesInput): number[] {
-    const requestedLimit = args.maxChapters ?? MAX_BATCH_CHAPTERS;
+    const instructionRange = this.parseInstructionRange(args.instruction);
+    const requestedLimit = instructionRange ? MAX_BATCH_CHAPTERS : args.maxChapters ?? MAX_BATCH_CHAPTERS;
     const maxChapters = Math.min(MAX_BATCH_CHAPTERS, requestedLimit);
-    const fromList = Array.isArray(args.chapterNos) && args.chapterNos.length ? args.chapterNos : undefined;
-    const rawNos = fromList ?? this.range(args.startChapterNo, args.endChapterNo, args.maxChapters);
+    const fromList = !instructionRange && Array.isArray(args.chapterNos) && args.chapterNos.length ? args.chapterNos : undefined;
+    const fromArgs = instructionRange ? [] : fromList ?? this.range(args.startChapterNo, args.endChapterNo, args.maxChapters);
+    const rawNos = instructionRange ?? fromArgs;
     if (!rawNos.length) throw new BadRequestException('write_chapter_series 需要 chapterNos、startChapterNo/endChapterNo 或 startChapterNo/maxChapters');
 
     const chapterNos = [...new Set(rawNos)].sort((a, b) => a - b);
@@ -223,6 +235,16 @@ export class WriteChapterSeriesTool implements BaseTool<WriteChapterSeriesInput,
     }
 
     return [];
+  }
+
+  private parseInstructionRange(instruction?: string): number[] | undefined {
+    const text = instruction?.trim();
+    if (!text) return undefined;
+    const match = text.match(/(?:第\s*)?(\d+)\s*(?:章\s*)?(?:-|－|~|～|–|—|到|至)\s*(?:第\s*)?(\d+)\s*章/);
+    if (!match) return undefined;
+    const start = Number(match[1]);
+    const end = Number(match[2]);
+    return this.range(start, end);
   }
 
   private async loadChapters(projectId: string, chapterNos: number[]) {
@@ -295,7 +317,7 @@ export class WriteChapterSeriesTool implements BaseTool<WriteChapterSeriesInput,
     return typeof value === 'number' && Number.isFinite(value) ? value : 0;
   }
 
-  private toSuccessItem(chapter: { id: string; chapterNo: number; title: string | null }, generated: GenerateChapterResult, currentDraftId: string, pipeline: WriteChapterQualityPipelineOutput): WriteChapterSeriesItem {
+  private toSuccessItem(chapter: { id: string; chapterNo: number; title: string | null }, generated: GenerateChapterResult, currentDraftId: string, pipeline: WriteChapterQualityPipelineOutput, pipelineError?: string): WriteChapterSeriesItem {
     return {
       chapterId: chapter.id,
       chapterNo: chapter.chapterNo,
@@ -306,6 +328,7 @@ export class WriteChapterSeriesTool implements BaseTool<WriteChapterSeriesInput,
       actualWordCount: generated.actualWordCount,
       summary: generated.summary,
       pipeline,
+      ...(pipelineError ? { pipelineError } : {}),
     };
   }
 }

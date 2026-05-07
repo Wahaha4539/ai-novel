@@ -10,6 +10,7 @@ import { BaseTool } from '../agent-tools/base-tool';
 import { ToolRegistryService } from '../agent-tools/tool-registry.service';
 import { RuleEngineService } from '../agent-rules/rule-engine.service';
 import { SkillRegistryService } from '../agent-skills/skill-registry.service';
+import { EmbeddingGatewayService } from '../llm/embedding-gateway.service';
 import { LlmGatewayService, LlmTimeoutError } from '../llm/llm-gateway.service';
 import { AgentExecutorService, AgentWaitingReviewError } from './agent-executor.service';
 import { AgentExecutionObservationError } from './agent-observation.types';
@@ -338,6 +339,31 @@ test('GenerateChapterService maps pass and warning quality gates to QualityRepor
   assert.deepEqual(warnReport.issues, [{ severity: 'warning', issueType: 'generation_quality_gate_warning', message: 'too short' }]);
   assert.equal(failReport.verdict, 'fail');
   assert.deepEqual(failReport.issues, [{ severity: 'error', issueType: 'generation_quality_gate_blocker', message: 'refusal text' }]);
+});
+
+test('EmbeddingGatewayService splits large embedding requests by local service batch limit', async () => {
+  const service = new EmbeddingGatewayService() as unknown as {
+    embedTexts: (texts: string[], options?: Record<string, unknown>) => Promise<{ vectors: number[][]; model: string; usage?: Record<string, number> }>;
+    requestEmbedding: (_config: unknown, input: string[], _options: unknown, _trace: unknown) => Promise<{ vectors: number[][]; model: string; usage: Record<string, number>; rawPayloadSummary: Record<string, unknown> }>;
+  };
+  const batchSizes: number[] = [];
+  service.requestEmbedding = async (_config, input) => {
+    batchSizes.push(input.length);
+    return {
+      vectors: input.map((_, index) => [batchSizes.length, index]),
+      model: 'mock-embedding',
+      usage: { total_tokens: input.length },
+      rawPayloadSummary: { count: input.length },
+    };
+  };
+
+  const result = await service.embedTexts(Array.from({ length: 35 }, (_, index) => `memory ${index}`), { retries: 0 });
+
+  assert.deepEqual(batchSizes, [32, 3]);
+  assert.equal(result.vectors.length, 35);
+  assert.deepEqual(result.vectors[0], [1, 0]);
+  assert.deepEqual(result.vectors[32], [2, 0]);
+  assert.equal(result.usage?.total_tokens, 35);
 });
 
 test('GenerateChapterService 生成前细纲密度检查标记缺失执行卡字段', () => {
@@ -5763,9 +5789,35 @@ test('WriteChapterSeriesTool 按章节升序连续生成并限制批量数量', 
   pipelineCalls.length = 0;
   const maxChaptersResult = await tool.run({ startChapterNo: 3, maxChapters: 2, instruction: '从第 3 章开始连续写两章', qualityPipeline: 'draft_only' }, context);
   assert.deepEqual(generatedChapterIds, ['c3', 'c4']);
-  assert.deepEqual(pipelineCalls, []);
+  assert.equal(pipelineCalls.length, 0);
   assert.equal(maxChaptersResult.total, 2);
   assert.deepEqual(maxChaptersResult.chapters.map((item) => item.chapterNo), [3, 4]);
+
+  generatedChapterIds.length = 0;
+  pipelineCalls.length = 0;
+  const instructionRangeResult = await tool.run({ chapterNos: [3], maxChapters: 1, instruction: '帮我生成第3-4章正文的编写。', qualityPipeline: 'draft_only' }, context);
+  assert.deepEqual(generatedChapterIds, ['c3', 'c4']);
+  assert.equal(pipelineCalls.length, 0);
+  assert.equal(instructionRangeResult.total, 2);
+  assert.deepEqual(instructionRangeResult.chapters.map((item) => item.chapterNo), [3, 4]);
+
+  generatedChapterIds.length = 0;
+  pipelineCalls.length = 0;
+  const failingPolish = {
+    async run(args: Record<string, unknown>) {
+      pipelineCalls.push(`polish:${args.chapterId}:${args.draftId}`);
+      if (args.chapterId === 'c3') throw new Error('mock polish failed');
+      return { chapterId: args.chapterId, draftId: `p-${args.chapterId}`, polishedWordCount: 1200 };
+    },
+  };
+  const resilientTool = new WriteChapterSeriesTool(prisma as never, generateChapter as never, failingPolish as never, validation as never, repair as never, facts as never, memory as never, review as never);
+  const resilientResult = await resilientTool.run({ startChapterNo: 3, endChapterNo: 4, instruction: '连续写两章' }, context);
+  assert.deepEqual(generatedChapterIds, ['c3', 'c4']);
+  assert.equal(resilientResult.succeeded, 2);
+  assert.equal(resilientResult.failed, 0);
+  assert.equal(resilientResult.stoppedEarly, false);
+  assert.match(resilientResult.chapters[0].pipelineError ?? '', /mock polish failed/);
+  assert.equal(resilientResult.chapters[1].pipelineError, undefined);
 
   await assert.rejects(
     () => tool.run({ startChapterNo: 1, endChapterNo: 6, instruction: '太多章' }, context),
