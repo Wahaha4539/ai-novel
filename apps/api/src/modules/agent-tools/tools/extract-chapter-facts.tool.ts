@@ -1,5 +1,6 @@
 import { BadRequestException, Injectable } from '@nestjs/common';
 import { FactExtractionResult, FactExtractorService } from '../../facts/fact-extractor.service';
+import { DEFAULT_LLM_TIMEOUT_MS } from '../../llm/llm-timeout.constants';
 import { BaseTool, ToolContext } from '../base-tool';
 
 interface ExtractChapterFactsInput {
@@ -24,9 +25,18 @@ export class ExtractChapterFactsTool implements BaseTool<ExtractChapterFactsInpu
 
   constructor(private readonly factExtractor: FactExtractorService) {}
 
-  run(args: ExtractChapterFactsInput, context: ToolContext): Promise<FactExtractionResult> {
+  async run(args: ExtractChapterFactsInput, context: ToolContext): Promise<FactExtractionResult> {
     const chapterId = args.chapterId ?? context.chapterId;
     if (!chapterId) throw new BadRequestException('extract_chapter_facts 需要 chapterId');
-    return this.factExtractor.extractChapterFacts(context.projectId, chapterId, args.draftId);
+    await context.updateProgress?.({
+      phase: 'calling_llm',
+      phaseMessage: '正在抽取章节事实',
+      progressCurrent: 0,
+      progressTotal: 1,
+      timeoutMs: DEFAULT_LLM_TIMEOUT_MS * 2 + 60_000,
+    });
+    const result = await this.factExtractor.extractChapterFacts(context.projectId, chapterId, args.draftId);
+    await context.updateProgress?.({ phase: 'persisting', phaseMessage: '章节事实抽取已完成', progressCurrent: 1, progressTotal: 1, timeoutMs: 60_000 });
+    return result;
   }
 }

@@ -2,6 +2,7 @@ import { Injectable } from '@nestjs/common';
 import { StructuredLogger } from '../../common/logging/structured-logger';
 import type { ResolvedLlmConfig } from '../llm-providers/llm-providers.service';
 import { LlmEmbeddingOptions, LlmEmbeddingResult } from './dto/llm-chat.dto';
+import { DEFAULT_LLM_TIMEOUT_MS } from './llm-timeout.constants';
 
 const DEFAULT_EMBEDDING_BATCH_SIZE = 32;
 
@@ -72,7 +73,7 @@ export class EmbeddingGatewayService {
 
   private async requestEmbedding(config: ResolvedLlmConfig, input: string[], options: LlmEmbeddingOptions, trace: { appStep: string; attemptNo: number; maxAttempts: number }): Promise<LlmEmbeddingResult> {
     const url = `${config.baseUrl.replace(/\/+$/, '')}/embeddings`;
-    const timeoutMs = options.timeoutMs ?? 60_000;
+    const timeoutMs = options.timeoutMs ?? DEFAULT_LLM_TIMEOUT_MS;
     const startedAt = Date.now();
     const logContext = {
       appStep: trace.appStep,

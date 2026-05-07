@@ -4,6 +4,7 @@ import { SkillRegistryService } from '../agent-skills/skill-registry.service';
 import { ImportAssetType, IMPORT_ASSET_TYPES } from '../agent-tools/tools/import-preview.types';
 import { ToolRegistryService } from '../agent-tools/tool-registry.service';
 import { LlmGatewayService } from '../llm/llm-gateway.service';
+import { DEFAULT_LLM_TIMEOUT_MS } from '../llm/llm-timeout.constants';
 import { AgentContextV2 } from './agent-context-builder.service';
 import type { ImportPreviewModeDto } from './dto/create-agent-plan.dto';
 
@@ -73,7 +74,6 @@ const IMPORT_TARGET_ASSET_BY_TOOL = new Map<string, ImportAssetType>(
 
 const BUILD_IMPORT_BRIEF_TOOL = 'build_import_brief';
 const CROSS_TARGET_CONSISTENCY_CHECK_TOOL = 'cross_target_consistency_check';
-
 const MERGE_PREVIEW_ARG_BY_ASSET_TYPE: Record<ImportAssetType, string> = {
   projectProfile: 'projectProfilePreview',
   outline: 'outlinePreview',
@@ -239,7 +239,7 @@ export class AgentPlannerService {
     this.consumeLlmCall(llmBudget, 'initial_plan');
     const { data, result } = await this.llm.chatJson<unknown>(
       messages,
-      { appStep: 'agent_planner', maxTokens: 4500, timeoutMs: 90_000, retries: 1, temperature: 0.1 },
+      { appStep: 'agent_planner', maxTokens: 4500, timeoutMs: DEFAULT_LLM_TIMEOUT_MS, retries: 1, temperature: 0.1 },
     );
 
     try {
@@ -311,7 +311,7 @@ export class AgentPlannerService {
           ),
         },
       ],
-      { appStep: 'agent_planner', maxTokens: 4500, timeoutMs: 90_000, retries: 1, temperature: 0.1 },
+      { appStep: 'agent_planner', maxTokens: 4500, timeoutMs: DEFAULT_LLM_TIMEOUT_MS, retries: 1, temperature: 0.1 },
     );
 
     return { ...this.validateAndNormalizeLlmPlan(data, defaults, context), plannerDiagnostics: { source: 'llm_repair', model: result.model, usage: result.usage, repairedFromError: validationError, llmCalls: llmBudget.used, maxLlmCalls: llmBudget.max, schemaVersion: 2 } };

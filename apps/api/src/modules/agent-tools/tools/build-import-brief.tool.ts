@@ -1,5 +1,6 @@
 import { Injectable } from '@nestjs/common';
 import { LlmGatewayService } from '../../llm/llm-gateway.service';
+import { DEFAULT_LLM_TIMEOUT_MS } from '../../llm/llm-timeout.constants';
 import { BaseTool, ToolContext } from '../base-tool';
 import type { ToolManifestV2 } from '../tool-manifest.types';
 import { SourceTextAnalysisOutput } from './analyze-source-text.tool';
@@ -81,13 +82,20 @@ export class BuildImportBriefTool implements BaseTool<BuildImportBriefInput, Imp
   riskLevel: 'low' = 'low';
   requiresApproval = false;
   sideEffects: string[] = [];
-  executionTimeoutMs = 180_000;
+  executionTimeoutMs = DEFAULT_LLM_TIMEOUT_MS * 2 + 65_000;
 
   constructor(private readonly llm: LlmGatewayService) {}
 
   async run(args: BuildImportBriefInput, context: ToolContext): Promise<ImportBriefOutput> {
     const analysis = this.normalizeAnalysis(args.analysis);
     const requestedAssetTypes = normalizeImportAssetTypes(args.requestedAssetTypes, args.instruction);
+    await context.updateProgress?.({
+      phase: 'calling_llm',
+      phaseMessage: '正在生成导入简报',
+      progressCurrent: 0,
+      progressTotal: 1,
+      timeoutMs: DEFAULT_LLM_TIMEOUT_MS * 2 + 5_000,
+    });
     const response = await this.llm.chatJson<unknown>(
       [
         {
@@ -111,10 +119,11 @@ export class BuildImportBriefTool implements BaseTool<BuildImportBriefInput, Imp
           ].join('\n\n'),
         },
       ],
-      { appStep: 'agent_import_brief', maxTokens: 3500, timeoutMs: 160_000, retries: 1, temperature: 0.1 },
+      { appStep: 'agent_import_brief', maxTokens: 3500, timeoutMs: DEFAULT_LLM_TIMEOUT_MS, retries: 1, temperature: 0.1 },
     );
 
     recordToolLlmUsage(context, 'agent_import_brief', response.result);
+    await context.updateProgress?.({ phase: 'validating', phaseMessage: '正在校验导入简报', progressCurrent: 1, progressTotal: 1 });
     return this.normalize(response.data, analysis, requestedAssetTypes);
   }
 

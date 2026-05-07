@@ -4,6 +4,7 @@ import { NovelCacheService } from '../../common/cache/novel-cache.service';
 import { StructuredLogger } from '../../common/logging/structured-logger';
 import { PrismaService } from '../../prisma/prisma.service';
 import { EmbeddingGatewayService } from '../llm/embedding-gateway.service';
+import { DEFAULT_LLM_TIMEOUT_MS } from '../llm/llm-timeout.constants';
 
 export type RetrievalHitSourceType =
   | 'lorebook'
@@ -510,7 +511,7 @@ export class RetrievalService {
     const query = [context.queryText, context.objective, context.conflict, ...(context.characters ?? [])].filter(Boolean).join('\n').slice(0, 4000);
     if (!query.trim()) throw new Error('记忆召回查询文本为空，无法生成 embedding。');
 
-    const result = await this.embeddings.embedTexts([query], { appStep: 'embedding', timeoutMs: 45_000, retries: 1 });
+    const result = await this.embeddings.embedTexts([query], { appStep: 'embedding', timeoutMs: DEFAULT_LLM_TIMEOUT_MS, retries: 1 });
     const vector = result.vectors[0];
     if (!vector?.length) throw new Error('embedding 服务未返回有效查询向量。');
     return vector;

@@ -3,6 +3,7 @@ import { Prisma } from '@prisma/client';
 import { NovelCacheService } from '../../../common/cache/novel-cache.service';
 import { PrismaService } from '../../../prisma/prisma.service';
 import { LlmGatewayService } from '../../llm/llm-gateway.service';
+import { DEFAULT_LLM_TIMEOUT_MS } from '../../llm/llm-timeout.constants';
 import { BaseTool, ToolContext } from '../base-tool';
 import type { ToolManifestV2 } from '../tool-manifest.types';
 
@@ -195,7 +196,7 @@ interface PersistContinuityChangesOutput {
   approvalMessage: string;
 }
 
-const CONTINUITY_PREVIEW_LLM_TIMEOUT_MS = 120_000;
+const CONTINUITY_PREVIEW_LLM_TIMEOUT_MS = DEFAULT_LLM_TIMEOUT_MS;
 const CONTINUITY_PREVIEW_LLM_RETRIES = 1;
 const CONTINUITY_PREVIEW_PHASE_TIMEOUT_MS = CONTINUITY_PREVIEW_LLM_TIMEOUT_MS * (CONTINUITY_PREVIEW_LLM_RETRIES + 1) + 5_000;
 

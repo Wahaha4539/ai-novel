@@ -1,5 +1,6 @@
 import { Injectable } from '@nestjs/common';
 import { LlmGatewayService } from '../../llm/llm-gateway.service';
+import { DEFAULT_LLM_TIMEOUT_MS } from '../../llm/llm-timeout.constants';
 import { BaseTool, ToolContext } from '../base-tool';
 import type { ToolManifestV2 } from '../tool-manifest.types';
 
@@ -10,7 +11,7 @@ interface GenerateWorldbuildingPreviewInput {
   maxEntries?: number;
 }
 
-const WORLDBUILDING_PREVIEW_LLM_TIMEOUT_MS = 120_000;
+const WORLDBUILDING_PREVIEW_LLM_TIMEOUT_MS = DEFAULT_LLM_TIMEOUT_MS;
 const WORLDBUILDING_PREVIEW_LLM_RETRIES = 1;
 const WORLDBUILDING_PREVIEW_PHASE_TIMEOUT_MS = WORLDBUILDING_PREVIEW_LLM_TIMEOUT_MS * (WORLDBUILDING_PREVIEW_LLM_RETRIES + 1) + 5_000;
 

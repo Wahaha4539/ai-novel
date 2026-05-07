@@ -3,6 +3,7 @@ import { Prisma } from '@prisma/client';
 import { NovelCacheService } from '../../../common/cache/novel-cache.service';
 import { PrismaService } from '../../../prisma/prisma.service';
 import { LlmGatewayService } from '../../llm/llm-gateway.service';
+import { DEFAULT_LLM_TIMEOUT_MS } from '../../llm/llm-timeout.constants';
 import { BaseTool, ToolContext } from '../base-tool';
 import type { ToolManifestV2 } from '../tool-manifest.types';
 
@@ -196,7 +197,7 @@ type ExistingSceneRef = { id: string; chapterId: string | null; sceneNo: number 
 
 const SCENE_SOURCE_KIND = 'planned_scene_card' as const;
 const SCENE_ORIGIN_TOOL = 'generate_scene_cards_preview' as const;
-const SCENE_CARDS_PREVIEW_LLM_TIMEOUT_MS = 120_000;
+const SCENE_CARDS_PREVIEW_LLM_TIMEOUT_MS = DEFAULT_LLM_TIMEOUT_MS;
 const SCENE_CARDS_PREVIEW_LLM_RETRIES = 1;
 const SCENE_CARDS_PREVIEW_PHASE_TIMEOUT_MS = SCENE_CARDS_PREVIEW_LLM_TIMEOUT_MS * (SCENE_CARDS_PREVIEW_LLM_RETRIES + 1) + 5_000;
 

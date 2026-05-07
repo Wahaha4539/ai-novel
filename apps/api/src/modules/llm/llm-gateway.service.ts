@@ -3,6 +3,7 @@ import { StructuredLogger } from '../../common/logging/structured-logger';
 import { LlmProvidersService, ResolvedLlmConfig } from '../llm-providers/llm-providers.service';
 import { LlmChatMessage, LlmChatOptions, LlmChatResult } from './dto/llm-chat.dto';
 import { buildProviderChatParams } from './llm-chat-params';
+import { DEFAULT_LLM_TIMEOUT_MS } from './llm-timeout.constants';
 
 export class LlmTimeoutError extends Error {
   readonly code = 'LLM_TIMEOUT';
@@ -110,7 +111,7 @@ export class LlmGatewayService {
     }
 
     const startedAt = Date.now();
-    const timeoutMs = options.timeoutMs ?? 120_000;
+    const timeoutMs = options.timeoutMs ?? DEFAULT_LLM_TIMEOUT_MS;
     let response: Response;
     try {
       response = await fetch(`${config.baseUrl.replace(/\/+$/, '')}/chat/completions`, {
@@ -156,7 +157,7 @@ export class LlmGatewayService {
 
   private normalizeLlmError(error: unknown, options: LlmChatOptions): unknown {
     if (error instanceof LlmTimeoutError || error instanceof LlmProviderError || error instanceof LlmJsonInvalidError) return error;
-    const timeoutMs = options.timeoutMs ?? 120_000;
+    const timeoutMs = options.timeoutMs ?? DEFAULT_LLM_TIMEOUT_MS;
     const record = error && typeof error === 'object' ? error as Record<string, unknown> : {};
     const name = typeof record.name === 'string' ? record.name : '';
     const message = error instanceof Error ? error.message : String(error);

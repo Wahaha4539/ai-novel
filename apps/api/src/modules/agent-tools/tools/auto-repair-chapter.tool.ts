@@ -1,5 +1,6 @@
 import { BadRequestException, Injectable } from '@nestjs/common';
 import { ChapterAutoRepairResult, ChapterAutoRepairService } from '../../generation/chapter-auto-repair.service';
+import { DEFAULT_LLM_TIMEOUT_MS } from '../../llm/llm-timeout.constants';
 import { BaseTool, ToolContext } from '../base-tool';
 
 interface AutoRepairChapterInput {
@@ -24,7 +25,7 @@ export class AutoRepairChapterTool implements BaseTool<AutoRepairChapterInput, C
   riskLevel: 'medium' = 'medium';
   requiresApproval = true;
   sideEffects = ['create_chapter_draft_if_repaired', 'update_chapter_word_count'];
-  executionTimeoutMs = 425_000;
+  executionTimeoutMs = DEFAULT_LLM_TIMEOUT_MS * 2 + 65_000;
 
   constructor(private readonly autoRepair: ChapterAutoRepairService) {}
 

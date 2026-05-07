@@ -2,6 +2,7 @@ import { BadRequestException, Injectable, NotFoundException } from '@nestjs/comm
 import { Prisma } from '@prisma/client';
 import { PrismaService } from '../../prisma/prisma.service';
 import { LlmGatewayService } from '../llm/llm-gateway.service';
+import { DEFAULT_LLM_TIMEOUT_MS } from '../llm/llm-timeout.constants';
 
 export interface PolishChapterResult {
   draftId: string;
@@ -31,7 +32,7 @@ interface PolishChapterProgressReporter {
   heartbeat?: (patch?: PolishChapterProgressPatch) => Promise<void>;
 }
 
-const POLISH_CHAPTER_LLM_TIMEOUT_MS = 450_000;
+const POLISH_CHAPTER_LLM_TIMEOUT_MS = DEFAULT_LLM_TIMEOUT_MS;
 const POLISH_CHAPTER_LLM_RETRIES = 1;
 const POLISH_CHAPTER_LLM_PHASE_TIMEOUT_MS = POLISH_CHAPTER_LLM_TIMEOUT_MS * (POLISH_CHAPTER_LLM_RETRIES + 1) + 5_000;
 

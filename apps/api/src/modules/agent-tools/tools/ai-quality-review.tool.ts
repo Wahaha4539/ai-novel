@@ -1,5 +1,6 @@
 import { BadRequestException, Injectable } from '@nestjs/common';
 import { AiQualityReviewResult, AiQualityReviewService } from '../../quality-reports/ai-quality-review.service';
+import { DEFAULT_LLM_TIMEOUT_MS } from '../../llm/llm-timeout.constants';
 import { BaseTool, ToolContext } from '../base-tool';
 import type { ToolManifestV2 } from '../tool-manifest.types';
 
@@ -44,7 +45,7 @@ export class AiQualityReviewTool implements BaseTool<AiQualityReviewToolInput, A
   riskLevel: 'medium' = 'medium';
   requiresApproval = true;
   sideEffects = ['create_quality_report'];
-  executionTimeoutMs = 300_000;
+  executionTimeoutMs = DEFAULT_LLM_TIMEOUT_MS * 2 + 65_000;
   manifest: ToolManifestV2 = {
     name: this.name,
     displayName: 'AI 审稿并写入质量报告',

@@ -1,5 +1,6 @@
 import { Injectable } from '@nestjs/common';
 import { LlmGatewayService } from '../../llm/llm-gateway.service';
+import { DEFAULT_LLM_TIMEOUT_MS } from '../../llm/llm-timeout.constants';
 import { normalizeLorebookEntryType, STORY_BIBLE_ENTRY_TYPES } from '../../lorebook/lorebook-entry-types';
 import { BaseTool, ToolContext } from '../base-tool';
 import type { ToolManifestV2 } from '../tool-manifest.types';
@@ -11,7 +12,7 @@ interface GenerateStoryBiblePreviewInput {
   maxCandidates?: number;
 }
 
-const STORY_BIBLE_PREVIEW_LLM_TIMEOUT_MS = 120_000;
+const STORY_BIBLE_PREVIEW_LLM_TIMEOUT_MS = DEFAULT_LLM_TIMEOUT_MS;
 const STORY_BIBLE_PREVIEW_LLM_RETRIES = 1;
 const STORY_BIBLE_PREVIEW_PHASE_TIMEOUT_MS = STORY_BIBLE_PREVIEW_LLM_TIMEOUT_MS * (STORY_BIBLE_PREVIEW_LLM_RETRIES + 1) + 5_000;
 

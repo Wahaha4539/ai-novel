@@ -2,6 +2,7 @@ import { BadRequestException, Injectable, NotFoundException } from '@nestjs/comm
 import { Prisma } from '@prisma/client';
 import { PrismaService } from '../../prisma/prisma.service';
 import { LlmGatewayService } from '../llm/llm-gateway.service';
+import { DEFAULT_LLM_TIMEOUT_MS } from '../llm/llm-timeout.constants';
 
 interface ChapterAutoRepairProgressPatch {
   phase?: string;
@@ -30,7 +31,7 @@ export interface ChapterAutoRepairResult {
   summary?: string;
 }
 
-const CHAPTER_AUTO_REPAIR_LLM_TIMEOUT_MS = 180_000;
+const CHAPTER_AUTO_REPAIR_LLM_TIMEOUT_MS = DEFAULT_LLM_TIMEOUT_MS;
 const CHAPTER_AUTO_REPAIR_LLM_RETRIES = 1;
 const CHAPTER_AUTO_REPAIR_PHASE_TIMEOUT_MS = CHAPTER_AUTO_REPAIR_LLM_TIMEOUT_MS * (CHAPTER_AUTO_REPAIR_LLM_RETRIES + 1) + 5_000;
 

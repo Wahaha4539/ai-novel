@@ -1,5 +1,6 @@
 import { Injectable } from '@nestjs/common';
 import { LlmGatewayService } from '../../llm/llm-gateway.service';
+import { DEFAULT_LLM_TIMEOUT_MS } from '../../llm/llm-timeout.constants';
 import { BaseTool, ToolContext } from '../base-tool';
 import type { ToolManifestV2 } from '../tool-manifest.types';
 import { SourceTextAnalysisOutput } from './analyze-source-text.tool';
@@ -15,7 +16,7 @@ interface GenerateImportWritingRulesPreviewInput {
   maxRules?: number;
 }
 
-const IMPORT_WRITING_RULES_PREVIEW_LLM_TIMEOUT_MS = 220_000;
+const IMPORT_WRITING_RULES_PREVIEW_LLM_TIMEOUT_MS = DEFAULT_LLM_TIMEOUT_MS;
 const IMPORT_WRITING_RULES_PREVIEW_LLM_RETRIES = 1;
 const IMPORT_WRITING_RULES_PREVIEW_PHASE_TIMEOUT_MS = IMPORT_WRITING_RULES_PREVIEW_LLM_TIMEOUT_MS * (IMPORT_WRITING_RULES_PREVIEW_LLM_RETRIES + 1) + 5_000;
 

@@ -5,6 +5,7 @@ import { StructuredLogger } from '../../common/logging/structured-logger';
 import { PrismaService } from '../../prisma/prisma.service';
 import { buildGenerationProfileSnapshot, GenerationProfileSnapshot } from '../generation-profile/generation-profile.defaults';
 import { LlmGatewayService } from '../llm/llm-gateway.service';
+import { DEFAULT_LLM_TIMEOUT_MS } from '../llm/llm-timeout.constants';
 import { RetrievalBundle, RetrievalBundleWithCacheMeta, RetrievalService } from '../memory/retrieval.service';
 import { RetrievalPlan, RetrievalPlannerDiagnostics } from '../memory/retrieval-plan.types';
 import { ValidationService } from '../validation/validation.service';
@@ -42,7 +43,7 @@ interface ChapterGenerationProgressReporter {
   heartbeat?: (patch?: ChapterGenerationProgressPatch) => Promise<void>;
 }
 
-const GENERATE_CHAPTER_LLM_TIMEOUT_MS = 450_000;
+const GENERATE_CHAPTER_LLM_TIMEOUT_MS = DEFAULT_LLM_TIMEOUT_MS;
 const GENERATE_CHAPTER_LLM_RETRIES = 1;
 const GENERATE_CHAPTER_LLM_PHASE_TIMEOUT_MS = GENERATE_CHAPTER_LLM_TIMEOUT_MS * (GENERATE_CHAPTER_LLM_RETRIES + 1) + 5_000;
 

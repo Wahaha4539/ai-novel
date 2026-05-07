@@ -1,6 +1,7 @@
 import { Injectable } from '@nestjs/common';
 import { StructuredLogger } from '../../common/logging/structured-logger';
 import { LlmGatewayService } from '../llm/llm-gateway.service';
+import { DEFAULT_LLM_TIMEOUT_MS } from '../llm/llm-timeout.constants';
 import { RetrievalImportance, RetrievalPlan, RetrievalPlanQuery, RetrievalPlannerResult } from '../memory/retrieval-plan.types';
 
 export interface RetrievalPlannerInput {
@@ -40,7 +41,7 @@ export class RetrievalPlannerService {
           { role: 'system', content: this.buildSystemPrompt() },
           { role: 'user', content: this.buildUserPrompt(input) },
         ],
-        { appStep: 'retrieval_planner', maxTokens: 1800, timeoutMs: 90_000, retries: 1, temperature: 0 },
+        { appStep: 'retrieval_planner', maxTokens: 1800, timeoutMs: DEFAULT_LLM_TIMEOUT_MS, retries: 1, temperature: 0 },
       );
       const rawQueryCount = this.countRawQueries(data);
       const plan = this.normalizePlan(data, fallback);

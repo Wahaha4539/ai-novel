@@ -1,6 +1,7 @@
 import { Injectable, Optional } from '@nestjs/common';
 import { ToolRegistryService } from '../agent-tools/tool-registry.service';
 import { LlmGatewayService } from '../llm/llm-gateway.service';
+import { DEFAULT_LLM_TIMEOUT_MS } from '../llm/llm-timeout.constants';
 import { AgentContextV2 } from './agent-context-builder.service';
 import { AgentObservation, ReplanAttemptStats, ReplanPatch } from './agent-observation.types';
 import { AgentPlanStepSpec } from './agent-planner.service';
@@ -106,7 +107,7 @@ export class AgentReplannerService {
             },
           }),
         },
-      ], { appStep: 'agent_replanner', temperature: 0, maxTokens: 1200, timeoutMs: 30_000, retries: 0 });
+      ], { appStep: 'agent_replanner', temperature: 0, maxTokens: 1200, timeoutMs: DEFAULT_LLM_TIMEOUT_MS, retries: 0 });
       return this.normalizeAndValidateLlmPatch(response.data, input, deterministic);
     } catch (error) {
       return { ...deterministic, reason: `${deterministic.reason}；LLM Replanner 实验降级：${error instanceof Error ? error.message : String(error)}` };

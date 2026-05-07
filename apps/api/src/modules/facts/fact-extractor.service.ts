@@ -4,6 +4,7 @@ import { NovelCacheService } from '../../common/cache/novel-cache.service';
 import { PrismaService } from '../../prisma/prisma.service';
 import { buildGenerationProfileSnapshot, GenerationProfileSnapshot } from '../generation-profile/generation-profile.defaults';
 import { LlmGatewayService } from '../llm/llm-gateway.service';
+import { DEFAULT_LLM_TIMEOUT_MS } from '../llm/llm-timeout.constants';
 import { ChapterFirstAppearanceMemoryInput, MemoryWriterService } from '../memory/memory-writer.service';
 
 interface ExtractedEvent {
@@ -234,7 +235,7 @@ export class FactExtractorService {
         { role: 'system', content: '你是一名专业小说分析助手。请输出 80~200 字章节摘要，覆盖核心事件、角色变化、结尾悬念或转折。只输出摘要正文。' },
         { role: 'user', content: `作品：《${projectTitle}》\n章节：第${chapter.chapterNo}章「${chapter.title ?? ''}」\n章节目标：${chapter.objective ?? ''}\n核心冲突：${chapter.conflict ?? ''}\n\n--- 正文 ---\n${text.slice(0, MAX_TEXT_CHARS)}\n--- 正文结束 ---\n\n请输出本章摘要：` },
       ],
-      { appStep: 'summary', maxTokens: 700, timeoutMs: 120_000, retries: 1, temperature: 0.2 },
+      { appStep: 'summary', maxTokens: 700, timeoutMs: DEFAULT_LLM_TIMEOUT_MS, retries: 1, temperature: 0.2 },
     );
     const summary = result.text.trim().slice(0, 500);
     if (!summary) throw new Error(`第${chapter.chapterNo}章摘要抽取为空，已拒绝写入低质量事实层。`);
@@ -274,7 +275,7 @@ export class FactExtractorService {
         { role: 'system', content: '你是小说事实层抽取器。只输出 JSON 数组，识别本章文本中明确首次登场或疑似首次出现的人物、地点、道具、组织、规则或设定。字段：entityType(character/location/item/faction/rule/setting),title,detail,significance(minor/major/key),evidence。不要推断正文没有明确出现的内容。' },
         { role: 'user', content: `作品：《${projectTitle}》\n章节：第${chapter.chapterNo}章「${chapter.title ?? ''}」\n\n--- 正文 ---\n${text.slice(0, MAX_TEXT_CHARS)}\n--- 正文结束 ---` },
       ],
-      { appStep: 'fact_extractor.first_appearances', maxTokens: 1400, timeoutMs: 120_000, retries: 1, temperature: 0.1 },
+      { appStep: 'fact_extractor.first_appearances', maxTokens: 1400, timeoutMs: DEFAULT_LLM_TIMEOUT_MS, retries: 1, temperature: 0.1 },
     );
     if (!Array.isArray(data)) return [];
     const allowed = new Set<FirstAppearanceEntityType>(['character', 'location', 'item', 'faction', 'rule', 'setting']);
@@ -305,7 +306,7 @@ export class FactExtractorService {
         { role: 'system', content: '你是小说人物关系抽取器。只输出 JSON 数组，提取本章明确发生的人物关系变化。字段：characterA,characterB,relationType,change,evidence,summary。没有明确关系变化则输出 []。' },
         { role: 'user', content: `作品：《${projectTitle}》\n章节：第${chapter.chapterNo}章「${chapter.title ?? ''}」\n\n--- 正文 ---\n${text.slice(0, MAX_TEXT_CHARS)}\n--- 正文结束 ---` },
       ],
-      { appStep: 'fact_extractor.relationships', maxTokens: 1000, timeoutMs: 120_000, retries: 1, temperature: 0.1 },
+      { appStep: 'fact_extractor.relationships', maxTokens: 1000, timeoutMs: DEFAULT_LLM_TIMEOUT_MS, retries: 1, temperature: 0.1 },
     );
     if (!Array.isArray(data)) return [];
     const normalized = data
@@ -334,7 +335,7 @@ export class FactExtractorService {
         { role: 'system', content: system },
         { role: 'user', content: `作品：《${projectTitle}》\n章节：第${chapter.chapterNo}章「${chapter.title ?? ''}」\n\n--- 正文 ---\n${text.slice(0, MAX_TEXT_CHARS)}\n--- 正文结束 ---` },
       ],
-      { appStep, maxTokens: 1400, timeoutMs: 120_000, retries: 1, temperature: 0.1 },
+      { appStep, maxTokens: 1400, timeoutMs: DEFAULT_LLM_TIMEOUT_MS, retries: 1, temperature: 0.1 },
     );
     if (!Array.isArray(data)) throw new Error(`${appStep} 未返回 JSON 数组，已拒绝降级为空事实。`);
     return data.filter((item): item is Partial<T> & Record<string, unknown> => Boolean(item && typeof item === 'object')).slice(0, 8).map(normalize);

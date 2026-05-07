@@ -12,6 +12,7 @@ import { RuleEngineService } from '../agent-rules/rule-engine.service';
 import { SkillRegistryService } from '../agent-skills/skill-registry.service';
 import { EmbeddingGatewayService } from '../llm/embedding-gateway.service';
 import { LlmGatewayService, LlmTimeoutError } from '../llm/llm-gateway.service';
+import { DEFAULT_LLM_TIMEOUT_MS } from '../llm/llm-timeout.constants';
 import { AgentExecutorService, AgentWaitingReviewError } from './agent-executor.service';
 import { AgentExecutionObservationError } from './agent-observation.types';
 import { AgentReplannerService } from './agent-replanner.service';
@@ -2098,13 +2099,13 @@ test('GenerateGuidedStepPreviewTool 生成全部 guided 步骤预览且保持只
   assert.equal(tool.riskLevel, 'low');
   assert.ok(tool.allowedModes.includes('plan'));
   assert.match(calls[0].messages[0].content, /"genre"/);
-  assert.equal(calls[0].options.timeoutMs, 120_000);
+  assert.equal(calls[0].options.timeoutMs, DEFAULT_LLM_TIMEOUT_MS);
   assert.equal(calls[0].options.retries, 1);
   assert.match(calls[1].messages[0].content, /"pov"/);
   assert.match(calls[5].messages[0].content, /"chapters"/);
   assert.match(calls[6].messages[0].content, /"foreshadowTracks"/);
-  assert.equal(tool.executionTimeoutMs, 120_000 * 2 + 5_000 + 60_000);
-  assert.equal(progress.some((item) => item.phase === 'calling_llm' && item.timeoutMs === 120_000 * 2 + 5_000), true);
+  assert.equal(tool.executionTimeoutMs, DEFAULT_LLM_TIMEOUT_MS * 2 + 5_000 + 60_000);
+  assert.equal(progress.some((item) => item.phase === 'calling_llm' && item.timeoutMs === DEFAULT_LLM_TIMEOUT_MS * 2 + 5_000), true);
   assert.equal(progress.some((item) => item.phase === 'validating'), true);
 });
 
@@ -3056,11 +3057,11 @@ test('GenerateContinuityPreviewTool normalizes relationship/timeline candidates 
   assert.deepEqual(counters, { relationshipCreate: 0, relationshipUpdate: 0, relationshipDelete: 0, timelineCreate: 0, timelineUpdate: 0, timelineDelete: 0 });
   assert.equal(tool.requiresApproval, false);
   assert.deepEqual(tool.sideEffects, []);
-  assert.equal(tool.executionTimeoutMs, 120_000 * 2 + 5_000 + 60_000);
-  assert.equal(receivedOptions?.timeoutMs, 120_000);
+  assert.equal(tool.executionTimeoutMs, DEFAULT_LLM_TIMEOUT_MS * 2 + 5_000 + 60_000);
+  assert.equal(receivedOptions?.timeoutMs, DEFAULT_LLM_TIMEOUT_MS);
   assert.equal(receivedOptions?.retries, 1);
   assert.equal(progress[0].phase, 'calling_llm');
-  assert.equal(progress[0].timeoutMs, 120_000 * 2 + 5_000);
+  assert.equal(progress[0].timeoutMs, DEFAULT_LLM_TIMEOUT_MS * 2 + 5_000);
   assert.equal(progress.some((item) => item.phase === 'validating'), true);
 });
 
@@ -4161,8 +4162,8 @@ test('GenerateOutlinePreviewTool keeps 500s outer timeout but bounds LLM call', 
     { agentRunId: 'run1', projectId: 'p1', mode: 'plan', approved: false, outputs: {}, policy: {}, recordLlmUsage: (usage) => llmUsages.push(usage) },
   );
 
-  assert.equal(tool.executionTimeoutMs, 500_000);
-  assert.equal(receivedOptions?.timeoutMs, 90_000);
+  assert.equal(tool.executionTimeoutMs, DEFAULT_LLM_TIMEOUT_MS * 7 + 60_000);
+  assert.equal(receivedOptions?.timeoutMs, DEFAULT_LLM_TIMEOUT_MS);
   assert.equal(receivedOptions?.retries, 0);
   assert.equal(receivedOptions?.maxTokens, 4000);
   assert.match(receivedMessages?.[0]?.content ?? '', /actionBeats 至少 3 个节点/);
@@ -4612,8 +4613,8 @@ test('BuildImportPreviewTool normalizes non-string risks', async () => {
   );
 
   assert.deepEqual(output.risks, ['{"code":"schema","message":"需要复核"}', '42', '保留']);
-  assert.equal(tool.executionTimeoutMs, 450_000 * 2 + 5_000 + 60_000);
-  assert.equal(receivedOptions?.timeoutMs, 450_000);
+  assert.equal(tool.executionTimeoutMs, DEFAULT_LLM_TIMEOUT_MS * 2 + 5_000 + 60_000);
+  assert.equal(receivedOptions?.timeoutMs, DEFAULT_LLM_TIMEOUT_MS);
 });
 
 test('BuildImportPreviewTool normalizes LLM object and array scalar fields', async () => {
@@ -5440,6 +5441,7 @@ test('Planner 接受 LLM 语义判定的 taskType，不再被后端 baseline 锁
 
 test('Planner prompt 将长章节细纲引导到 outline_design 而非正文写作', async () => {
   let capturedMessages: Array<{ role: string; content: string }> = [];
+  let capturedOptions: { timeoutMs?: number } | undefined;
   const toolList = [
     createTool({ name: 'inspect_project_context', requiresApproval: false, riskLevel: 'low', sideEffects: [] }),
     createTool({ name: 'generate_outline_preview', description: '生成卷/章节细纲与执行卡预览，超过 15 章自动分批。', requiresApproval: false, riskLevel: 'low', sideEffects: [] }),
@@ -5461,8 +5463,9 @@ test('Planner prompt 将长章节细纲引导到 outline_design 而非正文写�
     })),
   } as unknown as ToolRegistryService;
   const llm = {
-    async chatJson(messages: Array<{ role: string; content: string }>) {
+    async chatJson(messages: Array<{ role: string; content: string }>, options: { timeoutMs?: number }) {
       capturedMessages = messages;
+      capturedOptions = options;
       return {
         data: {
           taskType: 'outline_design',
@@ -5488,6 +5491,7 @@ test('Planner prompt 将长章节细纲引导到 outline_design 而非正文写�
   assert.equal(plan.taskType, 'outline_design');
   assert.deepEqual(plan.steps.map((step) => step.tool), ['inspect_project_context', 'generate_outline_preview', 'validate_outline', 'persist_outline']);
   assert.equal(plan.steps[3].requiresApproval, true);
+  assert.equal(capturedOptions?.timeoutMs, DEFAULT_LLM_TIMEOUT_MS);
   assert.match(capturedMessages[0].content, /卷细纲 \/ 章节细纲 \/ 60 章细纲/);
   assert.match(capturedMessages[0].content, /不要误判为 write_chapter/);
   assert.match(promptPayload.taskTypeGuidance.outline_design, /60章细纲/);
@@ -7638,7 +7642,7 @@ test('GenerateChapterCraftBriefPreviewTool creates chapter progress card preview
   assert.equal(preview.candidates[0].proposedFields.craftBrief.concreteClues[0].name, 'salt-stained ledger thread');
   assert.equal(preview.writePlan.target, 'Chapter.craftBrief');
   assert.equal(preview.writePlan.requiresApprovalBeforePersist, true);
-  assert.equal(llmCalls[0].options.timeoutMs, 90_000);
+  assert.equal(llmCalls[0].options.timeoutMs, DEFAULT_LLM_TIMEOUT_MS);
   assert.deepEqual(progressPhases, ['preparing_context', 'calling_llm', 'validating']);
 });
 
@@ -8537,8 +8541,8 @@ test('AiQualityReviewTool requires approval and Act mode before writing report',
   assert.equal(tool.requiresApproval, true);
   assert.deepEqual(tool.allowedModes, ['act']);
   assert.deepEqual(tool.sideEffects, ['create_quality_report']);
-  assert.equal(tool.executionTimeoutMs, 300_000);
-  assert.ok(tool.executionTimeoutMs > 240_000);
+  assert.equal(tool.executionTimeoutMs, DEFAULT_LLM_TIMEOUT_MS * 2 + 65_000);
+  assert.ok(tool.executionTimeoutMs > DEFAULT_LLM_TIMEOUT_MS * 2);
   await assert.rejects(() => tool.run({ chapterId: 'c1' }, { agentRunId: 'run1', projectId: 'p1', mode: 'plan', approved: false, outputs: {}, policy: {} }), /Act 模式/);
   await assert.rejects(() => tool.run({ chapterId: 'c1' }, { agentRunId: 'run1', projectId: 'p1', mode: 'act', approved: false, outputs: {}, policy: {} }), /需要用户审批/);
 
@@ -8714,7 +8718,7 @@ test('ChapterAutoRepairService run merges QualityReport issues into repair promp
 
   assert.equal(result.skipped, false);
   assert.equal(result.repairedIssueCount, 1);
-  assert.equal(receivedOptions?.timeoutMs, 180_000);
+  assert.equal(receivedOptions?.timeoutMs, DEFAULT_LLM_TIMEOUT_MS);
   assert.equal(receivedOptions?.retries, 1);
   assert.equal(qualityReportFindArgs?.where.sourceType, 'generation');
   assert.equal(qualityReportFindArgs?.where.reportType, 'generation_quality_gate');
@@ -8723,7 +8727,7 @@ test('ChapterAutoRepairService run merges QualityReport issues into repair promp
   assert.match(promptText, /generation_quality_gate/);
   assert.match(promptText, /Scene card clue missing/);
   assert.equal(createdDrafts[0].source, 'agent_auto_repair');
-  assert.equal(progress.some((item) => item.phase === 'calling_llm' && item.timeoutMs === 180_000 * 2 + 5_000), true);
+  assert.equal(progress.some((item) => item.phase === 'calling_llm' && item.timeoutMs === DEFAULT_LLM_TIMEOUT_MS * 2 + 5_000), true);
   assert.equal(progress.some((item) => item.phase === 'persisting' && item.timeoutMs === 60_000), true);
   assert.equal(progress.some((item) => item.phase === 'persisting' && item.progressCurrent === 1), true);
 });
@@ -8754,7 +8758,7 @@ test('AutoRepairChapterTool propagates progress callbacks into service', async (
     },
   );
 
-  assert.equal(tool.executionTimeoutMs, 425_000);
+  assert.equal(tool.executionTimeoutMs, DEFAULT_LLM_TIMEOUT_MS * 2 + 65_000);
   assert.equal(receivedProgress, true);
   assert.equal(result.draftId, 'draft-repair');
   assert.deepEqual(progress.map((item) => item.phase), ['calling_llm', 'persisting']);
@@ -9055,7 +9059,7 @@ test('Executor 将 LLM timeout 分类为 LLM_TIMEOUT Observation', () => {
   const executor = new AgentExecutorService({} as never, {} as never, {} as never, {} as never) as unknown as {
     classifyObservationCode: (message: string, error: unknown) => string;
   };
-  const error = new LlmTimeoutError('LLM 在 90s 内未返回', 'planner', 90_000);
+  const error = new LlmTimeoutError('LLM 在 450s 内未返回', 'planner', DEFAULT_LLM_TIMEOUT_MS);
   assert.equal(executor.classifyObservationCode(error.message, error), 'LLM_TIMEOUT');
 });
 
@@ -9063,7 +9067,7 @@ test('generate_outline_preview LLM timeout 使用确定性 fallback 且补齐 60
   const progress: Array<Record<string, unknown>> = [];
   const llm = {
     async chatJson() {
-      throw new LlmTimeoutError('LLM 在 90s 内未返回', 'planner', 90_000);
+      throw new LlmTimeoutError('LLM 在 450s 内未返回', 'planner', DEFAULT_LLM_TIMEOUT_MS);
     },
   };
   const tool = new GenerateOutlinePreviewTool(llm as never);
@@ -9089,7 +9093,7 @@ test('generate_outline_preview LLM timeout 使用确定性 fallback 且补齐 60
   assert.match(result.risks.join('；'), /LLM_TIMEOUT/);
   assert.match(result.risks.join('；'), /fallback.*craftBrief|执行卡/);
   assert.equal(progress[0].phase, 'calling_llm');
-  assert.equal(progress[0].timeoutMs, 90_000);
+  assert.equal(progress[0].timeoutMs, DEFAULT_LLM_TIMEOUT_MS);
   assert.equal(progress.some((item) => String(item.phase) === 'fallback_generating'), true);
   assert.equal(result.risks.some((risk) => /工具 .*执行超时|工具执行超时/.test(risk)), false);
 });
@@ -9146,7 +9150,7 @@ test('generate_outline_preview 为 60 章自动拆分批次生成', async () => 
 
   assert.equal(calls.length, 5);
   assert.deepEqual(calls.map((call) => [call.start, call.end]), [[1, 12], [13, 24], [25, 36], [37, 48], [49, 60]]);
-  assert.equal(calls.every((call) => call.options.timeoutMs === 90_000), true);
+  assert.equal(calls.every((call) => call.options.timeoutMs === DEFAULT_LLM_TIMEOUT_MS), true);
   assert.equal(calls.every((call) => call.options.retries === 0), true);
   assert.equal(calls.every((call) => call.options.maxTokens === 9240), true);
   assert.match(calls[1].prompt, /本次运行已生成章节短表/);
@@ -9173,7 +9177,7 @@ test('generate_outline_preview 单批 timeout 只 fallback 当前批并继续后
       const start = Number(match[1]);
       const end = Number(match[2]);
       calls.push([start, end]);
-      if (start === 13) throw new LlmTimeoutError('第二批超时', 'planner', 90_000);
+      if (start === 13) throw new LlmTimeoutError('第二批超时', 'planner', DEFAULT_LLM_TIMEOUT_MS);
       return {
         data: {
           volume: { volumeNo: 1, title: '第一卷', synopsis: '卷简介', objective: '完成卷主线', chapterCount: 60 },
@@ -9323,7 +9327,7 @@ test('Trace updateStepPhase 写入 phase、phaseMessage、timeoutAt 和 heartbea
   };
   const trace = new AgentTraceService(prisma as never);
 
-  await trace.updateStepPhase('run1', 2, { phase: 'calling_llm', phaseMessage: '正在生成卷章节预览', timeoutMs: 90_000 }, 'plan', 1);
+  await trace.updateStepPhase('run1', 2, { phase: 'calling_llm', phaseMessage: '正在生成卷章节预览', timeoutMs: DEFAULT_LLM_TIMEOUT_MS }, 'plan', 1);
 
   assert.equal(updates[0].phase, 'calling_llm');
   assert.equal(updates[0].phaseMessage, '正在生成卷章节预览');
@@ -9624,10 +9628,10 @@ test('P3 import outline preview reports calling_llm with retry-aware phase timeo
     },
   );
 
-  assert.equal(receivedOptions?.timeoutMs, 220_000);
+  assert.equal(receivedOptions?.timeoutMs, DEFAULT_LLM_TIMEOUT_MS);
   assert.equal(receivedOptions?.retries, 1);
   assert.equal(progress[0].phase, 'calling_llm');
-  assert.equal(progress[0].timeoutMs, 445_000);
+  assert.equal(progress[0].timeoutMs, DEFAULT_LLM_TIMEOUT_MS * 2 + 5_000);
   assert.equal(progress.some((item) => item.phase === 'validating'), true);
 });
 

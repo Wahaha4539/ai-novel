@@ -1,6 +1,7 @@
 import { BadRequestException, Injectable, NotFoundException } from '@nestjs/common';
 import { PrismaService } from '../../prisma/prisma.service';
 import { LlmGatewayService } from '../llm/llm-gateway.service';
+import { DEFAULT_LLM_TIMEOUT_MS } from '../llm/llm-timeout.constants';
 
 type AgentChatIntent = 'approve_current_plan' | 'new_task' | 'revise_plan' | 'cancel_or_wait' | 'unclear';
 
@@ -46,7 +47,7 @@ export class AgentMessageIntentService {
           latestUserMessage: message,
         }),
       },
-    ], { appStep: 'agent_planner', temperature: 0, maxTokens: 300, timeoutMs: 30_000, retries: 0 });
+    ], { appStep: 'agent_planner', temperature: 0, maxTokens: 300, timeoutMs: DEFAULT_LLM_TIMEOUT_MS, retries: 0 });
 
     const intent = this.normalizeIntent(data.intent);
     const confidence = typeof data.confidence === 'number' && Number.isFinite(data.confidence) ? Math.max(0, Math.min(1, data.confidence)) : 0;

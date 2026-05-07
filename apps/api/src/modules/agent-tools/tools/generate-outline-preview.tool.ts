@@ -1,10 +1,11 @@
 import { Injectable } from '@nestjs/common';
 import { LlmGatewayService } from '../../llm/llm-gateway.service';
+import { DEFAULT_LLM_TIMEOUT_MS } from '../../llm/llm-timeout.constants';
 import { BaseTool, ToolContext } from '../base-tool';
 import type { ToolManifestV2 } from '../tool-manifest.types';
 import { recordToolLlmUsage } from './import-preview-llm-usage';
 
-const OUTLINE_PREVIEW_LLM_TIMEOUT_MS = 90_000;
+const OUTLINE_PREVIEW_LLM_TIMEOUT_MS = DEFAULT_LLM_TIMEOUT_MS;
 const OUTLINE_PREVIEW_BATCH_THRESHOLD = 15;
 const OUTLINE_PREVIEW_BATCH_SIZE = 12;
 
@@ -61,7 +62,7 @@ export class GenerateOutlinePreviewTool implements BaseTool<GenerateOutlinePrevi
   riskLevel: 'low' = 'low';
   requiresApproval = false;
   sideEffects: string[] = [];
-  executionTimeoutMs = 500_000;
+  executionTimeoutMs = OUTLINE_PREVIEW_LLM_TIMEOUT_MS * Math.ceil(80 / OUTLINE_PREVIEW_BATCH_SIZE) + 60_000;
   manifest: ToolManifestV2 = {
     name: this.name,
     displayName: '生成卷/章节细纲与执行卡预览',

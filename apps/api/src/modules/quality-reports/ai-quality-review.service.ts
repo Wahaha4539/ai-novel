@@ -2,6 +2,7 @@ import { BadRequestException, Injectable, NotFoundException } from '@nestjs/comm
 import { Prisma } from '@prisma/client';
 import { PrismaService } from '../../prisma/prisma.service';
 import { LlmGatewayService } from '../llm/llm-gateway.service';
+import { DEFAULT_LLM_TIMEOUT_MS } from '../llm/llm-timeout.constants';
 import { QualityReportsService } from './quality-reports.service';
 
 export interface AiQualityReviewInput {
@@ -31,7 +32,7 @@ interface AiQualityReviewProgressReporter {
   heartbeat?: (patch?: AiQualityReviewProgressPatch) => Promise<void>;
 }
 
-const AI_QUALITY_REVIEW_LLM_TIMEOUT_MS = 120_000;
+const AI_QUALITY_REVIEW_LLM_TIMEOUT_MS = DEFAULT_LLM_TIMEOUT_MS;
 const AI_QUALITY_REVIEW_LLM_RETRIES = 1;
 const AI_QUALITY_REVIEW_LLM_PHASE_TIMEOUT_MS = AI_QUALITY_REVIEW_LLM_TIMEOUT_MS * (AI_QUALITY_REVIEW_LLM_RETRIES + 1) + 5_000;
 

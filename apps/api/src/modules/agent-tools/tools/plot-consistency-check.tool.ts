@@ -2,6 +2,7 @@ import { Injectable } from '@nestjs/common';
 import { BaseTool, ToolContext } from '../base-tool';
 import type { ToolManifestV2 } from '../tool-manifest.types';
 import { LlmGatewayService } from '../../llm/llm-gateway.service';
+import { DEFAULT_LLM_TIMEOUT_MS } from '../../llm/llm-timeout.constants';
 
 interface PlotConsistencyCheckInput {
   taskContext?: Record<string, unknown>;
@@ -158,7 +159,7 @@ export class PlotConsistencyCheckTool implements BaseTool<PlotConsistencyCheckIn
       const response = await this.llm.chatJson<{ summary?: string; keyFindings?: string[] }>([
         { role: 'system', content: '你是小说剧情质检助手。只基于输入的确定性诊断做证据归纳，输出 JSON，不新增事实、不提出写库动作。' },
         { role: 'user', content: JSON.stringify({ task: 'plot_consistency_evidence_summary', instruction, deterministicReport: output }) },
-      ], { appStep: 'agent_evidence_summary', temperature: 0.1, maxTokens: 600, timeoutMs: 30_000, retries: 0 });
+      ], { appStep: 'agent_evidence_summary', temperature: 0.1, maxTokens: 600, timeoutMs: DEFAULT_LLM_TIMEOUT_MS, retries: 0 });
       return {
         status: 'succeeded',
         fallbackUsed: false,

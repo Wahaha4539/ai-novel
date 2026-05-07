@@ -1,5 +1,6 @@
 import { Injectable } from '@nestjs/common';
 import { MemoryReviewResult, MemoryReviewService } from '../../memory/memory-review.service';
+import { DEFAULT_LLM_TIMEOUT_MS } from '../../llm/llm-timeout.constants';
 import { BaseTool, ToolContext } from '../base-tool';
 
 interface ReviewMemoryInput {
@@ -23,7 +24,16 @@ export class ReviewMemoryTool implements BaseTool<ReviewMemoryInput, MemoryRevie
 
   constructor(private readonly memoryReview: MemoryReviewService) {}
 
-  run(args: ReviewMemoryInput, context: ToolContext): Promise<MemoryReviewResult> {
-    return this.memoryReview.reviewPending(context.projectId, args.chapterId ?? context.chapterId);
+  async run(args: ReviewMemoryInput, context: ToolContext): Promise<MemoryReviewResult> {
+    await context.updateProgress?.({
+      phase: 'calling_llm',
+      phaseMessage: '正在复核待审记忆',
+      progressCurrent: 0,
+      progressTotal: 1,
+      timeoutMs: DEFAULT_LLM_TIMEOUT_MS,
+    });
+    const result = await this.memoryReview.reviewPending(context.projectId, args.chapterId ?? context.chapterId);
+    await context.updateProgress?.({ phase: 'persisting', phaseMessage: '记忆复核已完成', progressCurrent: 1, progressTotal: 1, timeoutMs: 60_000 });
+    return result;
   }
 }

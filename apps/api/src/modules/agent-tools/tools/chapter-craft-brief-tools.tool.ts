@@ -3,6 +3,7 @@ import { Prisma } from '@prisma/client';
 import { NovelCacheService } from '../../../common/cache/novel-cache.service';
 import { PrismaService } from '../../../prisma/prisma.service';
 import { LlmGatewayService } from '../../llm/llm-gateway.service';
+import { DEFAULT_LLM_TIMEOUT_MS } from '../../llm/llm-timeout.constants';
 import { BaseTool, ToolContext } from '../base-tool';
 import type { ToolManifestV2 } from '../tool-manifest.types';
 import { recordToolLlmUsage } from './import-preview-llm-usage';
@@ -158,7 +159,7 @@ type ChapterTarget = {
 
 const CHAPTER_CRAFT_BRIEF_SOURCE_KIND = 'chapter_craft_brief' as const;
 const CHAPTER_CRAFT_BRIEF_ORIGIN_TOOL = 'generate_chapter_craft_brief_preview' as const;
-const CHAPTER_CRAFT_BRIEF_LLM_TIMEOUT_MS = 90_000;
+const CHAPTER_CRAFT_BRIEF_LLM_TIMEOUT_MS = DEFAULT_LLM_TIMEOUT_MS;
 const CHAPTER_CRAFT_BRIEF_MAX_TARGETS = 80;
 
 @Injectable()

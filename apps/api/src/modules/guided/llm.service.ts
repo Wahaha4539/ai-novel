@@ -1,6 +1,7 @@
 import { Injectable } from '@nestjs/common';
 import { LlmProvidersService, ResolvedLlmConfig } from '../llm-providers/llm-providers.service';
 import { buildProviderChatParams } from '../llm/llm-chat-params';
+import { DEFAULT_LLM_TIMEOUT_MS } from '../llm/llm-timeout.constants';
 
 interface ChatMessage {
   role: 'system' | 'user' | 'assistant';
@@ -60,7 +61,7 @@ export class LlmService {
         Authorization: `Bearer ${config.apiKey}`,
       },
       body,
-      signal: AbortSignal.timeout(600_000),
+      signal: AbortSignal.timeout(DEFAULT_LLM_TIMEOUT_MS),
     });
 
     if (!response.ok) {

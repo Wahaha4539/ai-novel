@@ -6,6 +6,7 @@ import {
   type GuidedStepSchemaKey,
 } from '../../guided/guided-step-schemas';
 import { LlmGatewayService } from '../../llm/llm-gateway.service';
+import { DEFAULT_LLM_TIMEOUT_MS } from '../../llm/llm-timeout.constants';
 import { PrismaService } from '../../../prisma/prisma.service';
 import { BaseTool, ToolContext } from '../base-tool';
 import type { ToolManifestV2 } from '../tool-manifest.types';
@@ -28,7 +29,7 @@ export interface GuidedStepPreviewOutput {
 }
 
 const GUIDED_STEP_KEYS = Object.keys(GUIDED_STEP_JSON_SCHEMAS) as GuidedStepSchemaKey[];
-const GUIDED_STEP_PREVIEW_LLM_TIMEOUT_MS = 120_000;
+const GUIDED_STEP_PREVIEW_LLM_TIMEOUT_MS = DEFAULT_LLM_TIMEOUT_MS;
 const GUIDED_STEP_PREVIEW_LLM_RETRIES = 1;
 const GUIDED_STEP_PREVIEW_PHASE_TIMEOUT_MS = GUIDED_STEP_PREVIEW_LLM_TIMEOUT_MS * (GUIDED_STEP_PREVIEW_LLM_RETRIES + 1) + 5_000;
 

@@ -4,6 +4,7 @@ import { CreateLlmProviderDto } from './dto/create-llm-provider.dto';
 import { UpdateLlmProviderDto } from './dto/update-llm-provider.dto';
 import { SetRoutingDto } from './dto/set-routing.dto';
 import { buildProviderChatParams } from '../llm/llm-chat-params';
+import { DEFAULT_LLM_TIMEOUT_MS } from '../llm/llm-timeout.constants';
 
 /** Allowed app steps for LLM routing — Agent-Centric API 内链路会复用这些步骤做模型路由。 */
 const VALID_APP_STEPS = ['guided', 'agent_planner', 'generate', 'polish', 'summary', 'memory_review', 'fact_extractor.events', 'fact_extractor.states', 'fact_extractor.foreshadows'] as const;
@@ -170,7 +171,7 @@ export class LlmProvidersService implements OnModuleInit {
           temperature: 0,
           max_tokens: 64,
         }),
-        signal: AbortSignal.timeout(30_000),
+        signal: AbortSignal.timeout(DEFAULT_LLM_TIMEOUT_MS),
       });
       if (!response.ok) {
         const detail = await response.text();

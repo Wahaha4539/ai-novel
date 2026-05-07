@@ -4,6 +4,7 @@ import { randomUUID } from 'crypto';
 import { NovelCacheService } from '../../common/cache/novel-cache.service';
 import { PrismaService } from '../../prisma/prisma.service';
 import { EmbeddingGatewayService } from '../llm/embedding-gateway.service';
+import { DEFAULT_LLM_TIMEOUT_MS } from '../llm/llm-timeout.constants';
 
 export interface MemoryWriterChunkInput {
   memoryType: string;
@@ -274,7 +275,7 @@ export class MemoryWriterService {
   private async attachEmbeddings(chunks: MemoryWriterChunkInput[]): Promise<{ vectors: number[][]; model?: string }> {
     if (!chunks.length) return { vectors: [] };
 
-    const result = await this.embeddings.embedTexts(chunks.map((chunk) => `${chunk.summary ?? ''}\n${chunk.content}`.slice(0, 4000)), { appStep: 'embedding', timeoutMs: 60_000, retries: 1 });
+    const result = await this.embeddings.embedTexts(chunks.map((chunk) => `${chunk.summary ?? ''}\n${chunk.content}`.slice(0, 4000)), { appStep: 'embedding', timeoutMs: DEFAULT_LLM_TIMEOUT_MS, retries: 1 });
     if (result.vectors.length !== chunks.length || result.vectors.some((vector) => !vector?.length)) throw new Error(`embedding 返回数量或内容无效：期望 ${chunks.length}，实际 ${result.vectors.length}`);
     return { vectors: result.vectors, model: result.model };
   }
