@@ -38,8 +38,8 @@ const SUPPORTED_STEP_INSTRUCTIONS: Record<GuidedStepSchemaKey, string> = {
   guided_style: '根据已有基础设定生成叙事风格，字段覆盖 pov/tense/proseStyle/pacing。',
   guided_characters: '生成 3-5 个核心角色，至少包含主角、配角/同行者、对手/反派；角色必须有具体动机、内在矛盾和可识别行为。',
   guided_outline: '根据基础设定、风格和核心角色生成完整故事总纲，包含起承转合、主要冲突线索和情感弧线。',
-  guided_volume: '根据总纲和角色设定拆分卷纲；如用户提示指定卷数，volumes 数组长度必须严格匹配。',
-  guided_chapter: '为指定卷生成章节细纲和本卷配角；每章必须有具体目标、核心冲突、3-5 个连续场景段、跨章交接、滚动连续状态和完整 craftBrief。若传入 chapterNo，则只细化该单章。',
+  guided_volume: '根据总纲和角色设定拆分卷纲；如用户提示指定卷数，volumes 数组长度必须严格匹配；narrativePlan 必须包含 storyUnits 单元故事。',
+  guided_chapter: '为指定卷生成章节细纲和本卷配角；每章必须有具体目标、核心冲突、所属 storyUnit、3-5 个连续场景段、跨章交接、滚动连续状态和完整 craftBrief。若传入 chapterNo，则只细化该单章。',
   guided_foreshadow: '根据卷纲和章节细纲设计伏笔体系，覆盖主线伏笔、卷级伏笔和章节伏笔，并写清埋设、揭开与 payoff。',
 };
 
@@ -144,7 +144,7 @@ export class GenerateGuidedStepPreviewTool implements BaseTool<GenerateGuidedSte
           content: [
             `步骤要求：${stepInstruction}`,
             stepKey === 'guided_chapter'
-              ? '章节连续性硬要求：章节不是场景边界，而是阅读节奏边界；sceneBeats 至少 3 个场景段，跨章节场景用同一 sceneArcId 串联；每章必须包含 entryState、exitState、openLoops、closedLoops、handoffToNextChapter 和 continuityState。禁止只写推进/建立/完成等抽象目标。'
+              ? '章节连续性硬要求：章节不是场景边界，而是阅读节奏边界；每 3-5 章必须组成完整 storyUnit 单元故事；每章 craftBrief.storyUnit 必须写清 unitId、chapterRange、chapterRole、至少 3 项 serviceFunctions，以及主线/人物/关系/世界主题贡献。sceneBeats 至少 3 个场景段，跨章节场景用同一 sceneArcId 串联；每章必须包含 entryState、exitState、openLoops、closedLoops、handoffToNextChapter 和 continuityState。禁止只写推进/建立/完成等抽象目标。'
               : '',
             inputWarnings.length ? `已知上下文缺口：\n${inputWarnings.map((warning) => `- ${warning}`).join('\n')}` : '',
             `用户提示：${args.userHint ?? ''}`,

@@ -46,6 +46,7 @@ interface VolumeData {
   title: string;
   synopsis: string;
   objective: string;
+  narrativePlan?: Record<string, unknown>;
 }
 
 const emptyCharacter = (roleType = 'protagonist'): CharacterData => ({
@@ -62,6 +63,16 @@ const emptyVolume = (volumeNo: number): VolumeData => ({
   synopsis: '',
   objective: '',
 });
+
+const jsonToText = (value: unknown) => value === undefined ? '' : JSON.stringify(value, null, 2);
+
+const parseJsonField = <T,>(value: string, fallback: T): T => {
+  try {
+    return JSON.parse(value) as T;
+  } catch {
+    return fallback;
+  }
+};
 
 interface Props {
   stepKey: StepKey;
@@ -424,7 +435,7 @@ function VolumesFields({
 
   const volumes = parseVolumes();
 
-  const updateVolume = (index: number, key: keyof VolumeData, value: string | number) => {
+  const updateVolume = (index: number, key: keyof VolumeData, value: unknown) => {
     const updated = [...volumes];
     updated[index] = { ...updated[index], [key]: value };
     onChange('volumes', JSON.stringify(updated));
@@ -503,6 +514,14 @@ function VolumesFields({
             <input className="input-field" value={vol.title} onChange={(e) => updateVolume(idx, 'title', e.target.value)} placeholder="卷标题…" style={{ fontSize: '0.8rem' }} />
             <input className="input-field" value={vol.objective} onChange={(e) => updateVolume(idx, 'objective', e.target.value)} placeholder="本卷核心目标…" style={{ fontSize: '0.8rem' }} />
             <textarea className="input-field" rows={3} value={vol.synopsis} onChange={(e) => updateVolume(idx, 'synopsis', e.target.value)} placeholder="本卷剧情概要…" style={{ fontSize: '0.8rem', lineHeight: 1.6, resize: 'vertical' }} />
+            <textarea
+              className="input-field"
+              rows={7}
+              value={jsonToText(vol.narrativePlan)}
+              onChange={(e) => updateVolume(idx, 'narrativePlan', parseJsonField(e.target.value, vol.narrativePlan ?? {}))}
+              placeholder="叙事规划 JSON：包含 storyUnits，每个单元故事覆盖 3-5 章…"
+              style={{ fontSize: '0.72rem', lineHeight: 1.45, resize: 'vertical', fontFamily: 'ui-monospace, SFMono-Regular, Menlo, monospace' }}
+            />
           </div>
         </div>
       ))}

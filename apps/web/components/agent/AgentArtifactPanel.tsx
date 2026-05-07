@@ -357,6 +357,11 @@ function OutlineChapterSummary({ chapter, index }: { chapter: Record<string, unk
   const mainlineTask = textValue(craftBrief.mainlineTask, '');
   const dialogueSubtext = textValue(craftBrief.dialogueSubtext, '');
   const characterShift = textValue(craftBrief.characterShift, '');
+  const storyUnit = asRecord(craftBrief.storyUnit);
+  const storyUnitRange = asRecord(storyUnit?.chapterRange);
+  const storyUnitRangeText = typeof storyUnitRange?.start === 'number' && typeof storyUnitRange?.end === 'number'
+    ? `第${storyUnitRange.start}-${storyUnitRange.end}章`
+    : '';
   return (
     <div className="space-y-1 rounded-lg border px-3 py-2" style={{ borderColor: 'var(--border-dim)', background: hasBrief ? 'rgba(20,184,166,0.06)' : 'rgba(251,191,36,0.06)' }}>
       <div className="text-xs leading-5" style={{ color: 'var(--text-muted)' }}>
@@ -368,6 +373,8 @@ function OutlineChapterSummary({ chapter, index }: { chapter: Record<string, unk
           <div><b style={{ color: 'var(--agent-text-label)' }}>执行卡</b>：{textValue(craftBrief.visibleGoal ?? craftBrief.mainlineTask, '暂无可见目标')}</div>
           {mainlineTask && <div>主线任务：{mainlineTask}</div>}
           {textValue(craftBrief.coreConflict, '') && <div>冲突：{textValue(craftBrief.coreConflict)}</div>}
+          {textValue(storyUnit?.title, '') && <div>单元故事：{[textValue(storyUnit?.title, ''), storyUnitRangeText, textValue(storyUnit?.chapterRole, '')].filter(Boolean).join(' · ')}</div>}
+          {textValue(storyUnit?.unitPayoff, '') && <div>单元结局：{textValue(storyUnit?.unitPayoff)}</div>}
           {actionBeats.length > 0 && <div>行动链：{actionBeats.slice(0, 3).join(' → ')}</div>}
           {clues.length > 0 && <div>线索：{clues.slice(0, 3).join('、')}</div>}
           {dialogueSubtext && <div>潜台词：{dialogueSubtext}</div>}
@@ -526,6 +533,12 @@ function ChapterCraftBriefFields({ craftBrief }: { craftBrief: Record<string, un
   const actionBeats = stringList(craftBrief.actionBeats);
   const subplotTasks = stringList(craftBrief.subplotTasks);
   const progressTypes = stringList(craftBrief.progressTypes);
+  const storyUnit = asRecord(craftBrief.storyUnit);
+  const storyUnitRange = asRecord(storyUnit?.chapterRange);
+  const storyUnitRangeText = typeof storyUnitRange?.start === 'number' && typeof storyUnitRange?.end === 'number'
+    ? `第${storyUnitRange.start}-${storyUnitRange.end}章`
+    : '';
+  const storyUnitFunctions = stringList(storyUnit?.serviceFunctions);
   const clues = asArray(craftBrief.concreteClues)
     .map((item) => {
       const clue = asRecord(item);
@@ -541,6 +554,10 @@ function ChapterCraftBriefFields({ craftBrief }: { craftBrief: Record<string, un
       {textValue(craftBrief.coreConflict, '') && <div>核心冲突：{textValue(craftBrief.coreConflict)}</div>}
       {textValue(craftBrief.mainlineTask, '') && <div>主线任务：{textValue(craftBrief.mainlineTask)}</div>}
       {subplotTasks.length > 0 && <div>支线推进：{subplotTasks.slice(0, 3).join('；')}</div>}
+      {textValue(storyUnit?.title, '') && <div>单元故事：{[textValue(storyUnit?.title, ''), storyUnitRangeText, textValue(storyUnit?.chapterRole, '')].filter(Boolean).join(' · ')}</div>}
+      {textValue(storyUnit?.localGoal, '') && <div>单元目标：{textValue(storyUnit?.localGoal)}</div>}
+      {storyUnitFunctions.length > 0 && <div>单元功能：{storyUnitFunctions.slice(0, 4).join(' / ')}</div>}
+      {textValue(storyUnit?.unitPayoff, '') && <div>单元结局：{textValue(storyUnit?.unitPayoff)}</div>}
       {actionBeats.length > 0 && <div>行动链：{actionBeats.slice(0, 5).join(' -> ')}</div>}
       {clues.length > 0 && <div>具体线索：{clues.slice(0, 4).join('；')}</div>}
       {textValue(craftBrief.dialogueSubtext, '') && <div>潜台词：{textValue(craftBrief.dialogueSubtext)}</div>}

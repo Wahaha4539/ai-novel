@@ -166,6 +166,7 @@ export class PromptBuilderService {
           ].join('\n');
         });
       const continuityState = this.asRecord(brief.continuityState);
+      const storyUnit = this.asRecord(brief.storyUnit);
       const clues = this.asRecordArray(brief.concreteClues)
         .map((item) => {
           const name = this.text(item.name);
@@ -181,6 +182,23 @@ export class PromptBuilderService {
         this.text(brief.coreConflict) ? `核心冲突：${this.text(brief.coreConflict)}` : '',
         this.text(brief.mainlineTask) ? `主线任务：${this.text(brief.mainlineTask)}` : '',
         this.stringArray(brief.subplotTasks).length ? `支线任务：${this.stringArray(brief.subplotTasks).join('；')}` : '',
+        storyUnit && Object.keys(storyUnit).length
+          ? [
+            '单元故事：',
+            this.text(storyUnit.unitId) || this.text(storyUnit.title) ? `- 单元：${[this.text(storyUnit.unitId), this.text(storyUnit.title)].filter(Boolean).join(' / ')}` : '',
+            this.asRecord(storyUnit.chapterRange) ? `- 覆盖章节：第${this.text(this.asRecord(storyUnit.chapterRange)?.start) || '?'}-${this.text(this.asRecord(storyUnit.chapterRange)?.end) || '?'}章` : '',
+            this.text(storyUnit.chapterRole) ? `- 本章角色：${this.text(storyUnit.chapterRole)}` : '',
+            this.text(storyUnit.localGoal) ? `- 单元局部目标：${this.text(storyUnit.localGoal)}` : '',
+            this.text(storyUnit.localConflict) ? `- 单元核心冲突：${this.text(storyUnit.localConflict)}` : '',
+            this.stringArray(storyUnit.serviceFunctions).length ? `- 叙事功能：${this.stringArray(storyUnit.serviceFunctions).join(' / ')}` : '',
+            this.text(storyUnit.mainlineContribution) ? `- 主线贡献：${this.text(storyUnit.mainlineContribution)}` : '',
+            this.text(storyUnit.characterContribution) ? `- 人物贡献：${this.text(storyUnit.characterContribution)}` : '',
+            this.text(storyUnit.relationshipContribution) ? `- 关系贡献：${this.text(storyUnit.relationshipContribution)}` : '',
+            this.text(storyUnit.worldOrThemeContribution) ? `- 世界/主题贡献：${this.text(storyUnit.worldOrThemeContribution)}` : '',
+            this.text(storyUnit.unitPayoff) ? `- 单元回报：${this.text(storyUnit.unitPayoff)}` : '',
+            this.text(storyUnit.stateChangeAfterUnit) ? `- 单元结束状态变化：${this.text(storyUnit.stateChangeAfterUnit)}` : '',
+          ].filter(Boolean).join('\n')
+          : '',
         this.text(brief.entryState) ? `入场状态：${this.text(brief.entryState)}` : '',
         sceneBeats.length ? ['场景链：', ...sceneBeats].join('\n') : '',
         this.stringArray(brief.actionBeats).length ? ['行动链：', ...this.stringArray(brief.actionBeats).map((item, index) => `${index + 1}. ${item}`)].join('\n') : '',

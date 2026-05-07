@@ -117,6 +117,21 @@ function createOutlineCraftBrief(overrides: Record<string, unknown> = {}) {
     coreConflict: '外部阻力迫使主角正面选择',
     mainlineTask: '推进卷内主线',
     subplotTasks: ['推进卷内支线'],
+    storyUnit: {
+      unitId: 'v1_unit_01',
+      title: '旧闸棚失踪案',
+      chapterRange: { start: 1, end: 4 },
+      chapterRole: '开局推进',
+      localGoal: '查清旧闸棚账册被替换的原因',
+      localConflict: '巡检员和馆方同时阻断调阅并试图销毁账册',
+      serviceFunctions: ['mainline', 'relationship_shift', 'foreshadow'],
+      mainlineContribution: '把旧账册缺页指向卷内主线的失踪记录。',
+      characterContribution: '让主角从谨慎旁观转向主动承担调查风险。',
+      relationshipContribution: '同伴第一次为主角藏证据，信任开始改变。',
+      worldOrThemeContribution: '展示档案制度如何被权力篡改，回应记忆与真相主题。',
+      unitPayoff: '单元末主角确认账册替换者与东闸封锁有关。',
+      stateChangeAfterUnit: '主角持有半页账纸，但名字进入临检记录。',
+    },
     actionBeats: ['林澈在旧闸棚翻开潮蚀账册', '巡检员当场扣住账册并逼他交出通行牌', '同伴撕下半页账册塞进工具箱带离现场'],
     sceneBeats: [
       {
@@ -493,6 +508,7 @@ test('GenerateChapterService 生成前细纲密度检查标记缺失执行卡字
   assert.ok(result.warnings.length >= 4);
   assert.ok(result.missing.includes('objective'));
   assert.ok(result.missing.includes('action_beats'));
+  assert.ok(result.missing.includes('story_unit'));
   assert.ok(result.missing.includes('scene_beats'));
   assert.ok(result.missing.includes('concrete_clues'));
   assert.ok(result.missing.includes('irreversible_consequence'));
@@ -9457,6 +9473,7 @@ test('generate_outline_preview 保留 LLM craftBrief', async () => {
   assert.equal(result.chapters[0].volumeNo, 2);
   assert.equal(result.chapters[0].craftBrief?.visibleGoal, '拿到失踪档案');
   assert.equal(result.chapters[0].craftBrief?.concreteClues?.[0]?.name, '湿钥匙');
+  assert.equal(result.chapters[0].craftBrief?.storyUnit?.unitId, 'v1_unit_01');
   assert.equal(result.chapters[1].craftBrief?.visibleGoal, '确认卷宗被替换');
   assert.equal(result.chapters[1].craftBrief?.coreConflict, '同伴担心越界调查会失去职位');
   assert.ok((result.chapters[1].craftBrief?.actionBeats?.length ?? 0) >= 3);
@@ -9488,6 +9505,32 @@ test('generate_outline_preview 缺失 craftBrief 字段时直接报错', async (
       { agentRunId: 'run1', projectId: 'p1', mode: 'plan', approved: false, outputs: {}, policy: {} },
     ),
     /craftBrief/,
+  );
+});
+
+test('generate_outline_preview 缺失 storyUnit 字段时直接报错', async () => {
+  const llm = {
+    async chatJson() {
+      const craftBrief = createOutlineCraftBrief();
+      delete (craftBrief as Record<string, unknown>).storyUnit;
+      return {
+        data: {
+          volume: { volumeNo: 2, title: '第二卷', synopsis: '卷简介', objective: '破解旧案', chapterCount: 1 },
+          chapters: [createOutlineChapter(1, 2, { title: '雨夜档案', craftBrief })],
+          risks: [],
+        },
+        result: { model: 'mock' },
+      };
+    },
+  };
+  const tool = new GenerateOutlinePreviewTool(llm as never);
+
+  await assert.rejects(
+    () => tool.run(
+      { instruction: '生成第二卷细纲', volumeNo: 2, chapterCount: 1 },
+      { agentRunId: 'run1', projectId: 'p1', mode: 'plan', approved: false, outputs: {}, policy: {} },
+    ),
+    /storyUnit/,
   );
 });
 

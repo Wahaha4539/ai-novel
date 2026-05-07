@@ -26,6 +26,7 @@ export interface ChapterCraftBrief {
   coreConflict: string;
   mainlineTask: string;
   subplotTasks: string[];
+  storyUnit: ChapterStoryUnit;
   actionBeats: string[];
   sceneBeats: ChapterSceneBeat[];
   concreteClues: Array<{
@@ -43,6 +44,22 @@ export interface ChapterCraftBrief {
   closedLoops: string[];
   handoffToNextChapter: string;
   continuityState: ChapterContinuityState;
+}
+
+export interface ChapterStoryUnit {
+  unitId: string;
+  title: string;
+  chapterRange: { start: number; end: number };
+  chapterRole: string;
+  localGoal: string;
+  localConflict: string;
+  serviceFunctions: string[];
+  mainlineContribution: string;
+  characterContribution: string;
+  relationshipContribution: string;
+  worldOrThemeContribution: string;
+  unitPayoff: string;
+  stateChangeAfterUnit: string;
 }
 
 export interface ChapterSceneBeat {
@@ -300,7 +317,9 @@ export class GenerateChapterCraftBriefPreviewTool implements BaseTool<GenerateCh
             'Generate chapter-level execution cards, not prose and not scene cards.',
             'A chapter is a reading beat, not necessarily a scene boundary. A scene may continue across chapters if sceneArcId and handoff fields preserve continuity.',
             'Each candidate must include chapterNo, title, proposedFields.objective, proposedFields.conflict, proposedFields.outline, and proposedFields.craftBrief.',
-            'craftBrief must include visibleGoal, hiddenEmotion, coreConflict, mainlineTask, subplotTasks, actionBeats, sceneBeats, concreteClues, dialogueSubtext, characterShift, irreversibleConsequence, progressTypes, entryState, exitState, openLoops, closedLoops, handoffToNextChapter, and continuityState.',
+            'craftBrief must include visibleGoal, hiddenEmotion, coreConflict, mainlineTask, subplotTasks, storyUnit, actionBeats, sceneBeats, concreteClues, dialogueSubtext, characterShift, irreversibleConsequence, progressTypes, entryState, exitState, openLoops, closedLoops, handoffToNextChapter, and continuityState.',
+            'storyUnit ties this chapter into a 3-5 chapter unit story. It must include unitId, title, chapterRange, chapterRole, localGoal, localConflict, serviceFunctions, mainlineContribution, characterContribution, relationshipContribution, worldOrThemeContribution, unitPayoff, and stateChangeAfterUnit.',
+            'storyUnit.serviceFunctions must contain at least 3 concrete functions such as mainline, protagonist_arc, supporting_character, relationship_shift, worldbuilding, theme, antagonist_pressure, foreshadow, emotional_pacing, or resource_cost.',
             'sceneBeats must contain at least 3 concrete scene segments with sceneArcId, scenePart, location, participants, localGoal, visibleAction, obstacle, turningPoint, partResult, and sensoryAnchor. Use continuesFromChapterNo / continuesToChapterNo for cross-chapter scenes.',
             'actionBeats must contain at least 3 concrete actions. concreteClues must contain at least 1 tangible clue or prop with sensory detail and later use.',
             'irreversibleConsequence must name the concrete fact, relationship, resource, status, rule, or danger that changes by the end of the chapter.',
@@ -900,6 +919,7 @@ function validateCraftBriefQuality(brief: Record<string, unknown>): string[] {
     if (!optionalText(brief[field])) reasons.push(`craftBrief.${field} is required.`);
   });
   if (stringArray(brief.subplotTasks).length < 1) reasons.push('craftBrief.subplotTasks must contain at least 1 item.');
+  reasons.push(...validateStoryUnitQuality(brief.storyUnit));
   if (stringArray(brief.actionBeats).length < 3) reasons.push('craftBrief.actionBeats must contain at least 3 concrete action beats.');
   if (stringArray(brief.openLoops).length < 1) reasons.push('craftBrief.openLoops must contain at least 1 item.');
   if (stringArray(brief.closedLoops).length < 1) reasons.push('craftBrief.closedLoops must contain at least 1 item.');
@@ -910,6 +930,33 @@ function validateCraftBriefQuality(brief: Record<string, unknown>): string[] {
   const continuityReasons = validateContinuityStateQuality(brief.continuityState);
   reasons.push(...continuityReasons);
   if (stringArray(brief.progressTypes).length < 1) reasons.push('craftBrief.progressTypes must contain at least 1 item.');
+  return reasons;
+}
+
+function validateStoryUnitQuality(value: unknown): string[] {
+  const record = asRecord(value);
+  if (!record) return ['craftBrief.storyUnit is required.'];
+  const reasons: string[] = [];
+  [
+    'unitId',
+    'title',
+    'chapterRole',
+    'localGoal',
+    'localConflict',
+    'mainlineContribution',
+    'characterContribution',
+    'relationshipContribution',
+    'worldOrThemeContribution',
+    'unitPayoff',
+    'stateChangeAfterUnit',
+  ].forEach((field) => {
+    if (!optionalText(record[field])) reasons.push(`craftBrief.storyUnit.${field} is required.`);
+  });
+  const range = asRecord(record.chapterRange);
+  const start = positiveInt(range?.start);
+  const end = positiveInt(range?.end);
+  if (!start || !end || end < start) reasons.push('craftBrief.storyUnit.chapterRange must contain positive start/end.');
+  if (stringArray(record.serviceFunctions).length < 3) reasons.push('craftBrief.storyUnit.serviceFunctions must contain at least 3 items.');
   return reasons;
 }
 
@@ -1022,6 +1069,7 @@ function normalizeCraftBrief(raw: Record<string, unknown> | undefined, base: { c
     coreConflict: requiredText(raw.coreConflict, `Chapter ${base.chapterNo} craftBrief.coreConflict`),
     mainlineTask: requiredText(raw.mainlineTask, `Chapter ${base.chapterNo} craftBrief.mainlineTask`),
     subplotTasks: requiredStringArray(raw.subplotTasks, `Chapter ${base.chapterNo} craftBrief.subplotTasks`),
+    storyUnit: normalizeStoryUnit(raw.storyUnit, base.chapterNo),
     actionBeats: requiredMinStringArray(raw.actionBeats, 3, `Chapter ${base.chapterNo} craftBrief.actionBeats`),
     sceneBeats: normalizeSceneBeats(raw.sceneBeats, base.chapterNo),
     concreteClues: normalizeClues(raw.concreteClues, base.chapterNo),
@@ -1035,6 +1083,31 @@ function normalizeCraftBrief(raw: Record<string, unknown> | undefined, base: { c
     closedLoops: requiredStringArray(raw.closedLoops, `Chapter ${base.chapterNo} craftBrief.closedLoops`),
     handoffToNextChapter: requiredText(raw.handoffToNextChapter, `Chapter ${base.chapterNo} craftBrief.handoffToNextChapter`),
     continuityState: normalizeContinuityState(raw.continuityState, base.chapterNo),
+  };
+}
+
+function normalizeStoryUnit(value: unknown, chapterNo: number): ChapterStoryUnit {
+  const raw = asRecord(value);
+  if (!raw || !Object.keys(raw).length) throw new Error(`Chapter ${chapterNo} craftBrief.storyUnit is required.`);
+  const range = asRecord(raw.chapterRange);
+  const start = positiveInt(range?.start);
+  const end = positiveInt(range?.end);
+  if (!start || !end || end < start) throw new Error(`Chapter ${chapterNo} craftBrief.storyUnit.chapterRange is invalid.`);
+  const serviceFunctions = requiredMinStringArray(raw.serviceFunctions, 3, `Chapter ${chapterNo} craftBrief.storyUnit.serviceFunctions`);
+  return {
+    unitId: requiredText(raw.unitId, `Chapter ${chapterNo} craftBrief.storyUnit.unitId`),
+    title: requiredText(raw.title, `Chapter ${chapterNo} craftBrief.storyUnit.title`),
+    chapterRange: { start, end },
+    chapterRole: requiredText(raw.chapterRole, `Chapter ${chapterNo} craftBrief.storyUnit.chapterRole`),
+    localGoal: requiredText(raw.localGoal, `Chapter ${chapterNo} craftBrief.storyUnit.localGoal`),
+    localConflict: requiredText(raw.localConflict, `Chapter ${chapterNo} craftBrief.storyUnit.localConflict`),
+    serviceFunctions,
+    mainlineContribution: requiredText(raw.mainlineContribution, `Chapter ${chapterNo} craftBrief.storyUnit.mainlineContribution`),
+    characterContribution: requiredText(raw.characterContribution, `Chapter ${chapterNo} craftBrief.storyUnit.characterContribution`),
+    relationshipContribution: requiredText(raw.relationshipContribution, `Chapter ${chapterNo} craftBrief.storyUnit.relationshipContribution`),
+    worldOrThemeContribution: requiredText(raw.worldOrThemeContribution, `Chapter ${chapterNo} craftBrief.storyUnit.worldOrThemeContribution`),
+    unitPayoff: requiredText(raw.unitPayoff, `Chapter ${chapterNo} craftBrief.storyUnit.unitPayoff`),
+    stateChangeAfterUnit: requiredText(raw.stateChangeAfterUnit, `Chapter ${chapterNo} craftBrief.storyUnit.stateChangeAfterUnit`),
   };
 }
 

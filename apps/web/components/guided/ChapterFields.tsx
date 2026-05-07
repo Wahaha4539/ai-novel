@@ -42,25 +42,25 @@ const emptyCraftBrief = (): ChapterCraftBrief => ({
   coreConflict: '',
   mainlineTask: '',
   subplotTasks: [],
-    actionBeats: [],
-    sceneBeats: [],
-    concreteClues: [],
-    dialogueSubtext: '',
-    characterShift: '',
-    irreversibleConsequence: '',
-    progressTypes: [],
-    entryState: '',
-    exitState: '',
-    openLoops: [],
-    closedLoops: [],
-    handoffToNextChapter: '',
-    continuityState: {
-      characterPositions: [],
-      activeThreats: [],
-      ownedClues: [],
-      relationshipChanges: [],
-      nextImmediatePressure: '',
-    },
+  actionBeats: [],
+  sceneBeats: [],
+  concreteClues: [],
+  dialogueSubtext: '',
+  characterShift: '',
+  irreversibleConsequence: '',
+  progressTypes: [],
+  entryState: '',
+  exitState: '',
+  openLoops: [],
+  closedLoops: [],
+  handoffToNextChapter: '',
+  continuityState: {
+    characterPositions: [],
+    activeThreats: [],
+    ownedClues: [],
+    relationshipChanges: [],
+    nextImmediatePressure: '',
+  },
 });
 
 const stringListToText = (value?: string[]) => Array.isArray(value) ? value.join('\n') : '';
@@ -87,6 +87,14 @@ const parseJsonField = <T,>(value: string, fallback: T): T => {
   } catch {
     return fallback;
   }
+};
+
+const storyUnitSummary = (value: ChapterCraftBrief['storyUnit']) => {
+  if (!value) return '';
+  const range = typeof value.chapterRange?.start === 'number' && typeof value.chapterRange?.end === 'number'
+    ? `第${value.chapterRange.start}-${value.chapterRange.end}章`
+    : '';
+  return [value.title, range, value.chapterRole].filter(Boolean).join(' · ');
 };
 
 /** Parse volumes from guided_volume step data */
@@ -527,6 +535,7 @@ function ChapterCard({
   const [expanded, setExpanded] = useState(false);
   const craftBrief = chapter.craftBrief;
   const hasCraftBrief = Boolean(craftBrief && Object.keys(craftBrief).length > 0);
+  const unitSummary = storyUnitSummary(craftBrief?.storyUnit);
 
   return (
     <div
@@ -582,6 +591,24 @@ function ChapterCard({
           >
             {chapter.title || '未命名章节'}
           </span>
+          {unitSummary && (
+            <span
+              style={{
+                fontSize: '0.62rem',
+                color: '#14b8a6',
+                background: 'rgba(20,184,166,0.1)',
+                padding: '0.05rem 0.3rem',
+                borderRadius: '0.2rem',
+                overflow: 'hidden',
+                textOverflow: 'ellipsis',
+                whiteSpace: 'nowrap',
+                maxWidth: '12rem',
+              }}
+              title={unitSummary}
+            >
+              {unitSummary}
+            </span>
+          )}
         </div>
         <div style={{ display: 'flex', alignItems: 'center', gap: '0.25rem', flexShrink: 0 }}>
           <button
@@ -680,6 +707,16 @@ function ChapterCard({
                 onChange={(e) => onUpdateCraftBrief({ mainlineTask: e.target.value })}
                 placeholder="主线任务…"
                 style={{ fontSize: '0.74rem' }}
+              />
+              <textarea
+                className="input-field"
+                rows={6}
+                value={jsonToText(craftBrief?.storyUnit)}
+                onChange={(e) => onUpdateCraftBrief({
+                  storyUnit: parseJsonField(e.target.value, craftBrief?.storyUnit),
+                })}
+                placeholder="单元故事 JSON：unitId / title / chapterRange / chapterRole / serviceFunctions / unitPayoff…"
+                style={{ fontSize: '0.72rem', lineHeight: 1.45, resize: 'vertical', fontFamily: 'ui-monospace, SFMono-Regular, Menlo, monospace' }}
               />
               <input
                 className="input-field"

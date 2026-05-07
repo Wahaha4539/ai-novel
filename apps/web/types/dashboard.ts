@@ -1,4 +1,4 @@
-import { ChapterCraftBrief } from './guided';
+import { ChapterCraftBrief, VolumeNarrativePlan } from './guided';
 
 export type ProjectSummary = {
   id: string;
@@ -26,7 +26,7 @@ export type VolumeSummary = {
   title?: string | null;
   synopsis?: string | null;
   objective?: string | null;
-  narrativePlan?: Record<string, unknown> | null;
+  narrativePlan?: VolumeNarrativePlan | Record<string, unknown> | null;
   chapterCount?: number | null;
   status: string;
   _count?: { chapters: number };

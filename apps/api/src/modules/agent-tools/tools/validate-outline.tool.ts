@@ -26,6 +26,8 @@ export interface ValidateOutlineOutput {
     totalExpectedWordCount: number;
     craftBriefCount: number;
     craftBriefMissingCount: number;
+    storyUnitCount: number;
+    storyUnitMissingCount: number;
     sceneBeatCount: number;
     continuityMissingCount: number;
   };
@@ -127,6 +129,7 @@ export class ValidateOutlineTool implements BaseTool<ValidateOutlineInput, Valid
   private buildOutput(issues: OutlineValidationIssue[], chapters: OutlinePreviewOutput['chapters'], expectedChapterCount: number | undefined, sourceRisks: string[], writePreview?: ValidateOutlineOutput['writePreview']): ValidateOutlineOutput {
     const duplicatedChapterNos = this.findDuplicatedNumbers(chapters.map((chapter) => Number(chapter.chapterNo)));
     const craftBriefCount = chapters.filter((chapter) => Object.keys(this.asRecord(chapter.craftBrief)).length > 0).length;
+    const storyUnitCount = chapters.filter((chapter) => Object.keys(this.asRecord(this.asRecord(chapter.craftBrief).storyUnit)).length > 0).length;
     const sceneBeatCount = chapters.reduce((sum, chapter) => sum + this.asRecordArray(this.asRecord(chapter.craftBrief).sceneBeats).length, 0);
     const continuityMissingCount = chapters.filter((chapter) => !this.hasContinuityFields(this.asRecord(chapter.craftBrief))).length;
     return {
@@ -140,6 +143,8 @@ export class ValidateOutlineTool implements BaseTool<ValidateOutlineInput, Valid
         totalExpectedWordCount: chapters.reduce((sum, chapter) => sum + (Number(chapter.expectedWordCount) || 0), 0),
         craftBriefCount,
         craftBriefMissingCount: Math.max(0, chapters.length - craftBriefCount),
+        storyUnitCount,
+        storyUnitMissingCount: Math.max(0, chapters.length - storyUnitCount),
         sceneBeatCount,
         continuityMissingCount,
       },
@@ -245,7 +250,48 @@ export class ValidateOutlineTool implements BaseTool<ValidateOutlineInput, Valid
     if (!this.text(brief.irreversibleConsequence).trim()) {
       issues.push({ severity: 'error', message: `${label} 的 craftBrief.irreversibleConsequence 为空。`, suggestion: '结尾后果应改变事实、关系、资源、地位、规则或危险等级之一。' });
     }
+    this.validateStoryUnit(brief.storyUnit, label, issues);
     this.validateContinuityFields(brief, label, issues);
+  }
+
+  private validateStoryUnit(value: unknown, label: string, issues: OutlineValidationIssue[]) {
+    const storyUnit = this.asRecord(value);
+    if (!Object.keys(storyUnit).length) {
+      issues.push({
+        severity: 'error',
+        message: `${label} 缺少 craftBrief.storyUnit。`,
+        suggestion: '请把每章归入 3-5 章的单元故事，并写清这个单元如何服务主线、人物、关系和世界/主题。',
+      });
+      return;
+    }
+    const requiredTextFields = [
+      'unitId',
+      'title',
+      'chapterRole',
+      'localGoal',
+      'localConflict',
+      'mainlineContribution',
+      'characterContribution',
+      'relationshipContribution',
+      'worldOrThemeContribution',
+      'unitPayoff',
+      'stateChangeAfterUnit',
+    ];
+    requiredTextFields.forEach((field) => {
+      if (!this.text(storyUnit[field]).trim()) {
+        issues.push({ severity: 'error', message: `${label} 的 craftBrief.storyUnit.${field} 为空。`, suggestion: '单元故事必须有可执行的局部故事弧和叙事功能说明。' });
+      }
+    });
+    const chapterRange = this.asRecord(storyUnit.chapterRange);
+    const start = Number(chapterRange.start);
+    const end = Number(chapterRange.end);
+    if (!Number.isInteger(start) || start <= 0 || !Number.isInteger(end) || end < start) {
+      issues.push({ severity: 'error', message: `${label} 的 craftBrief.storyUnit.chapterRange 无效。`, suggestion: 'chapterRange 必须写成正整数 start/end，例如 {"start":1,"end":4}。' });
+    }
+    const serviceFunctions = this.stringArray(storyUnit.serviceFunctions);
+    if (serviceFunctions.length < 3) {
+      issues.push({ severity: 'error', message: `${label} 的 craftBrief.storyUnit.serviceFunctions 少于 3 项。`, suggestion: '至少标明主线推进、人物塑造、关系变化、世界观、主题、反派压力、伏笔、节奏或资源代价中的 3 项功能。' });
+    }
   }
 
   private validateOutlineDensity(value: unknown, label: string, issues: OutlineValidationIssue[]) {

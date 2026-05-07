@@ -171,11 +171,12 @@ ${INTERACTION_STYLE}
 - 每卷 synopsis 必须包含：「## 全书主线阶段」「## 本卷主线」「## 本卷戏剧问题」「## 开局状态」「## 结尾状态」「## 主线里程碑」「## 卷内支线」「## 支线交叉点」「## 伏笔分配」「## 卷末交接」
 - 「## 卷内支线」至少 2 条，每条写清作用、起点、推进方式和阶段结果
 - 「## 卷末交接」必须分别写清：已解决、已升级、移交下一卷
-- narrativePlan 必须包含 globalMainlineStage、volumeMainline、dramaticQuestion、startState、endState、mainlineMilestones、subStoryLines、foreshadowPlan、endingHook、handoffToNextVolume，并与 synopsis 信息一致
+- narrativePlan 必须包含 globalMainlineStage、volumeMainline、dramaticQuestion、startState、endState、mainlineMilestones、subStoryLines、storyUnits、foreshadowPlan、endingHook、handoffToNextVolume，并与 synopsis 信息一致
+- narrativePlan 必须包含 storyUnits 数组；每个单元故事覆盖 3-5 章，写清 unitId、title、chapterRange、localGoal、localConflict、serviceFunctions、payoff、stateChangeAfterUnit
 
 ${INTERACTION_STYLE}
 完成时输出的 JSON 格式：
-\`[STEP_COMPLETE]\`{"volumes":[{"volumeNo":1,"title":"卷名","synopsis":"Markdown结构：含全书主线阶段/本卷主线/本卷戏剧问题/卷内支线/支线交叉点/卷末交接","objective":"本卷核心目标(具体可检验)","narrativePlan":{"globalMainlineStage":"全书主线阶段","volumeMainline":"本卷主线","dramaticQuestion":"本卷戏剧问题","startState":"开局状态","endState":"结尾状态","mainlineMilestones":["关键节点"],"subStoryLines":[{"name":"支线名","type":"mystery","function":"叙事作用","startState":"起点","progress":"推进方式","endState":"阶段结果","relatedCharacters":["角色名"],"chapterNodes":[1]}],"foreshadowPlan":["伏笔分配"],"endingHook":"卷末钩子","handoffToNextVolume":"卷末交接"}}]}`,
+\`[STEP_COMPLETE]\`{"volumes":[{"volumeNo":1,"title":"卷名","synopsis":"Markdown结构：含全书主线阶段/本卷主线/本卷戏剧问题/卷内支线/单元故事/支线交叉点/卷末交接","objective":"本卷核心目标(具体可检验)","narrativePlan":{"globalMainlineStage":"全书主线阶段","volumeMainline":"本卷主线","dramaticQuestion":"本卷戏剧问题","startState":"开局状态","endState":"结尾状态","mainlineMilestones":["关键节点"],"subStoryLines":[{"name":"支线名","type":"mystery","function":"叙事作用","startState":"起点","progress":"推进方式","endState":"阶段结果","relatedCharacters":["角色名"],"chapterNodes":[1]}],"storyUnits":[{"unitId":"v1_unit_01","title":"单元故事名","chapterRange":{"start":1,"end":4},"localGoal":"单元局部目标","localConflict":"单元核心阻力","serviceFunctions":["mainline","relationship_shift","foreshadow"],"payoff":"单元阶段结局","stateChangeAfterUnit":"单元结束后的状态变化"}],"foreshadowPlan":["伏笔分配"],"endingHook":"卷末钩子","handoffToNextVolume":"卷末交接"}}]}`,
 
   guided_chapter: `你是一个资深小说创作顾问。你正在引导用户完成「章节细纲」规划步骤。
 帮助用户为当前卷规划具体章节和本卷新登场的配角。可以给出章节节奏方案供选择。
@@ -183,12 +184,14 @@ ${INTERACTION_STYLE}
 ## 整卷章节细纲规则（严格遵守）
 - 这是整卷章节细纲，不是正文，也不是单章细化执行卡
 - 每章至少领到 1 个本卷主线任务，并至少推进 1 条卷内支线
+- 每 3-5 章必须组成一个完整的单元故事 storyUnit；每章 craftBrief.storyUnit 要写明本章在该单元中的角色
 - 每章 objective 必须具体可检验，不能只写「推进剧情」或「调查线索」
 - 每章 conflict 必须写清阻力来源和阻力方式
 - 每章 outline 必须写成 3-5 个连续场景段，包含具体地点、出场人物、可被镜头拍到的动作、阻力、阶段结果和下一章交接
 - 每章必须输出 craftBrief 结构化对象，后端会写入 Chapter.craftBrief
-- craftBrief 必须包含 visibleGoal、hiddenEmotion、coreConflict、mainlineTask、subplotTasks、actionBeats、concreteClues、dialogueSubtext、characterShift、irreversibleConsequence、progressTypes
-- craftBrief 还必须包含 sceneBeats、entryState、exitState、openLoops、closedLoops、handoffToNextChapter、continuityState
+- craftBrief 必须包含 visibleGoal、hiddenEmotion、coreConflict、mainlineTask、subplotTasks、storyUnit、actionBeats、concreteClues、dialogueSubtext、characterShift、irreversibleConsequence、progressTypes
+- craftBrief 还必须包含 storyUnit、sceneBeats、entryState、exitState、openLoops、closedLoops、handoffToNextChapter、continuityState
+- storyUnit 必须包含 unitId、title、chapterRange、chapterRole、localGoal、localConflict、serviceFunctions、mainlineContribution、characterContribution、relationshipContribution、worldOrThemeContribution、unitPayoff、stateChangeAfterUnit；serviceFunctions 至少 3 项
 - sceneBeats 至少 3 个场景段；跨章节场景必须沿用同一个 sceneArcId，并用 scenePart、continuesFromChapterNo、continuesToChapterNo 标明这是第几段
 - entryState 必须接住上一章 exitState / handoffToNextChapter；handoffToNextChapter 必须给出下一章可直接接续的动作、地点、压力或未解决问题
 - continuityState 必须写清角色位置、仍在生效的威胁、已持有线索/资源、关系变化和下一章最紧迫压力
@@ -213,7 +216,7 @@ ${INTERACTION_STYLE}
 
 ${INTERACTION_STYLE}
 完成时输出的 JSON 格式：
-\`[STEP_COMPLETE]\`{"chapters":[{"chapterNo":1,"volumeNo":1,"title":"章节标题","objective":"本章目标","conflict":"核心冲突","outline":"含主线任务/支线任务/3-5个具体场景段/阶段结果/下一章交接的章节大纲","craftBrief":{"visibleGoal":"表层目标","hiddenEmotion":"隐藏情绪","coreConflict":"核心冲突","mainlineTask":"本章主线任务","subplotTasks":["支线任务"],"actionBeats":["行动链节点"],"sceneBeats":[{"sceneArcId":"跨章场景ID","scenePart":"1/3","continuesFromChapterNo":null,"continuesToChapterNo":2,"location":"具体地点","participants":["角色名"],"localGoal":"本场局部目标","visibleAction":"可被镜头拍到的动作","obstacle":"阻力来源和方式","turningPoint":"反转或新信息","partResult":"场景段结果","sensoryAnchor":"感官锚点"}],"concreteClues":[{"name":"物证或线索","sensoryDetail":"感官细节","laterUse":"后续用途"}],"dialogueSubtext":"对话潜台词","characterShift":"人物变化","irreversibleConsequence":"不可逆后果","progressTypes":["info"],"entryState":"接住上一章压力","exitState":"本章结束状态","openLoops":["未解决问题"],"closedLoops":["阶段性解决问题"],"handoffToNextChapter":"下一章接续动作和压力","continuityState":{"characterPositions":["角色位置"],"activeThreats":["仍在生效的威胁"],"ownedClues":["已持有线索"],"relationshipChanges":["关系变化"],"nextImmediatePressure":"下一章最紧迫压力"}}}],"supportingCharacters":[{"name":"角色名","roleType":"supporting","personalityCore":"性格核心(含内在矛盾)","motivation":"具体动机","firstAppearChapter":1}]}`,
+\`[STEP_COMPLETE]\`{"chapters":[{"chapterNo":1,"volumeNo":1,"title":"章节标题","objective":"本章目标","conflict":"核心冲突","outline":"含主线任务/支线任务/单元故事/3-5个具体场景段/阶段结果/下一章交接的章节大纲","craftBrief":{"visibleGoal":"表层目标","hiddenEmotion":"隐藏情绪","coreConflict":"核心冲突","mainlineTask":"本章主线任务","subplotTasks":["支线任务"],"storyUnit":{"unitId":"v1_unit_01","title":"单元故事名","chapterRange":{"start":1,"end":4},"chapterRole":"开局/升级/反转/收束","localGoal":"单元局部目标","localConflict":"单元核心阻力","serviceFunctions":["mainline","relationship_shift","foreshadow"],"mainlineContribution":"本章如何推进主线","characterContribution":"本章如何塑造人物","relationshipContribution":"本章如何改变关系","worldOrThemeContribution":"本章如何展开世界或主题","unitPayoff":"单元阶段结局","stateChangeAfterUnit":"单元结束后的状态变化"},"actionBeats":["行动链节点"],"sceneBeats":[{"sceneArcId":"跨章场景ID","scenePart":"1/3","continuesFromChapterNo":null,"continuesToChapterNo":2,"location":"具体地点","participants":["角色名"],"localGoal":"本场局部目标","visibleAction":"可被镜头拍到的动作","obstacle":"阻力来源和方式","turningPoint":"反转或新信息","partResult":"场景段结果","sensoryAnchor":"感官锚点"}],"concreteClues":[{"name":"物证或线索","sensoryDetail":"感官细节","laterUse":"后续用途"}],"dialogueSubtext":"对话潜台词","characterShift":"人物变化","irreversibleConsequence":"不可逆后果","progressTypes":["info"],"entryState":"接住上一章压力","exitState":"本章结束状态","openLoops":["未解决问题"],"closedLoops":["阶段性解决问题"],"handoffToNextChapter":"下一章接续动作和压力","continuityState":{"characterPositions":["角色位置"],"activeThreats":["仍在生效的威胁"],"ownedClues":["已持有线索"],"relationshipChanges":["关系变化"],"nextImmediatePressure":"下一章最紧迫压力"}}}],"supportingCharacters":[{"name":"角色名","roleType":"supporting","personalityCore":"性格核心(含内在矛盾)","motivation":"具体动机","firstAppearChapter":1}]}`,
 
   guided_foreshadow: `你是一个资深小说创作顾问，精通叙事悬念构建与伏笔编排。你正在引导用户完成「伏笔设计」规划步骤。
 
@@ -764,6 +767,7 @@ export class GuidedService {
     if (!stringArray(craftBrief.subplotTasks).length) {
       throw new BadRequestException(`${label} 章节细纲生成失败：craftBrief.subplotTasks 为空。`);
     }
+    this.assertGuidedStoryUnitQuality(craftBrief.storyUnit, label);
     if (stringArray(craftBrief.actionBeats).length < 3) {
       throw new BadRequestException(`${label} 章节细纲生成失败：craftBrief.actionBeats 少于 3 个节点。`);
     }
@@ -797,6 +801,40 @@ export class GuidedService {
       .some((field) => stringArray(continuityState[field]).length > 0);
     if (!hasConcreteState) {
       throw new BadRequestException(`${label} 章节细纲生成失败：continuityState 缺少角色位置、威胁、线索或关系变化。`);
+    }
+  }
+
+  private assertGuidedStoryUnitQuality(value: unknown, label: string) {
+    const storyUnit = asRecord(value);
+    if (!storyUnit || Object.keys(storyUnit).length === 0) {
+      throw new BadRequestException(`${label} 章节细纲生成失败：缺少 craftBrief.storyUnit。`);
+    }
+    const requiredTextFields = [
+      'unitId',
+      'title',
+      'chapterRole',
+      'localGoal',
+      'localConflict',
+      'mainlineContribution',
+      'characterContribution',
+      'relationshipContribution',
+      'worldOrThemeContribution',
+      'unitPayoff',
+      'stateChangeAfterUnit',
+    ];
+    requiredTextFields.forEach((field) => {
+      if (!asString(storyUnit[field])?.trim()) {
+        throw new BadRequestException(`${label} 章节细纲生成失败：craftBrief.storyUnit.${field} 为空。`);
+      }
+    });
+    const chapterRange = asRecord(storyUnit.chapterRange);
+    const start = asNumber(chapterRange?.start);
+    const end = asNumber(chapterRange?.end);
+    if (!Number.isInteger(start) || !start || start < 1 || !Number.isInteger(end) || !end || end < start) {
+      throw new BadRequestException(`${label} 章节细纲生成失败：craftBrief.storyUnit.chapterRange 无效。`);
+    }
+    if (stringArray(storyUnit.serviceFunctions).length < 3) {
+      throw new BadRequestException(`${label} 章节细纲生成失败：craftBrief.storyUnit.serviceFunctions 少于 3 项。`);
     }
   }
 
@@ -871,12 +909,14 @@ export class GuidedService {
 - 「## 开局状态」/「## 结尾状态」：结尾必须产生事实、关系、资源、地位、规则或危险的不可逆变化
 - 「## 主线里程碑」：5-8 个必须发生的关键节点
 - 「## 卷内支线」：2-4 条，逐条写清作用、起点、推进方式和阶段结果
+- 「## 单元故事」：按 3-5 章一组设计完整小故事，写清局部目标、冲突、阶段结局，以及服务主线/人物/关系/世界主题的功能
 - 「## 支线交叉点」：至少 1 个物证、事件或对话同时推进两条线
 - 「## 伏笔分配」：本卷埋设、推进、回收哪些伏笔
 - 「## 卷末交接」：分别写清已解决、已升级、移交下一卷
 
 ### 结构化字段（必须写入 Volume.narrativePlan）
-每个 volume 除 synopsis Markdown 外，还必须输出 narrativePlan 对象，字段包含 globalMainlineStage、volumeMainline、dramaticQuestion、startState、endState、mainlineMilestones、subStoryLines、foreshadowPlan、endingHook、handoffToNextVolume。narrativePlan 与 synopsis 信息必须一致。`,
+每个 volume 除 synopsis Markdown 外，还必须输出 narrativePlan 对象，字段包含 globalMainlineStage、volumeMainline、dramaticQuestion、startState、endState、mainlineMilestones、subStoryLines、storyUnits、foreshadowPlan、endingHook、handoffToNextVolume。narrativePlan 与 synopsis 信息必须一致。
+storyUnits 每项必须包含 unitId、title、chapterRange、localGoal、localConflict、serviceFunctions、payoff、stateChangeAfterUnit；serviceFunctions 至少 3 项。`,
       guided_chapter: `请为指定卷规划 8-15 个章节，每章有明确的推进目标和核心冲突。
 同时为本卷设计 2-4 个新登场的配角（不要重复核心角色步骤中已有的角色）。
 
@@ -899,11 +939,13 @@ export class GuidedService {
 ### 主线与支线分配
 - 每章必须至少领到 1 个本卷主线任务，写进 objective 或 outline
 - 每章必须至少推进 1 条卷内支线，写清支线名称和本章推进结果
+- 每 3-5 章必须组成一个完整的单元故事 storyUnit：有局部目标、局部冲突、阶段结局；结局必须改变主线、人物、关系、世界/主题、伏笔或资源代价中的至少 3 项
 - 每章 objective 必须具体可检验，不能只写「调查线索」「推进主线」
 - 每章 conflict 必须写清阻力来源和阻力方式，例如谁阻止、用什么手段、主角付出什么代价
 - 每章 outline 必须写成 3-5 个连续场景段，包含具体地点、出场人物、可被镜头拍到的动作、阻力、阶段结果和下一章交接，不能只写一句剧情摘要
 - 章节不是场景边界，而是阅读节奏边界；一个大场景可以跨多个章节，但每章必须完成一个阶段动作，并把压力交接给下一章
-- craftBrief 必须额外包含 sceneBeats、entryState、exitState、openLoops、closedLoops、handoffToNextChapter、continuityState
+- craftBrief 必须额外包含 storyUnit、sceneBeats、entryState、exitState、openLoops、closedLoops、handoffToNextChapter、continuityState
+- storyUnit 必须包含 unitId、title、chapterRange、chapterRole、localGoal、localConflict、serviceFunctions、mainlineContribution、characterContribution、relationshipContribution、worldOrThemeContribution、unitPayoff、stateChangeAfterUnit；serviceFunctions 至少 3 项
 - sceneBeats 至少 3 个场景段；跨章节场景必须沿用同一个 sceneArcId，并用 scenePart、continuesFromChapterNo、continuesToChapterNo 标明这是第几段
 - entryState 必须接住上一章 exitState / handoffToNextChapter；handoffToNextChapter 必须给出下一章可直接接续的动作、地点、压力或未解决问题
 - continuityState 必须写清角色位置、仍在生效的威胁、已持有线索/资源、关系变化和下一章最紧迫压力
@@ -935,7 +977,7 @@ export class GuidedService {
 ### 质量标准
 - outline 至少 50 字，要包含具体的场景、行为和结果
 - objective 要具体可检验（如「读者了解了 X 的真实身份」而非「推进剧情」）
-- 每个 chapter 必须输出 craftBrief 对象，包含 visibleGoal、hiddenEmotion、coreConflict、mainlineTask、subplotTasks、actionBeats、sceneBeats、concreteClues、dialogueSubtext、characterShift、irreversibleConsequence、progressTypes、entryState、exitState、openLoops、closedLoops、handoffToNextChapter、continuityState
+- 每个 chapter 必须输出 craftBrief 对象，包含 visibleGoal、hiddenEmotion、coreConflict、mainlineTask、subplotTasks、storyUnit、actionBeats、sceneBeats、concreteClues、dialogueSubtext、characterShift、irreversibleConsequence、progressTypes、entryState、exitState、openLoops、closedLoops、handoffToNextChapter、continuityState
 - 不生成正文，不写单章执行卡；这里生成的是整卷章节细纲`,
       guided_foreshadow: `请根据已完成的卷纲和章节细纲，设计一套完整的伏笔体系。
 伏笔数量公式：主线 2-3 条 + 每卷 1-2 条卷级伏笔 + 适量章节级伏笔。
@@ -1063,9 +1105,9 @@ ${schema}
 仅细化 **第 ${dto.volumeNo} 卷第 ${dto.chapterNo} 章**，不生成正文，不新增章节，不删除章节，不重排整卷章节。
 你必须只返回 chapters 数组中的 **1** 个 chapter 对象；对象的 volumeNo 必须是 ${dto.volumeNo}，chapterNo 必须是 ${dto.chapterNo}。
 保留当前章节标题、目标和冲突的核心意图，除非它们明显空泛；可以把它们改得更具体、更可执行。
-outline 必须写成 Markdown，并且必须以 \`## 本章执行卡\` 开头，至少包含这些小节或标签：表层目标、隐藏情绪、核心冲突、入场状态、场景链、行动链、物证/线索、对话潜台词、人物变化、不可逆后果、离场状态、下一章交接。
-craftBrief 必须输出同一执行卡的结构化版本，字段与 Markdown 内容一致，供正文生成直接读取。
-craftBrief 必须包含 sceneBeats、entryState、exitState、openLoops、closedLoops、handoffToNextChapter、continuityState；sceneBeats 至少 3 个场景段，跨章场景用同一 sceneArcId 串联。
+outline 必须写成 Markdown，并且必须以 \`## 本章执行卡\` 开头，至少包含这些小节或标签：表层目标、隐藏情绪、核心冲突、单元故事、入场状态、场景链、行动链、物证/线索、对话潜台词、人物变化、不可逆后果、离场状态、下一章交接。
+craftBrief 必须输出同一执行卡的结构化版本，字段与 Markdown 内容一致，供正文生成直接读取；其中 storyUnit 必须保留或补全本章所属单元故事、章节范围、本章角色和至少 3 项叙事功能。
+craftBrief 必须包含 storyUnit、sceneBeats、entryState、exitState、openLoops、closedLoops、handoffToNextChapter、continuityState；sceneBeats 至少 3 个场景段，跨章场景用同一 sceneArcId 串联。
 entryState 必须接住前一章状态；handoffToNextChapter 必须给出下一章可直接接续的动作、地点、压力或未解决问题。
 如果前文或模板要求生成整卷章节，请忽略该要求，以本节单章细化规则为准。
 

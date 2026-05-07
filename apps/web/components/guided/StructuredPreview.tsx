@@ -421,6 +421,7 @@ interface VolumeData {
   title: string;
   synopsis: string;
   objective: string;
+  narrativePlan?: Record<string, unknown>;
 }
 
 const emptyVolume = (volumeNo: number): VolumeData => ({
@@ -429,6 +430,16 @@ const emptyVolume = (volumeNo: number): VolumeData => ({
   synopsis: '',
   objective: '',
 });
+
+const jsonToText = (value: unknown) => value === undefined ? '' : JSON.stringify(value, null, 2);
+
+const parseJsonField = <T,>(value: string, fallback: T): T => {
+  try {
+    return JSON.parse(value) as T;
+  } catch {
+    return fallback;
+  }
+};
 
 /** Multi-volume card preview for guided_volume step */
 function VolumesPreview({
@@ -452,7 +463,7 @@ function VolumesPreview({
 
   const volumes = parseVolumes();
 
-  const updateVolume = (index: number, key: keyof VolumeData, value: string | number) => {
+  const updateVolume = (index: number, key: keyof VolumeData, value: unknown) => {
     const updated = [...volumes];
     updated[index] = { ...updated[index], [key]: value };
     onEditField('volumes', JSON.stringify(updated));
@@ -561,7 +572,7 @@ function VolumeCard({
   index: number;
   volume: VolumeData;
   total: number;
-  onUpdate: (index: number, key: keyof VolumeData, value: string | number) => void;
+  onUpdate: (index: number, key: keyof VolumeData, value: unknown) => void;
   onRemove: (index: number) => void;
 }) {
   const accentColor = '#14b8a6';
@@ -633,6 +644,14 @@ function VolumeCard({
           onChange={(e) => onUpdate(index, 'synopsis', e.target.value)}
           placeholder="本卷剧情概要…"
           style={{ fontSize: '0.8rem', lineHeight: 1.6, resize: 'vertical' }}
+        />
+        <textarea
+          className="input-field"
+          rows={7}
+          value={jsonToText(volume.narrativePlan)}
+          onChange={(e) => onUpdate(index, 'narrativePlan', parseJsonField(e.target.value, volume.narrativePlan ?? {}))}
+          placeholder="叙事规划 JSON：包含 storyUnits，每个单元故事覆盖 3-5 章…"
+          style={{ fontSize: '0.72rem', lineHeight: 1.45, resize: 'vertical', fontFamily: 'ui-monospace, SFMono-Regular, Menlo, monospace' }}
         />
       </div>
     </div>

@@ -175,14 +175,15 @@
 卷纲生成规则：
 - 增强卷纲继续写入每卷 `synopsis` 的 Markdown 段落，以兼容旧项目和人工阅读
 - 同时必须输出结构化 `narrativePlan` 对象，后端会写入 `Volume.narrativePlan`
-- 每卷 `synopsis` 必须包含：`## 全书主线阶段`、`## 本卷主线`、`## 本卷戏剧问题`、`## 开局状态`、`## 结尾状态`、`## 主线里程碑`、`## 卷内支线`、`## 支线交叉点`、`## 伏笔分配`、`## 卷末交接`
+- 每卷 `synopsis` 必须包含：`## 全书主线阶段`、`## 本卷主线`、`## 本卷戏剧问题`、`## 开局状态`、`## 结尾状态`、`## 主线里程碑`、`## 卷内支线`、`## 单元故事`、`## 支线交叉点`、`## 伏笔分配`、`## 卷末交接`
 - `## 卷内支线` 至少 2 条，每条写清作用、起点、推进方式和阶段结果
+- `## 单元故事` 按 3-5 章一组规划完整小故事，每个单元故事写清局部目标、局部冲突、阶段结局，以及至少 3 项叙事功能
 - `## 卷末交接` 必须分别写清：已解决、已升级、移交下一卷
-- `narrativePlan` 必须包含：`globalMainlineStage`、`volumeMainline`、`dramaticQuestion`、`startState`、`endState`、`mainlineMilestones`、`subStoryLines`、`foreshadowPlan`、`endingHook`、`handoffToNextVolume`
+- `narrativePlan` 必须包含：`globalMainlineStage`、`volumeMainline`、`dramaticQuestion`、`startState`、`endState`、`mainlineMilestones`、`subStoryLines`、`storyUnits`、`foreshadowPlan`、`endingHook`、`handoffToNextVolume`
 - 禁止只写「推进主线」「主角成长」「遭遇困难」这类空泛表达
 
 完成时输出的 JSON 格式：
-`[STEP_COMPLETE]`{"volumes":[{"volumeNo":1,"title":"卷名","synopsis":"Markdown结构：含全书主线阶段/本卷主线/本卷戏剧问题/卷内支线/支线交叉点/卷末交接","objective":"本卷核心目标(具体可检验)","narrativePlan":{"globalMainlineStage":"全书主线阶段","volumeMainline":"本卷主线","dramaticQuestion":"本卷戏剧问题","startState":"开局状态","endState":"结尾状态","mainlineMilestones":["关键节点"],"subStoryLines":[{"name":"支线名","type":"mystery","function":"叙事作用","startState":"起点","progress":"推进方式","endState":"阶段结果","relatedCharacters":["角色名"],"chapterNodes":[1]}],"foreshadowPlan":["伏笔分配"],"endingHook":"卷末钩子","handoffToNextVolume":"卷末交接"}}]}
+`[STEP_COMPLETE]`{"volumes":[{"volumeNo":1,"title":"卷名","synopsis":"Markdown结构：含全书主线阶段/本卷主线/本卷戏剧问题/卷内支线/单元故事/支线交叉点/卷末交接","objective":"本卷核心目标(具体可检验)","narrativePlan":{"globalMainlineStage":"全书主线阶段","volumeMainline":"本卷主线","dramaticQuestion":"本卷戏剧问题","startState":"开局状态","endState":"结尾状态","mainlineMilestones":["关键节点"],"subStoryLines":[{"name":"支线名","type":"mystery","function":"叙事作用","startState":"起点","progress":"推进方式","endState":"阶段结果","relatedCharacters":["角色名"],"chapterNodes":[1]}],"storyUnits":[{"unitId":"v1_unit_01","title":"单元故事名","chapterRange":{"start":1,"end":4},"localGoal":"单元局部目标","localConflict":"单元核心阻力","serviceFunctions":["mainline","relationship_shift","foreshadow"],"payoff":"单元阶段结局","stateChangeAfterUnit":"单元结束后的状态变化"}],"foreshadowPlan":["伏笔分配"],"endingHook":"卷末钩子","handoffToNextVolume":"卷末交接"}}]}
 ```
 
 **User Template：**
@@ -223,16 +224,17 @@
 
 整卷章节细纲规则：
 - 每章至少领到 1 个本卷主线任务，并至少推进 1 条卷内支线
+- 每 3-5 章必须组成一个完整 `storyUnit` 单元故事；每章写明自己在单元故事中的角色
 - 每章 `objective` 必须具体可检验，不能只写「推进剧情」或「调查线索」
 - 每章 `conflict` 必须写清阻力来源和阻力方式
 - 每章 `outline` 必须包含具体场景、关键行动和阶段结果
 - 每章必须输出结构化 `craftBrief`，后端会写入 `Chapter.craftBrief`
-- `craftBrief` 必须包含：`visibleGoal`、`hiddenEmotion`、`coreConflict`、`mainlineTask`、`subplotTasks`、`actionBeats`、`concreteClues`、`dialogueSubtext`、`characterShift`、`irreversibleConsequence`、`progressTypes`
+- `craftBrief` 必须包含：`visibleGoal`、`hiddenEmotion`、`coreConflict`、`mainlineTask`、`subplotTasks`、`storyUnit`、`actionBeats`、`concreteClues`、`dialogueSubtext`、`characterShift`、`irreversibleConsequence`、`progressTypes`
 - 每 3-4 章至少发生一次信息揭示、关系反转、资源得失、地位变化或规则升级
 - 卷末章节必须收束本卷主线，并留下清晰的下一卷交接
 
 完成时输出的 JSON 格式：
-`[STEP_COMPLETE]`{"chapters":[{"chapterNo":1,"volumeNo":1,"title":"章节标题","objective":"本章目标","conflict":"核心冲突","outline":"含主线任务/支线任务/具体场景行动/阶段结果的章节大纲","craftBrief":{"visibleGoal":"表层目标","hiddenEmotion":"隐藏情绪","coreConflict":"核心冲突","mainlineTask":"本章主线任务","subplotTasks":["支线任务"],"actionBeats":["行动链节点"],"concreteClues":[{"name":"物证或线索","sensoryDetail":"感官细节","laterUse":"后续用途"}],"dialogueSubtext":"对话潜台词","characterShift":"人物变化","irreversibleConsequence":"不可逆后果","progressTypes":["info"]}}]}
+`[STEP_COMPLETE]`{"chapters":[{"chapterNo":1,"volumeNo":1,"title":"章节标题","objective":"本章目标","conflict":"核心冲突","outline":"含主线任务/支线任务/单元故事/具体场景行动/阶段结果的章节大纲","craftBrief":{"visibleGoal":"表层目标","hiddenEmotion":"隐藏情绪","coreConflict":"核心冲突","mainlineTask":"本章主线任务","subplotTasks":["支线任务"],"storyUnit":{"unitId":"v1_unit_01","title":"单元故事名","chapterRange":{"start":1,"end":4},"chapterRole":"开局/升级/反转/收束","localGoal":"单元局部目标","localConflict":"单元核心阻力","serviceFunctions":["mainline","relationship_shift","foreshadow"],"mainlineContribution":"本章如何推进主线","characterContribution":"本章如何塑造人物","relationshipContribution":"本章如何改变关系","worldOrThemeContribution":"本章如何展开世界或主题","unitPayoff":"单元阶段结局","stateChangeAfterUnit":"单元结束后的状态变化"},"actionBeats":["行动链节点"],"concreteClues":[{"name":"物证或线索","sensoryDetail":"感官细节","laterUse":"后续用途"}],"dialogueSubtext":"对话潜台词","characterShift":"人物变化","irreversibleConsequence":"不可逆后果","progressTypes":["info"]}}]}
 ```
 
 **User Template：**

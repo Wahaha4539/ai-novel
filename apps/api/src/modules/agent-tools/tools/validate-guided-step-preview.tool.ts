@@ -277,6 +277,7 @@ export class ValidateGuidedStepPreviewTool implements BaseTool<ValidateGuidedSte
     if (!this.stringArray(brief.subplotTasks).length) {
       issues.push({ severity: 'error', message: `${label} 的 craftBrief.subplotTasks 为空。`, path: `${path}.subplotTasks` });
     }
+    this.validateStoryUnit(brief.storyUnit, label, `${path}.storyUnit`, issues);
     if (this.stringArray(brief.actionBeats).length < 3) {
       issues.push({ severity: 'error', message: `${label} 的 craftBrief.actionBeats 少于 3 个节点。`, path: `${path}.actionBeats` });
     }
@@ -311,6 +312,40 @@ export class ValidateGuidedStepPreviewTool implements BaseTool<ValidateGuidedSte
       .some((field) => this.stringArray(continuityState[field]).length > 0);
     if (!hasConcreteState) {
       issues.push({ severity: 'error', message: `${label} 的 craftBrief.continuityState 缺少角色位置、威胁、线索或关系变化。`, path: `${path}.continuityState` });
+    }
+  }
+
+  private validateStoryUnit(value: unknown, label: string, path: string, issues: GuidedStepValidationIssue[]) {
+    const storyUnit = this.asRecord(value);
+    if (!storyUnit || !Object.keys(storyUnit).length) {
+      issues.push({ severity: 'error', message: `${label} 缺少 craftBrief.storyUnit。`, path });
+      return;
+    }
+    [
+      'unitId',
+      'title',
+      'chapterRole',
+      'localGoal',
+      'localConflict',
+      'mainlineContribution',
+      'characterContribution',
+      'relationshipContribution',
+      'worldOrThemeContribution',
+      'unitPayoff',
+      'stateChangeAfterUnit',
+    ].forEach((field) => {
+      if (!this.text(storyUnit[field])) {
+        issues.push({ severity: 'error', message: `${label} 的 craftBrief.storyUnit.${field} 为空。`, path: `${path}.${field}` });
+      }
+    });
+    const chapterRange = this.asRecord(storyUnit.chapterRange);
+    const start = this.number(chapterRange?.start);
+    const end = this.number(chapterRange?.end);
+    if (!Number.isInteger(start) || !start || start < 1 || !Number.isInteger(end) || !end || end < start) {
+      issues.push({ severity: 'error', message: `${label} 的 craftBrief.storyUnit.chapterRange 无效。`, path: `${path}.chapterRange` });
+    }
+    if (this.stringArray(storyUnit.serviceFunctions).length < 3) {
+      issues.push({ severity: 'error', message: `${label} 的 craftBrief.storyUnit.serviceFunctions 少于 3 项。`, path: `${path}.serviceFunctions` });
     }
   }
 

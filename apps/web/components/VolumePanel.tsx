@@ -315,6 +315,7 @@ function VolumeCard({
   const [synopsis, setSynopsis] = useState(volume.synopsis ?? '');
   const [showChapterOutlines, setShowChapterOutlines] = useState(false);
   const chapterCount = volume._count?.chapters ?? chapters.length;
+  const storyUnits = storyUnitsFromPlan(volume.narrativePlan);
 
   useEffect(() => {
     setSynopsis(volume.synopsis ?? '');
@@ -397,6 +398,28 @@ function VolumeCard({
             </p>
           )}
         </>
+      )}
+
+      {!isEditing && storyUnits.length > 0 && (
+        <div className="mb-3 space-y-1">
+          <div className="text-[0.68rem] font-semibold" style={{ color: '#14b8a6' }}>单元故事</div>
+          {storyUnits.slice(0, 4).map((unit, index) => {
+            const range = asObjectRecord(unit.chapterRange);
+            const rangeText = typeof range?.start === 'number' && typeof range?.end === 'number'
+              ? `第${range.start}-${range.end}章`
+              : '';
+            const functions = Array.isArray(unit.serviceFunctions)
+              ? unit.serviceFunctions.filter((item): item is string => typeof item === 'string' && item.trim().length > 0)
+              : [];
+            return (
+              <div key={textValue(unit.unitId) || index} className="text-[0.68rem] leading-5" style={{ color: 'var(--text-muted)' }}>
+                <b style={{ color: 'var(--text-main)' }}>{textValue(unit.title, '未命名单元')}</b>
+                {rangeText ? ` · ${rangeText}` : ''}
+                {functions.length ? ` · ${functions.slice(0, 3).join(' / ')}` : ''}
+              </div>
+            );
+          })}
+        </div>
       )}
 
       <ChapterOutlineSection
@@ -507,6 +530,15 @@ function ChapterOutlineRow({ chapter }: { chapter: ChapterSummary }) {
   const mainlineTask = textValue(craftBrief.mainlineTask);
   const consequence = textValue(craftBrief.irreversibleConsequence);
   const characterShift = textValue(craftBrief.characterShift);
+  const storyUnit = asObjectRecord(craftBrief.storyUnit);
+  const storyUnitRange = asObjectRecord(storyUnit?.chapterRange);
+  const storyUnitRangeText = typeof storyUnitRange?.start === 'number' && typeof storyUnitRange?.end === 'number'
+    ? `第${storyUnitRange.start}-${storyUnitRange.end}章`
+    : '';
+  const storyUnitFunctions = Array.isArray(storyUnit?.serviceFunctions)
+    ? storyUnit.serviceFunctions.filter((item): item is string => typeof item === 'string' && item.trim().length > 0)
+    : [];
+  const storyUnitTitle = textValue(storyUnit?.title);
 
   return (
     <article
@@ -540,6 +572,10 @@ function ChapterOutlineRow({ chapter }: { chapter: ChapterSummary }) {
       {visibleGoal && <ChapterField label="可见目标" value={visibleGoal} />}
       {mainlineTask && <ChapterField label="主线任务" value={mainlineTask} />}
       {coreConflict && <ChapterField label="执行卡冲突" value={coreConflict} multiline />}
+      {storyUnitTitle && <ChapterField label="单元故事" value={[storyUnitTitle, storyUnitRangeText, textValue(storyUnit?.chapterRole)].filter(Boolean).join(' · ')} />}
+      {textValue(storyUnit?.localGoal) && <ChapterField label="单元目标" value={textValue(storyUnit?.localGoal)} multiline />}
+      {storyUnitFunctions.length > 0 && <ChapterField label="单元功能" value={storyUnitFunctions.slice(0, 5).join('、')} />}
+      {textValue(storyUnit?.unitPayoff) && <ChapterField label="单元结局" value={textValue(storyUnit?.unitPayoff)} multiline />}
       {actionBeats.length > 0 && <ChapterField label="行动链" value={actionBeats.slice(0, 5).join('；')} multiline />}
       {concreteClues.length > 0 && <ChapterField label="线索" value={concreteClues.slice(0, 4).join('；')} multiline />}
       {characterShift && <ChapterField label="人物变化" value={characterShift} multiline />}
@@ -568,10 +604,22 @@ function ChapterField({ label, value, multiline = false }: { label: string; valu
   );
 }
 
+function storyUnitsFromPlan(value: VolumeSummary['narrativePlan']): Record<string, unknown>[] {
+  const plan = asObjectRecord(value);
+  const units = Array.isArray(plan?.storyUnits) ? plan.storyUnits : [];
+  return units
+    .map((item) => asObjectRecord(item))
+    .filter((item): item is Record<string, unknown> => Boolean(item));
+}
+
 function asCraftBriefRecord(value: ChapterSummary['craftBrief']): Record<string, unknown> {
   return value && typeof value === 'object' && !Array.isArray(value) ? { ...value } as Record<string, unknown> : {};
 }
 
-function textValue(value: unknown) {
-  return typeof value === 'string' && value.trim() ? value.trim() : '';
+function asObjectRecord(value: unknown): Record<string, unknown> | undefined {
+  return value && typeof value === 'object' && !Array.isArray(value) ? value as Record<string, unknown> : undefined;
+}
+
+function textValue(value: unknown, fallback = '') {
+  return typeof value === 'string' && value.trim() ? value.trim() : fallback;
 }

@@ -351,11 +351,21 @@ function ChapterPlanningBrief({ chapter }: { chapter: ChapterSummary }) {
   const subplotTasks = Array.isArray(craftBrief.subplotTasks)
     ? craftBrief.subplotTasks.filter((item): item is string => typeof item === 'string' && item.trim().length > 0)
     : [];
+  const storyUnit = asObjectRecord(craftBrief.storyUnit);
+  const storyUnitRange = asObjectRecord(storyUnit?.chapterRange);
+  const storyUnitRangeText = typeof storyUnitRange?.start === 'number' && typeof storyUnitRange?.end === 'number'
+    ? `第${storyUnitRange.start}-${storyUnitRange.end}章`
+    : '';
+  const storyUnitFunctions = Array.isArray(storyUnit?.serviceFunctions)
+    ? storyUnit.serviceFunctions.filter((item): item is string => typeof item === 'string' && item.trim().length > 0)
+    : [];
+  const storyUnitTitle = textValue(storyUnit?.title);
 
   const hasPlanningData = Boolean(
     chapter.objective?.trim()
     || chapter.conflict?.trim()
     || chapter.outline?.trim()
+    || storyUnitTitle
     || actionBeats.length
     || concreteClues.length
     || progressTypes.length,
@@ -396,6 +406,17 @@ function ChapterPlanningBrief({ chapter }: { chapter: ChapterSummary }) {
         <PlanningField label="执行卡冲突" value={textValue(craftBrief.coreConflict)} multiline />
         <PlanningField label="主线任务" value={textValue(craftBrief.mainlineTask)} />
         <PlanningField label="支线任务" value={subplotTasks.slice(0, 5).join('；')} multiline />
+        <PlanningField label="单元故事" value={[storyUnitTitle, storyUnitRangeText, textValue(storyUnit?.chapterRole)].filter(Boolean).join(' · ')} />
+        <PlanningField label="单元目标" value={textValue(storyUnit?.localGoal)} multiline />
+        <PlanningField label="单元阻力" value={textValue(storyUnit?.localConflict)} multiline />
+        <PlanningField label="本章服务" value={[
+          textValue(storyUnit?.mainlineContribution),
+          textValue(storyUnit?.characterContribution),
+          textValue(storyUnit?.relationshipContribution),
+          textValue(storyUnit?.worldOrThemeContribution),
+        ].filter(Boolean).join('；')} multiline />
+        <PlanningField label="单元功能" value={storyUnitFunctions.join('、')} />
+        <PlanningField label="单元结局" value={textValue(storyUnit?.unitPayoff)} multiline />
         <PlanningField label="行动链" value={actionBeats.slice(0, 6).join('；')} multiline />
         <PlanningField label="线索" value={concreteClues.slice(0, 8).join('、')} />
         <PlanningField label="潜台词" value={textValue(craftBrief.dialogueSubtext)} multiline />
@@ -429,6 +450,10 @@ function PlanningField({ label, value, multiline = false }: { label: string; val
 
 function asCraftBriefRecord(value: ChapterSummary['craftBrief']): Record<string, unknown> {
   return value && typeof value === 'object' && !Array.isArray(value) ? { ...value } as Record<string, unknown> : {};
+}
+
+function asObjectRecord(value: unknown): Record<string, unknown> | undefined {
+  return value && typeof value === 'object' && !Array.isArray(value) ? value as Record<string, unknown> : undefined;
 }
 
 function textValue(value: unknown) {
