@@ -218,6 +218,11 @@ export function assertChapterCharacterExecution(value: unknown, options: AssertC
   if (!Object.keys(record).length) {
     throw new Error(`${label} 缺少章节角色执行。`);
   }
+  const knownSceneBeatIds = new Set(
+    (options.sceneBeats ?? [])
+      .map((sceneBeat) => text(sceneBeat.sceneArcId))
+      .filter(Boolean),
+  );
 
   const newMinorCharacters = requiredRecordArray(record.newMinorCharacters, `${label}.newMinorCharacters`).map((minor, index) => {
     const minorLabel = `${label}.newMinorCharacters[${index}]`;
@@ -239,7 +244,11 @@ export function assertChapterCharacterExecution(value: unknown, options: AssertC
   });
   const minorNames = new Set(normalizeNameList(newMinorCharacters.map((minor) => minor.nameOrLabel)));
 
-  const cast = requiredRecordArray(record.cast, `${label}.cast`).map((member, index) => {
+  const rawCast = requiredRecordArray(record.cast, `${label}.cast`);
+  if (!rawCast.length) {
+    throw new Error(`${label}.cast 至少需要 1 个角色。`);
+  }
+  const cast = rawCast.map((member, index) => {
     const memberLabel = `${label}.cast[${index}]`;
     const characterName = requiredText(member.characterName, `${memberLabel}.characterName`);
     const source = requiredEnum(member.source, CHAPTER_CHARACTER_SOURCES, `${memberLabel}.source`);
@@ -268,6 +277,14 @@ export function assertChapterCharacterExecution(value: unknown, options: AssertC
     if (options.actionBeatCount && actionBeatRefs.some((ref) => ref > options.actionBeatCount!)) {
       throw new Error(`${memberLabel}.actionBeatRefs 超出 actionBeats 范围。`);
     }
+    const sceneBeatRefs = requiredStringArray(member.sceneBeatRefs, `${memberLabel}.sceneBeatRefs`);
+    if (knownSceneBeatIds.size) {
+      for (const ref of sceneBeatRefs) {
+        if (!knownSceneBeatIds.has(ref)) {
+          throw new Error(`${memberLabel}.sceneBeatRefs 引用未知 sceneBeat：${ref}`);
+        }
+      }
+    }
     return {
       characterName,
       characterId: optionalText(member.characterId),
@@ -277,7 +294,7 @@ export function assertChapterCharacterExecution(value: unknown, options: AssertC
       hiddenGoal: optionalText(member.hiddenGoal),
       pressure: requiredText(member.pressure, `${memberLabel}.pressure`),
       actionBeatRefs,
-      sceneBeatRefs: requiredStringArray(member.sceneBeatRefs, `${memberLabel}.sceneBeatRefs`),
+      sceneBeatRefs,
       entryState: requiredText(member.entryState, `${memberLabel}.entryState`),
       exitState: requiredText(member.exitState, `${memberLabel}.exitState`),
       dialogueJob: optionalText(member.dialogueJob),

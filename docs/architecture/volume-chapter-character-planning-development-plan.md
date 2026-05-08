@@ -192,13 +192,13 @@ type ChapterCharacterExecution = {
 
 | ID | 状态 | 任务 | 影响文件 | 验收标准 |
 |---|---|---|---|---|
-| VCC-P2-01 | todo | 扩展 `ChapterCraftBrief`，新增 `characterExecution`。 | `apps/api/src/modules/agent-tools/tools/generate-outline-preview.tool.ts`, `chapter-outline-preview-tools.tool.ts` | 类型编译通过。 |
-| VCC-P2-02 | todo | 更新 `generate_chapter_outline_preview` prompt，要求引用既有角色或卷级候选。 | `apps/api/src/modules/agent-tools/tools/chapter-outline-preview-tools.tool.ts` | LLM mock 生成的本章角色均有 `source` 和目标/压力/入场/离场状态。 |
-| VCC-P2-03 | todo | 更新 `generate_outline_preview` 的逐章 prompt，要求每章输出 `craftBrief.characterExecution`。 | `apps/api/src/modules/agent-tools/tools/generate-outline-preview.tool.ts` | 每章 normalize 后均含角色执行。 |
-| VCC-P2-04 | todo | 增加角色引用解析：既有角色、卷级候选、临时角色三类来源。 | `generate-outline-preview.tool.ts`, `chapter-outline-preview-tools.tool.ts` | 引用未知角色、错误 source、候选名不匹配均抛错。 |
-| VCC-P2-05 | todo | 校验 `sceneBeats.participants` 与 `characterExecution.cast` 一致。 | 同上 | 场景参与者不在 cast 中时抛错。 |
-| VCC-P2-06 | todo | 校验章节级临时角色不能承担重要长线功能。 | 同上 | `minor_temporary` 出现在主线驱动或长期人物弧时抛错。 |
-| VCC-P2-07 | todo | 合并多章预览时保留角色执行并做完整性检查。 | `apps/api/src/modules/agent-tools/tools/chapter-outline-preview-tools.tool.ts` | `merge_chapter_outline_previews` 遇到缺失 `characterExecution` 的章节直接失败。 |
+| VCC-P2-01 | done | 扩展 `ChapterCraftBrief`，新增 `characterExecution`。 | `apps/api/src/modules/agent-tools/tools/generate-outline-preview.tool.ts`, `chapter-outline-preview-tools.tool.ts` | 类型编译通过。 |
+| VCC-P2-02 | done | 更新 `generate_chapter_outline_preview` prompt，要求引用既有角色或卷级候选。 | `apps/api/src/modules/agent-tools/tools/chapter-outline-preview-tools.tool.ts` | LLM mock 生成的本章角色均有 `source` 和目标/压力/入场/离场状态。 |
+| VCC-P2-03 | done | 更新 `generate_outline_preview` 的逐章 prompt，要求每章输出 `craftBrief.characterExecution`。 | `apps/api/src/modules/agent-tools/tools/generate-outline-preview.tool.ts` | 每章 normalize 后均含角色执行。 |
+| VCC-P2-04 | done | 增加角色引用解析：既有角色、卷级候选、临时角色三类来源。 | `generate-outline-preview.tool.ts`, `chapter-outline-preview-tools.tool.ts` | 引用未知角色、错误 source、候选名不匹配均抛错。 |
+| VCC-P2-05 | done | 校验 `sceneBeats.participants` 与 `characterExecution.cast` 一致。 | 同上 | 场景参与者不在 cast 中时抛错。 |
+| VCC-P2-06 | done | 校验章节级临时角色不能承担重要长线功能。 | 同上 | `minor_temporary` 出现在主线驱动或长期人物弧时抛错。 |
+| VCC-P2-07 | done | 合并多章预览时保留角色执行并做完整性检查。 | `apps/api/src/modules/agent-tools/tools/chapter-outline-preview-tools.tool.ts` | `merge_chapter_outline_previews` 遇到缺失 `characterExecution` 的章节直接失败。 |
 
 ### P3：校验、写入和角色候选入库
 
@@ -354,3 +354,4 @@ docker compose up -d --build
 |---|---|---|---|
 | 2026-05-08 | VCC-P0-02 | 新增 `outline-character-contracts.ts`，定义 `VolumeCharacterPlan`、`ChapterCharacterExecution`、角色来源枚举和基础失败即失败校验 helper；新增 `AGENT_TEST_FILTER` 支持，便于小任务阶段只运行新增 agent 测试。 | `AGENT_TEST_FILTER='VCC character contract' pnpm --filter api test:agent` 通过 5/276 项。 |
 | 2026-05-08 | VCC-P1-01/P1-02/P1-04/P1-05 | `generate_volume_outline_preview` 与 `generate_outline_preview` prompt 要求输出 `narrativePlan.characterPlan`；normalize 阶段调用共享契约校验，候选关键字段缺失、`firstAppearChapter` 越界或关系参与者非法时直接失败，不生成角色 fallback。 | `AGENT_TEST_FILTER='VCC volume outline preview' pnpm --filter api test:agent` 通过 2/279 项；`AGENT_TEST_FILTER='VCC outline preview requires' pnpm --filter api test:agent` 通过 1/279 项。 |
+| 2026-05-08 | VCC-P2-01..P2-07 | `generate_outline_preview` 与 `generate_chapter_outline_preview` 要求并校验 `craftBrief.characterExecution`；校验 cast/source、卷级候选引用、临时角色边界、relationship/scene participants 覆盖，并在 `merge_chapter_outline_previews` 拦截缺失角色执行的章节。 | `AGENT_TEST_FILTER='VCC chapter outline preview' pnpm --filter api test:agent` 通过 2/283 项；`AGENT_TEST_FILTER='VCC chapter outline preview rejects important' pnpm --filter api test:agent` 通过 1/284 项；`AGENT_TEST_FILTER='VCC outline preview rejects scene' pnpm --filter api test:agent` 通过 1/283 项；`AGENT_TEST_FILTER='VCC merge chapter' pnpm --filter api test:agent` 通过 1/283 项。 |

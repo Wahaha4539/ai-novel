@@ -206,6 +206,81 @@ function createOutlineCraftBrief(overrides: Record<string, unknown> = {}) {
       relationshipChanges: ['同伴为他冒险藏证据'],
       nextImmediatePressure: '必须在东闸关闭前离开封锁线',
     },
+    characterExecution: {
+      povCharacter: '林澈',
+      cast: [
+        {
+          characterName: '林澈',
+          source: 'existing' as const,
+          functionInChapter: '推动本章行动链并承接主线压力',
+          visibleGoal: '完成本章可检验目标',
+          pressure: '外部阻力迫使他立刻选择',
+          actionBeatRefs: [1, 2],
+          sceneBeatRefs: ['archive_pressure'],
+          entryState: '带着上一章压力进入现场',
+          exitState: '带走证据但付出资源代价',
+        },
+        {
+          characterName: '邵衡',
+          source: 'volume_candidate' as const,
+          functionInChapter: '制造制度压力并留下合作缝隙',
+          visibleGoal: '阻止林澈公开账册',
+          hiddenGoal: '判断林澈是否值得托付登记簿',
+          pressure: '巡检处正在清查泄密者',
+          actionBeatRefs: [2, 3],
+          sceneBeatRefs: ['archive_pressure'],
+          entryState: '以巡检处代表身份压制现场',
+          exitState: '暗中放过林澈离开',
+        },
+        {
+          characterName: '巡检员',
+          source: 'minor_temporary' as const,
+          functionInChapter: '一次性现场阻力',
+          visibleGoal: '清空旧闸棚并登记靠近者',
+          pressure: '上级要求立刻封锁账房',
+          actionBeatRefs: [2],
+          sceneBeatRefs: ['archive_pressure'],
+          entryState: '守在账房门口',
+          exitState: '完成搜查后离场',
+        },
+        {
+          characterName: '同伴',
+          source: 'minor_temporary' as const,
+          functionInChapter: '一次性协助藏证据',
+          visibleGoal: '帮林澈把半页账纸带出账房',
+          pressure: '巡检员正在检查袖口',
+          actionBeatRefs: [3],
+          sceneBeatRefs: ['archive_pressure'],
+          entryState: '跟随林澈进入账房',
+          exitState: '带着工具箱离开旧闸棚',
+        },
+      ],
+      relationshipBeats: [
+        {
+          participants: ['林澈', '邵衡'],
+          publicStateBefore: '互相怀疑',
+          trigger: '邵衡没有揭穿半页账纸',
+          shift: '林澈意识到他可能不是纯粹敌人',
+          publicStateAfter: '表面仍对立，私下出现合作余地',
+        },
+      ],
+      newMinorCharacters: [
+        {
+          nameOrLabel: '巡检员',
+          narrativeFunction: '一次性现场阻力',
+          interactionScope: '旧闸棚搜查',
+          firstAndOnlyUse: true,
+          approvalPolicy: 'preview_only' as const,
+        },
+        {
+          nameOrLabel: '同伴',
+          narrativeFunction: '一次性协助藏证据',
+          interactionScope: '账房后门藏证据',
+          firstAndOnlyUse: true,
+          approvalPolicy: 'preview_only' as const,
+        },
+      ],
+    },
     ...overrides,
   };
 }
@@ -571,6 +646,227 @@ test('VCC outline preview requires volume characterPlan', async () => {
 
   assert.equal(result.chapters.length, 4);
   assert.equal(((result.volume.narrativePlan?.characterPlan as Record<string, unknown>).newCharacterCandidates as Array<Record<string, unknown>>)[0].name, '邵衡');
+});
+
+test('VCC chapter outline preview preserves characterExecution', async () => {
+  const llm = {
+    async chatJson() {
+      return {
+        data: {
+          chapter: createOutlineChapter(2, 1),
+          risks: [],
+        },
+        result: { model: 'mock-chapter-character-execution' },
+      };
+    },
+  };
+  const tool = new GenerateChapterOutlinePreviewTool(llm as never);
+  const result = await tool.run(
+    {
+      context: { project: { title: '旧档案' }, characters: [{ name: '林澈' }, { name: '沈栖' }] },
+      volumeOutline: {
+        volumeNo: 1,
+        title: '旧闸棚账册',
+        synopsis: '卷简介',
+        objective: '拿到账册证据',
+        chapterCount: 4,
+        narrativePlan: createVccNarrativePlan(),
+      },
+      instruction: '生成第 2 章角色执行',
+      volumeNo: 1,
+      chapterNo: 2,
+      chapterCount: 4,
+    },
+    { agentRunId: 'run1', projectId: 'p1', mode: 'plan', approved: false, outputs: {}, policy: {} },
+  );
+
+  assert.equal(result.chapter.craftBrief?.characterExecution?.povCharacter, '林澈');
+  assert.equal(result.chapter.craftBrief?.characterExecution?.cast.some((member) => member.characterName === '邵衡' && member.source === 'volume_candidate'), true);
+});
+
+test('VCC chapter outline preview rejects character not in volume candidates', async () => {
+  const badCraftBrief = createOutlineCraftBrief({
+    characterExecution: {
+      ...createOutlineCraftBrief().characterExecution,
+      cast: [
+        ...(createOutlineCraftBrief().characterExecution.cast as Array<Record<string, unknown>>).filter((member) => member.characterName !== '邵衡'),
+        {
+          ...(createOutlineCraftBrief().characterExecution.cast as Array<Record<string, unknown>>).find((member) => member.characterName === '邵衡'),
+          characterName: '未入候选',
+          source: 'volume_candidate',
+        },
+      ],
+    },
+  });
+  const tool = new GenerateChapterOutlinePreviewTool({
+    async chatJson() {
+      return {
+        data: {
+          chapter: createOutlineChapter(2, 1, { craftBrief: badCraftBrief }),
+          risks: [],
+        },
+        result: { model: 'mock-chapter-character-execution' },
+      };
+    },
+  } as never);
+
+  await assert.rejects(
+    () => tool.run(
+      {
+        context: { project: { title: '旧档案' }, characters: [{ name: '林澈' }] },
+        volumeOutline: {
+          volumeNo: 1,
+          title: '旧闸棚账册',
+          synopsis: '卷简介',
+          objective: '拿到账册证据',
+          chapterCount: 4,
+          narrativePlan: createVccNarrativePlan(),
+        },
+        instruction: '生成第 2 章角色执行',
+        volumeNo: 1,
+        chapterNo: 2,
+        chapterCount: 4,
+      },
+      { agentRunId: 'run1', projectId: 'p1', mode: 'plan', approved: false, outputs: {}, policy: {} },
+    ),
+    /未进入卷级角色候选/,
+  );
+});
+
+test('VCC chapter outline preview rejects important temporary character', async () => {
+  const badExecution = {
+    ...createOutlineCraftBrief().characterExecution,
+    cast: (createOutlineCraftBrief().characterExecution.cast as Array<Record<string, unknown>>).map((member) => (
+      member.characterName === '巡检员'
+        ? { ...member, functionInChapter: '承担本卷主线核心反派主压力' }
+        : member
+    )),
+  };
+  const tool = new GenerateChapterOutlinePreviewTool({
+    async chatJson() {
+      return {
+        data: {
+          chapter: createOutlineChapter(2, 1, { craftBrief: createOutlineCraftBrief({ characterExecution: badExecution }) }),
+          risks: [],
+        },
+        result: { model: 'mock-chapter-character-execution' },
+      };
+    },
+  } as never);
+
+  await assert.rejects(
+    () => tool.run(
+      {
+        context: { project: { title: '旧档案' }, characters: [{ name: '林澈' }] },
+        volumeOutline: {
+          volumeNo: 1,
+          title: '旧闸棚账册',
+          synopsis: '卷简介',
+          objective: '拿到账册证据',
+          chapterCount: 4,
+          narrativePlan: createVccNarrativePlan(),
+        },
+        instruction: '生成第 2 章角色执行',
+        volumeNo: 1,
+        chapterNo: 2,
+        chapterCount: 4,
+      },
+      { agentRunId: 'run1', projectId: 'p1', mode: 'plan', approved: false, outputs: {}, policy: {} },
+    ),
+    /临时角色承担了重要或长期角色功能/,
+  );
+});
+
+test('VCC outline preview rejects scene participant outside characterExecution cast', async () => {
+  const badCraftBrief = createOutlineCraftBrief({
+    sceneBeats: [
+      {
+        ...createOutlineCraftBrief().sceneBeats[0],
+        participants: ['林澈', '未列入角色'],
+      },
+      ...(createOutlineCraftBrief().sceneBeats as Array<Record<string, unknown>>).slice(1),
+    ],
+  });
+  const tool = new GenerateOutlinePreviewTool({
+    async chatJson(messages: Array<{ role: string; content: string }>) {
+      const prompt = messages[1]?.content ?? '';
+      const match = prompt.match(/章节范围：第 (\d+)-(\d+) 章/);
+      const chapterNo = match ? Number(match[1]) : 1;
+      return {
+        data: {
+          volume: {
+            volumeNo: 1,
+            title: '旧闸棚账册',
+            synopsis: '卷简介',
+            objective: '拿到账册证据',
+            chapterCount: 4,
+            narrativePlan: createVccNarrativePlan(),
+          },
+          chapters: [createOutlineChapter(chapterNo, 1, { craftBrief: badCraftBrief })],
+          risks: [],
+        },
+        result: { model: 'mock-outline-character-execution' },
+      };
+    },
+  } as never);
+
+  await assert.rejects(
+    () => tool.run(
+      {
+        context: { project: { title: '旧档案' }, characters: [{ name: '林澈' }, { name: '沈栖' }] },
+        instruction: '为第 1 卷生成 4 章细纲',
+        volumeNo: 1,
+        chapterCount: 4,
+      },
+      { agentRunId: 'run1', projectId: 'p1', mode: 'plan', approved: false, outputs: {}, policy: {} },
+    ),
+    /未被 characterExecution\.cast 覆盖/,
+  );
+});
+
+test('VCC merge chapter outline previews rejects missing characterExecution', async () => {
+  const craftBrief = createOutlineCraftBrief();
+  delete (craftBrief as Record<string, unknown>).characterExecution;
+  const tool = new MergeChapterOutlinePreviewsTool();
+  const characterPlan = createVccCharacterPlan({
+    existingCharacterArcs: [
+      {
+        ...createVccCharacterPlan().existingCharacterArcs[0],
+        lastActiveChapter: 1,
+      },
+    ],
+    newCharacterCandidates: [
+      {
+        ...createVccCharacterPlan().newCharacterCandidates[0],
+        firstAppearChapter: 1,
+      },
+    ],
+    relationshipArcs: [
+      {
+        ...createVccCharacterPlan().relationshipArcs[0],
+        turnChapterNos: [1],
+      },
+    ],
+  });
+
+  await assert.rejects(
+    () => tool.run(
+      {
+        previews: [
+          {
+            volume: { volumeNo: 1, title: '旧闸棚账册', synopsis: '卷简介', objective: '拿到账册证据', chapterCount: 1, narrativePlan: createVccNarrativePlan({ storyUnits: [{ unitId: 'v1_unit_01', title: '短单元', chapterRange: { start: 1, end: 1 }, localGoal: '短目标', localConflict: '短阻力', serviceFunctions: ['mainline', 'relationship_shift', 'foreshadow'], payoff: '短回收', stateChangeAfterUnit: '短变化' }], characterPlan }) },
+            chapter: createOutlineChapter(1, 1, { craftBrief }),
+            chapters: [createOutlineChapter(1, 1, { craftBrief })],
+            risks: [],
+          },
+        ],
+        volumeNo: 1,
+        chapterCount: 1,
+      },
+      { agentRunId: 'run1', projectId: 'p1', mode: 'plan', approved: false, outputs: {}, policy: {} },
+    ),
+    /craftBrief 不完整/,
+  );
 });
 
 const TARGETED_IMPORT_PREVIEW_TOOL_NAMES = [
