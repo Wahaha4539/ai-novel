@@ -350,7 +350,7 @@ export class GenerateGuidedStepPreviewTool implements BaseTool<GenerateGuidedSte
     if (data && typeof data === 'object' && !Array.isArray(data)) {
       return { structuredData: data as Record<string, unknown>, warnings: [] };
     }
-    return { structuredData: {}, warnings: ['模型返回的步骤预览不是 JSON 对象，已返回空预览。'] };
+    throw new Error('generate_guided_step_preview LLM 返回不是 JSON 对象，未生成可审批的步骤预览。请重试、缩小范围或补充上下文。');
   }
 
   private buildSummary(stepKey: string, data: Record<string, unknown>): string {

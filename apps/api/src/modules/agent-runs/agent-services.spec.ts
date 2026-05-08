@@ -3944,6 +3944,22 @@ test('GenerateGuidedStepPreviewTool 对未知步骤显式拒绝', async () => {
   );
 });
 
+test('VCC generate_guided_step_preview rejects non-object LLM output', async () => {
+  const tool = new GenerateGuidedStepPreviewTool({
+    async chatJson() {
+      return { data: [], result: { model: 'mock-guided-preview' } };
+    },
+  } as never);
+
+  await assert.rejects(
+    () => tool.run(
+      { stepKey: 'guided_setup' },
+      { agentRunId: 'run-vcc-guided-preview-non-object', projectId: 'p1', mode: 'plan', approved: false, outputs: {}, policy: {} },
+    ),
+    /不是 JSON 对象|JSON object/,
+  );
+});
+
 test('ValidateGuidedStepPreviewTool 标记缺字段、重复编号并保持只读', async () => {
   const reads: string[] = [];
   const prisma = {
