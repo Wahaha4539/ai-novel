@@ -11,7 +11,7 @@ import { AgentContextV2 } from './agent-context-builder.service';
 import type { ImportPreviewModeDto } from './dto/create-agent-plan.dto';
 import { invokeAgentPlannerGraph } from './planner-graph/agent-planner.graph';
 import { AgentPlannerGraphService } from './planner-graph/agent-planner-graph.service';
-import type { AgentPlannerGraphState } from './planner-graph/planner-graph.state';
+import type { AgentPlannerGraphState, RouteDecision, SelectedToolBundle } from './planner-graph/planner-graph.state';
 
 export interface AgentPlanStepSpec {
   id?: string;
@@ -63,6 +63,20 @@ interface PlannerOutputDefaults {
   summary: string;
   assumptions: string[];
   risks: string[];
+}
+
+export interface AgentPlanWithToolsInput {
+  goal: string;
+  context?: AgentContextV2;
+  route?: RouteDecision;
+  selectedBundle?: SelectedToolBundle;
+  selectedTools: ToolManifestForPlanner[];
+}
+
+interface PlannerToolScope {
+  route?: RouteDecision;
+  selectedBundle?: SelectedToolBundle;
+  selectedTools?: ToolManifestForPlanner[];
 }
 
 type AgentContextPromptPayload = Omit<AgentContextV2, 'availableTools'>;
@@ -159,6 +173,22 @@ export class AgentPlannerService {
     };
   }
 
+  async createPlanWithTools(input: AgentPlanWithToolsInput): Promise<AgentPlanSpec> {
+    const defaults = this.createOutputDefaults(input.goal);
+    const llmBudget: PlannerLlmBudget = { used: 0, max: this.rules.getPolicy().limits.maxLlmCalls, failures: [] };
+    try {
+      return await this.createLlmPlan(input.goal, defaults, llmBudget, input.context, {
+        route: input.route,
+        selectedBundle: input.selectedBundle,
+        selectedTools: input.selectedTools,
+      });
+    } catch (error) {
+      const failures = [...llmBudget.failures, this.failureDetail('planner_failed', error)];
+      const diagnostics = { llmCalls: llmBudget.used, maxLlmCalls: llmBudget.max, failures, ...this.plannerScopeDiagnostics(input) };
+      throw new AgentPlannerFailedError(`Agent Planner 生成高质量计划失败：${JSON.stringify(diagnostics)}`, diagnostics);
+    }
+  }
+
   private isGraphPlannerEnabled(): boolean {
     const value = process.env[AGENT_PLANNER_GRAPH_ENABLED]?.trim().toLowerCase();
     return value === '1' || value === 'true' || value === 'yes' || value === 'on';
@@ -188,8 +218,10 @@ export class AgentPlannerService {
     };
   }
 
-  private async createLlmPlan(goal: string, defaults: PlannerOutputDefaults, llmBudget: PlannerLlmBudget, context?: AgentContextV2): Promise<AgentPlanSpec> {
-    const tools = this.toolManifestsForPrompt();
+  private async createLlmPlan(goal: string, defaults: PlannerOutputDefaults, llmBudget: PlannerLlmBudget, context?: AgentContextV2, toolScope?: PlannerToolScope): Promise<AgentPlanSpec> {
+    const tools = toolScope?.selectedTools?.length
+      ? toolScope.selectedTools.map((tool) => this.compactToolManifestForPrompt(tool))
+      : this.toolManifestsForPrompt();
     const promptContext = this.contextForPrompt(context);
     const availableTaskTypes = this.listTaskTypes();
     const skills = this.skills.list();
@@ -231,6 +263,7 @@ export class AgentPlannerService {
           {
             userGoal: goal,
             agentContext: promptContext,
+            ...this.plannerScopePromptPayload(toolScope),
             currentAgentMode: 'plan',
             stepModeContract: 'steps[].mode 固定为 act；Plan/Act 运行时模式由后端 AgentRuntimeService 注入，不由 LLM 决定。',
             availableTaskTypes,
@@ -308,7 +341,7 @@ export class AgentPlannerService {
     );
 
     try {
-      return { ...this.validateAndNormalizeLlmPlan(data, defaults, context), plannerDiagnostics: { source: 'llm', model: result.model, usage: result.usage, llmCalls: llmBudget.used, maxLlmCalls: llmBudget.max, schemaVersion: 2 } };
+      return { ...this.validateAndNormalizeLlmPlan(data, defaults, context), plannerDiagnostics: { source: 'llm', model: result.model, usage: result.usage, llmCalls: llmBudget.used, maxLlmCalls: llmBudget.max, schemaVersion: 2, ...this.plannerScopeDiagnostics(toolScope) } };
     } catch (error) {
       llmBudget.failures.push(this.failureDetail('schema_validation', error));
       return this.repairLlmPlan(goal, defaults, data, error instanceof Error ? error.message : String(error), llmBudget, context);
@@ -394,6 +427,38 @@ export class AgentPlannerService {
     if (!context) return undefined;
     const { availableTools: _availableTools, ...promptContext } = context;
     return promptContext;
+  }
+
+  private plannerScopePromptPayload(scope?: PlannerToolScope): Record<string, unknown> {
+    return this.removeUndefinedArgs({
+      routeDecision: scope?.route,
+      toolBundle: scope?.selectedBundle
+        ? {
+            name: scope.selectedBundle.bundleName,
+            selectedToolNames: scope.selectedBundle.strictToolNames,
+            optionalToolNames: scope.selectedBundle.optionalToolNames,
+            deniedToolNames: scope.selectedBundle.deniedToolNames,
+          }
+        : undefined,
+    });
+  }
+
+  private plannerScopeDiagnostics(scope?: PlannerToolScope): Record<string, unknown> {
+    return this.removeUndefinedArgs({
+      route: scope?.route
+        ? {
+            domain: scope.route.domain,
+            intent: scope.route.intent,
+            confidence: scope.route.confidence,
+          }
+        : undefined,
+      toolBundle: scope?.selectedBundle
+        ? {
+            name: scope.selectedBundle.bundleName,
+            selectedToolCount: scope.selectedBundle.strictToolNames.length,
+          }
+        : undefined,
+    });
   }
 
   private toolManifestsForPrompt(toolNames?: string[]): PlannerPromptToolManifest[] {

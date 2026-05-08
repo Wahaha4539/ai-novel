@@ -226,7 +226,7 @@
 
 ### ASP-P3-002 实现 selectToolBundleNode
 
-- 状态：`[ ]`
+- 状态：`[x]`
 - 模块：API
 - 文件：
   - `apps/api/src/modules/agent-runs/planner-graph/nodes/select-tool-bundle.node.ts`
@@ -261,6 +261,13 @@
   - `plannerDiagnostics` 记录 route 和 bundle。
 - 验证：
   - `pnpm --dir apps/api run test:agent`
+- 完成记录（2026-05-09）：
+  - 新增 `AgentPlannerService.createPlanWithTools()` 和 `createDomainPlannerNode`，DomainPlanner prompt 注入 `routeDecision` 与 `toolBundle`。
+  - scoped Planner 的 `availableTools` 仅使用 selected manifests；默认 legacy `createPlan()` 不变。
+  - `plannerDiagnostics` 记录 route 和 bundle 摘要，便于后续前端/debug 展示。
+  - 修改文件：`apps/api/src/modules/agent-runs/agent-planner.service.ts`、`apps/api/src/modules/agent-runs/planner-graph/nodes/domain-planner.node.ts`、`apps/api/src/modules/agent-runs/planner-graph/nodes/index.ts`、`apps/api/src/modules/agent-runs/agent-services.spec.ts`、`docs/architecture/agent-supervisor-planner-development-plan.md`。
+  - 测试：`AGENT_TEST_FILTER="DomainPlanner route" pnpm --dir apps/api run test:agent`，通过（1/334 targeted）。
+  - 测试：`pnpm --filter api build`，通过。
 
 ## 6. P4 PlanValidator
 

@@ -22,7 +22,7 @@ import { AgentReplannerService } from './agent-replanner.service';
 import { AgentRuntimeService } from './agent-runtime.service';
 import { AgentPlannerService } from './agent-planner.service';
 import { AgentPlannerGraphService } from './planner-graph/agent-planner-graph.service';
-import { createSelectToolBundleNode } from './planner-graph/nodes';
+import { createDomainPlannerNode, createSelectToolBundleNode } from './planner-graph/nodes';
 import { TOOL_BUNDLE_DEFINITIONS, ToolBundleRegistry } from './planner-graph/tool-bundles';
 import { RootSupervisor, validateRouteDecision } from './planner-graph/supervisors/root-supervisor';
 import { AgentPolicyService, AgentSecondConfirmationRequiredError } from './agent-policy.service';
@@ -8358,6 +8358,80 @@ test('selectToolBundleNode selects outline and guided bundles with diagnostics',
   });
   assert.equal(guided.selectedBundle?.bundleName, 'guided.step');
   assert.ok(guided.selectedTools?.every((tool) => ['generate_guided_step_preview', 'validate_guided_step_preview', 'persist_guided_step_result'].includes(tool.name)));
+});
+
+test('DomainPlanner route prompt uses selected tools and records diagnostics', async () => {
+  let promptPayload: Record<string, any> | undefined;
+  const toolList = [
+    createTool({ name: 'echo_report', requiresApproval: false, riskLevel: 'low', sideEffects: [] }),
+    createTool({ name: 'write_chapter', requiresApproval: true, riskLevel: 'high', sideEffects: ['draft_write'] }),
+  ];
+  const tools = {
+    list: () => toolList,
+    listManifestsForPlanner: (toolNames?: string[]) => (toolNames?.length ? toolNames : toolList.map((tool) => tool.name)).map((name) => {
+      const tool = toolList.find((item) => item.name === name);
+      if (!tool) throw new Error(`missing ${name}`);
+      return {
+        name: tool.name,
+        displayName: tool.name,
+        description: tool.description,
+        whenToUse: [],
+        whenNotToUse: [],
+        allowedModes: tool.allowedModes,
+        riskLevel: tool.riskLevel,
+        requiresApproval: tool.requiresApproval,
+        sideEffects: tool.sideEffects,
+      };
+    }),
+  } as unknown as ToolRegistryService;
+  const llm = {
+    async chatJson(messages: Array<{ role: string; content: string }>) {
+      promptPayload = JSON.parse(messages[1].content);
+      return {
+        data: {
+          taskType: 'general',
+          summary: 'Selected tool plan.',
+          assumptions: [],
+          risks: [],
+          steps: [
+            { stepNo: 1, name: 'Report', tool: 'echo_report', mode: 'act', requiresApproval: false, args: { message: 'ok' } },
+          ],
+        },
+        result: { model: 'planner-mock', usage: { prompt_tokens: 1, completion_tokens: 1 } },
+      };
+    },
+  };
+  const planner = new AgentPlannerService(new SkillRegistryService(), tools, new RuleEngineService(), llm as never);
+  const node = createDomainPlannerNode(planner);
+  const selectedBundle = {
+    bundleName: 'general.echo',
+    strictToolNames: ['echo_report'],
+    optionalToolNames: [],
+    deniedToolNames: ['write_chapter'],
+    selectionReason: 'test',
+  };
+  const update = await node({
+    goal: '需要澄清',
+    defaults: { taskType: 'general', summary: 'fallback', assumptions: [], risks: [] },
+    route: { domain: 'general', intent: 'clarify', confidence: 0.4, reasons: ['test'] },
+    selectedBundle,
+    selectedTools: tools.listManifestsForPlanner(['echo_report']),
+    diagnostics: { graphVersion: 'test', nodes: [] },
+  });
+
+  assert.deepEqual(promptPayload?.routeDecision, { domain: 'general', intent: 'clarify', confidence: 0.4, reasons: ['test'] });
+  assert.deepEqual(promptPayload?.toolBundle, {
+    name: 'general.echo',
+    selectedToolNames: ['echo_report'],
+    optionalToolNames: [],
+    deniedToolNames: ['write_chapter'],
+  });
+  assert.deepEqual((promptPayload?.availableTools as Array<Record<string, unknown>>).map((tool) => tool.name), ['echo_report']);
+  assert.doesNotMatch(JSON.stringify(promptPayload?.availableTools), /write_chapter/);
+  const diagnostics = update.plan?.plannerDiagnostics as Record<string, any>;
+  assert.equal(diagnostics.route.domain, 'general');
+  assert.equal(diagnostics.toolBundle.name, 'general.echo');
+  assert.ok(update.diagnostics?.nodes.some((item) => item.name === 'domainPlanner'));
 });
 
 test('Tool manifest filtering preserves requested order and fails on unknown tools', () => {
