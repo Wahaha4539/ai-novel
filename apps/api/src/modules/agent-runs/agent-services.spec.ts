@@ -904,7 +904,7 @@ test('VCC volume outline preview rejects missing candidate motivation', async ()
 
   await assert.rejects(
     () => tool.run(
-      { context: { characters: [{ name: '林澈' }] }, instruction: '生成卷纲', volumeNo: 1, chapterCount: 4 },
+      { context: { characters: [{ name: '林澈' }, { name: '沈栖' }] }, instruction: '生成卷纲', volumeNo: 1, chapterCount: 4 },
       { agentRunId: 'run1', projectId: 'p1', mode: 'plan', approved: false, outputs: {}, policy: {} },
     ),
     /motivation/,
