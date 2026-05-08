@@ -11,6 +11,7 @@ import { AgentContextV2 } from './agent-context-builder.service';
 import type { ImportPreviewModeDto } from './dto/create-agent-plan.dto';
 import { invokeAgentPlannerGraph } from './planner-graph/agent-planner.graph';
 import { AgentPlannerGraphService } from './planner-graph/agent-planner-graph.service';
+import { PlanValidatorService } from './planner-graph/plan-validator.service';
 import type { AgentPlannerGraphState, RouteDecision, SelectedToolBundle } from './planner-graph/planner-graph.state';
 
 export interface AgentPlanStepSpec {
@@ -148,6 +149,7 @@ export class AgentPlannerService {
     private readonly rules: RuleEngineService,
     private readonly llm: LlmGatewayService,
     @Optional() private readonly plannerGraph?: AgentPlannerGraphService,
+    @Optional() private readonly planValidator?: PlanValidatorService,
   ) {}
 
   async createPlan(goal: string, context?: AgentContextV2): Promise<AgentPlanSpec> {
@@ -341,7 +343,7 @@ export class AgentPlannerService {
     );
 
     try {
-      return { ...this.validateAndNormalizeLlmPlan(data, defaults, context), plannerDiagnostics: { source: 'llm', model: result.model, usage: result.usage, llmCalls: llmBudget.used, maxLlmCalls: llmBudget.max, schemaVersion: 2, ...this.plannerScopeDiagnostics(toolScope) } };
+      return { ...this.validateAndNormalizeScopedPlan(data, defaults, context, toolScope), plannerDiagnostics: { source: 'llm', model: result.model, usage: result.usage, llmCalls: llmBudget.used, maxLlmCalls: llmBudget.max, schemaVersion: 2, ...this.plannerScopeDiagnostics(toolScope) } };
     } catch (error) {
       llmBudget.failures.push(this.failureDetail('schema_validation', error));
       return this.repairLlmPlan(goal, defaults, data, error instanceof Error ? error.message : String(error), llmBudget, context, toolScope);
@@ -423,7 +425,16 @@ export class AgentPlannerService {
       { appStep: 'agent_planner', maxTokens: 4500, timeoutMs: DEFAULT_LLM_TIMEOUT_MS, retries: 1, temperature: 0.1 },
     );
 
-    return { ...this.validateAndNormalizeLlmPlan(data, defaults, context), plannerDiagnostics: { source: 'llm_repair', model: result.model, usage: result.usage, repairedFromError: validationError, llmCalls: llmBudget.used, maxLlmCalls: llmBudget.max, schemaVersion: 2, ...this.plannerScopeDiagnostics(toolScope) } };
+    return { ...this.validateAndNormalizeScopedPlan(data, defaults, context, toolScope), plannerDiagnostics: { source: 'llm_repair', model: result.model, usage: result.usage, repairedFromError: validationError, llmCalls: llmBudget.used, maxLlmCalls: llmBudget.max, schemaVersion: 2, ...this.plannerScopeDiagnostics(toolScope) } };
+  }
+
+  private validateAndNormalizeScopedPlan(data: unknown, defaults: PlannerOutputDefaults, context?: AgentContextV2, toolScope?: PlannerToolScope): AgentPlanSpec {
+    const plan = this.validateAndNormalizeLlmPlan(data, defaults, context);
+    if (toolScope?.selectedBundle || toolScope?.route) {
+      const validator = this.planValidator ?? new PlanValidatorService();
+      validator.validate({ plan, context, route: toolScope.route, selectedBundle: toolScope.selectedBundle });
+    }
+    return plan;
   }
 
   private contextForPrompt(context?: AgentContextV2): AgentContextPromptPayload | undefined {

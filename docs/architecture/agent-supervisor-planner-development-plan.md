@@ -279,7 +279,7 @@
 
 ### ASP-P4-001 新增 PlanValidatorService
 
-- 状态：`[ ]`
+- 状态：`[x]`
 - 模块：API
 - 文件：
   - `apps/api/src/modules/agent-runs/planner-graph/plan-validator.service.ts`
@@ -292,6 +292,13 @@
   - 不生成任何 fallback plan。
 - 验证：
   - `pnpm --dir apps/api run test:agent`
+- 完成记录（2026-05-09）：
+  - 新增 `PlanValidatorService`，统一校验 selected bundle 外工具、写入/持久化工具审批、outline route 边界、guided 误路由、timeline 预览持久化和导入目标范围扩大。
+  - `AgentPlannerService.createPlanWithTools()` 在首轮与 repair 归一化后调用同一 validator；校验失败继续走 LLM repair，repair 后仍失败则直接抛错，不生成 fallback plan。
+  - 在 `AgentRunsModule` 注册 `PlanValidatorService`，保持 legacy `createPlan()` 默认路径不变。
+  - 修改文件：`apps/api/src/modules/agent-runs/planner-graph/plan-validator.service.ts`、`apps/api/src/modules/agent-runs/agent-planner.service.ts`、`apps/api/src/modules/agent-runs/agent-runs.module.ts`、`apps/api/src/modules/agent-runs/agent-services.spec.ts`、`docs/architecture/agent-supervisor-planner-development-plan.md`。
+  - 测试：`AGENT_TEST_FILTER="PlanValidatorService" pnpm --dir apps/api run test:agent`，通过（5/340 targeted）。
+  - 测试：`pnpm --filter api build`，通过。
 
 ### ASP-P4-002 增加大纲领域硬约束测试
 

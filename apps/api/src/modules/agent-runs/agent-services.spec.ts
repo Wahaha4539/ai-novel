@@ -20,8 +20,9 @@ import { AgentExecutorService, AgentWaitingReviewError } from './agent-executor.
 import { AgentExecutionObservationError } from './agent-observation.types';
 import { AgentReplannerService } from './agent-replanner.service';
 import { AgentRuntimeService } from './agent-runtime.service';
-import { AgentPlannerService } from './agent-planner.service';
+import { AgentPlannerService, type AgentPlanSpec } from './agent-planner.service';
 import { AgentPlannerGraphService } from './planner-graph/agent-planner-graph.service';
+import { PlanValidatorService } from './planner-graph/plan-validator.service';
 import { createDomainPlannerNode, createSelectToolBundleNode } from './planner-graph/nodes';
 import { TOOL_BUNDLE_DEFINITIONS, ToolBundleRegistry } from './planner-graph/tool-bundles';
 import { RootSupervisor, validateRouteDecision } from './planner-graph/supervisors/root-supervisor';
@@ -8502,6 +8503,144 @@ test('Planner repair selected tools prompt does not return to full manifests', a
   assert.deepEqual((payloads[1].registeredTools as Array<Record<string, unknown>>).map((tool) => tool.name), ['echo_report']);
   assert.deepEqual(payloads[1].toolBundle.selectedToolNames, ['echo_report']);
   assert.doesNotMatch(JSON.stringify(payloads[1].registeredTools), /write_chapter/);
+});
+
+function createPlanValidatorPlan(steps: Array<{ tool: string; requiresApproval?: boolean; args?: Record<string, unknown> }>, overrides: Partial<AgentPlanSpec> = {}): AgentPlanSpec {
+  return {
+    taskType: 'general',
+    summary: 'validator test',
+    assumptions: [],
+    risks: [],
+    requiredApprovals: [],
+    steps: steps.map((step, index) => ({
+      stepNo: index + 1,
+      name: step.tool,
+      tool: step.tool,
+      mode: 'act',
+      requiresApproval: step.requiresApproval ?? false,
+      args: step.args ?? {},
+    })),
+    ...overrides,
+  };
+}
+
+test('PlanValidatorService rejects bundle-outside tools', () => {
+  const validator = new PlanValidatorService();
+  assert.throws(
+    () => validator.validate({
+      plan: createPlanValidatorPlan([
+        { tool: 'echo_report' },
+        { tool: 'write_chapter', requiresApproval: true },
+      ]),
+      selectedBundle: { bundleName: 'general.echo', strictToolNames: ['echo_report'], optionalToolNames: [], selectionReason: 'test' },
+    }),
+    /bundle-outside tools.*write_chapter/,
+  );
+});
+
+test('PlanValidatorService rejects write tools without approval', () => {
+  const validator = new PlanValidatorService();
+  assert.throws(
+    () => validator.validate({
+      plan: createPlanValidatorPlan([{ tool: 'write_chapter', requiresApproval: false }]),
+    }),
+    /write tools without approval: write_chapter/,
+  );
+});
+
+test('PlanValidatorService rejects route and tool mismatches', () => {
+  const validator = new PlanValidatorService();
+  assert.throws(
+    () => validator.validate({
+      plan: createPlanValidatorPlan([{ tool: 'generate_chapter_outline_preview' }]),
+      route: { domain: 'outline', intent: 'generate_volume_outline', confidence: 0.9, reasons: ['test'] },
+    }),
+    /volume outline route tools: generate_chapter_outline_preview/,
+  );
+  assert.throws(
+    () => validator.validate({
+      plan: createPlanValidatorPlan([{ tool: 'persist_timeline_events', requiresApproval: true }]),
+      route: { domain: 'timeline', intent: 'plan_timeline', confidence: 0.9, reasons: ['test'], needsPersistence: false },
+    }),
+    /timeline preview route tools: persist_timeline_events/,
+  );
+  assert.throws(
+    () => validator.validate({
+      plan: createPlanValidatorPlan([{ tool: 'write_chapter', requiresApproval: true }]),
+      route: { domain: 'guided', intent: 'guided_step_consultation', confidence: 0.9, reasons: ['test'] },
+    }),
+    /guided route tools: write_chapter/,
+  );
+});
+
+test('PlanValidatorService rejects import asset scope expansion', () => {
+  const validator = new PlanValidatorService();
+  const context = { session: { requestedAssetTypes: ['outline'] } } as AgentContextV2;
+  assert.throws(
+    () => validator.validate({
+      plan: createPlanValidatorPlan([
+        { tool: 'build_import_preview', args: { requestedAssetTypes: ['outline', 'characters'] } },
+      ]),
+      context,
+      route: { domain: 'import', intent: 'project_assets', confidence: 0.9, reasons: ['test'] },
+    }),
+    /import requestedAssetTypes mismatch/,
+  );
+});
+
+test('PlanValidatorService blocks invalid scoped planner output without fallback plan', async () => {
+  let calls = 0;
+  const toolList = [
+    createTool({ name: 'echo_report', requiresApproval: false, riskLevel: 'low', sideEffects: [] }),
+    createTool({ name: 'inspect_project_context', requiresApproval: false, riskLevel: 'low', sideEffects: [] }),
+  ];
+  const tools = {
+    list: () => toolList,
+    listManifestsForPlanner: (toolNames?: string[]) => (toolNames?.length ? toolNames : toolList.map((tool) => tool.name)).map((name) => {
+      const tool = toolList.find((item) => item.name === name);
+      if (!tool) throw new Error(`missing ${name}`);
+      return {
+        name: tool.name,
+        displayName: tool.name,
+        description: tool.description,
+        whenToUse: [],
+        whenNotToUse: [],
+        allowedModes: tool.allowedModes,
+        riskLevel: tool.riskLevel,
+        requiresApproval: tool.requiresApproval,
+        sideEffects: tool.sideEffects,
+      };
+    }),
+  } as unknown as ToolRegistryService;
+  const llm = {
+    async chatJson() {
+      calls += 1;
+      return {
+        data: {
+          taskType: 'general',
+          summary: 'Invalid selected tool plan.',
+          assumptions: [],
+          risks: [],
+          steps: [
+            { stepNo: 1, name: 'Inspect', tool: 'inspect_project_context', mode: 'act', requiresApproval: false, args: {} },
+          ],
+        },
+        result: { model: 'planner-mock' },
+      };
+    },
+  };
+  const planner = new AgentPlannerService(new SkillRegistryService(), tools, new RuleEngineService(), llm as never, undefined, new PlanValidatorService());
+
+  await assert.rejects(
+    () => planner.createPlanWithTools({
+      goal: 'selected tools only',
+      route: { domain: 'general', intent: 'clarify', confidence: 0.4, reasons: ['test'] },
+      selectedBundle: { bundleName: 'general.echo', strictToolNames: ['echo_report'], optionalToolNames: [], deniedToolNames: ['inspect_project_context'], selectionReason: 'test' },
+      selectedTools: tools.listManifestsForPlanner(['echo_report']),
+    }),
+    /Agent Planner .*bundle-outside tools.*inspect_project_context/,
+  );
+  assert.equal(calls, 2);
 });
 
 test('Tool manifest filtering preserves requested order and fails on unknown tools', () => {
