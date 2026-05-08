@@ -1,4 +1,4 @@
-import { Injectable } from '@nestjs/common';
+import { Injectable, Optional } from '@nestjs/common';
 import { RuleEngineService } from '../agent-rules/rule-engine.service';
 import { SkillRegistryService } from '../agent-skills/skill-registry.service';
 import { ImportAssetType, IMPORT_ASSET_TYPES } from '../agent-tools/tools/import-preview.types';
@@ -9,6 +9,9 @@ import { LlmGatewayService } from '../llm/llm-gateway.service';
 import { DEFAULT_LLM_TIMEOUT_MS } from '../llm/llm-timeout.constants';
 import { AgentContextV2 } from './agent-context-builder.service';
 import type { ImportPreviewModeDto } from './dto/create-agent-plan.dto';
+import { invokeAgentPlannerGraph } from './planner-graph/agent-planner.graph';
+import { AgentPlannerGraphService } from './planner-graph/agent-planner-graph.service';
+import type { AgentPlannerGraphState } from './planner-graph/planner-graph.state';
 
 export interface AgentPlanStepSpec {
   id?: string;
@@ -95,6 +98,7 @@ const ALIGN_CHAPTER_TIMELINE_PREVIEW_TOOL = 'align_chapter_timeline_preview';
 const VALIDATE_TIMELINE_PREVIEW_TOOL = 'validate_timeline_preview';
 const GENERATE_CHAPTER_CRAFT_BRIEF_PREVIEW_TOOL = 'generate_chapter_craft_brief_preview';
 const VALIDATE_CHAPTER_CRAFT_BRIEF_TOOL = 'validate_chapter_craft_brief';
+const AGENT_PLANNER_GRAPH_ENABLED = 'AGENT_PLANNER_GRAPH_ENABLED';
 const MERGE_PREVIEW_ARG_BY_ASSET_TYPE: Record<ImportAssetType, string> = {
   projectProfile: 'projectProfilePreview',
   outline: 'outlinePreview',
@@ -129,12 +133,14 @@ export class AgentPlannerService {
     private readonly tools: ToolRegistryService,
     private readonly rules: RuleEngineService,
     private readonly llm: LlmGatewayService,
+    @Optional() private readonly plannerGraph?: AgentPlannerGraphService,
   ) {}
 
   async createPlan(goal: string, context?: AgentContextV2): Promise<AgentPlanSpec> {
     const defaults = this.createOutputDefaults(goal);
     const llmBudget: PlannerLlmBudget = { used: 0, max: this.rules.getPolicy().limits.maxLlmCalls, failures: [] };
     try {
+      if (this.isGraphPlannerEnabled()) return await this.createGraphWrappedPlan(goal, defaults, llmBudget, context);
       return await this.createLlmPlan(goal, defaults, llmBudget, context);
     } catch (error) {
       const failures = [...llmBudget.failures, this.failureDetail('planner_failed', error)];
@@ -150,6 +156,35 @@ export class AgentPlannerService {
       summary: `处理目标：${goal}`,
       assumptions: ['Plan 阶段只生成可审批计划和只读预览。'],
       risks: this.rules.listHardRules(),
+    };
+  }
+
+  private isGraphPlannerEnabled(): boolean {
+    const value = process.env[AGENT_PLANNER_GRAPH_ENABLED]?.trim().toLowerCase();
+    return value === '1' || value === 'true' || value === 'yes' || value === 'on';
+  }
+
+  private async createGraphWrappedPlan(goal: string, defaults: PlannerOutputDefaults, llmBudget: PlannerLlmBudget, context?: AgentContextV2): Promise<AgentPlanSpec> {
+    const legacyPlan = await this.createLlmPlan(goal, defaults, llmBudget, context);
+    const graphInput = { goal, context, defaults, legacyPlan };
+    const graphState = this.plannerGraph
+      ? await this.plannerGraph.invoke(graphInput)
+      : await invokeAgentPlannerGraph(graphInput);
+    if (!graphState.plan) throw new Error('Agent Planner Graph 未返回计划');
+    return this.withGraphDiagnostics(graphState.plan, graphState);
+  }
+
+  private withGraphDiagnostics(plan: AgentPlanSpec, graphState: AgentPlannerGraphState): AgentPlanSpec {
+    const legacyDiagnostics = plan.plannerDiagnostics ?? {};
+    return {
+      ...plan,
+      plannerDiagnostics: {
+        ...legacyDiagnostics,
+        source: 'langgraph_supervisor',
+        legacySource: legacyDiagnostics.source,
+        graphVersion: graphState.diagnostics.graphVersion,
+        graphNodes: graphState.diagnostics.nodes,
+      },
     };
   }
 

@@ -15,10 +15,11 @@ import { AgentRunsController } from './agent-runs.controller';
 import { AgentRunsService } from './agent-runs.service';
 import { AgentRuntimeService } from './agent-runtime.service';
 import { AgentTraceService } from './agent-trace.service';
+import { AgentPlannerGraphService } from './planner-graph/agent-planner-graph.service';
 
 @Module({
   imports: [PrismaModule, AgentToolsModule, AgentSkillsModule, AgentRulesModule, LlmModule],
   controllers: [AgentRunsController],
-  providers: [AgentRunsService, AgentRuntimeService, AgentPlannerService, AgentReplannerService, AgentContextBuilderService, AgentMessageIntentService, AgentExecutorService, AgentPolicyService, AgentTraceService, AgentRunWatchdogService],
+  providers: [AgentRunsService, AgentRuntimeService, AgentPlannerService, AgentPlannerGraphService, AgentReplannerService, AgentContextBuilderService, AgentMessageIntentService, AgentExecutorService, AgentPolicyService, AgentTraceService, AgentRunWatchdogService],
 })
 export class AgentRunsModule {}

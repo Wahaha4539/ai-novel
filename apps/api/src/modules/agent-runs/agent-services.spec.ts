@@ -21,6 +21,7 @@ import { AgentExecutionObservationError } from './agent-observation.types';
 import { AgentReplannerService } from './agent-replanner.service';
 import { AgentRuntimeService } from './agent-runtime.service';
 import { AgentPlannerService } from './agent-planner.service';
+import { AgentPlannerGraphService } from './planner-graph/agent-planner-graph.service';
 import { AgentPolicyService, AgentSecondConfirmationRequiredError } from './agent-policy.service';
 import { AgentTraceService } from './agent-trace.service';
 import { AgentRunsService } from './agent-runs.service';
@@ -8216,6 +8217,62 @@ test('Planner exposes timeline_plan for read-only planned timeline candidates', 
   assert.ok(promptPayload?.availableTaskTypes.includes('timeline_plan'));
   assert.match(promptPayload?.taskTypeGuidance.timeline_plan, /generate_timeline_preview/);
   assert.match(promptPayload?.taskTypeGuidance.timeline_plan, /validate_timeline_preview/);
+});
+
+test('Planner graph feature flag wraps legacy plan diagnostics without changing steps', async () => {
+  const previousFlag = process.env.AGENT_PLANNER_GRAPH_ENABLED;
+  const toolList = [
+    createTool({ name: 'echo_report', requiresApproval: false, riskLevel: 'low', sideEffects: [] }),
+  ];
+  const tools = {
+    list: () => toolList,
+    listManifestsForPlanner: () => toolList.map((tool) => ({
+      name: tool.name,
+      displayName: tool.name,
+      description: tool.description,
+      whenToUse: ['需要给出只读说明或澄清时使用。'],
+      whenNotToUse: [],
+      allowedModes: tool.allowedModes,
+      riskLevel: tool.riskLevel,
+      requiresApproval: tool.requiresApproval,
+      sideEffects: tool.sideEffects,
+    })),
+  } as unknown as ToolRegistryService;
+  const llm = {
+    async chatJson() {
+      return {
+        data: {
+          taskType: 'general',
+          summary: 'Graph flag smoke plan.',
+          assumptions: [],
+          risks: [],
+          steps: [
+            { stepNo: 1, name: 'Report result', tool: 'echo_report', mode: 'act', requiresApproval: false, args: { message: 'ok' } },
+          ],
+        },
+        result: { model: 'planner-mock', usage: { prompt_tokens: 1, completion_tokens: 1 } },
+      };
+    },
+  };
+
+  try {
+    delete process.env.AGENT_PLANNER_GRAPH_ENABLED;
+    const legacyPlanner = new AgentPlannerService(new SkillRegistryService(), tools, new RuleEngineService(), llm as never);
+    const legacyPlan = await legacyPlanner.createPlan('graph flag smoke');
+
+    process.env.AGENT_PLANNER_GRAPH_ENABLED = 'true';
+    const graphPlanner = new AgentPlannerService(new SkillRegistryService(), tools, new RuleEngineService(), llm as never, new AgentPlannerGraphService());
+    const graphPlan = await graphPlanner.createPlan('graph flag smoke');
+
+    assert.equal(legacyPlan.plannerDiagnostics?.source, 'llm');
+    assert.equal(graphPlan.plannerDiagnostics?.source, 'langgraph_supervisor');
+    assert.equal(graphPlan.plannerDiagnostics?.legacySource, 'llm');
+    assert.ok(Array.isArray(graphPlan.plannerDiagnostics?.graphNodes));
+    assert.deepEqual(graphPlan.steps, legacyPlan.steps);
+  } finally {
+    if (previousFlag === undefined) delete process.env.AGENT_PLANNER_GRAPH_ENABLED;
+    else process.env.AGENT_PLANNER_GRAPH_ENABLED = previousFlag;
+  }
 });
 
 test('Planner prompt compacts tool manifests without losing callable input schema', async () => {

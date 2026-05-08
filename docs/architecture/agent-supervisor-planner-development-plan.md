@@ -113,7 +113,7 @@
 
 ### ASP-P1-003 给 AgentPlannerService 增加 graph feature flag
 
-- 状态：`[ ]`
+- 状态：`[x]`
 - 模块：API
 - 文件：
   - `apps/api/src/modules/agent-runs/agent-planner.service.ts`
@@ -127,6 +127,13 @@
 - 验证：
   - `pnpm --dir apps/api run test:agent`
   - `pnpm --filter api build`
+- 完成记录（2026-05-09）：
+  - 新增 `AGENT_PLANNER_GRAPH_ENABLED` feature flag，默认关闭时保持原 legacy Planner 路径；开启时先生成 legacy plan，再进入 LangGraph wrapper pass-through。
+  - `plannerDiagnostics.source` 在 graph 路径标记为 `langgraph_supervisor`，并保留 `legacySource` 与 graph node diagnostics。
+  - 新增薄封装 `AgentPlannerGraphService` 并注册到 `AgentRunsModule`，不替换 Executor、Runtime、审批、写入或 Tool 实现。
+  - 修改文件：`apps/api/src/modules/agent-runs/agent-planner.service.ts`、`apps/api/src/modules/agent-runs/agent-runs.module.ts`、`apps/api/src/modules/agent-runs/planner-graph/agent-planner-graph.service.ts`、`apps/api/src/modules/agent-runs/agent-services.spec.ts`、`docs/architecture/agent-supervisor-planner-development-plan.md`。
+  - 测试：`AGENT_TEST_FILTER="Planner graph feature flag" pnpm --dir apps/api run test:agent`，通过（1/329 targeted）。
+  - 测试：`pnpm --filter api build`，通过。
 
 ## 4. P2 ToolBundle Registry
 
