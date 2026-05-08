@@ -64,6 +64,7 @@ import { PersistStoryBibleTool } from '../agent-tools/tools/persist-story-bible.
 import { GenerateContinuityPreviewTool, PersistContinuityChangesTool, ValidateContinuityChangesTool } from '../agent-tools/tools/continuity-changes.tool';
 import { GenerateTimelinePreviewTool } from '../agent-tools/tools/generate-timeline-preview.tool';
 import { ValidateTimelinePreviewTool } from '../agent-tools/tools/validate-timeline-preview.tool';
+import { PersistTimelineEventsTool } from '../agent-tools/tools/persist-timeline-events.tool';
 import { assertNoTimelineDuplicateConflicts, normalizeTimelineCandidate, normalizeTimelineCandidates, normalizeTimelinePreviewFromLlmCall, validateTimelineCandidateChapterRefs } from '../agent-tools/tools/timeline-preview.support';
 import { GenerateChapterCraftBriefPreviewTool, PersistChapterCraftBriefTool, ValidateChapterCraftBriefTool } from '../agent-tools/tools/chapter-craft-brief-tools.tool';
 import { GenerateSceneCardsPreviewTool, ListSceneCardsTool, PersistSceneCardsTool, UpdateSceneCardTool, ValidateSceneCardsTool } from '../agent-tools/tools/scene-card-tools.tool';
@@ -6911,6 +6912,124 @@ test('validate_timeline_preview returns accepted rejected writePreview and stays
     /sourceTrace\.agentRunId must match current agent run/,
   );
   assert.deepEqual(writes, []);
+});
+
+test('persist_timeline_events requires approved act validation and writes only current project events', async () => {
+  const baseTrace = makeTimelineCandidateRaw().sourceTrace as Record<string, unknown>;
+  const candidateRaw = makeTimelineCandidateRaw({
+    chapterId: 'chapter-7',
+    sourceTrace: {
+      ...baseTrace,
+      agentRunId: 'run-timeline',
+      toolName: 'generate_timeline_preview',
+      chapterId: 'chapter-7',
+    },
+  });
+  const preview = await normalizeTimelinePreviewFromLlmCall(
+    async () => ({ data: { candidates: [candidateRaw], assumptions: [], risks: [] } }),
+    {
+      expectedProjectId: 'p1',
+      expectedSourceKind: 'planned_timeline_event',
+      expectedOriginTool: 'generate_timeline_preview',
+      sourceKind: 'planned_timeline_event',
+      minCandidates: 1,
+    },
+  );
+  const createdData: Array<Record<string, unknown>> = [];
+  const prisma = {
+    chapter: {
+      async findMany() {
+        return [{ id: 'chapter-7', projectId: 'p1', chapterNo: 7 }];
+      },
+    },
+    timelineEvent: {
+      async findMany() {
+        return [];
+      },
+    },
+    async $transaction(callback: (tx: unknown) => Promise<unknown>) {
+      return callback({
+        chapter: {
+          async findMany() {
+            return [{ id: 'chapter-7', projectId: 'p1', chapterNo: 7 }];
+          },
+        },
+        timelineEvent: {
+          async findMany() {
+            return [];
+          },
+          async create(args: { data: Record<string, unknown> }) {
+            createdData.push(args.data);
+            return { id: 'timeline-created', eventStatus: args.data.eventStatus };
+          },
+          async updateMany() {
+            throw new Error('should not update');
+          },
+          async deleteMany() {
+            throw new Error('should not delete');
+          },
+        },
+      });
+    },
+  };
+  const validateTool = new ValidateTimelinePreviewTool(prisma as never);
+  const validation = await validateTool.run({
+    preview,
+  }, {
+    agentRunId: 'run-timeline',
+    projectId: 'p1',
+    mode: 'plan',
+    approved: false,
+    outputs: {},
+    policy: {},
+  } as never);
+  assert.equal(validation.valid, true);
+  const persistTool = new PersistTimelineEventsTool(prisma as never);
+  const actContext = {
+    agentRunId: 'run-timeline',
+    projectId: 'p1',
+    mode: 'act' as const,
+    approved: true,
+    outputs: { 1: preview, 2: validation },
+    stepTools: { 1: 'generate_timeline_preview', 2: 'validate_timeline_preview' },
+    policy: {},
+  };
+
+  await assert.rejects(
+    () => persistTool.run({ preview, validation }, { ...actContext, mode: 'plan' } as never),
+    /act mode/,
+  );
+  await assert.rejects(
+    () => persistTool.run({ preview, validation }, { ...actContext, approved: false } as never),
+    /requires explicit user approval/,
+  );
+  assert.equal(createdData.length, 0);
+
+  const result = await persistTool.run({ preview, validation }, actContext as never);
+
+  assert.equal(result.createdCount, 1);
+  assert.equal(result.confirmedCount, 0);
+  assert.equal(result.updatedCount, 0);
+  assert.equal(result.archivedCount, 0);
+  assert.equal(result.skippedUnselectedCount, 0);
+  assert.deepEqual(result.events, [{ candidateId: 'tlc_plan_7', action: 'create_planned', timelineEventId: 'timeline-created', eventStatus: 'planned' }]);
+  assert.equal(createdData.length, 1);
+  assert.deepEqual(createdData[0].project, { connect: { id: 'p1' } });
+  assert.deepEqual(createdData[0].chapter, { connect: { id: 'chapter-7' } });
+  assert.equal(createdData[0].sourceType, 'agent_timeline_plan');
+
+  const forgedValidation = JSON.parse(JSON.stringify(validation));
+  forgedValidation.accepted[0].sourceTrace.agentRunId = 'foreign-run';
+  forgedValidation.writePreview.entries[0].sourceTrace.agentRunId = 'foreign-run';
+  forgedValidation.writePreview.entries[0].after.metadata.sourceTrace.agentRunId = 'foreign-run';
+  await assert.rejects(
+    () => persistTool.run(
+      { preview, validation: forgedValidation },
+      { ...actContext, outputs: { 1: preview, 2: forgedValidation } } as never,
+    ),
+    /sourceTrace does not match validation\.accepted/,
+  );
+  assert.equal(createdData.length, 1);
 });
 
 test('RetrievalService 使用 querySpec hash 缓存召回并按开关和 Planner 查询隔离', async () => {
