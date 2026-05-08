@@ -186,8 +186,9 @@ export class PersistTimelineEventsTool implements BaseTool<PersistTimelineEvents
   }
 
   private assertExecutableInput(args: PersistTimelineEventsInput, context: ToolContext): void {
+    const automaticWrite = this.hasGenerationProfileAutoWritePolicy(context);
     if (context.mode !== 'act') throw new BadRequestException('persist_timeline_events can only run in Agent act mode.');
-    if (!context.approved) throw new BadRequestException('persist_timeline_events requires explicit user approval.');
+    if (!context.approved && !automaticWrite) throw new BadRequestException('persist_timeline_events requires explicit user approval.');
     if (!args.preview) throw new BadRequestException('persist_timeline_events requires timeline preview output.');
     if (!args.validation) throw new BadRequestException('persist_timeline_events requires validate_timeline_preview output.');
     if (args.validation.valid !== true) throw new BadRequestException('validate_timeline_preview did not pass; persist_timeline_events will not write.');
@@ -199,6 +200,22 @@ export class PersistTimelineEventsTool implements BaseTool<PersistTimelineEvents
     }
     this.assertPreviousToolOutput(args.preview, context, TIMELINE_ORIGIN_BY_SOURCE_KIND[this.readSourceKind(args.preview)], 'preview');
     this.assertPreviousToolOutput(args.validation, context, 'validate_timeline_preview', 'validation');
+  }
+
+  private hasGenerationProfileAutoWritePolicy(context: ToolContext): boolean {
+    const policy = (context.policy ?? {}).timelineAutoWrite;
+    if (policy === undefined) return false;
+    const record = this.requireRecord(policy, 'context.policy.timelineAutoWrite');
+    if (record.source !== 'generation_profile') {
+      throw new BadRequestException('timeline auto write policy must come from GenerationProfile.');
+    }
+    if (record.strategy !== 'validated_auto_write') {
+      throw new BadRequestException('timeline auto write policy must use validated_auto_write strategy.');
+    }
+    if (record.projectId !== context.projectId) {
+      throw new BadRequestException('timeline auto write policy projectId must match current project.');
+    }
+    return true;
   }
 
   private assertPreviousToolOutput(value: unknown, context: ToolContext, expectedTool: string, field: 'preview' | 'validation'): void {

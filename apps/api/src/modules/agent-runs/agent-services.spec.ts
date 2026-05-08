@@ -6668,14 +6668,23 @@ test('Executor 使用运行时最新草稿指针并跳过无问题的二次修�
   assert.equal(executed.find((item) => item.name === 'extract_chapter_facts')?.args.draftId, 'draft-polish');
 });
 
-function makeGenerationServiceTimelineHarness(options: { autoUpdateTimeline: boolean; validationValid?: boolean }) {
+function makeGenerationServiceTimelineHarness(options: {
+  autoUpdateTimeline: boolean;
+  validationValid?: boolean;
+  timelineAutoWritePolicy?: 'preview_only' | 'validated_auto_write';
+  validationIssues?: Array<{ severity: string; message: string }>;
+}) {
   const calls: string[] = [];
   let completedPayload: Record<string, unknown> | undefined;
   let failedMessage: string | undefined;
   const preview = { candidates: [{ candidateId: 'tl_align_1' }], assumptions: [], risks: [], writePlan: { mode: 'preview_only' } };
+  const validationIssues = options.validationValid === false
+    ? [{ severity: 'error', message: 'bad sourceTrace' }]
+    : (options.validationIssues ?? []);
   const validation = {
     valid: options.validationValid ?? true,
-    issues: options.validationValid === false ? [{ severity: 'error', message: 'bad sourceTrace' }] : [],
+    issueCount: validationIssues.length,
+    issues: validationIssues,
     accepted: options.validationValid === false ? [] : [{ candidateId: 'tl_align_1' }],
     rejected: [],
     writePreview: { entries: [] },
@@ -6691,7 +6700,13 @@ function makeGenerationServiceTimelineHarness(options: { autoUpdateTimeline: boo
     } as never,
     {
       async run() { calls.push('write'); return { draftId: 'draft-write', retrievalPayload: { context: true } }; },
-      async loadGenerationProfileSnapshot() { calls.push('profile'); return createGenerationProfile({ autoUpdateTimeline: options.autoUpdateTimeline }); },
+      async loadGenerationProfileSnapshot() {
+        calls.push('profile');
+        return createGenerationProfile({
+          autoUpdateTimeline: options.autoUpdateTimeline,
+          metadata: options.timelineAutoWritePolicy ? { timelineAutoWritePolicy: options.timelineAutoWritePolicy } : {},
+        });
+      },
     } as never,
     { async run() { calls.push('postprocess'); return { draftId: 'draft-post' }; } } as never,
     { async run() { calls.push('polish'); return { draftId: 'draft-final', polishedWordCount: 1200 }; } } as never,
@@ -6714,6 +6729,12 @@ function makeGenerationServiceTimelineHarness(options: { autoUpdateTimeline: boo
       async run() {
         calls.push('timelineValidate');
         return validation;
+      },
+    } as never,
+    {
+      async run(_args: Record<string, unknown>, context: { policy: { timelineAutoWrite?: { strategy?: string } } }) {
+        calls.push(`timelinePersist:${context.policy.timelineAutoWrite?.strategy ?? 'missing_policy'}`);
+        return { createdCount: 1, confirmedCount: 0, updatedCount: 0, archivedCount: 0, skippedUnselectedCount: 0, events: [{ candidateId: 'tl_align_1' }] };
       },
     } as never,
   );
@@ -6745,8 +6766,10 @@ test('GenerationService runs read-only chapter timeline preview and validation w
   assert.equal(timelineAlignment.skipped, false);
   assert.equal(timelineAlignment.preview, preview);
   assert.equal(timelineAlignment.validation, validation);
+  assert.equal(timelineAlignment.autoWritePolicy, 'preview_only');
   assert.ok(calls.includes('align:draft-final:job-1'));
   assert.ok(calls.includes('timelineValidate'));
+  assert.equal(calls.some((call) => call.startsWith('timelinePersist:')), false);
 });
 
 test('GenerationService fails chapter generation when timeline validation rejects auto alignment', async () => {
@@ -6759,6 +6782,37 @@ test('GenerationService fails chapter generation when timeline validation reject
   assert.ok(calls.includes('align:draft-final:job-1'));
   assert.ok(calls.includes('timelineValidate'));
   assert.equal(calls.includes('job.completed'), false);
+});
+
+test('GenerationService auto persists timeline only with explicit validated_auto_write policy', async () => {
+  const { service, calls } = makeGenerationServiceTimelineHarness({
+    autoUpdateTimeline: true,
+    timelineAutoWritePolicy: 'validated_auto_write',
+  });
+
+  const result = await service.generateChapter('c1', { mode: 'draft' });
+  const responsePayload = (result as { responsePayload: Record<string, unknown> }).responsePayload;
+  const timelineAlignment = responsePayload.timelineAlignment as Record<string, unknown>;
+  const persist = timelineAlignment.persist as Record<string, unknown>;
+
+  assert.equal((result as { status: string }).status, 'completed');
+  assert.equal(timelineAlignment.autoWritePolicy, 'validated_auto_write');
+  assert.equal(persist.createdCount, 1);
+  assert.ok(calls.includes('timelinePersist:validated_auto_write'));
+});
+
+test('GenerationService rejects timeline auto write when validation has warnings', async () => {
+  const { service, calls } = makeGenerationServiceTimelineHarness({
+    autoUpdateTimeline: true,
+    timelineAutoWritePolicy: 'validated_auto_write',
+    validationIssues: [{ severity: 'warning', message: 'needs review' }],
+  });
+
+  const result = await service.generateChapter('c1', { mode: 'draft' });
+
+  assert.equal((result as { status: string }).status, 'failed');
+  assert.match((result as { errorMessage: string }).errorMessage, /zero validation issues/);
+  assert.equal(calls.some((call) => call.startsWith('timelinePersist:')), false);
 });
 
 test('FactExtractorService 抽取事实后同步生成 pending_review 记忆且不写 TimelineEvent', async () => {
@@ -7778,6 +7832,18 @@ test('persist_timeline_events requires approved act validation and writes only c
     () => persistTool.run({ preview, validation }, { ...actContext, approved: false } as never),
     /requires explicit user approval/,
   );
+  await assert.rejects(
+    () => persistTool.run(
+      { preview, validation, dryRun: true },
+      { ...actContext, approved: false, policy: { timelineAutoWrite: { source: 'generation_profile', strategy: 'validated_auto_write', projectId: 'p2' } } } as never,
+    ),
+    /projectId must match current project/,
+  );
+  const autoPolicyDryRun = await persistTool.run(
+    { preview, validation, dryRun: true },
+    { ...actContext, approved: false, policy: { timelineAutoWrite: { source: 'generation_profile', strategy: 'validated_auto_write', projectId: 'p1' } } } as never,
+  );
+  assert.equal(autoPolicyDryRun.createdCount, 0);
   assert.equal(createdData.length, 0);
 
   const result = await persistTool.run({ preview, validation }, actContext as never);

@@ -2,7 +2,8 @@ import { Injectable } from '@nestjs/common';
 import { randomUUID } from 'crypto';
 import { StructuredLogger } from '../../common/logging/structured-logger';
 import { AlignChapterTimelinePreviewTool } from '../agent-tools/tools/align-chapter-timeline-preview.tool';
-import type { GenerateTimelinePreviewOutput, ValidateTimelinePreviewOutput } from '../agent-tools/tools/timeline-preview.types';
+import { PersistTimelineEventsTool } from '../agent-tools/tools/persist-timeline-events.tool';
+import type { GenerateTimelinePreviewOutput, PersistTimelineEventsOutput, ValidateTimelinePreviewOutput } from '../agent-tools/tools/timeline-preview.types';
 import { ValidateTimelinePreviewTool } from '../agent-tools/tools/validate-timeline-preview.tool';
 import { ChaptersService } from '../chapters/chapters.service';
 import { FactExtractorService } from '../facts/fact-extractor.service';
@@ -23,8 +24,10 @@ const AUTO_POLISH_INSTRUCTION = '请在不改变剧情事实、人物关系、�
 interface ChapterTimelineAlignmentResult {
   skipped: boolean;
   reason?: string;
+  autoWritePolicy?: 'preview_only' | 'validated_auto_write';
   preview?: GenerateTimelinePreviewOutput;
   validation?: ValidateTimelinePreviewOutput;
+  persist?: PersistTimelineEventsOutput;
 }
 
 @Injectable()
@@ -43,6 +46,7 @@ export class GenerationService {
     private readonly validationService: ValidationService,
     private readonly alignChapterTimelinePreviewTool: AlignChapterTimelinePreviewTool,
     private readonly validateTimelinePreviewTool: ValidateTimelinePreviewTool,
+    private readonly persistTimelineEventsTool: PersistTimelineEventsTool,
   ) {}
 
   async generateChapter(chapterId: string, dto: GenerateChapterDto) {
@@ -160,6 +164,7 @@ export class GenerationService {
     if (!input.generationProfile.autoUpdateTimeline) {
       return { skipped: true, reason: 'autoUpdateTimeline_disabled' };
     }
+    const autoWritePolicy = this.resolveTimelineAutoWritePolicy(input.generationProfile);
 
     const context = {
       agentRunId: input.jobId ?? input.requestId ?? `chapter_generation:${input.draftId}`,
@@ -190,6 +195,36 @@ export class GenerationService {
       const messages = validation.issues.map((issue) => issue.message).filter(Boolean);
       throw new Error(`timeline alignment validation failed: ${messages.join('; ') || 'no accepted timeline candidates'}`);
     }
-    return { skipped: false, preview, validation };
+    if (autoWritePolicy === 'preview_only') {
+      return { skipped: false, autoWritePolicy, preview, validation };
+    }
+    if (validation.issueCount > 0) {
+      throw new Error('timeline alignment auto write requires zero validation issues; review the timeline preview manually.');
+    }
+
+    const persist = await this.persistTimelineEventsTool.run(
+      { preview, validation },
+      {
+        ...context,
+        mode: 'act' as const,
+        outputs: { 1: preview, 2: validation },
+        stepTools: { 1: 'align_chapter_timeline_preview', 2: 'validate_timeline_preview' },
+        policy: {
+          timelineAutoWrite: {
+            source: 'generation_profile',
+            strategy: autoWritePolicy,
+            projectId: input.projectId,
+          },
+        },
+      },
+    );
+    return { skipped: false, autoWritePolicy, preview, validation, persist };
+  }
+
+  private resolveTimelineAutoWritePolicy(generationProfile: GenerationProfileSnapshot): 'preview_only' | 'validated_auto_write' {
+    const value = generationProfile.metadata.timelineAutoWritePolicy;
+    if (value === undefined || value === null || value === 'preview_only') return 'preview_only';
+    if (value === 'validated_auto_write') return 'validated_auto_write';
+    throw new Error('GenerationProfile metadata.timelineAutoWritePolicy must be preview_only or validated_auto_write.');
   }
 }
