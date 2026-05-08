@@ -62,7 +62,7 @@ import { GenerateStoryBiblePreviewTool } from '../agent-tools/tools/generate-sto
 import { ValidateStoryBibleTool } from '../agent-tools/tools/validate-story-bible.tool';
 import { PersistStoryBibleTool } from '../agent-tools/tools/persist-story-bible.tool';
 import { GenerateContinuityPreviewTool, PersistContinuityChangesTool, ValidateContinuityChangesTool } from '../agent-tools/tools/continuity-changes.tool';
-import { normalizeTimelineCandidate, normalizeTimelineCandidates, validateTimelineCandidateChapterRefs } from '../agent-tools/tools/timeline-preview.support';
+import { assertNoTimelineDuplicateConflicts, normalizeTimelineCandidate, normalizeTimelineCandidates, validateTimelineCandidateChapterRefs } from '../agent-tools/tools/timeline-preview.support';
 import { GenerateChapterCraftBriefPreviewTool, PersistChapterCraftBriefTool, ValidateChapterCraftBriefTool } from '../agent-tools/tools/chapter-craft-brief-tools.tool';
 import { GenerateSceneCardsPreviewTool, ListSceneCardsTool, PersistSceneCardsTool, UpdateSceneCardTool, ValidateSceneCardsTool } from '../agent-tools/tools/scene-card-tools.tool';
 import { RelationshipGraphService } from '../agent-tools/relationship-graph.service';
@@ -6641,6 +6641,38 @@ test('timeline preview chapter ref validation rejects missing cross-project and 
   assert.throws(
     () => validateTimelineCandidateChapterRefs([byNo], [{ id: 'foreign', projectId: 'p2', chapterNo: 7 }], 'p1'),
     /cross-project chapter/,
+  );
+});
+
+test('timeline preview duplicate detection rejects same project same chapter title and time', () => {
+  const base = normalizeTimelineCandidate(makeTimelineCandidateRaw());
+  const duplicate = normalizeTimelineCandidate(makeTimelineCandidateRaw({
+    candidateId: 'tlc_plan_dup',
+    sourceTrace: { ...(makeTimelineCandidateRaw().sourceTrace as Record<string, unknown>), candidateId: 'tlc_plan_dup' },
+  }));
+  const changedOwnEvent = normalizeTimelineCandidate(makeTimelineCandidateRaw({
+    action: 'update_event',
+    existingTimelineEventId: 'existing-1',
+    sourceTrace: { ...(makeTimelineCandidateRaw().sourceTrace as Record<string, unknown>), candidateAction: 'update_event' },
+  }));
+  const resolved = [{ candidateId: base.candidateId, chapterId: 'chapter-7', chapterNo: 7 }];
+
+  assert.throws(
+    () => assertNoTimelineDuplicateConflicts([base, duplicate], [], { expectedProjectId: 'p1' }),
+    /Duplicate timeline candidates/,
+  );
+  assert.throws(
+    () => assertNoTimelineDuplicateConflicts([base], [{ id: 'existing-1', projectId: 'p1', chapterNo: 7, title: base.title, eventTime: base.eventTime }], { expectedProjectId: 'p1', resolvedChapterRefs: resolved }),
+    /would duplicate existing same-project TimelineEvent/,
+  );
+  assert.doesNotThrow(() => assertNoTimelineDuplicateConflicts(
+    [changedOwnEvent],
+    [{ id: 'existing-1', projectId: 'p1', chapterNo: 7, title: base.title, eventTime: base.eventTime }],
+    { expectedProjectId: 'p1' },
+  ));
+  assert.throws(
+    () => assertNoTimelineDuplicateConflicts([base], [{ id: 'foreign-existing', projectId: 'p2', chapterNo: 7, title: base.title, eventTime: base.eventTime }], { expectedProjectId: 'p1' }),
+    /cross-project event/,
   );
 });
 

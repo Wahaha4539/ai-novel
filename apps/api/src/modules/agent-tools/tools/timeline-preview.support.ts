@@ -51,6 +51,15 @@ export interface TimelineResolvedChapterRef {
   chapterNo: number;
 }
 
+export interface ExistingTimelineEventRef {
+  id: string;
+  projectId: string;
+  chapterId?: string | null;
+  chapterNo?: number | null;
+  title: string;
+  eventTime?: string | null;
+}
+
 export function normalizeTimelineCandidates(value: unknown, options: NormalizeTimelineCandidatesOptions = {}): TimelineCandidate[] {
   if (!Array.isArray(value)) {
     throw new Error('timelineCandidates must be an array.');
@@ -104,6 +113,43 @@ export function validateTimelineCandidateChapterRefs(
     }
     return { candidateId: candidate.candidateId, chapterId: chapter.id, chapterNo: chapter.chapterNo };
   });
+}
+
+export function assertNoTimelineDuplicateConflicts(
+  candidates: TimelineCandidate[],
+  existingEvents: ExistingTimelineEventRef[],
+  options: { expectedProjectId: string; resolvedChapterRefs?: TimelineResolvedChapterRef[] },
+): void {
+  const resolvedByCandidateId = new Map((options.resolvedChapterRefs ?? []).map((ref) => [ref.candidateId, ref]));
+  const existingByKey = new Map<string, ExistingTimelineEventRef>();
+  for (const event of existingEvents) {
+    if (event.projectId !== options.expectedProjectId) {
+      throw new Error(`Existing TimelineEvent index contains cross-project event: ${event.id}.`);
+    }
+    const key = timelineKeyFromExisting(event);
+    if (!key) continue;
+    const previous = existingByKey.get(key);
+    if (previous) {
+      throw new Error(`Existing TimelineEvent rows already duplicate same chapter/title/time: ${previous.id} and ${event.id}.`);
+    }
+    existingByKey.set(key, event);
+  }
+
+  const candidateByKey = new Map<string, TimelineCandidate>();
+  for (const candidate of candidates) {
+    if (candidate.action === 'archive_event') continue;
+    const key = timelineKeyFromCandidate(candidate, resolvedByCandidateId.get(candidate.candidateId));
+    const previousCandidate = candidateByKey.get(key);
+    if (previousCandidate) {
+      throw new Error(`Duplicate timeline candidates write same chapter/title/time: ${previousCandidate.candidateId} and ${candidate.candidateId}.`);
+    }
+    candidateByKey.set(key, candidate);
+
+    const existing = existingByKey.get(key);
+    if (existing && existing.id !== candidate.existingTimelineEventId) {
+      throw new Error(`Timeline candidate ${candidate.candidateId} would duplicate existing same-project TimelineEvent: ${existing.id}.`);
+    }
+  }
 }
 
 export function normalizeTimelineCandidate(value: unknown, options: NormalizeTimelineCandidateOptions & { path?: string } = {}): TimelineCandidate {
@@ -283,6 +329,29 @@ function normalizeContextSources(value: unknown, path: string): TimelineSourceRe
       chapterNo: optionalPositiveInt(record, 'chapterNo', itemPath),
     };
   });
+}
+
+function timelineKeyFromCandidate(candidate: TimelineCandidate, resolved?: TimelineResolvedChapterRef): string {
+  const chapterKey = resolved
+    ? `chapterNo:${resolved.chapterNo}`
+    : candidate.chapterNo !== undefined
+      ? `chapterNo:${candidate.chapterNo}`
+      : `chapterId:${candidate.chapterId}`;
+  return `${chapterKey}|${normalizeKeyPart(candidate.title)}|${normalizeKeyPart(candidate.eventTime)}`;
+}
+
+function timelineKeyFromExisting(event: ExistingTimelineEventRef): string | null {
+  const chapterKey = event.chapterNo != null
+    ? `chapterNo:${event.chapterNo}`
+    : event.chapterId
+      ? `chapterId:${event.chapterId}`
+      : null;
+  if (!chapterKey) return null;
+  return `${chapterKey}|${normalizeKeyPart(event.title)}|${normalizeKeyPart(event.eventTime ?? '')}`;
+}
+
+function normalizeKeyPart(value: string): string {
+  return value.trim().replace(/\s+/g, ' ').toLowerCase();
 }
 
 function requireAction(record: Record<string, unknown>, path: string): TimelineCandidateAction {
