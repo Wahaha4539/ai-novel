@@ -8312,6 +8312,23 @@ test('ToolBundleRegistry resolves core bundles and rejects missing registered to
   );
 });
 
+test('Tool manifest filtering preserves requested order and fails on unknown tools', () => {
+  const registry = Object.create(ToolRegistryService.prototype) as ToolRegistryService;
+  (registry as unknown as { tools: Map<string, BaseTool> }).tools = new Map<string, BaseTool>();
+  registry.register(createTool({ name: 'alpha_tool', description: 'Alpha tool', requiresApproval: false, riskLevel: 'low', sideEffects: [] }));
+  registry.register(createTool({ name: 'beta_tool', description: 'Beta tool', requiresApproval: false, riskLevel: 'low', sideEffects: [] }));
+  registry.register(createTool({ name: 'gamma_tool', description: 'Gamma tool', requiresApproval: false, riskLevel: 'low', sideEffects: [] }));
+
+  assert.deepEqual(registry.listManifestsForPlanner().map((manifest) => manifest.name), ['alpha_tool', 'beta_tool', 'gamma_tool']);
+  assert.deepEqual(registry.listManifestsForPlanner(['gamma_tool', 'alpha_tool', 'gamma_tool']).map((manifest) => manifest.name), ['gamma_tool', 'alpha_tool']);
+  assert.throws(() => registry.listManifestsForPlanner(['missing_tool']), /Planner requested unregistered tool manifest: missing_tool/);
+
+  const planner = new AgentPlannerService(new SkillRegistryService(), registry, new RuleEngineService(), {} as LlmGatewayService) as unknown as {
+    toolManifestsForPrompt: (toolNames?: string[]) => Array<{ name: string; outputFields?: string[] }>;
+  };
+  assert.deepEqual(planner.toolManifestsForPrompt(['beta_tool']).map((manifest) => manifest.name), ['beta_tool']);
+});
+
 test('Planner prompt compacts tool manifests without losing callable input schema', async () => {
   let promptPayload: Record<string, any> | undefined;
   const inputSchema: NonNullable<BaseTool['inputSchema']> = {

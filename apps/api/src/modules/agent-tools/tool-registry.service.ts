@@ -218,8 +218,8 @@ export class ToolRegistryService implements OnModuleInit {
    * 返回压缩后的 LLM 友好工具手册。Planner 只需要语义说明和风险边界，
    * 不暴露运行时实现细节，避免 Prompt 过长或诱导模型编造内部能力。
    */
-  listManifestsForPlanner(): ToolManifestForPlanner[] {
-    return this.list().map((tool) => {
+  listManifestsForPlanner(toolNames?: string[]): ToolManifestForPlanner[] {
+    return this.listToolsForPlanner(toolNames).map((tool) => {
       const manifest = tool.manifest;
       return {
         name: manifest?.name ?? tool.name,
@@ -238,6 +238,15 @@ export class ToolRegistryService implements OnModuleInit {
         sideEffects: manifest?.sideEffects ?? tool.sideEffects,
         idPolicy: manifest?.idPolicy,
       };
+    });
+  }
+
+  private listToolsForPlanner(toolNames?: string[]): BaseTool[] {
+    if (!toolNames?.length) return this.list();
+    return [...new Set(toolNames)].map((toolName) => {
+      const tool = this.get(toolName);
+      if (!tool) throw new Error(`Planner requested unregistered tool manifest: ${toolName}`);
+      return tool;
     });
   }
 }

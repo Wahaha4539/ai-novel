@@ -396,8 +396,8 @@ export class AgentPlannerService {
     return promptContext;
   }
 
-  private toolManifestsForPrompt(): PlannerPromptToolManifest[] {
-    return this.tools.listManifestsForPlanner().map((tool) => this.compactToolManifestForPrompt(tool));
+  private toolManifestsForPrompt(toolNames?: string[]): PlannerPromptToolManifest[] {
+    return this.tools.listManifestsForPlanner(toolNames).map((tool) => this.compactToolManifestForPrompt(tool));
   }
 
   private compactToolManifestForPrompt(tool: ToolManifestForPlanner): PlannerPromptToolManifest {

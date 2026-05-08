@@ -162,7 +162,7 @@
 
 ### ASP-P2-002 支持按工具名过滤 manifests
 
-- 状态：`[ ]`
+- 状态：`[x]`
 - 模块：API
 - 文件：
   - `apps/api/src/modules/agent-tools/tool-registry.service.ts`
@@ -176,6 +176,12 @@
 - 验证：
   - `pnpm --dir apps/api run test:agent`
   - `pnpm --filter api build`
+- 完成记录（2026-05-09）：
+  - `ToolRegistryService.listManifestsForPlanner(toolNames?)` 支持按工具名过滤，按传入顺序稳定输出并去重。
+  - 未注册工具名会直接抛错；`AgentPlannerService.toolManifestsForPrompt(toolNames?)` 透传过滤参数，为后续 selected tools prompt 链路做准备。
+  - 修改文件：`apps/api/src/modules/agent-tools/tool-registry.service.ts`、`apps/api/src/modules/agent-runs/agent-planner.service.ts`、`apps/api/src/modules/agent-runs/agent-services.spec.ts`、`docs/architecture/agent-supervisor-planner-development-plan.md`。
+  - 测试：`AGENT_TEST_FILTER="Tool manifest filtering" pnpm --dir apps/api run test:agent`，通过（1/331 targeted）。
+  - 测试：`pnpm --filter api build`，通过。
 
 ### ASP-P2-003 重构 Planner repair 使用 selected tools
 
