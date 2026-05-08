@@ -7,7 +7,8 @@ import {
 } from '../../guided/guided-step-schemas';
 import { BaseTool, ToolContext } from '../base-tool';
 import type { ToolManifestV2 } from '../tool-manifest.types';
-import { assertChapterCharacterExecution, assertVolumeCharacterPlan, type VolumeCharacterPlan } from './outline-character-contracts';
+import { assertChapterCharacterExecution, type VolumeCharacterPlan } from './outline-character-contracts';
+import { assertVolumeNarrativePlan } from './outline-narrative-contracts';
 
 interface ValidateGuidedStepPreviewInput {
   stepKey?: string;
@@ -225,19 +226,19 @@ export class ValidateGuidedStepPreviewTool implements BaseTool<ValidateGuidedSte
       const chapterCount = this.number(volume.chapterCount);
       if (volumeNo === undefined || volumeNo <= 0) issues.push({ severity: 'error', message: `${label} 的 volumeNo 必须是正数。`, path: `${path}.volumeNo` });
       if (chapterCount === undefined || chapterCount <= 0) issues.push({ severity: 'error', message: `${label} 的 chapterCount 必须是正数。`, path: `${path}.chapterCount` });
-      if (!this.text(volume.title)) issues.push({ severity: 'warning', message: `${label} 缺少 title。`, path: `${path}.title` });
-      if (!this.text(volume.synopsis)) issues.push({ severity: 'warning', message: `${label} 缺少 synopsis。`, path: `${path}.synopsis` });
-      if (!this.text(volume.objective)) issues.push({ severity: 'warning', message: `${label} 缺少 objective。`, path: `${path}.objective` });
+      if (!this.text(volume.title)) issues.push({ severity: 'error', message: `${label} 缺少 title。`, path: `${path}.title` });
+      if (!this.text(volume.synopsis)) issues.push({ severity: 'error', message: `${label} 缺少 synopsis。`, path: `${path}.synopsis` });
+      if (!this.text(volume.objective)) issues.push({ severity: 'error', message: `${label} 缺少 objective。`, path: `${path}.objective` });
       if (chapterCount !== undefined && chapterCount > 0) {
         try {
-          assertVolumeCharacterPlan(this.asRecord(volume.narrativePlan)?.characterPlan, {
+          assertVolumeNarrativePlan(volume.narrativePlan, {
             chapterCount,
             existingCharacterNames: characterContext.existingCharacterNames,
             existingCharacterAliases: characterContext.existingCharacterAliases,
-            label: `${path}.narrativePlan.characterPlan`,
+            label: `${path}.narrativePlan`,
           });
         } catch (error) {
-          issues.push({ severity: 'error', message: `${label} 的角色规划无效：${this.errorMessage(error)}。`, path: `${path}.narrativePlan.characterPlan` });
+          issues.push({ severity: 'error', message: `${label} 的卷级叙事规划无效：${this.errorMessage(error)}。`, path: `${path}.narrativePlan` });
         }
       }
     });
@@ -679,12 +680,13 @@ export class ValidateGuidedStepPreviewTool implements BaseTool<ValidateGuidedSte
     const chapterCount = this.number(volume.chapterCount);
     if (!Number.isInteger(volumeNo) || !volumeNo || volumeNo < 1 || !Number.isInteger(chapterCount) || !chapterCount || chapterCount < 1) return;
     try {
-      const characterPlan = assertVolumeCharacterPlan(this.asRecord(volume.narrativePlan)?.characterPlan, {
+      const narrativePlan = assertVolumeNarrativePlan(volume.narrativePlan, {
         chapterCount,
         existingCharacterNames: characterContext.existingCharacterNames,
         existingCharacterAliases: characterContext.existingCharacterAliases,
-        label: `第 ${volumeNo} 卷.narrativePlan.characterPlan`,
+        label: `第 ${volumeNo} 卷.narrativePlan`,
       });
+      const characterPlan = narrativePlan.characterPlan as VolumeCharacterPlan;
       characterContext.volumePlansByNo.set(volumeNo, characterPlan);
     } catch {
       // Invalid upstream plans are reported by the chapter validation as missing usable characterPlan.

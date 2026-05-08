@@ -3,7 +3,8 @@ import { Prisma } from '@prisma/client';
 import { PrismaService } from '../../../prisma/prisma.service';
 import { BaseTool, ToolContext } from '../base-tool';
 import { OutlinePreviewOutput } from './generate-outline-preview.tool';
-import { assertChapterCharacterExecution, assertVolumeCharacterPlan, VolumeCharacterPlan } from './outline-character-contracts';
+import { assertChapterCharacterExecution, VolumeCharacterPlan } from './outline-character-contracts';
+import { assertVolumeNarrativePlan } from './outline-narrative-contracts';
 
 interface PersistOutlineInput {
   preview?: OutlinePreviewOutput;
@@ -111,15 +112,16 @@ export class PersistOutlineTool implements BaseTool<PersistOutlineInput, Record<
     }
 
     try {
-      const characterPlan = assertVolumeCharacterPlan(this.asRecord(preview.volume.narrativePlan).characterPlan, {
+      const narrativePlan = assertVolumeNarrativePlan(preview.volume.narrativePlan, {
         chapterCount: Number(preview.volume.chapterCount),
         existingCharacterNames: characterCatalog.existingCharacterNames,
         existingCharacterAliases: characterCatalog.existingCharacterAliases,
-        label: 'volume.narrativePlan.characterPlan',
+        label: 'volume.narrativePlan',
       });
+      const characterPlan = narrativePlan.characterPlan as VolumeCharacterPlan;
       this.assertChapterCharacterExecutions(preview, characterPlan, characterCatalog);
     } catch (error) {
-      throw new BadRequestException(`persist_outline blocked by character planning validation: ${this.errorMessage(error)}`);
+      throw new BadRequestException(`persist_outline blocked by narrative planning validation: ${this.errorMessage(error)}`);
     }
   }
 

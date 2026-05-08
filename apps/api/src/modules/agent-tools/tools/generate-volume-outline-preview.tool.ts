@@ -6,7 +6,8 @@ import { BaseTool, ToolContext } from '../base-tool';
 import type { ToolManifestV2 } from '../tool-manifest.types';
 import { OutlinePreviewOutput } from './generate-outline-preview.tool';
 import { recordToolLlmUsage } from './import-preview-llm-usage';
-import { assertVolumeCharacterPlan, type CharacterReferenceCatalog } from './outline-character-contracts';
+import type { CharacterReferenceCatalog } from './outline-character-contracts';
+import { assertVolumeNarrativePlan } from './outline-narrative-contracts';
 
 const VOLUME_OUTLINE_PREVIEW_LLM_TIMEOUT_MS = DEFAULT_LLM_TIMEOUT_MS;
 
@@ -154,8 +155,11 @@ export class GenerateVolumeOutlinePreviewTool implements BaseTool<GenerateVolume
     if (!Number.isInteger(returnedChapterCount) || returnedChapterCount !== chapterCount) {
       throw new Error(`generate_volume_outline_preview volume.chapterCount 与目标章节数 ${chapterCount} 不匹配，未生成完整卷大纲。`);
     }
-    const narrativePlan = this.asRecord(volumeRecord.narrativePlan);
-    this.assertNarrativePlan(narrativePlan, chapterCount, characterCatalog);
+    const narrativePlan = assertVolumeNarrativePlan(volumeRecord.narrativePlan, {
+      chapterCount,
+      ...characterCatalog,
+      label: 'volume.narrativePlan',
+    });
     return {
       volume: {
         volumeNo,
@@ -167,78 +171,6 @@ export class GenerateVolumeOutlinePreviewTool implements BaseTool<GenerateVolume
       },
       risks: this.stringArray(output.risks),
     };
-  }
-
-  private assertNarrativePlan(narrativePlan: Record<string, unknown>, chapterCount: number, characterCatalog: CharacterReferenceCatalog = {}): void {
-    if (!Object.keys(narrativePlan).length) {
-      throw new Error('generate_volume_outline_preview 缺少 volume.narrativePlan，未生成完整卷大纲。');
-    }
-    for (const field of ['globalMainlineStage', 'volumeMainline', 'dramaticQuestion', 'startState', 'endState', 'endingHook', 'handoffToNextVolume']) {
-      this.requiredText(narrativePlan[field], `narrativePlan.${field}`);
-    }
-    for (const field of ['mainlineMilestones', 'foreshadowPlan']) {
-      if (!this.stringArray(narrativePlan[field]).length) {
-        throw new Error(`generate_volume_outline_preview 缺少 narrativePlan.${field}，未生成完整卷大纲。`);
-      }
-    }
-    const subStoryLines = this.asRecordArray(narrativePlan.subStoryLines);
-    if (subStoryLines.length < 2) {
-      throw new Error('generate_volume_outline_preview narrativePlan.subStoryLines 少于 2 条，未生成完整卷大纲。');
-    }
-    for (const [index, subStoryLine] of subStoryLines.entries()) {
-      const label = `narrativePlan.subStoryLines[${index}]`;
-      for (const field of ['name', 'type', 'function', 'startState', 'progress', 'endState']) {
-        this.requiredText(subStoryLine[field], `${label}.${field}`);
-      }
-      if (!this.stringArray(subStoryLine.relatedCharacters).length) {
-        throw new Error(`generate_volume_outline_preview 缺少 ${label}.relatedCharacters，未生成完整卷大纲。`);
-      }
-      if (!this.positiveIntArray(subStoryLine.chapterNodes).length) {
-        throw new Error(`generate_volume_outline_preview 缺少 ${label}.chapterNodes，未生成完整卷大纲。`);
-      }
-    }
-    const storyUnits = this.asRecordArray(narrativePlan.storyUnits);
-    if (!storyUnits.length) {
-      throw new Error('generate_volume_outline_preview 缺少 narrativePlan.storyUnits，未生成完整卷大纲。');
-    }
-    const normalizedRanges: Array<{ start: number; end: number; label: string }> = [];
-    for (const [index, storyUnit] of storyUnits.entries()) {
-      const label = `narrativePlan.storyUnits[${index}]`;
-      for (const field of ['unitId', 'title', 'localGoal', 'localConflict', 'payoff', 'stateChangeAfterUnit']) {
-        this.requiredText(storyUnit[field], `${label}.${field}`);
-      }
-      const range = this.asRecord(storyUnit.chapterRange);
-      const start = this.requiredPositiveInt(range.start, `${label}.chapterRange.start`);
-      const end = this.requiredPositiveInt(range.end, `${label}.chapterRange.end`);
-      if (end < start || start > chapterCount) {
-        throw new Error(`generate_volume_outline_preview ${label}.chapterRange 无效，未生成完整卷大纲。`);
-      }
-      const length = end - start + 1;
-      if (chapterCount >= 3 && (length < 3 || length > 5)) {
-        throw new Error(`generate_volume_outline_preview ${label}.chapterRange 必须覆盖 3-5 章，未生成完整卷大纲。`);
-      }
-      const serviceFunctions = this.stringArray(storyUnit.serviceFunctions);
-      if (serviceFunctions.length < 3) {
-        throw new Error(`generate_volume_outline_preview ${label}.serviceFunctions 少于 3 项，未生成完整卷大纲。`);
-      }
-      normalizedRanges.push({ start, end, label });
-    }
-    const sortedRanges = normalizedRanges.sort((a, b) => a.start - b.start);
-    let expectedStart = 1;
-    for (const range of sortedRanges) {
-      if (range.start !== expectedStart) {
-        throw new Error(`generate_volume_outline_preview ${range.label}.chapterRange 未连续覆盖全卷章节，未生成完整卷大纲。`);
-      }
-      expectedStart = range.end + 1;
-    }
-    if (expectedStart !== chapterCount + 1) {
-      throw new Error(`generate_volume_outline_preview narrativePlan.storyUnits 未覆盖到第 ${chapterCount} 章，未生成完整卷大纲。`);
-    }
-    narrativePlan.characterPlan = assertVolumeCharacterPlan(narrativePlan.characterPlan, {
-      chapterCount,
-      ...characterCatalog,
-      label: 'narrativePlan.characterPlan',
-    });
   }
 
   private buildSystemPrompt(): string {
@@ -310,14 +242,6 @@ export class GenerateVolumeOutlinePreviewTool implements BaseTool<GenerateVolume
     return text;
   }
 
-  private requiredPositiveInt(value: unknown, label: string): number {
-    const numeric = Number(value);
-    if (!Number.isInteger(numeric) || numeric < 1) {
-      throw new Error(`generate_volume_outline_preview 返回缺少 ${label}，未生成完整卷大纲。`);
-    }
-    return numeric;
-  }
-
   private positiveInt(value: unknown, label: string): number | undefined {
     if (value === undefined || value === null || value === '') return undefined;
     const numeric = Number(value);
@@ -338,20 +262,8 @@ export class GenerateVolumeOutlinePreviewTool implements BaseTool<GenerateVolume
     return Array.isArray(value) ? value.map((item) => this.text(item)).filter(Boolean) : [];
   }
 
-  private positiveIntArray(value: unknown): number[] {
-    return Array.isArray(value)
-      ? value.map((item) => Number(item)).filter((item) => Number.isInteger(item) && item > 0)
-      : [];
-  }
-
   private asRecord(value: unknown): Record<string, unknown> {
     return value && typeof value === 'object' && !Array.isArray(value) ? value as Record<string, unknown> : {};
-  }
-
-  private asRecordArray(value: unknown): Array<Record<string, unknown>> {
-    return Array.isArray(value)
-      ? value.map((item) => this.asRecord(item)).filter((item) => Object.keys(item).length > 0)
-      : [];
   }
 
   private safeJson(value: unknown, limit: number): string {

@@ -5,7 +5,8 @@ import { DEFAULT_LLM_TIMEOUT_MS } from '../../llm/llm-timeout.constants';
 import { BaseTool, ToolContext } from '../base-tool';
 import type { ToolManifestV2 } from '../tool-manifest.types';
 import { recordToolLlmUsage } from './import-preview-llm-usage';
-import { assertChapterCharacterExecution, assertVolumeCharacterPlan, type ChapterCharacterExecution, type CharacterReferenceCatalog } from './outline-character-contracts';
+import { assertChapterCharacterExecution, type ChapterCharacterExecution, type CharacterReferenceCatalog, type VolumeCharacterPlan } from './outline-character-contracts';
+import { assertVolumeNarrativePlan } from './outline-narrative-contracts';
 
 const OUTLINE_PREVIEW_LLM_TIMEOUT_MS = DEFAULT_LLM_TIMEOUT_MS;
 const OUTLINE_PREVIEW_BATCH_SIZE = 1;
@@ -317,16 +318,12 @@ export class GenerateOutlinePreviewTool implements BaseTool<GenerateOutlinePrevi
       throw new Error(`generate_outline_preview volume.chapterCount 与目标章节数 ${totalChapterCount} 不匹配，未生成完整细纲。`);
     }
     const risks = this.stringArray(output.risks, []);
-    const narrativePlan = this.asRecord(volumeRecord.narrativePlan);
-    if (!Object.keys(narrativePlan).length) {
-      throw new Error('generate_outline_preview 缺少 volume.narrativePlan，未生成完整细纲。');
-    }
-    const characterPlan = assertVolumeCharacterPlan(narrativePlan.characterPlan, {
+    const narrativePlan = assertVolumeNarrativePlan(volumeRecord.narrativePlan, {
       chapterCount: totalChapterCount,
       ...(options.characterCatalog ?? {}),
-      label: 'volume.narrativePlan.characterPlan',
+      label: 'volume.narrativePlan',
     });
-    narrativePlan.characterPlan = characterPlan;
+    const characterPlan = narrativePlan.characterPlan as VolumeCharacterPlan;
     const volumeCandidateNames = characterPlan.newCharacterCandidates.map((candidate) => candidate.name);
     const chapters: OutlinePreviewOutput['chapters'] = rawChapters.map((item, index) => {
       const record = this.asRecord(item);

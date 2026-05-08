@@ -414,21 +414,37 @@ function createVccCharacterPlanForChapterCount(chapterCount: number, overrides: 
 
 function createVccNarrativePlanForChapterCount(chapterCount: number, overrides: Record<string, unknown> = {}) {
   return createVccNarrativePlan({
-    storyUnits: [
-      {
-        unitId: 'v1_unit_01',
-        title: '旧闸棚失踪档案',
-        chapterRange: { start: 1, end: chapterCount },
-        localGoal: '拿到第一份可核对证据',
-        localConflict: '巡检处封锁账房并登记靠近者',
-        serviceFunctions: ['mainline', 'relationship_shift', 'foreshadow'],
-        payoff: '主角带走证据但名字进入记录',
-        stateChangeAfterUnit: '调查从传闻变成可追查证据',
-      },
-    ],
+    storyUnits: createVccStoryUnitsForChapterCount(chapterCount),
     characterPlan: createVccCharacterPlanForChapterCount(chapterCount),
     ...overrides,
   });
+}
+
+function createVccStoryUnitsForChapterCount(chapterCount: number) {
+  const units: Array<Record<string, unknown>> = [];
+  let start = 1;
+  let unitIndex = 1;
+  while (start <= chapterCount) {
+    const remaining = chapterCount - start + 1;
+    let length = remaining;
+    if (chapterCount >= 3 && remaining > 5) {
+      length = remaining % 5 === 1 ? 3 : remaining % 5 === 2 ? 4 : 5;
+    }
+    const end = start + length - 1;
+    units.push({
+      unitId: `v1_unit_${String(unitIndex).padStart(2, '0')}`,
+      title: `旧闸棚失踪档案 ${unitIndex}`,
+      chapterRange: { start, end },
+      localGoal: `拿到第 ${unitIndex} 组可核对证据`,
+      localConflict: '巡检处封锁账房并登记靠近者',
+      serviceFunctions: ['mainline', 'relationship_shift', 'foreshadow'],
+      payoff: '主角带走证据但名字进入记录',
+      stateChangeAfterUnit: '调查从传闻变成可追查证据',
+    });
+    start = end + 1;
+    unitIndex += 1;
+  }
+  return units;
 }
 
 function createVccOutlinePreview(chapterCount = 1, overrides: Record<string, unknown> = {}): OutlinePreviewOutput {
@@ -955,6 +971,46 @@ test('VCC outline preview requires volume characterPlan', async () => {
 
   assert.equal(result.chapters.length, 4);
   assert.equal(((result.volume.narrativePlan?.characterPlan as Record<string, unknown>).newCharacterCandidates as Array<Record<string, unknown>>)[0].name, '邵衡');
+});
+
+test('VCC outline preview rejects incomplete volume narrativePlan', async () => {
+  const llm = {
+    async chatJson(messages: Array<{ role: string; content: string }>) {
+      const prompt = messages[1]?.content ?? '';
+      const match = prompt.match(/章节范围：第 (\d+)-(\d+) 章/);
+      const chapterNo = match ? Number(match[1]) : 1;
+      const narrativePlan = { ...createVccNarrativePlan(), storyUnits: undefined };
+      return {
+        data: {
+          volume: {
+            volumeNo: 1,
+            title: '旧闸棚账册',
+            synopsis: '卷简介',
+            objective: '拿到账册证据',
+            chapterCount: 4,
+            narrativePlan,
+          },
+          chapters: [createOutlineChapter(chapterNo, 1)],
+          risks: [],
+        },
+        result: { model: 'mock-outline-incomplete-narrative' },
+      };
+    },
+  };
+  const tool = new GenerateOutlinePreviewTool(llm as never);
+
+  await assert.rejects(
+    () => tool.run(
+      {
+        context: { project: { title: '旧档案' }, characters: [{ name: '林澈' }, { name: '沈栖' }] },
+        instruction: '生成完整细纲',
+        volumeNo: 1,
+        chapterCount: 4,
+      },
+      { agentRunId: 'run-vcc-outline-narrative', projectId: 'p1', mode: 'plan', approved: false, outputs: {}, policy: {} },
+    ),
+    /storyUnits/,
+  );
 });
 
 test('VCC chapter outline preview preserves characterExecution', async () => {
@@ -3519,6 +3575,38 @@ test('VCC guided_volume requires explicit volumeNo and chapterCount', async () =
   assert.equal(transactionCalled, false);
 });
 
+test('VCC guided_volume rejects incomplete narrativePlan before writes', async () => {
+  let transactionCalled = false;
+  const prisma = {
+    character: { async findMany() { return [{ name: '林澈', alias: [] }, { name: '沈栖', alias: [] }]; } },
+    guidedSession: { async findUnique() { return { stepData: { guided_characters_result: { characters: [{ name: '林澈' }, { name: '沈栖' }] } } }; } },
+    volume: {
+      deleteMany() {
+        transactionCalled = true;
+        return Promise.resolve({ count: 1 });
+      },
+      createMany() {
+        transactionCalled = true;
+        return Promise.resolve({ count: 1 });
+      },
+    },
+    async $transaction() {
+      transactionCalled = true;
+      return [];
+    },
+  };
+  const service = new GuidedService(prisma as never, {} as never, {} as never);
+  const badVolume = createVccGuidedVolume({
+    narrativePlan: { ...createVccNarrativePlanForChapterCount(3), storyUnits: undefined },
+  });
+
+  await assert.rejects(
+    () => service.finalizeStep('p1', 'guided_volume', { volumes: [badVolume] }),
+    /storyUnits|叙事规划|narrativePlan/,
+  );
+  assert.equal(transactionCalled, false);
+});
+
 test('VCC legacy guided finalize-step endpoint rejects direct writes', () => {
   let serviceCalled = false;
   const controller = new GuidedController({
@@ -4063,6 +4151,26 @@ test('VCC validate_guided_step_preview rejects missing characterPlan', async () 
   assert.equal(result.issues.some((issue) => /characterPlan|角色规划/.test(issue.message)), true);
 });
 
+test('VCC validate_guided_step_preview rejects incomplete volume narrativePlan', async () => {
+  const prisma = {
+    character: { async findMany() { return [{ name: '林澈', alias: [] }, { name: '沈栖', alias: [] }]; } },
+    guidedSession: { async findUnique() { return { stepData: {} }; } },
+    volume: { async findMany() { return []; } },
+  };
+  const tool = new ValidateGuidedStepPreviewTool(prisma as never);
+  const badVolume = createVccGuidedVolume({
+    narrativePlan: { ...createVccNarrativePlanForChapterCount(3), storyUnits: undefined },
+  });
+
+  const result = await tool.run(
+    { stepKey: 'guided_volume', structuredData: { volumes: [badVolume] } },
+    { agentRunId: 'run-vcc-validate-guided-narrative', projectId: 'p1', mode: 'plan', approved: false, outputs: {}, policy: {} },
+  );
+
+  assert.equal(result.valid, false);
+  assert.equal(result.issues.some((issue) => /storyUnits|叙事规划|narrativePlan/.test(issue.message)), true);
+});
+
 test('VCC validate_guided_step_preview rejects invalid characterExecution', async () => {
   const validVolume = createVccGuidedVolume();
   const prisma = {
@@ -4165,6 +4273,35 @@ test('PersistGuidedStepResultTool 阻止未审批或校验失败的写入', asyn
   await assert.rejects(
     () => tool.run({ stepKey: 'guided_chapter', structuredData: { chapters: [{ chapterNo: 2 }, { chapterNo: 2 }] } }, context),
     /校验未通过/,
+  );
+  assert.equal(finalizeCalled, false);
+});
+
+test('VCC persist_guided_step_result rejects incomplete guided_volume before service write', async () => {
+  let finalizeCalled = false;
+  const prisma = {
+    character: { async findMany() { return [{ name: '林澈', alias: [] }, { name: '沈栖', alias: [] }]; } },
+    guidedSession: { async findUnique() { return { stepData: {} }; } },
+    volume: { async findMany() { return []; } },
+  };
+  const validateTool = new ValidateGuidedStepPreviewTool(prisma as never);
+  const guidedService = {
+    async finalizeStep() {
+      finalizeCalled = true;
+      return { written: [] };
+    },
+  };
+  const tool = new PersistGuidedStepResultTool(guidedService as never, validateTool);
+  const badVolume = createVccGuidedVolume({
+    narrativePlan: { ...createVccNarrativePlanForChapterCount(3), storyUnits: undefined },
+  });
+
+  await assert.rejects(
+    () => tool.run(
+      { stepKey: 'guided_volume', structuredData: { volumes: [badVolume] } },
+      { agentRunId: 'run-vcc-persist-guided-narrative', projectId: 'p1', mode: 'act', approved: true, outputs: {}, policy: {} },
+    ),
+    /storyUnits|校验未通过|narrativePlan/,
   );
   assert.equal(finalizeCalled, false);
 });
@@ -6040,6 +6177,37 @@ test('PersistOutlineTool 拒绝旧 outline_preview 缺 craftBrief', async () => 
   );
 
   assert.equal(updatedChapters.length, 0);
+});
+
+test('VCC validate_outline and persist_outline reject incomplete volume narrativePlan', async () => {
+  let transactionCalled = false;
+  const prisma = {
+    character: { async findMany() { return [{ name: '林澈', alias: [] }, { name: '沈栖', alias: [] }]; } },
+    volume: { async findUnique() { return null; } },
+    chapter: { async findMany() { return []; } },
+    async $transaction() {
+      transactionCalled = true;
+      return {};
+    },
+  };
+  const preview = createVccOutlinePreview(3, {
+    volume: {
+      narrativePlan: { ...createVccNarrativePlanForChapterCount(3), storyUnits: undefined },
+    },
+  });
+  const validateTool = new ValidateOutlineTool(prisma as never);
+  const persistTool = new PersistOutlineTool(prisma as never);
+  const context = { agentRunId: 'run-vcc-outline-narrative-persist', projectId: 'p1', mode: 'act' as const, approved: true, outputs: {}, policy: {} };
+
+  const validation = await validateTool.run({ preview }, context);
+  assert.equal(validation.valid, false);
+  assert.equal(validation.issues.some((issue) => /storyUnits|narrativePlan/.test(issue.message)), true);
+
+  await assert.rejects(
+    () => persistTool.run({ preview, validation: { valid: true } }, context),
+    /storyUnits|narrative planning|narrativePlan/,
+  );
+  assert.equal(transactionCalled, false);
 });
 
 test('GenerateOutlinePreviewTool keeps long outer timeout without output token cap', async () => {

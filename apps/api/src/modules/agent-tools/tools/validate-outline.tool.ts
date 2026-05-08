@@ -2,7 +2,8 @@ import { Injectable } from '@nestjs/common';
 import { PrismaService } from '../../../prisma/prisma.service';
 import { BaseTool, ToolContext } from '../base-tool';
 import { OutlinePreviewOutput } from './generate-outline-preview.tool';
-import { assertChapterCharacterExecution, assertVolumeCharacterPlan, VolumeCharacterPlan } from './outline-character-contracts';
+import { assertChapterCharacterExecution, VolumeCharacterPlan } from './outline-character-contracts';
+import { assertVolumeNarrativePlan } from './outline-narrative-contracts';
 
 interface ValidateOutlineInput {
   preview?: OutlinePreviewOutput;
@@ -202,21 +203,21 @@ export class ValidateOutlineTool implements BaseTool<ValidateOutlineInput, Valid
     stats: CharacterValidationStats,
   ): VolumeCharacterPlan | undefined {
     try {
-      const narrativePlan = this.asRecord(preview.volume?.narrativePlan);
-      const characterPlan = assertVolumeCharacterPlan(narrativePlan.characterPlan, {
+      const narrativePlan = assertVolumeNarrativePlan(preview.volume?.narrativePlan, {
         chapterCount: Number(preview.volume?.chapterCount),
         existingCharacterNames: characterCatalog.existingCharacterNames,
         existingCharacterAliases: characterCatalog.existingCharacterAliases,
-        label: 'volume.narrativePlan.characterPlan',
+        label: 'volume.narrativePlan',
       });
+      const characterPlan = narrativePlan.characterPlan as VolumeCharacterPlan;
       stats.volumeCharacterCandidateCount = characterPlan.newCharacterCandidates.length;
       return characterPlan;
     } catch (error) {
       this.addCharacterIssue(
         issues,
         stats,
-        `volume.narrativePlan.characterPlan invalid: ${this.errorMessage(error)}`,
-        'Regenerate the outline preview with a complete volume characterPlan before approval or persist.',
+        `volume.narrativePlan invalid: ${this.errorMessage(error)}`,
+        'Regenerate the outline preview with a complete volume narrativePlan and characterPlan before approval or persist.',
       );
       return undefined;
     }

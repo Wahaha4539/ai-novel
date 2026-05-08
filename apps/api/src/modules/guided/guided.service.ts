@@ -13,9 +13,9 @@ import {
 } from './guided-step-schemas';
 import {
   assertChapterCharacterExecution,
-  assertVolumeCharacterPlan,
   VolumeCharacterPlan,
 } from '../agent-tools/tools/outline-character-contracts';
+import { assertVolumeNarrativePlan } from '../agent-tools/tools/outline-narrative-contracts';
 
 const DEFAULT_FIRST_STEP = 'guided_setup';
 
@@ -877,16 +877,21 @@ export class GuidedService {
     if (!Number.isInteger(chapterCount) || !chapterCount || chapterCount < 1) {
       throw new BadRequestException(`${label} 卷级角色规划校验失败：缺少有效 chapterCount，无法确认 firstAppearChapter 是否越界。请重新生成卷纲并显式返回本卷总章节数。`);
     }
-    const narrativePlan = asRecord(volume.narrativePlan);
+    for (const field of ['title', 'synopsis', 'objective']) {
+      if (!asString(volume[field])?.trim()) {
+        throw new BadRequestException(`${label} 卷纲生成失败：缺少 ${field}，请重新生成完整卷纲后再审批写入。`);
+      }
+    }
     try {
-      return assertVolumeCharacterPlan(narrativePlan?.characterPlan, {
+      const narrativePlan = assertVolumeNarrativePlan(volume.narrativePlan, {
         chapterCount,
         existingCharacterNames: catalog.existingCharacterNames,
         existingCharacterAliases: catalog.existingCharacterAliases,
-        label: `${label}.narrativePlan.characterPlan`,
+        label: `${label}.narrativePlan`,
       });
+      return narrativePlan.characterPlan as VolumeCharacterPlan;
     } catch (error) {
-      throw new BadRequestException(`${label} 卷级角色规划无效：${errorMessage(error)}。请重试卷纲生成，或补充角色上下文后再生成。`);
+      throw new BadRequestException(`${label} 卷级叙事规划无效：${errorMessage(error)}。请重试卷纲生成，或补充角色上下文后再生成。`);
     }
   }
 
