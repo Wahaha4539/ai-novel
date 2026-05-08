@@ -1098,11 +1098,13 @@ export class AgentRuntimeService {
       const preview = this.latestOutputByTools(outputs, steps, ['merge_chapter_outline_previews', 'generate_outline_preview']);
       const validation = this.latestOutputByTools(outputs, steps, ['validate_outline']);
       const persist = this.latestOutputByTools(outputs, steps, ['persist_outline']);
+      const characterPersist = this.latestOutputByTools(outputs, steps, ['persist_volume_character_candidates']);
       return [
         ...(preview ? [{ artifactType: 'outline_preview', title: '大纲预览', content: preview }] : []),
         ...(validation ? [{ artifactType: 'outline_validation_report', title: '大纲校验报告', content: validation }] : []),
         ...this.buildTimelineArtifacts(outputs, steps, true),
         ...(persist ? [{ artifactType: 'outline_persist_result', title: '大纲写入结果', content: persist }] : []),
+        ...(characterPersist ? [{ artifactType: 'volume_character_candidates_persist_result', title: '卷级角色候选写入结果', content: characterPersist }] : []),
       ];
     }
 

@@ -3139,6 +3139,30 @@ test('AgentRuntime maps timeline persist artifact in act mode', () => {
   assert.deepEqual(artifacts.map((item) => item.content), [preview, validation, persist]);
 });
 
+test('VCC AgentRuntime maps volume character candidate persist artifact', () => {
+  const runtime = new AgentRuntimeService({} as never, {} as never, {} as never, {} as never, {} as never, {} as never) as unknown as {
+    buildExecutionArtifacts: (taskType: string, outputs: Record<number, unknown>, steps: Array<{ stepNo: number; tool: string }>) => Array<{ artifactType: string; title: string; content: unknown }>;
+  };
+  const preview = createVccOutlinePreview(1);
+  const validation = { valid: true, stats: { characterCandidateCount: 1 } };
+  const outlinePersist = { createdCount: 1, updatedCount: 0, skippedCount: 0, chapterCount: 1 };
+  const characterPersist = { createdCount: 1, updatedCount: 0, skippedCount: 0, relationshipCreatedCount: 1, relationshipSkippedCount: 0 };
+
+  const artifacts = runtime.buildExecutionArtifacts(
+    'outline_design',
+    { 2: preview, 3: validation, 4: outlinePersist, 5: characterPersist },
+    [
+      { stepNo: 2, tool: 'merge_chapter_outline_previews' },
+      { stepNo: 3, tool: 'validate_outline' },
+      { stepNo: 4, tool: 'persist_outline' },
+      { stepNo: 5, tool: 'persist_volume_character_candidates' },
+    ],
+  );
+
+  assert.deepEqual(artifacts.map((item) => item.artifactType), ['outline_preview', 'outline_validation_report', 'outline_persist_result', 'volume_character_candidates_persist_result']);
+  assert.equal(artifacts[3].content, characterPersist);
+});
+
 function createVccGuidedChapter(overrides: Record<string, unknown> = {}) {
   return createOutlineChapter(1, 1, {
     outline: '主角在旧闸棚账房逐页核对账册墨痕，巡检员夺走账册并要求他离开；同伴在后门假装摔倒藏下半页证据，雨廊尽头的东闸即将关闭，迫使他带着证据立刻转移。',
