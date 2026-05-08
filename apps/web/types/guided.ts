@@ -192,6 +192,7 @@ export interface GuidedChapterData {
 
 export interface GuidedVolumeData {
   volumeNo: number;
+  chapterCount: number;
   title: string;
   synopsis: string;
   objective: string;
