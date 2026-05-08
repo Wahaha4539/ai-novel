@@ -8222,6 +8222,12 @@ test('PromptBuilderService renders dedicated relationship timeline and writing r
   assert.match(result.user, /eventStatus=planned/);
   assert.match(result.user, /sourceType=writing_rule/);
   assert.match(result.user, /sourceId=rule-1/);
+  assert.equal(result.debug.timelineEventCount, 1);
+  assert.equal(result.debug.verifiedTimelineEventCount, 1);
+  assert.equal(result.debug.plannedTimelineEventCount, 1);
+  assert.deepEqual(result.debug.timelineLayerCounts, { verifiedActive: 1, plannedCurrent: 1 });
+  assert.equal((result.debug.verifiedTimelineSourceTrace as Array<Record<string, unknown>>)[0].sourceId, 'time-1');
+  assert.equal((result.debug.plannedTimelineSourceTrace as Array<Record<string, unknown>>)[0].sourceId, 'planned-time-1');
 });
 
 test('PromptBuilderService renders GenerationProfile new entity boundaries', async () => {

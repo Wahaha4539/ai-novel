@@ -69,6 +69,8 @@ export class PromptBuilderService {
       this.buildStructuredContextSection(context),
       this.buildPreviousChaptersSection(context),
     ].join('\n\n');
+    const verifiedTimelineHits = context.contextPack.verifiedContext.structuredHits.filter((hit) => hit.sourceType === 'timeline_event');
+    const plannedTimelineEvents = context.contextPack.planningContext?.plannedTimelineEvents ?? [];
 
     return {
       system,
@@ -80,7 +82,12 @@ export class PromptBuilderService {
         memoryCount: context.contextPack.verifiedContext.memoryHits.length,
         structuredCount: context.contextPack.verifiedContext.structuredHits.length,
         relationshipEdgeCount: context.contextPack.verifiedContext.structuredHits.filter((hit) => hit.sourceType === 'relationship_edge').length,
-        timelineEventCount: context.contextPack.verifiedContext.structuredHits.filter((hit) => hit.sourceType === 'timeline_event').length,
+        timelineEventCount: verifiedTimelineHits.length,
+        verifiedTimelineEventCount: verifiedTimelineHits.length,
+        plannedTimelineEventCount: plannedTimelineEvents.length,
+        timelineLayerCounts: { verifiedActive: verifiedTimelineHits.length, plannedCurrent: plannedTimelineEvents.length },
+        verifiedTimelineSourceTrace: verifiedTimelineHits.map((hit) => hit.sourceTrace),
+        plannedTimelineSourceTrace: plannedTimelineEvents.map((event) => event.sourceTrace),
         writingRuleCount: context.contextPack.verifiedContext.structuredHits.filter((hit) => hit.sourceType === 'writing_rule').length,
         verifiedContextCount: context.contextPack.verifiedContext.lorebookHits.length + context.contextPack.verifiedContext.memoryHits.length + context.contextPack.verifiedContext.structuredHits.length,
         previousChapterCount: context.previousChapters.length,
