@@ -39,6 +39,18 @@ export interface NormalizeTimelineCandidatesOptions extends NormalizeTimelineCan
   maxCandidates?: number;
 }
 
+export interface TimelineChapterRefRow {
+  id: string;
+  projectId: string;
+  chapterNo: number;
+}
+
+export interface TimelineResolvedChapterRef {
+  candidateId: string;
+  chapterId: string;
+  chapterNo: number;
+}
+
 export function normalizeTimelineCandidates(value: unknown, options: NormalizeTimelineCandidatesOptions = {}): TimelineCandidate[] {
   if (!Array.isArray(value)) {
     throw new Error('timelineCandidates must be an array.');
@@ -51,6 +63,47 @@ export function normalizeTimelineCandidates(value: unknown, options: NormalizeTi
     throw new Error(`timelineCandidates count ${value.length} exceeds maximum ${options.maxCandidates}.`);
   }
   return value.map((item, index) => normalizeTimelineCandidate(item, { ...options, path: `timelineCandidates[${index}]` }));
+}
+
+export function validateTimelineCandidateChapterRefs(
+  candidates: TimelineCandidate[],
+  chapters: TimelineChapterRefRow[],
+  expectedProjectId: string,
+): TimelineResolvedChapterRef[] {
+  const chaptersById = new Map<string, TimelineChapterRefRow>();
+  const chaptersByNo = new Map<number, TimelineChapterRefRow>();
+  for (const chapter of chapters) {
+    if (chapter.projectId !== expectedProjectId) {
+      throw new Error(`Chapter reference index contains cross-project chapter: ${chapter.id}.`);
+    }
+    if (chaptersById.has(chapter.id)) {
+      throw new Error(`Chapter reference index contains duplicate chapterId: ${chapter.id}.`);
+    }
+    if (chaptersByNo.has(chapter.chapterNo)) {
+      throw new Error(`Chapter reference index contains duplicate chapterNo: ${chapter.chapterNo}.`);
+    }
+    chaptersById.set(chapter.id, chapter);
+    chaptersByNo.set(chapter.chapterNo, chapter);
+  }
+
+  return candidates.map((candidate) => {
+    const chapterById = candidate.chapterId ? chaptersById.get(candidate.chapterId) : undefined;
+    const chapterByNo = candidate.chapterNo !== undefined ? chaptersByNo.get(candidate.chapterNo) : undefined;
+    if (candidate.chapterId && !chapterById) {
+      throw new Error(`Timeline candidate ${candidate.candidateId} chapterId does not belong to current project: ${candidate.chapterId}.`);
+    }
+    if (candidate.chapterNo !== undefined && !chapterByNo) {
+      throw new Error(`Timeline candidate ${candidate.candidateId} chapterNo does not belong to current project: ${candidate.chapterNo}.`);
+    }
+    if (chapterById && chapterByNo && chapterById.id !== chapterByNo.id) {
+      throw new Error(`Timeline candidate ${candidate.candidateId} chapterId and chapterNo do not match: ${candidate.chapterId} != chapter ${candidate.chapterNo}.`);
+    }
+    const chapter = chapterById ?? chapterByNo;
+    if (!chapter) {
+      throw new Error(`Timeline candidate ${candidate.candidateId} must reference a current-project chapter.`);
+    }
+    return { candidateId: candidate.candidateId, chapterId: chapter.id, chapterNo: chapter.chapterNo };
+  });
 }
 
 export function normalizeTimelineCandidate(value: unknown, options: NormalizeTimelineCandidateOptions & { path?: string } = {}): TimelineCandidate {

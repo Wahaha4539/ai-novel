@@ -62,7 +62,7 @@ import { GenerateStoryBiblePreviewTool } from '../agent-tools/tools/generate-sto
 import { ValidateStoryBibleTool } from '../agent-tools/tools/validate-story-bible.tool';
 import { PersistStoryBibleTool } from '../agent-tools/tools/persist-story-bible.tool';
 import { GenerateContinuityPreviewTool, PersistContinuityChangesTool, ValidateContinuityChangesTool } from '../agent-tools/tools/continuity-changes.tool';
-import { normalizeTimelineCandidate, normalizeTimelineCandidates } from '../agent-tools/tools/timeline-preview.support';
+import { normalizeTimelineCandidate, normalizeTimelineCandidates, validateTimelineCandidateChapterRefs } from '../agent-tools/tools/timeline-preview.support';
 import { GenerateChapterCraftBriefPreviewTool, PersistChapterCraftBriefTool, ValidateChapterCraftBriefTool } from '../agent-tools/tools/chapter-craft-brief-tools.tool';
 import { GenerateSceneCardsPreviewTool, ListSceneCardsTool, PersistSceneCardsTool, UpdateSceneCardTool, ValidateSceneCardsTool } from '../agent-tools/tools/scene-card-tools.tool';
 import { RelationshipGraphService } from '../agent-tools/relationship-graph.service';
@@ -6611,6 +6611,37 @@ test('timeline preview normalize fails when required content fields or trusted t
     /cross-project or mismatched/,
   );
   assert.throws(() => normalizeTimelineCandidates([], { minCandidates: 1 }), /below required minimum 1/);
+});
+
+test('timeline preview chapter ref validation rejects missing cross-project and mismatched chapter refs', () => {
+  const chapters = [
+    { id: 'chapter-7', projectId: 'p1', chapterNo: 7 },
+    { id: 'chapter-8', projectId: 'p1', chapterNo: 8 },
+  ];
+  const byNo = normalizeTimelineCandidate(makeTimelineCandidateRaw());
+  const byId = normalizeTimelineCandidate(makeTimelineCandidateRaw({ chapterId: 'chapter-7' }));
+  const resolved = validateTimelineCandidateChapterRefs([byNo, byId], chapters, 'p1');
+
+  assert.deepEqual(resolved, [
+    { candidateId: 'tlc_plan_7', chapterId: 'chapter-7', chapterNo: 7 },
+    { candidateId: 'tlc_plan_7', chapterId: 'chapter-7', chapterNo: 7 },
+  ]);
+  assert.throws(
+    () => validateTimelineCandidateChapterRefs([normalizeTimelineCandidate(makeTimelineCandidateRaw({ chapterId: 'chapter-7', chapterNo: 8 }))], chapters, 'p1'),
+    /chapterId and chapterNo do not match/,
+  );
+  assert.throws(
+    () => validateTimelineCandidateChapterRefs([normalizeTimelineCandidate(makeTimelineCandidateRaw({ chapterId: 'foreign-chapter' }))], chapters, 'p1'),
+    /chapterId does not belong to current project/,
+  );
+  assert.throws(
+    () => validateTimelineCandidateChapterRefs([normalizeTimelineCandidate(makeTimelineCandidateRaw({ chapterNo: 99 }))], chapters, 'p1'),
+    /chapterNo does not belong to current project/,
+  );
+  assert.throws(
+    () => validateTimelineCandidateChapterRefs([byNo], [{ id: 'foreign', projectId: 'p2', chapterNo: 7 }], 'p1'),
+    /cross-project chapter/,
+  );
 });
 
 test('RetrievalService 使用 querySpec hash 缓存召回并按开关和 Planner 查询隔离', async () => {
