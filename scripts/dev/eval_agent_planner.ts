@@ -113,6 +113,21 @@ type EvalReport = {
   failures: Array<{ id: string; failures: string[] }>;
 };
 
+type PromptBaselineReport = {
+  generatedAt: string;
+  sourceMode: 'planner_prompt_baseline';
+  casesPath: string;
+  caseId: string;
+  userGoal: string;
+  allToolCount: number;
+  availableToolsChars: number;
+  userPayloadChars: number;
+  systemChars: number;
+  totalChars: number;
+  messageCount: number;
+  availableToolNames: string[];
+};
+
 const casesPath = path.resolve(findRepoRoot(), 'apps/api/test/fixtures/agent-eval-cases.json');
 const cases = JSON.parse(fs.readFileSync(casesPath, 'utf8')) as EvalCase[];
 const plansDir = readArg('--plans');
@@ -123,15 +138,30 @@ const livePlanner = process.argv.includes('--live-planner');
 const realLlmSample = process.argv.includes('--real-llm-sample');
 const retrievalEval = process.argv.includes('--retrieval-eval');
 const experimentalLlmEvidenceReport = process.argv.includes('--experimental-llm-evidence-report');
+const promptBaseline = process.argv.includes('--prompt-baseline');
+const promptBaselineCaseId = readArg('--case-id');
 
 /**
  * Agent Planner 评测入口。
  * 输入 plans 目录时按 caseId.json 读取真实/离线 Planner 输出并打分；未输入时仅校验固定用例集可读取，便于 CI 先纳入基线。
  * 传入 --live-planner 时会构造 Nest TestingModule 并调用真实 AgentPlannerService.createPlan()，LLM 响应用可控 mock 固定，避免本地无 API Key 时评测不可重复。
+ * 传入 --prompt-baseline 时只捕获 Planner prompt 体积，不调用真实 LLM，不执行工具。
  * 传入 --retrieval-eval 时会用确定性 Prisma Mock 驱动真实 collect_task_context 工具，直接评测工具输出的检索维度和召回数量。
  * 可选 --report/--history 会输出当前指标快照和历史趋势，用于观察 Prompt、Manifest、Resolver 改动后的回归。
  */
 async function main() {
+  if (promptBaseline) {
+    const report = await createPlannerPromptBaselineReport(promptBaselineCaseId);
+    console.log(`Planner prompt baseline (${report.caseId})`);
+    console.log(`- allToolCount: ${report.allToolCount}`);
+    console.log(`- availableToolsChars: ${report.availableToolsChars}`);
+    console.log(`- userPayloadChars: ${report.userPayloadChars}`);
+    console.log(`- systemChars: ${report.systemChars}`);
+    console.log(`- totalChars: ${report.totalChars}`);
+    if (reportPath) writeJson(reportPath, report);
+    return;
+  }
+
   if (experimentalLlmEvidenceReport) {
     const outputs = await Promise.all(cases.map((item) => createExperimentalEvidenceOutput(item)));
     const report = buildExperimentalEvidenceReport(outputs);
@@ -529,6 +559,55 @@ async function runLivePlannerEval(options: { realLlm?: boolean; sampleSize?: num
   return results;
 }
 
+async function createPlannerPromptBaselineReport(caseId?: string): Promise<PromptBaselineReport> {
+  const toolRegistry = new EvalToolRegistry();
+  const llm = new PromptCaptureLlmGatewayMock();
+  const moduleRef = await Test.createTestingModule({
+    providers: [
+      AgentPlannerService,
+      SkillRegistryService,
+      RuleEngineService,
+      { provide: ToolRegistryService, useValue: toolRegistry },
+      { provide: LlmGatewayService, useValue: llm },
+    ],
+  }).compile();
+
+  try {
+    const planner = moduleRef.get(AgentPlannerService);
+    const item = selectPromptBaselineCase(caseId);
+    await planner.createPlan(item.message, buildEvalContext(item, toolRegistry));
+    const messages = llm.capturedCalls[0];
+    if (!messages) throw new Error('Planner prompt baseline capture failed: no LLM messages captured');
+    const userPayload = [...messages].reverse().find((message) => message.role === 'user')?.content ?? '';
+    const payload = parsePlannerPrompt(messages);
+    const availableTools = Array.isArray(payload.availableTools) ? payload.availableTools : [];
+    if (!availableTools.length) throw new Error('Planner prompt baseline capture failed: availableTools missing from user payload');
+
+    return {
+      generatedAt: new Date().toISOString(),
+      sourceMode: 'planner_prompt_baseline',
+      casesPath,
+      caseId: item.id,
+      userGoal: item.message,
+      allToolCount: availableTools.length,
+      availableToolsChars: JSON.stringify(availableTools).length,
+      userPayloadChars: userPayload.length,
+      systemChars: messages.filter((message) => message.role === 'system').reduce((total, message) => total + message.content.length, 0),
+      totalChars: messages.reduce((total, message) => total + message.content.length, 0),
+      messageCount: messages.length,
+      availableToolNames: availableTools.map((tool) => textOrUndefined(asRecord(tool).name)).filter((name): name is string => Boolean(name)),
+    };
+  } finally {
+    await moduleRef.close();
+  }
+}
+
+function selectPromptBaselineCase(caseId?: string): EvalCase {
+  const item = caseId ? cases.find((candidate) => candidate.id === caseId) : cases[0];
+  if (!item) throw new Error(`Prompt baseline eval case not found: ${caseId}`);
+  return item;
+}
+
 /** Retrieval Eval 直接驱动真实 collect_task_context；Prisma 使用确定性内存 Mock，避免依赖本地数据库状态。 */
 async function createRealRetrievalOutput(item: EvalCase): Promise<{ item: EvalCase; output?: RetrievalEvalOutput; error?: string }> {
   if (!item.expected.retrieval) return { item, output: {} };
@@ -764,8 +843,12 @@ const EVAL_TOOL_DEFINITIONS: EvalToolDefinition[] = [
   { name: 'validate_timeline_preview', description: '校验时间线候选字段、章节引用、sourceTrace 和写入前 diff。' },
   { name: 'persist_timeline_events', description: '审批后写入已校验的时间线候选。', requiresApproval: true, riskLevel: 'high', sideEffects: ['create_timeline_event', 'update_timeline_event', 'delete_timeline_event'] },
   { name: 'generate_outline_preview', description: '生成大纲拆分预览。' },
+  { name: 'generate_volume_outline_preview', description: '生成卷级大纲预览。' },
+  { name: 'generate_chapter_outline_preview', description: '生成单章细纲预览。' },
+  { name: 'merge_chapter_outline_previews', description: '合并多章细纲预览。' },
   { name: 'validate_outline', description: '校验大纲预览。' },
   { name: 'persist_outline', description: '审批后持久化大纲。', requiresApproval: true, riskLevel: 'medium', sideEffects: ['create_outline'] },
+  { name: 'persist_volume_outline', description: '审批后持久化卷级大纲。', requiresApproval: true, riskLevel: 'medium', sideEffects: ['upsert_volume_outline'] },
   { name: 'analyze_source_text', description: '分析导入文案。' },
   { name: 'build_import_preview', description: '构建导入预览。' },
   { name: 'build_import_brief', description: 'Build a shared import brief before targeted import preview tools.' },
@@ -828,6 +911,15 @@ class EvalLlmGatewayMock {
     const agentContext = asRecord(payload.agentContext);
     const data = createMockPlannerOutput(userGoal, agentContext);
     return { data: data as T, result: { text: JSON.stringify(data), model: 'eval-mock-planner', usage: { prompt_tokens: 0, completion_tokens: 0 } } };
+  }
+}
+
+class PromptCaptureLlmGatewayMock extends EvalLlmGatewayMock {
+  readonly capturedCalls: LlmChatMessage[][] = [];
+
+  override async chatJson<T = unknown>(messages: LlmChatMessage[]): Promise<{ data: T; result: { text: string; model: string; usage: Record<string, number> } }> {
+    this.capturedCalls.push(messages);
+    return super.chatJson<T>(messages);
   }
 }
 

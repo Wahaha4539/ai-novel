@@ -1,0 +1,525 @@
+# Agent Supervisor Planner 开发计划
+
+> 来源设计文档：`docs/architecture/agent-supervisor-planner-design.md`
+> 任务编号前缀：`ASP`，即 Agent Supervisor Planner
+> 任务状态：`[ ]` 未开始，`[~]` 进行中，`[x]` 已完成
+> 目标：按可回归、可灰度、可扩展的方式落地 LangGraph TS supervisor planner。
+
+## 1. 开发原则
+
+1. 先改 Planner 编排层，不替换执行、审批和写入链路。
+2. 子 Agent 和 supervisor 只产出 `AgentPlanSpec`，不能直接执行工具。
+3. Planner prompt 只能看到 selected tools，不能在 repair 阶段回到全量工具。
+4. 低置信度或工具包缺失时澄清或失败，不扩大权限。
+5. 任何小说内容生成失败都必须失败，不生成占位内容进入审批或写入链路。
+6. 每个阶段必须有可运行测试或 eval 证明收益。
+
+## 2. P0 文档与基线
+
+### ASP-P0-001 落地 supervisor planner 设计文档
+
+- 状态：`[x]`
+- 模块：Docs
+- 文件：`docs/architecture/agent-supervisor-planner-design.md`
+- 任务：说明 LangGraph TS、多层 supervisor、ToolBundle、PlanValidator、可观测性和迁移策略。
+- 依赖：无
+- 验收：
+  - 明确 RootSupervisor 只路由，不执行工具。
+  - 明确 ToolBundle 过滤是首要收益点。
+  - 明确现有 Executor、审批、写入链路不被替换。
+  - 明确 `AGENTS.md` 的生成失败处理要求。
+- 验证：人工审阅
+
+### ASP-P0-002 落地开发计划文档
+
+- 状态：`[x]`
+- 模块：Docs
+- 文件：`docs/architecture/agent-supervisor-planner-development-plan.md`
+- 任务：把设计拆成可验收的阶段任务，标明文件范围、依赖、验收和验证命令。
+- 依赖：ASP-P0-001
+- 验收：
+  - 任务覆盖 dependency、graph scaffold、ToolBundle、routing、validator、eval、灰度。
+  - 每个实现任务都有至少一个验证方式。
+- 验证：人工审阅
+
+### ASP-P0-003 记录当前 Planner prompt 基线
+
+- 状态：`[x]`
+- 模块：API / Scripts
+- 文件：
+  - `scripts/dev/eval_agent_planner.ts`
+  - `tmp/agent-planner-prompt-baseline.json` 或报告输出
+- 任务：在不执行真实写入的情况下统计全量 tools prompt 基线。
+- 依赖：无
+- 验收：
+  - 报告包含 `allToolCount`、`availableToolsChars`、`userPayloadChars`、`systemChars`、`totalChars`。
+  - 报告可重复生成，不依赖真实 LLM。
+  - 不把 tmp 报告强制纳入源码，除非团队决定保留基线快照。
+- 验证：
+  - `pnpm --dir apps/api run eval:agent:live`
+  - 人工检查报告字段
+- 完成记录（2026-05-09）：
+  - 新增 `--prompt-baseline` eval 模式，使用可控 mock LLM 捕获首轮 Planner prompt，并输出 `allToolCount`、`availableToolsChars`、`userPayloadChars`、`systemChars`、`totalChars`。
+  - 补齐 eval 专用工具清单中的卷大纲/章节细纲 manifest，使当前全量工具基线和 `outline_split_008` live eval 一致。
+  - 修改文件：`scripts/dev/eval_agent_planner.ts`、`docs/architecture/agent-supervisor-planner-development-plan.md`。
+  - 生成但不提交：`tmp/agent-planner-prompt-baseline.json`。
+  - 测试：`pnpm --dir apps/api run eval:agent -- --prompt-baseline --report ../../tmp/agent-planner-prompt-baseline.json`，通过，报告字段人工检查通过（`allToolCount=48`、`availableToolsChars=24281`、`userPayloadChars=49777`、`systemChars=2971`、`totalChars=52748`）。
+  - 测试：`pnpm --dir apps/api run eval:agent:live`，通过（21/21）。
+
+## 3. P1 LangGraph 壳与兼容入口
+
+### ASP-P1-001 增加 LangGraph TS 依赖
+
+- 状态：`[ ]`
+- 模块：API
+- 文件：
+  - `apps/api/package.json`
+  - `pnpm-lock.yaml`
+- 任务：安装 `@langchain/langgraph` 和 `@langchain/core`。
+- 依赖：ASP-P0-001
+- 验收：
+  - API build 能通过。
+  - 没有引入 Python LangGraph 或独立 worker。
+- 验证：
+  - `pnpm --filter api build`
+
+### ASP-P1-002 新增 planner graph 目录和状态类型
+
+- 状态：`[ ]`
+- 模块：API
+- 文件：
+  - `apps/api/src/modules/agent-runs/planner-graph/planner-graph.state.ts`
+  - `apps/api/src/modules/agent-runs/planner-graph/agent-planner.graph.ts`
+  - `apps/api/src/modules/agent-runs/planner-graph/nodes/*.ts`
+- 任务：建立 graph state、节点接口和最小可编译 graph。
+- 依赖：ASP-P1-001
+- 验收：
+  - 有 `AgentPlannerGraphState`、`RouteDecision`、`SelectedToolBundle` 类型。
+  - graph 可在测试中 invoke，但暂时可以只返回 legacy plan。
+  - 不改变现有运行行为。
+- 验证：
+  - `pnpm --filter api build`
+
+### ASP-P1-003 给 AgentPlannerService 增加 graph feature flag
+
+- 状态：`[ ]`
+- 模块：API
+- 文件：
+  - `apps/api/src/modules/agent-runs/agent-planner.service.ts`
+  - `apps/api/src/modules/agent-runs/agent-runs.module.ts`
+- 任务：新增 `AGENT_PLANNER_GRAPH_ENABLED` 控制 graph planner 是否启用。
+- 依赖：ASP-P1-002
+- 验收：
+  - 默认行为与当前 Planner 一致。
+  - 开启 flag 后走 graph wrapper。
+  - diagnostics 能标明 planner source。
+- 验证：
+  - `pnpm --dir apps/api run test:agent`
+  - `pnpm --filter api build`
+
+## 4. P2 ToolBundle Registry
+
+### ASP-P2-001 新增 ToolBundleRegistry
+
+- 状态：`[ ]`
+- 模块：API
+- 文件：
+  - `apps/api/src/modules/agent-runs/planner-graph/tool-bundles/tool-bundle.registry.ts`
+  - `apps/api/src/modules/agent-runs/planner-graph/tool-bundles/*.tool-bundle.ts`
+- 任务：把领域意图映射到工具包定义。
+- 依赖：ASP-P1-002
+- 验收：
+  - 至少包含 `outline.volume`、`outline.chapter`、`writing.chapter`、`revision.chapter`、`import.project_assets`、`guided.step`。
+  - 工具名全部来自 `ToolRegistryService` 已注册工具。
+  - 缺失工具时报错，不静默忽略关键工具。
+- 验证：
+  - 新增服务级测试覆盖 bundle 工具存在性。
+  - `pnpm --dir apps/api run test:agent`
+
+### ASP-P2-002 支持按工具名过滤 manifests
+
+- 状态：`[ ]`
+- 模块：API
+- 文件：
+  - `apps/api/src/modules/agent-tools/tool-registry.service.ts`
+  - `apps/api/src/modules/agent-runs/agent-planner.service.ts`
+- 任务：让 Planner 可以拿 selected manifests，而不是每次调用 `listManifestsForPlanner()` 全量结果。
+- 依赖：ASP-P2-001
+- 验收：
+  - 新增类似 `listManifestsForPlanner(toolNames?: string[])` 或独立过滤方法。
+  - 顺序稳定，方便快照和 eval。
+  - 未注册工具直接抛错。
+- 验证：
+  - `pnpm --dir apps/api run test:agent`
+  - `pnpm --filter api build`
+
+### ASP-P2-003 重构 Planner repair 使用 selected tools
+
+- 状态：`[ ]`
+- 模块：API
+- 文件：
+  - `apps/api/src/modules/agent-runs/agent-planner.service.ts`
+- 任务：确保 create 和 repair 两次 LLM 调用使用同一组 selected tools。
+- 依赖：ASP-P2-002
+- 验收：
+  - repair prompt 不再调用全量 `toolManifestsForPrompt()`。
+  - 单测覆盖 repair 阶段看不到 bundle 外工具。
+- 验证：
+  - `pnpm --dir apps/api run test:agent`
+
+## 5. P3 RootSupervisor 路由
+
+### ASP-P3-001 实现 classifyIntentNode
+
+- 状态：`[ ]`
+- 模块：API
+- 文件：
+  - `apps/api/src/modules/agent-runs/planner-graph/nodes/classify-intent.node.ts`
+  - `apps/api/src/modules/agent-runs/planner-graph/supervisors/root-supervisor.ts`
+- 任务：根据用户目标和上下文输出结构化 `RouteDecision`。
+- 依赖：ASP-P1-002
+- 验收：
+  - 不接收 tools。
+  - 输出经过 schema 校验。
+  - 支持 outline、writing、revision、import、quality、guided、timeline、worldbuilding、general。
+  - 低置信度输出 clarification，不进入全工具 Planner。
+- 验证：
+  - 新增路由单测。
+  - `pnpm --dir apps/api run test:agent`
+
+### ASP-P3-002 实现 selectToolBundleNode
+
+- 状态：`[ ]`
+- 模块：API
+- 文件：
+  - `apps/api/src/modules/agent-runs/planner-graph/nodes/select-tool-bundle.node.ts`
+- 任务：根据 route 选择 bundle 并生成 selected manifests。
+- 依赖：ASP-P2-001，ASP-P3-001
+- 验收：
+  - “卷大纲”只选择 `outline.volume`。
+  - “章节细纲 / 拆成 N 章”选择 `outline.chapter`。
+  - guided context 存在时优先选择 `guided.step`。
+  - diagnostics 记录 selected tool count。
+- 验证：
+  - `pnpm --dir apps/api run test:agent`
+
+### ASP-P3-003 将 route 注入 DomainPlanner prompt
+
+- 状态：`[ ]`
+- 模块：API
+- 文件：
+  - `apps/api/src/modules/agent-runs/agent-planner.service.ts`
+  - `apps/api/src/modules/agent-runs/planner-graph/nodes/domain-planner.node.ts`
+- 任务：在 user payload 中加入 `routeDecision` 和 `toolBundle`。
+- 依赖：ASP-P3-002
+- 验收：
+  - Planner 可读取 route，但不能修改 route。
+  - `availableTools` 只包含 selected manifests。
+  - `plannerDiagnostics` 记录 route 和 bundle。
+- 验证：
+  - `pnpm --dir apps/api run test:agent`
+
+## 6. P4 PlanValidator
+
+### ASP-P4-001 新增 PlanValidatorService
+
+- 状态：`[ ]`
+- 模块：API
+- 文件：
+  - `apps/api/src/modules/agent-runs/planner-graph/plan-validator.service.ts`
+- 任务：从 `AgentPlannerService.validateAndNormalizeLlmPlan()` 中抽出可复用校验，新增 bundle 级约束。
+- 依赖：ASP-P3-003
+- 验收：
+  - bundle 外工具被拒绝。
+  - 写入工具必须保留审批。
+  - route 与工具链不匹配时报错。
+  - 不生成任何 fallback plan。
+- 验证：
+  - `pnpm --dir apps/api run test:agent`
+
+### ASP-P4-002 增加大纲领域硬约束测试
+
+- 状态：`[ ]`
+- 模块：API
+- 文件：
+  - `apps/api/src/modules/agent-runs/agent-services.spec.ts`
+  - `apps/api/test/fixtures/agent-eval-cases.json`
+- 任务：覆盖卷大纲和章节细纲分流。
+- 依赖：ASP-P4-001
+- 验收：
+  - “生成第一卷大纲”不能出现 `generate_chapter_outline_preview`。
+  - “把第一卷拆成 30 章”必须出现章节细纲链路。
+  - “生成卷大纲”不能被 repair 成章节细纲。
+- 验证：
+  - `pnpm --dir apps/api run test:agent`
+  - `pnpm --dir apps/api run eval:agent:live`
+
+### ASP-P4-003 增加导入、guided、timeline 边界测试
+
+- 状态：`[ ]`
+- 模块：API
+- 文件：
+  - `apps/api/src/modules/agent-runs/agent-services.spec.ts`
+  - `apps/api/test/fixtures/agent-eval-cases.json`
+- 任务：覆盖非大纲领域的工具隔离边界。
+- 依赖：ASP-P4-001
+- 验收：
+  - 导入只要 outline 时不能生成 characters/worldbuilding/writingRules。
+  - guided 当前步骤问答不能走 `chapter_write`。
+  - timeline 候选生成不能默认加入 `persist_timeline_events`。
+- 验证：
+  - `pnpm --dir apps/api run test:agent`
+  - `pnpm --dir apps/api run eval:agent:live`
+
+## 7. P5 Eval 与 Prompt 体积门禁
+
+### ASP-P5-001 扩展 Agent Eval 指标
+
+- 状态：`[ ]`
+- 模块：API / Scripts
+- 文件：
+  - `scripts/dev/eval_agent_planner.ts`
+  - `apps/api/test/fixtures/agent-eval-cases.json`
+- 任务：新增 route 和 tool bundle 相关指标。
+- 依赖：ASP-P3-003
+- 验收：
+  - 报告包含 `routeAccuracy`、`bundleAccuracy`、`bundleToolLeakRate`、`promptReductionRate`。
+  - Eval 能分别展示 legacy 和 graph planner 结果。
+- 验证：
+  - `pnpm --dir apps/api run eval:agent:live`
+
+### ASP-P5-002 加入 prompt size 回归保护
+
+- 状态：`[ ]`
+- 模块：API / Scripts
+- 文件：
+  - `scripts/dev/eval_agent_planner.ts`
+- 任务：对 selected tools prompt size 设置回归阈值。
+- 依赖：ASP-P5-001
+- 验收：
+  - outline.volume 的 selected tools 字符数明显小于全量 tools。
+  - 发生 bundle 外扩导致 prompt size 大幅增长时 eval 失败。
+- 验证：
+  - `pnpm --dir apps/api run eval:agent:live:report`
+
+### ASP-P5-003 更新 CI gate
+
+- 状态：`[ ]`
+- 模块：CI / API
+- 文件：
+  - `apps/api/package.json`
+  - `.github/workflows/agent-eval.yml`
+- 任务：把 route/bundle 指标纳入 `eval:agent:gate`。
+- 依赖：ASP-P5-001，ASP-P5-002
+- 验收：
+  - 本地 gate 通过。
+  - CI 能展示失败 case。
+- 验证：
+  - `pnpm run eval:agent:gate`
+
+## 8. P6 Outline Subgraph
+
+### ASP-P6-001 新增 OutlineSupervisor
+
+- 状态：`[ ]`
+- 模块：API
+- 文件：
+  - `apps/api/src/modules/agent-runs/planner-graph/supervisors/outline-supervisor.ts`
+  - `apps/api/src/modules/agent-runs/planner-graph/subgraphs/outline.subgraph.ts`
+- 任务：把 outline 领域从 RootSupervisor 中拆出二级 supervisor。
+- 依赖：ASP-P5-001
+- 验收：
+  - 支持 `volume_outline`、`chapter_outline`、`craft_brief`、`scene_card` 四类意图。
+  - 输出仍是 `RouteDecision` 或其领域细化结果。
+  - 不直接调用工具。
+- 验证：
+  - `pnpm --dir apps/api run test:agent`
+
+### ASP-P6-002 将 outline tool bundles 迁移到 outline subgraph
+
+- 状态：`[ ]`
+- 模块：API
+- 文件：
+  - `apps/api/src/modules/agent-runs/planner-graph/tool-bundles/outline.tool-bundle.ts`
+  - `apps/api/src/modules/agent-runs/planner-graph/subgraphs/outline.subgraph.ts`
+- 任务：让 outline subgraph 负责选取 outline 子领域 bundle。
+- 依赖：ASP-P6-001
+- 验收：
+  - RootSupervisor 只判断 domain=outline。
+  - OutlineSupervisor 判断 volume/chapter/craftBrief/sceneCard。
+  - 既有大纲测试全部通过。
+- 验证：
+  - `pnpm --dir apps/api run test:agent`
+  - `pnpm --dir apps/api run eval:agent:live`
+
+## 9. P7 扩展领域 ToolBundle
+
+### ASP-P7-001 完善 Writing / Revision bundle
+
+- 状态：`[ ]`
+- 模块：API
+- 文件：
+  - `apps/api/src/modules/agent-runs/planner-graph/tool-bundles/writing.tool-bundle.ts`
+  - `apps/api/src/modules/agent-runs/planner-graph/tool-bundles/revision.tool-bundle.ts`
+- 任务：把正文写作、续写、重写、润色严格分包。
+- 依赖：ASP-P5-001
+- 验收：
+  - “写正文”优先 `write_chapter` 或 `write_chapter_series`。
+  - “重写，不沿用旧稿”优先 `rewrite_chapter`。
+  - “润色”不误用 `rewrite_chapter`。
+- 验证：
+  - `pnpm --dir apps/api run test:agent`
+
+### ASP-P7-002 完善 Import bundle
+
+- 状态：`[ ]`
+- 模块：API
+- 文件：
+  - `apps/api/src/modules/agent-runs/planner-graph/tool-bundles/import.tool-bundle.ts`
+- 任务：支持 quick/deep/auto 和 requestedAssetTypes 的工具可见性。
+- 依赖：ASP-P5-001
+- 验收：
+  - deep 单目标可见对应 `generate_import_*_preview`。
+  - quick 多目标可见 `build_import_preview`。
+  - 目标工具缺失时明确失败或使用受控 fallback，不扩大资产范围。
+- 验证：
+  - `pnpm --dir apps/api run test:agent`
+  - `pnpm --dir apps/api run eval:agent:live`
+
+### ASP-P7-003 完善 Quality / Timeline / Worldbuilding bundle
+
+- 状态：`[ ]`
+- 模块：API
+- 文件：
+  - `apps/api/src/modules/agent-runs/planner-graph/tool-bundles/quality.tool-bundle.ts`
+  - `apps/api/src/modules/agent-runs/planner-graph/tool-bundles/timeline.tool-bundle.ts`
+  - `apps/api/src/modules/agent-runs/planner-graph/tool-bundles/worldbuilding.tool-bundle.ts`
+- 任务：把检查类、时间线和设定扩展类任务与写作任务隔离。
+- 依赖：ASP-P5-001
+- 验收：
+  - 角色检查不看到正文写作工具。
+  - 时间线候选默认不看到 `persist_timeline_events`，除非 intent 明确保存。
+  - 世界观扩展保留 preview -> validate -> approved persist 链路。
+- 验证：
+  - `pnpm --dir apps/api run test:agent`
+
+## 10. P8 可观测性与前端调试
+
+### ASP-P8-001 扩展 plannerDiagnostics
+
+- 状态：`[ ]`
+- 模块：API
+- 文件：
+  - `apps/api/src/modules/agent-runs/agent-planner.service.ts`
+  - `apps/api/src/modules/agent-runs/planner-graph/*.ts`
+- 任务：记录 graph route、bundle、prompt size 和节点执行结果。
+- 依赖：ASP-P3-003
+- 验收：
+  - `AgentPlan.plannerDiagnostics` 能看到 route 和 selected tools。
+  - 出错时能定位是 classify、bundle、planner 还是 validator。
+- 验证：
+  - `pnpm --dir apps/api run test:agent`
+
+### ASP-P8-002 前端展示 planner debug 信息
+
+- 状态：`[ ]`
+- 模块：Web
+- 文件：
+  - `apps/web/components/agent/AgentPlanPanel.tsx`
+  - `apps/web/components/agent/AgentArtifactPanel.tsx`
+- 任务：在调试区域展示 route、bundle、selected tools。
+- 依赖：ASP-P8-001
+- 验收：
+  - 普通用户视图不被技术信息打扰。
+  - 调试信息可展开查看。
+  - 不显示冗长 manifest。
+- 验证：
+  - `pnpm --filter web build`
+  - 如做真实 UI 测试，按 Docker Compose 流程启动
+
+## 11. P9 灰度与默认启用
+
+### ASP-P9-001 本地默认启用 graph planner
+
+- 状态：`[ ]`
+- 模块：Config / API
+- 文件：
+  - `.env.example` 或项目配置文档
+  - `apps/api/src/modules/agent-runs/agent-planner.service.ts`
+- 任务：本地和测试环境默认启用 graph planner。
+- 依赖：ASP-P5-003
+- 验收：
+  - 本地开发默认走 graph。
+  - 生产环境仍可关闭。
+- 验证：
+  - `pnpm --dir apps/api run test:agent`
+  - `pnpm run eval:agent:gate`
+
+### ASP-P9-002 生产灰度策略
+
+- 状态：`[ ]`
+- 模块：API / Ops Docs
+- 文件：
+  - `docs/architecture/agent-supervisor-planner-design.md`
+  - 配置说明文档
+- 任务：定义从关闭到部分启用再到默认启用的灰度步骤。
+- 依赖：ASP-P9-001
+- 验收：
+  - 有可回滚开关。
+  - legacy fallback 默认关闭。
+  - diagnostics 能确认每个 run 是否走 graph。
+- 验证：人工审阅和生产前演练
+
+## 12. 总体验收
+
+完成 P1 到 P5 后，必须满足：
+
+1. Planner Graph 可通过 feature flag 启用。
+2. 常见任务只看到对应 ToolBundle。
+3. repair 阶段不回到全量 tools。
+4. 大纲、导入、guided、timeline 的关键误判有测试。
+5. eval 报告能展示 route/bundle/prompt size 指标。
+6. `AgentExecutorService`、审批和写入链路未被替换。
+
+完成 P6 到 P9 后，必须满足：
+
+1. outline 领域有独立子图。
+2. writing、revision、import、quality、timeline、worldbuilding 有稳定工具包。
+3. 前端能查看 route/bundle 调试信息。
+4. CI gate 能防止工具泄漏和 prompt 体积回退。
+5. graph planner 可以作为默认 Planner 路径。
+
+## 13. 推荐执行顺序
+
+```text
+ASP-P0-003
+ASP-P1-001
+ASP-P1-002
+ASP-P2-001
+ASP-P2-002
+ASP-P3-001
+ASP-P3-002
+ASP-P3-003
+ASP-P2-003
+ASP-P4-001
+ASP-P4-002
+ASP-P4-003
+ASP-P5-001
+ASP-P5-002
+ASP-P5-003
+ASP-P6-001
+ASP-P6-002
+ASP-P7-001
+ASP-P7-002
+ASP-P7-003
+ASP-P8-001
+ASP-P8-002
+ASP-P9-001
+ASP-P9-002
+```
+
+优先级说明：
+
+- P1 到 P5 是第一版必须完成的最小闭环。
+- P6 是针对当前“卷大纲 vs 章节细纲”问题的高价值增强。
+- P7 到 P9 属于扩展和灰度，不阻塞第一版工具隔离收益。
