@@ -219,10 +219,10 @@ type ChapterCharacterExecution = {
 
 | ID | 状态 | 任务 | 影响文件 | 验收标准 |
 |---|---|---|---|---|
-| VCC-P4-01 | todo | 更新 `guided_volume` 提示词，要求输出卷级 `characterPlan`。 | `apps/api/src/modules/guided/guided.service.ts` | guided 卷纲生成结果包含角色规划。 |
-| VCC-P4-02 | todo | 更新 `guided_chapter` 提示词，要求输出 `craftBrief.characterExecution`。 | `apps/api/src/modules/guided/guided.service.ts` | guided 章节细纲生成结果包含章级角色执行。 |
-| VCC-P4-03 | todo | 处理现有 `supportingCharacters`：继续兼容读取，但新链路以 `characterPlan.newCharacterCandidates` 为主。 | `guided.service.ts` | 旧项目不报错，新项目使用新结构。 |
-| VCC-P4-04 | todo | 保存本卷时不把章节级临时角色写入正式角色库。 | `guided.service.ts` | `minor_temporary` 只保存在 `craftBrief`，不会 create Character。 |
+| VCC-P4-01 | done | 更新 `guided_volume` 提示词，要求输出卷级 `characterPlan`。 | `apps/api/src/modules/guided/guided.service.ts` | guided 卷纲生成结果包含角色规划。 |
+| VCC-P4-02 | done | 更新 `guided_chapter` 提示词，要求输出 `craftBrief.characterExecution`。 | `apps/api/src/modules/guided/guided.service.ts` | guided 章节细纲生成结果包含章级角色执行。 |
+| VCC-P4-03 | done | 处理现有 `supportingCharacters`：继续兼容读取，但新链路以 `characterPlan.newCharacterCandidates` 为主。 | `guided.service.ts` | 旧项目不报错，新项目使用新结构。 |
+| VCC-P4-04 | done | 保存本卷时不把章节级临时角色写入正式角色库。 | `guided.service.ts` | `minor_temporary` 只保存在 `craftBrief`，不会 create Character。 |
 
 ### P5：Agent 计划、Artifact 与前端展示
 
@@ -357,3 +357,4 @@ docker compose up -d --build
 | 2026-05-08 | VCC-P2-01..P2-07 | `generate_outline_preview` 与 `generate_chapter_outline_preview` 要求并校验 `craftBrief.characterExecution`；校验 cast/source、卷级候选引用、临时角色边界、relationship/scene participants 覆盖，并在 `merge_chapter_outline_previews` 拦截缺失角色执行的章节。 | `AGENT_TEST_FILTER='VCC chapter outline preview' pnpm --filter api test:agent` 通过 2/283 项；`AGENT_TEST_FILTER='VCC chapter outline preview rejects important' pnpm --filter api test:agent` 通过 1/284 项；`AGENT_TEST_FILTER='VCC outline preview rejects scene' pnpm --filter api test:agent` 通过 1/283 项；`AGENT_TEST_FILTER='VCC merge chapter' pnpm --filter api test:agent` 通过 1/283 项。 |
 | 2026-05-08 | VCC-P3-01..P3-03 | `validate_outline` 增加角色规划 stats 与错误拦截，复用角色契约检查缺失 `characterPlan`、缺失/非法 `characterExecution`、未知角色和 scene participants 未覆盖；`persist_outline` 在写入前要求有效校验结果并重新执行角色规划安全检查，只写 `Volume.narrativePlan` 与 `Chapter.craftBrief`，不创建 `Character`。 | `AGENT_TEST_FILTER='VCC validate_outline' pnpm --filter api test:agent` 通过 3/290 项；`AGENT_TEST_FILTER='VCC persist_outline' pnpm --filter api test:agent` 通过 3/290 项；`AGENT_TEST_FILTER='PersistOutlineTool 写入新建' pnpm --filter api test:agent` 通过 1/290 项；`AGENT_TEST_FILTER='PersistOutlineTool 拒绝旧 outline_preview' pnpm --filter api test:agent` 通过 1/290 项；`AGENT_TEST_FILTER='ValidateOutlineTool 生成写入前 diff' pnpm --filter api test:agent` 通过 1/290 项；`AGENT_TEST_FILTER='ValidateOutlineTool 容忍 LLM' pnpm --filter api test:agent` 通过 1/290 项。 |
 | 2026-05-08 | VCC-P3-04..P3-06 | 新增高风险审批 Tool `persist_volume_character_candidates`，审批后把卷级候选写入正式 `Character`，跳过手工/非 agent 角色，允许更新 `source='agent_outline'` 的候选；可选写入可解析两端的 `RelationshipEdge`，并在 description/manifest/output 中区分正式角色写入、卷/章节 JSON 规划和章节临时角色。 | `AGENT_TEST_FILTER='VCC persist_volume_character_candidates' pnpm --filter api test:agent` 通过 3/293 项；`AGENT_TEST_FILTER='AppModule compiles' pnpm --filter api test:agent` 通过 1/293 项。 |
+| 2026-05-08 | VCC-P4-01..P4-04 | `guided_volume`/`guided_chapter` prompt 与 schema 对齐角色规划契约；生成与写入前显式校验 `narrativePlan.characterPlan` 和 `craftBrief.characterExecution`；单章细化遇到卷号/章号错配直接失败；旧 `supportingCharacters` 仅保存在 guided session 兼容展示，不再自动创建正式 `Character`。 | `AGENT_TEST_FILTER='VCC guided_' pnpm --filter api test:agent` 通过 4/297 项。 |

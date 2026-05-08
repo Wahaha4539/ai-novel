@@ -11,8 +11,18 @@ import {
   GUIDED_SINGLE_CHAPTER_REFINEMENT_SCHEMA,
   getGuidedStepJsonSchema,
 } from './guided-step-schemas';
+import {
+  assertChapterCharacterExecution,
+  assertVolumeCharacterPlan,
+  VolumeCharacterPlan,
+} from '../agent-tools/tools/outline-character-contracts';
 
 const DEFAULT_FIRST_STEP = 'guided_setup';
+
+interface CharacterReferenceCatalogForGuided {
+  existingCharacterNames: string[];
+  existingCharacterAliases: Record<string, string[]>;
+}
 
 /**
  * Canonical template variables for prompt templates.
@@ -173,10 +183,12 @@ ${INTERACTION_STYLE}
 - 「## 卷末交接」必须分别写清：已解决、已升级、移交下一卷
 - narrativePlan 必须包含 globalMainlineStage、volumeMainline、dramaticQuestion、startState、endState、mainlineMilestones、subStoryLines、storyUnits、foreshadowPlan、endingHook、handoffToNextVolume，并与 synopsis 信息一致
 - narrativePlan 必须包含 storyUnits 数组；每个单元故事覆盖 3-5 章，写清 unitId、title、chapterRange、localGoal、localConflict、serviceFunctions、payoff、stateChangeAfterUnit
+- narrativePlan 必须包含 characterPlan；characterPlan.existingCharacterArcs 写既有角色本卷弧线，newCharacterCandidates 写本卷重要新增角色候选，relationshipArcs 写可解析角色之间的关系弧，roleCoverage 写主线/反派压力/情感配重/信息承载覆盖
+- newCharacterCandidates 可为空；若有候选，每个候选必须包含 candidateId、name、roleType、scope=volume、narrativeFunction、personalityCore、motivation、firstAppearChapter、expectedArc、approvalStatus=candidate；重要新增角色不得只出现在章节 supportingCharacters 中
 
 ${INTERACTION_STYLE}
 完成时输出的 JSON 格式：
-\`[STEP_COMPLETE]\`{"volumes":[{"volumeNo":1,"title":"卷名","synopsis":"Markdown结构：含全书主线阶段/本卷主线/本卷戏剧问题/卷内支线/单元故事/支线交叉点/卷末交接","objective":"本卷核心目标(具体可检验)","narrativePlan":{"globalMainlineStage":"全书主线阶段","volumeMainline":"本卷主线","dramaticQuestion":"本卷戏剧问题","startState":"开局状态","endState":"结尾状态","mainlineMilestones":["关键节点"],"subStoryLines":[{"name":"支线名","type":"mystery","function":"叙事作用","startState":"起点","progress":"推进方式","endState":"阶段结果","relatedCharacters":["角色名"],"chapterNodes":[1]}],"storyUnits":[{"unitId":"v1_unit_01","title":"单元故事名","chapterRange":{"start":1,"end":4},"localGoal":"单元局部目标","localConflict":"单元核心阻力","serviceFunctions":["mainline","relationship_shift","foreshadow"],"payoff":"单元阶段结局","stateChangeAfterUnit":"单元结束后的状态变化"}],"foreshadowPlan":["伏笔分配"],"endingHook":"卷末钩子","handoffToNextVolume":"卷末交接"}}]}`,
+\`[STEP_COMPLETE]\`{"volumes":[{"volumeNo":1,"title":"卷名","synopsis":"Markdown结构：含全书主线阶段/本卷主线/本卷戏剧问题/卷内支线/单元故事/支线交叉点/卷末交接","objective":"本卷核心目标(具体可检验)","narrativePlan":{"globalMainlineStage":"全书主线阶段","volumeMainline":"本卷主线","dramaticQuestion":"本卷戏剧问题","startState":"开局状态","endState":"结尾状态","mainlineMilestones":["关键节点"],"subStoryLines":[{"name":"支线名","type":"mystery","function":"叙事作用","startState":"起点","progress":"推进方式","endState":"阶段结果","relatedCharacters":["角色名"],"chapterNodes":[1]}],"storyUnits":[{"unitId":"v1_unit_01","title":"单元故事名","chapterRange":{"start":1,"end":4},"localGoal":"单元局部目标","localConflict":"单元核心阻力","serviceFunctions":["mainline","relationship_shift","foreshadow"],"payoff":"单元阶段结局","stateChangeAfterUnit":"单元结束后的状态变化"}],"characterPlan":{"existingCharacterArcs":[{"characterName":"既有角色名","roleInVolume":"本卷角色功能","entryState":"入卷状态","volumeGoal":"本卷目标","pressure":"压力","keyChoices":["关键选择"],"firstActiveChapter":1,"endState":"出卷状态"}],"newCharacterCandidates":[],"relationshipArcs":[],"roleCoverage":{"mainlineDrivers":["既有角色名"],"antagonistPressure":[],"emotionalCounterweights":[],"expositionCarriers":[]}},"foreshadowPlan":["伏笔分配"],"endingHook":"卷末钩子","handoffToNextVolume":"卷末交接"}}]}`,
 
   guided_chapter: `你是一个资深小说创作顾问。你正在引导用户完成「章节细纲」规划步骤。
 帮助用户为当前卷规划具体章节和本卷新登场的配角。可以给出章节节奏方案供选择。
@@ -191,6 +203,10 @@ ${INTERACTION_STYLE}
 - 每章必须输出 craftBrief 结构化对象，后端会写入 Chapter.craftBrief
 - craftBrief 必须包含 visibleGoal、hiddenEmotion、coreConflict、mainlineTask、subplotTasks、storyUnit、actionBeats、concreteClues、dialogueSubtext、characterShift、irreversibleConsequence、progressTypes
 - craftBrief 还必须包含 storyUnit、sceneBeats、entryState、exitState、openLoops、closedLoops、handoffToNextChapter、continuityState
+- craftBrief 必须包含 characterExecution：povCharacter、cast、relationshipBeats、newMinorCharacters；cast.source 只能是 existing、volume_candidate、minor_temporary
+- existing 必须来自既有角色；volume_candidate 必须来自上游卷纲 narrativePlan.characterPlan.newCharacterCandidates；minor_temporary 必须出现在 newMinorCharacters
+- sceneBeats.participants 和 relationshipBeats.participants 必须全部被 characterExecution.cast.characterName 覆盖
+- 旧 supportingCharacters 字段仅兼容展示，不会自动写入正式 Character；重要新增角色必须先进入卷级 characterPlan.newCharacterCandidates
 - storyUnit 必须包含 unitId、title、chapterRange、chapterRole、localGoal、localConflict、serviceFunctions、mainlineContribution、characterContribution、relationshipContribution、worldOrThemeContribution、unitPayoff、stateChangeAfterUnit；serviceFunctions 至少 3 项
 - sceneBeats 至少 3 个场景段；跨章节场景必须沿用同一个 sceneArcId，并用 scenePart、continuesFromChapterNo、continuesToChapterNo 标明这是第几段
 - entryState 必须接住上一章 exitState / handoffToNextChapter；handoffToNextChapter 必须给出下一章可直接接续的动作、地点、压力或未解决问题
@@ -216,7 +232,7 @@ ${INTERACTION_STYLE}
 
 ${INTERACTION_STYLE}
 完成时输出的 JSON 格式：
-\`[STEP_COMPLETE]\`{"chapters":[{"chapterNo":1,"volumeNo":1,"title":"章节标题","objective":"本章目标","conflict":"核心冲突","outline":"含主线任务/支线任务/单元故事/3-5个具体场景段/阶段结果/下一章交接的章节大纲","craftBrief":{"visibleGoal":"表层目标","hiddenEmotion":"隐藏情绪","coreConflict":"核心冲突","mainlineTask":"本章主线任务","subplotTasks":["支线任务"],"storyUnit":{"unitId":"v1_unit_01","title":"单元故事名","chapterRange":{"start":1,"end":4},"chapterRole":"开局/升级/反转/收束","localGoal":"单元局部目标","localConflict":"单元核心阻力","serviceFunctions":["mainline","relationship_shift","foreshadow"],"mainlineContribution":"本章如何推进主线","characterContribution":"本章如何塑造人物","relationshipContribution":"本章如何改变关系","worldOrThemeContribution":"本章如何展开世界或主题","unitPayoff":"单元阶段结局","stateChangeAfterUnit":"单元结束后的状态变化"},"actionBeats":["行动链节点"],"sceneBeats":[{"sceneArcId":"跨章场景ID","scenePart":"1/3","continuesFromChapterNo":null,"continuesToChapterNo":2,"location":"具体地点","participants":["角色名"],"localGoal":"本场局部目标","visibleAction":"可被镜头拍到的动作","obstacle":"阻力来源和方式","turningPoint":"反转或新信息","partResult":"场景段结果","sensoryAnchor":"感官锚点"}],"concreteClues":[{"name":"物证或线索","sensoryDetail":"感官细节","laterUse":"后续用途"}],"dialogueSubtext":"对话潜台词","characterShift":"人物变化","irreversibleConsequence":"不可逆后果","progressTypes":["info"],"entryState":"接住上一章压力","exitState":"本章结束状态","openLoops":["未解决问题"],"closedLoops":["阶段性解决问题"],"handoffToNextChapter":"下一章接续动作和压力","continuityState":{"characterPositions":["角色位置"],"activeThreats":["仍在生效的威胁"],"ownedClues":["已持有线索"],"relationshipChanges":["关系变化"],"nextImmediatePressure":"下一章最紧迫压力"}}}],"supportingCharacters":[{"name":"角色名","roleType":"supporting","personalityCore":"性格核心(含内在矛盾)","motivation":"具体动机","firstAppearChapter":1}]}`,
+\`[STEP_COMPLETE]\`{"chapters":[{"chapterNo":1,"volumeNo":1,"title":"章节标题","objective":"本章目标","conflict":"核心冲突","outline":"含主线任务/支线任务/单元故事/3-5个具体场景段/阶段结果/下一章交接的章节大纲","craftBrief":{"visibleGoal":"表层目标","hiddenEmotion":"隐藏情绪","coreConflict":"核心冲突","mainlineTask":"本章主线任务","subplotTasks":["支线任务"],"storyUnit":{"unitId":"v1_unit_01","title":"单元故事名","chapterRange":{"start":1,"end":4},"chapterRole":"开局/升级/反转/收束","localGoal":"单元局部目标","localConflict":"单元核心阻力","serviceFunctions":["mainline","relationship_shift","foreshadow"],"mainlineContribution":"本章如何推进主线","characterContribution":"本章如何塑造人物","relationshipContribution":"本章如何改变关系","worldOrThemeContribution":"本章如何展开世界或主题","unitPayoff":"单元阶段结局","stateChangeAfterUnit":"单元结束后的状态变化"},"actionBeats":["行动链节点"],"sceneBeats":[{"sceneArcId":"跨章场景ID","scenePart":"1/3","continuesFromChapterNo":null,"continuesToChapterNo":2,"location":"具体地点","participants":["角色名"],"localGoal":"本场局部目标","visibleAction":"可被镜头拍到的动作","obstacle":"阻力来源和方式","turningPoint":"反转或新信息","partResult":"场景段结果","sensoryAnchor":"感官锚点"}],"characterExecution":{"povCharacter":"既有角色名","cast":[{"characterName":"既有角色名","source":"existing","functionInChapter":"本章功能","visibleGoal":"可见目标","pressure":"压力","actionBeatRefs":[1],"sceneBeatRefs":["跨章场景ID"],"entryState":"入场状态","exitState":"离场状态"}],"relationshipBeats":[],"newMinorCharacters":[]},"concreteClues":[{"name":"物证或线索","sensoryDetail":"感官细节","laterUse":"后续用途"}],"dialogueSubtext":"对话潜台词","characterShift":"人物变化","irreversibleConsequence":"不可逆后果","progressTypes":["info"],"entryState":"接住上一章压力","exitState":"本章结束状态","openLoops":["未解决问题"],"closedLoops":["阶段性解决问题"],"handoffToNextChapter":"下一章接续动作和压力","continuityState":{"characterPositions":["角色位置"],"activeThreats":["仍在生效的威胁"],"ownedClues":["已持有线索"],"relationshipChanges":["关系变化"],"nextImmediatePressure":"下一章最紧迫压力"}}}],"supportingCharacters":[{"name":"仅旧项目展示兼容，不会自动写入正式角色","roleType":"supporting","personalityCore":"性格核心","motivation":"具体动机","firstAppearChapter":1}]}`,
 
   guided_foreshadow: `你是一个资深小说创作顾问，精通叙事悬念构建与伏笔编排。你正在引导用户完成「伏笔设计」规划步骤。
 
@@ -705,6 +721,14 @@ export class GuidedService {
     }
 
     const firstChapter = chapters[0] as Record<string, unknown>;
+    const returnedChapterNo = asNumber(firstChapter.chapterNo);
+    const returnedVolumeNo = asNumber(firstChapter.volumeNo);
+    if (returnedChapterNo !== chapterNo) {
+      throw new BadRequestException(`单章细化失败：模型返回的 chapterNo=${returnedChapterNo ?? '缺失'} 与请求的第 ${chapterNo} 章不一致。请重试并要求模型只返回目标章节。`);
+    }
+    if (returnedVolumeNo !== volumeNo) {
+      throw new BadRequestException(`单章细化失败：模型返回的 volumeNo=${returnedVolumeNo ?? '缺失'} 与请求的第 ${volumeNo} 卷不一致。请重试并要求模型只返回目标卷章节。`);
+    }
     this.assertGuidedChapterQuality(firstChapter, `第 ${chapterNo} 章`);
     const normalizedChapter: Record<string, unknown> = {
       ...firstChapter,
@@ -713,13 +737,6 @@ export class GuidedService {
       outline: asString(firstChapter.outline),
       craftBrief: asInputJsonObject(firstChapter.craftBrief),
     };
-
-    if (asNumber(firstChapter.chapterNo) !== undefined && asNumber(firstChapter.chapterNo) !== chapterNo) {
-      warnings.push(`模型返回的 chapterNo=${firstChapter.chapterNo} 与请求不一致，已改为 ${chapterNo}`);
-    }
-    if (asNumber(firstChapter.volumeNo) !== undefined && asNumber(firstChapter.volumeNo) !== volumeNo) {
-      warnings.push(`模型返回的 volumeNo=${firstChapter.volumeNo} 与请求不一致，已改为 ${volumeNo}`);
-    }
 
     return {
       structuredData: {
@@ -838,6 +855,130 @@ export class GuidedService {
     }
   }
 
+  private async assertGuidedVolumesCharacterPlans(projectId: string, volumes: Array<Record<string, unknown>>): Promise<void> {
+    if (!volumes.length) return;
+    const catalog = await this.loadGuidedCharacterCatalog(projectId);
+    volumes.forEach((volume, index) => {
+      this.assertGuidedVolumeCharacterPlan(volume, catalog, `第 ${asNumber(volume.volumeNo) ?? index + 1} 卷`);
+    });
+  }
+
+  private assertGuidedVolumeCharacterPlan(
+    volume: Record<string, unknown>,
+    catalog: CharacterReferenceCatalogForGuided,
+    label: string,
+  ): VolumeCharacterPlan {
+    const chapterCount = inferVolumeChapterCount(volume);
+    if (!chapterCount) {
+      throw new BadRequestException(`${label} 卷级角色规划校验失败：缺少有效 chapterCount 或 narrativePlan.storyUnits 章节范围，无法确认 firstAppearChapter 是否越界。请重新生成卷纲并给出连续章节范围。`);
+    }
+    const narrativePlan = asRecord(volume.narrativePlan);
+    try {
+      return assertVolumeCharacterPlan(narrativePlan?.characterPlan, {
+        chapterCount,
+        existingCharacterNames: catalog.existingCharacterNames,
+        existingCharacterAliases: catalog.existingCharacterAliases,
+        label: `${label}.narrativePlan.characterPlan`,
+      });
+    } catch (error) {
+      throw new BadRequestException(`${label} 卷级角色规划无效：${errorMessage(error)}。请重试卷纲生成，或补充角色上下文后再生成。`);
+    }
+  }
+
+  private async assertGuidedChaptersCharacterExecutions(projectId: string, chapters: Array<Record<string, unknown>>): Promise<void> {
+    if (!chapters.length) return;
+    const catalog = await this.loadGuidedCharacterCatalog(projectId);
+    const volumePlansByNo = await this.loadGuidedVolumeCharacterPlans(projectId, catalog);
+
+    chapters.forEach((chapter, index) => {
+      const label = `第 ${asNumber(chapter.chapterNo) ?? index + 1} 章`;
+      const volumeNo = asNumber(chapter.volumeNo);
+      if (!volumeNo) {
+        throw new BadRequestException(`${label} 章节角色执行校验失败：缺少 volumeNo，无法匹配卷级 characterPlan。请重新生成章节细纲。`);
+      }
+      const volumePlan = volumePlansByNo.get(volumeNo);
+      if (!volumePlan) {
+        throw new BadRequestException(`${label} 章节角色执行校验失败：第 ${volumeNo} 卷缺少有效 characterPlan，章节级重要角色必须先进入卷级候选。请先重新生成或保存卷纲角色规划。`);
+      }
+      const craftBrief = asRecord(chapter.craftBrief);
+      try {
+        assertChapterCharacterExecution(craftBrief?.characterExecution, {
+          existingCharacterNames: catalog.existingCharacterNames,
+          existingCharacterAliases: catalog.existingCharacterAliases,
+          volumeCandidateNames: volumePlan.newCharacterCandidates.map((candidate) => candidate.name),
+          sceneBeats: asRecordArray(craftBrief?.sceneBeats).map((beat) => ({
+            sceneArcId: asString(beat.sceneArcId),
+            participants: beat.participants,
+          })),
+          actionBeatCount: stringArray(craftBrief?.actionBeats).length,
+          label: `${label}.craftBrief.characterExecution`,
+        });
+      } catch (error) {
+        throw new BadRequestException(`${label} 章节角色执行无效：${errorMessage(error)}。请重试章节细纲生成，确保 cast、sceneBeats 和卷级候选一致。`);
+      }
+    });
+  }
+
+  private async loadGuidedVolumeCharacterPlans(
+    projectId: string,
+    catalog: CharacterReferenceCatalogForGuided,
+  ): Promise<Map<number, VolumeCharacterPlan>> {
+    const [session, persistedVolumes] = await Promise.all([
+      this.prisma.guidedSession.findUnique({ where: { projectId } }),
+      this.prisma.volume.findMany({
+        where: { projectId },
+        select: { volumeNo: true, chapterCount: true, narrativePlan: true },
+      }),
+    ]);
+    const plansByNo = new Map<number, VolumeCharacterPlan>();
+    const stepData = (session?.stepData as Record<string, unknown>) ?? {};
+    const guidedVolumeResult = asRecord(stepData.guided_volume_result);
+    const guidedVolumes = asRecordArray(guidedVolumeResult?.volumes);
+
+    for (const volume of persistedVolumes as Array<Record<string, unknown>>) {
+      const volumeNo = asNumber(volume.volumeNo);
+      if (!volumeNo) continue;
+      plansByNo.set(volumeNo, this.assertGuidedVolumeCharacterPlan(volume, catalog, `第 ${volumeNo} 卷`));
+    }
+    for (const volume of guidedVolumes) {
+      const volumeNo = asNumber(volume.volumeNo);
+      if (!volumeNo) continue;
+      plansByNo.set(volumeNo, this.assertGuidedVolumeCharacterPlan(volume, catalog, `第 ${volumeNo} 卷`));
+    }
+    return plansByNo;
+  }
+
+  private async loadGuidedCharacterCatalog(projectId: string): Promise<CharacterReferenceCatalogForGuided> {
+    const [characters, session] = await Promise.all([
+      this.prisma.character.findMany({
+        where: { projectId },
+        select: { name: true, alias: true },
+      }),
+      this.prisma.guidedSession.findUnique({ where: { projectId } }),
+    ]);
+    const existingCharacterNames: string[] = [];
+    const existingCharacterAliases: Record<string, string[]> = {};
+    const addName = (name: unknown) => {
+      const text = asString(name);
+      if (text && !existingCharacterNames.includes(text)) existingCharacterNames.push(text);
+      return text;
+    };
+
+    for (const character of characters as Array<{ name?: unknown; alias?: unknown }>) {
+      const name = addName(character.name);
+      if (!name) continue;
+      const aliases = stringArray(character.alias);
+      if (aliases.length) existingCharacterAliases[name] = aliases;
+    }
+
+    const stepData = (session?.stepData as Record<string, unknown>) ?? {};
+    const guidedCharactersResult = asRecord(stepData.guided_characters_result);
+    const guidedCharacters = asRecordArray(guidedCharactersResult?.characters);
+    guidedCharacters.forEach((character) => addName(character.name));
+
+    return { existingCharacterNames, existingCharacterAliases };
+  }
+
   /** One-shot generation: generate all structured data for a step without Q&A */
   async generateStepData(
     projectId: string,
@@ -916,7 +1057,10 @@ export class GuidedService {
 
 ### 结构化字段（必须写入 Volume.narrativePlan）
 每个 volume 除 synopsis Markdown 外，还必须输出 narrativePlan 对象，字段包含 globalMainlineStage、volumeMainline、dramaticQuestion、startState、endState、mainlineMilestones、subStoryLines、storyUnits、foreshadowPlan、endingHook、handoffToNextVolume。narrativePlan 与 synopsis 信息必须一致。
-storyUnits 每项必须包含 unitId、title、chapterRange、localGoal、localConflict、serviceFunctions、payoff、stateChangeAfterUnit；serviceFunctions 至少 3 项。`,
+storyUnits 每项必须包含 unitId、title、chapterRange、localGoal、localConflict、serviceFunctions、payoff、stateChangeAfterUnit；serviceFunctions 至少 3 项。
+每个 volume 的 narrativePlan 还必须包含 characterPlan：existingCharacterArcs、newCharacterCandidates、relationshipArcs、roleCoverage。
+重要新增角色只能进入 characterPlan.newCharacterCandidates；章节级 supportingCharacters 仅兼容旧展示，不作为正式角色来源。
+newCharacterCandidates 可为空；若有候选，每个候选必须包含 candidateId、name、roleType、scope=volume、narrativeFunction、personalityCore、motivation、firstAppearChapter、expectedArc、approvalStatus=candidate。`,
       guided_chapter: `请为指定卷规划 8-15 个章节，每章有明确的推进目标和核心冲突。
 同时为本卷设计 2-4 个新登场的配角（不要重复核心角色步骤中已有的角色）。
 
@@ -945,6 +1089,10 @@ storyUnits 每项必须包含 unitId、title、chapterRange、localGoal、localC
 - 每章 outline 必须写成 3-5 个连续场景段，包含具体地点、出场人物、可被镜头拍到的动作、阻力、阶段结果和下一章交接，不能只写一句剧情摘要
 - 章节不是场景边界，而是阅读节奏边界；一个大场景可以跨多个章节，但每章必须完成一个阶段动作，并把压力交接给下一章
 - craftBrief 必须额外包含 storyUnit、sceneBeats、entryState、exitState、openLoops、closedLoops、handoffToNextChapter、continuityState
+- craftBrief 必须额外包含 characterExecution：povCharacter、cast、relationshipBeats、newMinorCharacters
+- characterExecution.cast 的 source 只能是 existing、volume_candidate、minor_temporary；volume_candidate 必须来自上游卷纲 characterPlan.newCharacterCandidates；minor_temporary 必须出现在 newMinorCharacters
+- sceneBeats.participants 与 relationshipBeats.participants 必须都被 characterExecution.cast.characterName 覆盖
+- 章节级 supportingCharacters 仅兼容旧项目展示，不会自动写入正式 Character；重要新增角色必须先进入卷级 characterPlan.newCharacterCandidates
 - storyUnit 必须包含 unitId、title、chapterRange、chapterRole、localGoal、localConflict、serviceFunctions、mainlineContribution、characterContribution、relationshipContribution、worldOrThemeContribution、unitPayoff、stateChangeAfterUnit；serviceFunctions 至少 3 项
 - sceneBeats 至少 3 个场景段；跨章节场景必须沿用同一个 sceneArcId，并用 scenePart、continuesFromChapterNo、continuesToChapterNo 标明这是第几段
 - entryState 必须接住上一章 exitState / handoffToNextChapter；handoffToNextChapter 必须给出下一章可直接接续的动作、地点、压力或未解决问题
@@ -977,7 +1125,7 @@ storyUnits 每项必须包含 unitId、title、chapterRange、localGoal、localC
 ### 质量标准
 - outline 至少 50 字，要包含具体的场景、行为和结果
 - objective 要具体可检验（如「读者了解了 X 的真实身份」而非「推进剧情」）
-- 每个 chapter 必须输出 craftBrief 对象，包含 visibleGoal、hiddenEmotion、coreConflict、mainlineTask、subplotTasks、storyUnit、actionBeats、sceneBeats、concreteClues、dialogueSubtext、characterShift、irreversibleConsequence、progressTypes、entryState、exitState、openLoops、closedLoops、handoffToNextChapter、continuityState
+- 每个 chapter 必须输出 craftBrief 对象，包含 visibleGoal、hiddenEmotion、coreConflict、mainlineTask、subplotTasks、storyUnit、actionBeats、sceneBeats、characterExecution、concreteClues、dialogueSubtext、characterShift、irreversibleConsequence、progressTypes、entryState、exitState、openLoops、closedLoops、handoffToNextChapter、continuityState
 - 不生成正文，不写单章执行卡；这里生成的是整卷章节细纲`,
       guided_foreshadow: `请根据已完成的卷纲和章节细纲，设计一套完整的伏笔体系。
 伏笔数量公式：主线 2-3 条 + 每卷 1-2 条卷级伏笔 + 适量章节级伏笔。
@@ -1220,8 +1368,12 @@ ${singleChapterContext.chapterPositionContext}`;
       structuredData = normalized.structuredData;
       warnings.push(...normalized.warnings);
     }
+    if (dto.currentStep === 'guided_volume') {
+      await this.assertGuidedVolumesCharacterPlans(projectId, asRecordArray(structuredData.volumes));
+    }
     if (dto.currentStep === 'guided_chapter') {
       this.assertGuidedChaptersQuality(structuredData.chapters);
+      await this.assertGuidedChaptersCharacterExecutions(projectId, asRecordArray(structuredData.chapters));
     }
 
     // Extract the summary text (everything before the JSON)
@@ -1327,6 +1479,7 @@ ${singleChapterContext.chapterPositionContext}`;
         // Replace all existing volumes for this project (delete-then-create)
         const volumes = structuredData.volumes as Array<Record<string, unknown>> | undefined;
         if (volumes?.length) {
+          await this.assertGuidedVolumesCharacterPlans(projectId, volumes);
           // 先删除再批量写入，并放在同一事务里，避免中途失败留下空卷纲。
           await this.prisma.$transaction([
             this.prisma.volume.deleteMany({ where: { projectId } }),
@@ -1353,6 +1506,7 @@ ${singleChapterContext.chapterPositionContext}`;
         // so per-volume saves update existing rows in place to avoid renumbering chapters.
         const chapters = structuredData.chapters as Array<Record<string, unknown>> | undefined;
         if (chapters?.length) {
+          await this.assertGuidedChaptersCharacterExecutions(projectId, chapters);
           // Pre-fetch all volumes for this project to map volumeNo → volumeId
           const existingVolumes = await this.prisma.volume.findMany({
             where: { projectId },
@@ -1456,33 +1610,6 @@ ${singleChapterContext.chapterPositionContext}`;
             });
           }
           written.push(`Chapter × ${chapters.length}`);
-        }
-
-        // Create supporting characters generated alongside chapters.
-        // Per-volume: delete old volume-scoped characters first, then create new.
-        const chapterSupportChars = structuredData.supportingCharacters as Array<Record<string, unknown>> | undefined;
-        if (chapterSupportChars?.length) {
-          // Clean up old supporting chars for this volume to prevent duplicates
-          if (volumeNo) {
-            await this.prisma.character.deleteMany({
-              where: { projectId, source: 'guided_chapter', scope: `volume_${volumeNo}` },
-            });
-          }
-
-          await this.prisma.character.createMany({
-            data: chapterSupportChars.map((char) => ({
-                projectId,
-                name: asString(char.name) ?? '未命名配角',
-                roleType: asString(char.roleType) ?? 'supporting',
-                personalityCore: asString(char.personalityCore),
-                motivation: asString(char.motivation),
-                backstory: asString(char.backstory),
-                // Use volume-specific scope so we can manage per-volume
-                scope: volumeNo ? `volume_${volumeNo}` : 'chapter',
-                source: 'guided_chapter',
-            })),
-          });
-          written.push(`Character(supporting) × ${chapterSupportChars.length}`);
         }
         break;
       }
@@ -1639,6 +1766,24 @@ function asInputJsonObject(val: unknown): Prisma.InputJsonValue {
   const record = asRecord(val);
   if (!record) return {};
   return JSON.parse(JSON.stringify(record)) as Prisma.InputJsonValue;
+}
+
+function inferVolumeChapterCount(volume: Record<string, unknown>): number | undefined {
+  const explicit = asNumber(volume.chapterCount);
+  if (explicit && explicit > 0) return explicit;
+
+  const narrativePlan = asRecord(volume.narrativePlan);
+  const storyUnits = asRecordArray(narrativePlan?.storyUnits);
+  const maxEnd = storyUnits.reduce((max, unit) => {
+    const range = asRecord(unit.chapterRange);
+    const end = asNumber(range?.end);
+    return end && end > max ? end : max;
+  }, 0);
+  return maxEnd > 0 ? maxEnd : undefined;
+}
+
+function errorMessage(error: unknown): string {
+  return error instanceof Error ? error.message : String(error);
 }
 
 function normalizeVolumeNarrativePlan(volume: Record<string, unknown>): Prisma.InputJsonValue {

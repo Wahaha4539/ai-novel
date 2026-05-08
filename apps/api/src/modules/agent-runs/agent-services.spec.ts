@@ -3139,6 +3139,159 @@ test('AgentRuntime maps timeline persist artifact in act mode', () => {
   assert.deepEqual(artifacts.map((item) => item.content), [preview, validation, persist]);
 });
 
+function createVccGuidedChapter(overrides: Record<string, unknown> = {}) {
+  return createOutlineChapter(1, 1, {
+    outline: '主角在旧闸棚账房逐页核对账册墨痕，巡检员夺走账册并要求他离开；同伴在后门假装摔倒藏下半页证据，雨廊尽头的东闸即将关闭，迫使他带着证据立刻转移。',
+    ...overrides,
+  });
+}
+
+function createVccGuidedVolume(overrides: Record<string, unknown> = {}) {
+  return {
+    volumeNo: 1,
+    title: '旧闸棚账册',
+    synopsis: '## 全书主线阶段\n主角确认旧账册并非普通缺页，而是有人长期替换记录。\n## 本卷主线\n在东闸关闭前拿到账册证据。',
+    objective: '拿到账册被替换的可验证证据',
+    narrativePlan: createVccNarrativePlanForChapterCount(3),
+    ...overrides,
+  };
+}
+
+test('VCC guided_volume requires characterPlan', async () => {
+  let transactionCalled = false;
+  const prisma = {
+    character: { async findMany() { return []; } },
+    guidedSession: { async findUnique() { return { stepData: { guided_characters_result: { characters: [{ name: '林澈' }] } } }; } },
+    volume: {
+      deleteMany() {
+        transactionCalled = true;
+        return Promise.resolve({ count: 1 });
+      },
+      createMany() {
+        transactionCalled = true;
+        return Promise.resolve({ count: 1 });
+      },
+    },
+    async $transaction() {
+      transactionCalled = true;
+      return [];
+    },
+  };
+  const service = new GuidedService(prisma as never, {} as never, {} as never);
+  const badVolume = createVccGuidedVolume({
+    narrativePlan: { ...createVccNarrativePlanForChapterCount(3), characterPlan: undefined },
+  });
+
+  await assert.rejects(
+    () => service.finalizeStep('p1', 'guided_volume', { volumes: [badVolume] }),
+    /characterPlan|角色规划/,
+  );
+  assert.equal(transactionCalled, false);
+});
+
+test('VCC guided_chapter requires characterExecution', async () => {
+  let chapterWriteCalled = false;
+  const validVolume = createVccGuidedVolume();
+  const existingName = (validVolume.narrativePlan.characterPlan as ReturnType<typeof createVccCharacterPlan>).existingCharacterArcs[0].characterName;
+  const prisma = {
+    character: { async findMany() { return [{ name: existingName, alias: [] }]; } },
+    guidedSession: { async findUnique() { return { stepData: { guided_volume_result: { volumes: [validVolume] } } }; } },
+    volume: { async findMany() { return []; } },
+    chapter: {
+      async findMany() { chapterWriteCalled = true; return []; },
+      async aggregate() { chapterWriteCalled = true; return { _max: { chapterNo: 0 } }; },
+    },
+  };
+  const service = new GuidedService(prisma as never, {} as never, {} as never);
+  const craftBrief = { ...createOutlineCraftBrief(), characterExecution: undefined };
+
+  await assert.rejects(
+    () => service.finalizeStep('p1', 'guided_chapter', { chapters: [createVccGuidedChapter({ craftBrief })] }, 1),
+    /characterExecution|角色执行/,
+  );
+  assert.equal(chapterWriteCalled, false);
+});
+
+test('VCC guided_chapter rejects mismatched chapter number', async () => {
+  const llm = {
+    async chat() {
+      return '已生成。\n```json\n{"chapters":[{"chapterNo":4,"volumeNo":1,"title":"错章","objective":"目标","conflict":"冲突","outline":"短"}]}\n```';
+    },
+  };
+  const prisma = {
+    promptTemplate: { async findFirst() { return null; } },
+    guidedSession: { async findUnique() { return { stepData: {} }; } },
+    volume: {
+      async findFirst() { return { id: 'v1', volumeNo: 1, title: '卷一', objective: '目标', synopsis: '简介' }; },
+    },
+    chapter: {
+      async findFirst() { return { id: 'c3', volumeId: 'v1', chapterNo: 3, title: '第三章', objective: '旧目标', conflict: '旧冲突', outline: '旧细纲', craftBrief: {} }; },
+      async findMany() { return []; },
+    },
+    chapterPattern: { async findMany() { return []; } },
+    pacingBeat: { async findMany() { return []; } },
+    sceneCard: { async findMany() { return []; } },
+  };
+  const service = new GuidedService(prisma as never, llm as never, {} as never);
+
+  await assert.rejects(
+    () => service.generateStepData('p1', { currentStep: 'guided_chapter', volumeNo: 1, chapterNo: 3 }),
+    /chapterNo=4|第 3 章/,
+  );
+});
+
+test('VCC guided_chapter finalize does not create supporting Character', async () => {
+  const validVolume = createVccGuidedVolume();
+  const existingName = (validVolume.narrativePlan.characterPlan as ReturnType<typeof createVccCharacterPlan>).existingCharacterArcs[0].characterName;
+  const characterWrites: string[] = [];
+  let savedStepData: Record<string, unknown> | undefined;
+  const prisma = {
+    character: {
+      async findMany() { return [{ name: existingName, alias: [] }]; },
+      async deleteMany() { characterWrites.push('deleteMany'); return { count: 1 }; },
+      async createMany() { characterWrites.push('createMany'); return { count: 1 }; },
+    },
+    guidedSession: {
+      async findUnique() { return { stepData: { guided_volume_result: { volumes: [validVolume] } } }; },
+      async update(args: { data: { stepData: Record<string, unknown> } }) {
+        savedStepData = args.data.stepData;
+        return {};
+      },
+    },
+    volume: {
+      async findMany(args: { select?: Record<string, unknown> }) {
+        if (args.select?.id) return [{ id: 'v1', volumeNo: 1 }];
+        return [];
+      },
+    },
+    chapter: {
+      async findMany() { return []; },
+      async aggregate() { return { _max: { chapterNo: 0 } }; },
+      create(args: Record<string, unknown>) { return Promise.resolve({ id: 'c1', ...args }); },
+    },
+    async $transaction(operations: Array<Promise<unknown>>) {
+      return Promise.all(operations);
+    },
+  };
+  const cache = { async deleteProjectRecallResults() {} };
+  const service = new GuidedService(prisma as never, {} as never, cache as never);
+
+  const result = await service.finalizeStep(
+    'p1',
+    'guided_chapter',
+    {
+      chapters: [createVccGuidedChapter()],
+      supportingCharacters: [{ name: '旧展示配角', roleType: 'supporting', personalityCore: '谨慎', motivation: '守门' }],
+    },
+    1,
+  );
+
+  assert.deepEqual(result.written, ['Chapter × 1']);
+  assert.deepEqual(characterWrites, []);
+  const guidedChapterResult = savedStepData?.guided_chapter_result as Record<string, unknown> | undefined;
+  assert.deepEqual((guidedChapterResult?.volumeSupportingCharacters as Record<string, unknown>)?.[1], [{ name: '旧展示配角', roleType: 'supporting', personalityCore: '谨慎', motivation: '守门' }]);
+});
+
 test('GenerateGuidedStepPreviewTool 生成全部 guided 步骤预览且保持只读', async () => {
   const calls: Array<{ messages: Array<{ role: string; content: string }>; options: Record<string, unknown> }> = [];
   const progress: Array<Record<string, unknown>> = [];
