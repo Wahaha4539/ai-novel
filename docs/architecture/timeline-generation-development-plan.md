@@ -88,6 +88,27 @@
 - 已确认时间线事实：来自 `active` 事件，且章节范围早于当前章；进入 verified context。
 - 本章计划时间线：来自当前章 `planned` 事件；进入 planning context，只作为本章执行目标，不得当作已经发生的事实。
 
+### 3.4 TimelineEvent 字段与 metadata 约定
+
+`TimelineEvent` 表的显式字段和 `metadata` 需要分工清楚：
+
+- `eventStatus` 表示事实生命周期，只描述事件是否可作为事实约束参与召回。建议值为 `planned`、`active`、`changed`、`archived`。新增工具不得把未确认的计划事件写成 `active`。
+- `sourceType` 表示写入来源或维护通道，不等同于事实生命周期。建议值为 `manual`、`agent_continuity`、`agent_timeline_plan`、`agent_timeline_alignment`、`chapter_generation`、`imported_asset`。旧数据或人工扩展值可以保留，但新自动链路必须使用明确来源。
+- `metadata.sourceKind` 表示候选或写入意图，例如 `planned_timeline_event`、`chapter_timeline_alignment`、`planned_continuity_change`。它用于区分同一个 `sourceType` 下的不同生成场景。
+- `metadata.sourceTrace` 是生成、校验和写入链路的可追踪凭据。自动生成或 Agent 写入的时间线候选必须带有可信 `sourceTrace`，persist 时必须比对 preview、validate、writePreview 中的 `sourceTrace`，不一致直接报错。
+- `metadata.validation` 记录最近一次校验结果，包括 `status`、`issueCount`、`errors`、`warnings`、`validatedAt`。有 error 的候选不得写入；有 warning 的候选必须进入待审或按明确策略失败。
+
+`metadata.sourceTrace` 至少应尽量包含：
+
+- `projectId`：必须是当前项目，跨项目引用直接报错。
+- `toolName`、`agentRunId`、`planVersion`：来自 Agent 工具链时用于证明来源。
+- `candidateId`、`candidateAction`：用于防止 persist 阶段伪造或串换候选。
+- `chapterId` 或 `chapterNo`、`draftId`：用于定位来源章节或草稿。
+- `contextSources`：参与生成该候选的上下文来源，元素包含 `sourceType`、`sourceId`、`title`、`chapterId`、`chapterNo` 等。
+- `evidence`、`generatedAt`、`validatedAt`：用于面板展示与审计。
+
+不得在 persist 阶段临时拼装缺失的 `sourceTrace` 来掩盖 preview 或 validate 输出不完整；缺失、跨项目、不匹配或无法解释来源时，必须失败并让调用方重试或补充上下文。
+
 ## 4. 推荐工具链
 
 ### 4.1 新增 timeline-only 工具
@@ -145,12 +166,13 @@
 |---|---|---|---|---|
 | TL-P0-01 | done | 补充当前时间线行为说明，明确普通章节生成目前不写 `TimelineEvent` | `docs/architecture/*` | 文档说明当前行为和目标行为，避免误判 |
 | TL-P0-02 | done | 增加测试锁定现状：`extract_chapter_facts` 只写 `StoryEvent` 等事实表，不写 `TimelineEvent` | `apps/api/src/modules/agent-runs/agent-services.spec.ts` 或新测试 | 改造前测试通过；后续实现时按计划调整断言 |
-| TL-P0-03 | todo | 梳理 `TimelineEvent` 字段和 metadata 约定 | `packages/shared-types/src/index.ts`、文档 | 明确 sourceType、eventStatus、sourceTrace 语义 |
+| TL-P0-03 | done | 梳理 `TimelineEvent` 字段和 metadata 约定 | `packages/shared-types/src/index.ts`、文档 | 明确 sourceType、eventStatus、sourceTrace 语义 |
 
 完成记录：
 
 - TL-P0-01：补充当前普通章节生成边界，明确生成和润色后只调用事实抽取、校验、记忆重建与复核，当前不会写入 `TimelineEvent`；涉及文件：`docs/architecture/timeline-generation-development-plan.md`；验证命令：`git diff --check`。
 - TL-P0-02：在事实抽取成功用例中加入 `timelineEvent` 写方法探针，锁定 `extractChapterFacts` 当前只写事实层、记忆层和首登场候选，不写 `TimelineEvent`；涉及文件：`apps/api/src/modules/agent-runs/agent-services.spec.ts`、`docs/architecture/timeline-generation-development-plan.md`；验证命令：`pnpm --filter api test:agent`、`pnpm --filter api build`、`git diff --check`。
+- TL-P0-03：补充 `TimelineEventStatus`、`TimelineEventSourceType`、`TimelineEventMetadata`、`TimelineEventSourceTrace`、`TimelineEventValidationTrace` 共享类型，并在文档中明确 `eventStatus`、`sourceType`、`metadata.sourceTrace` 和 `metadata.validation` 的语义与失败边界；涉及文件：`packages/shared-types/src/index.ts`、`docs/architecture/timeline-generation-development-plan.md`；验证命令：`pnpm --filter api test:agent`、`pnpm --filter api build`、`pnpm --filter web build`、`git diff --check`。
 
 ### Phase 1：时间线候选契约与校验核心
 

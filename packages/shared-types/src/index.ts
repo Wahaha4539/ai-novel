@@ -189,6 +189,61 @@ export interface ListRelationshipEdgesQuery {
   q?: string;
 }
 
+export type TimelineEventStatus = 'planned' | 'active' | 'changed' | 'archived' | (string & {});
+
+export type TimelineEventSourceType =
+  | 'manual'
+  | 'agent_continuity'
+  | 'agent_timeline_plan'
+  | 'agent_timeline_alignment'
+  | 'chapter_generation'
+  | 'imported_asset'
+  | (string & {});
+
+export interface TimelineEventSourceRef {
+  sourceType: string;
+  sourceId?: string;
+  title?: string;
+  chapterId?: string;
+  chapterNo?: number;
+}
+
+export interface TimelineEventSourceTrace {
+  sourceKind: string;
+  projectId?: string;
+  agentRunId?: string;
+  planVersion?: number;
+  toolName?: string;
+  candidateId?: string;
+  candidateAction?: string;
+  chapterId?: string;
+  chapterNo?: number;
+  draftId?: string;
+  contextSources?: TimelineEventSourceRef[];
+  evidence?: string;
+  generatedAt?: string;
+  validatedAt?: string;
+}
+
+export interface TimelineEventValidationTrace {
+  status: 'pending' | 'passed' | 'warning' | 'failed' | (string & {});
+  issueCount?: number;
+  errors?: string[];
+  warnings?: string[];
+  validatedAt?: string;
+}
+
+export interface TimelineEventMetadata extends Record<string, unknown> {
+  sourceKind?: string;
+  sourceTrace?: TimelineEventSourceTrace;
+  validation?: TimelineEventValidationTrace;
+  candidateId?: string;
+  candidateAction?: string;
+  previousTimelineEventId?: string;
+  persistedBy?: string;
+  persistedAt?: string;
+}
+
 export interface TimelineEventDto {
   id: string;
   projectId: string;
@@ -204,9 +259,9 @@ export interface TimelineEventDto {
   isPublic: boolean;
   knownBy: string[];
   unknownBy: string[];
-  eventStatus: string;
-  sourceType: string;
-  metadata: Record<string, unknown>;
+  eventStatus: TimelineEventStatus;
+  sourceType: TimelineEventSourceType;
+  metadata: TimelineEventMetadata;
   createdAt: string;
   updatedAt: string;
 }
@@ -224,9 +279,9 @@ export interface CreateTimelineEventRequest {
   isPublic?: boolean;
   knownBy?: string[];
   unknownBy?: string[];
-  eventStatus?: string;
-  sourceType?: string;
-  metadata?: Record<string, unknown>;
+  eventStatus?: TimelineEventStatus;
+  sourceType?: TimelineEventSourceType;
+  metadata?: TimelineEventMetadata;
 }
 
 export type UpdateTimelineEventRequest = Partial<CreateTimelineEventRequest>;
