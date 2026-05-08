@@ -62,7 +62,7 @@ import { GenerateStoryBiblePreviewTool } from '../agent-tools/tools/generate-sto
 import { ValidateStoryBibleTool } from '../agent-tools/tools/validate-story-bible.tool';
 import { PersistStoryBibleTool } from '../agent-tools/tools/persist-story-bible.tool';
 import { GenerateContinuityPreviewTool, PersistContinuityChangesTool, ValidateContinuityChangesTool } from '../agent-tools/tools/continuity-changes.tool';
-import { assertNoTimelineDuplicateConflicts, normalizeTimelineCandidate, normalizeTimelineCandidates, validateTimelineCandidateChapterRefs } from '../agent-tools/tools/timeline-preview.support';
+import { assertNoTimelineDuplicateConflicts, normalizeTimelineCandidate, normalizeTimelineCandidates, normalizeTimelinePreviewFromLlmCall, validateTimelineCandidateChapterRefs } from '../agent-tools/tools/timeline-preview.support';
 import { GenerateChapterCraftBriefPreviewTool, PersistChapterCraftBriefTool, ValidateChapterCraftBriefTool } from '../agent-tools/tools/chapter-craft-brief-tools.tool';
 import { GenerateSceneCardsPreviewTool, ListSceneCardsTool, PersistSceneCardsTool, UpdateSceneCardTool, ValidateSceneCardsTool } from '../agent-tools/tools/scene-card-tools.tool';
 import { RelationshipGraphService } from '../agent-tools/relationship-graph.service';
@@ -6674,6 +6674,39 @@ test('timeline preview duplicate detection rejects same project same chapter tit
     () => assertNoTimelineDuplicateConflicts([base], [{ id: 'foreign-existing', projectId: 'p2', chapterNo: 7, title: base.title, eventTime: base.eventTime }], { expectedProjectId: 'p1' }),
     /cross-project event/,
   );
+});
+
+test('timeline preview LLM normalization fails fast on LLM errors incomplete JSON missing fields and low counts', async () => {
+  const options = {
+    expectedProjectId: 'p1',
+    expectedSourceKind: 'planned_timeline_event' as const,
+    expectedOriginTool: 'generate_timeline_preview' as const,
+    sourceKind: 'planned_timeline_event' as const,
+    minCandidates: 1,
+  };
+
+  await assert.rejects(
+    () => normalizeTimelinePreviewFromLlmCall(async () => { throw new Error('timeline LLM timeout'); }, options),
+    /timeline LLM timeout/,
+  );
+  await assert.rejects(
+    () => normalizeTimelinePreviewFromLlmCall(async () => ({ data: { assumptions: [], risks: [] } }), options),
+    /timelinePreview\.candidates must be an array/,
+  );
+  await assert.rejects(
+    () => normalizeTimelinePreviewFromLlmCall(async () => ({ data: { candidates: [makeTimelineCandidateRaw({ title: '' })], assumptions: [], risks: [] } }), options),
+    /timelineCandidates\[0\]\.title/,
+  );
+  await assert.rejects(
+    () => normalizeTimelinePreviewFromLlmCall(async () => ({ data: { candidates: [makeTimelineCandidateRaw()], assumptions: [], risks: [] } }), { ...options, minCandidates: 2 }),
+    /below required minimum 2/,
+  );
+
+  const valid = await normalizeTimelinePreviewFromLlmCall(async () => ({ data: { candidates: [makeTimelineCandidateRaw()], assumptions: [], risks: [] } }), options);
+  assert.equal(valid.writePlan.mode, 'preview_only');
+  assert.equal(valid.writePlan.requiresValidation, true);
+  assert.equal(valid.writePlan.requiresApprovalBeforePersist, true);
+  assert.equal(valid.candidates.length, 1);
 });
 
 test('RetrievalService 使用 querySpec hash 缓存召回并按开关和 Planner 查询隔离', async () => {

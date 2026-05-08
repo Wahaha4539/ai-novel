@@ -1,4 +1,5 @@
 import {
+  GenerateTimelinePreviewOutput,
   TimelineCandidate,
   TimelineCandidateAction,
   TimelineCandidateIssueSeverity,
@@ -39,6 +40,11 @@ export interface NormalizeTimelineCandidatesOptions extends NormalizeTimelineCan
   maxCandidates?: number;
 }
 
+export interface NormalizeTimelinePreviewOutputOptions extends NormalizeTimelineCandidatesOptions {
+  sourceKind: TimelineCandidateSourceKind;
+  allowedActions?: TimelineCandidateAction[];
+}
+
 export interface TimelineChapterRefRow {
   id: string;
   projectId: string;
@@ -72,6 +78,36 @@ export function normalizeTimelineCandidates(value: unknown, options: NormalizeTi
     throw new Error(`timelineCandidates count ${value.length} exceeds maximum ${options.maxCandidates}.`);
   }
   return value.map((item, index) => normalizeTimelineCandidate(item, { ...options, path: `timelineCandidates[${index}]` }));
+}
+
+export async function normalizeTimelinePreviewFromLlmCall(
+  callLlm: () => Promise<{ data: unknown }>,
+  options: NormalizeTimelinePreviewOutputOptions,
+): Promise<GenerateTimelinePreviewOutput> {
+  const { data } = await callLlm();
+  return normalizeTimelinePreviewOutput(data, options);
+}
+
+export function normalizeTimelinePreviewOutput(value: unknown, options: NormalizeTimelinePreviewOutputOptions): GenerateTimelinePreviewOutput {
+  const record = requireRecord(value, 'timelinePreview');
+  if (!Array.isArray(record.candidates)) {
+    throw new Error('timelinePreview.candidates must be an array.');
+  }
+  const candidates = normalizeTimelineCandidates(record.candidates, options);
+  return {
+    candidates,
+    assumptions: requireStringList(record, 'assumptions', 'timelinePreview'),
+    risks: requireStringList(record, 'risks', 'timelinePreview'),
+    writePlan: {
+      mode: 'preview_only',
+      target: 'TimelineEvent',
+      sourceKind: options.sourceKind,
+      candidateCount: candidates.length,
+      allowedActions: options.allowedActions ?? ['create_planned', 'confirm_planned', 'update_event', 'archive_event', 'create_discovered'],
+      requiresValidation: true,
+      requiresApprovalBeforePersist: true,
+    },
+  };
 }
 
 export function validateTimelineCandidateChapterRefs(
@@ -409,6 +445,19 @@ function requireBoolean(record: Record<string, unknown>, key: string, path: stri
     throw new Error(`${path}.${key} must be a boolean.`);
   }
   return value;
+}
+
+function requireStringList(record: Record<string, unknown>, key: string, path: string): string[] {
+  const value = record[key];
+  if (!Array.isArray(value)) {
+    throw new Error(`${path}.${key} must be a string array.`);
+  }
+  return value.map((item, index) => {
+    if (typeof item !== 'string') {
+      throw new Error(`${path}.${key}[${index}] must be a string.`);
+    }
+    return item.trim();
+  });
 }
 
 function requireStringArray(record: Record<string, unknown>, key: string, path: string): string[] {

@@ -177,6 +177,7 @@
 - TL-P1-02：新增 `timeline-preview.support.ts`，实现 timeline-only 候选 normalize，缺 `candidateId/title/eventTime/cause/result/impactScope/knownBy/sourceTrace` 等关键字段或候选数量不足会直接抛错，不补齐内容；涉及文件：`apps/api/src/modules/agent-tools/tools/timeline-preview.support.ts`、`apps/api/src/modules/agent-runs/agent-services.spec.ts`、`docs/architecture/timeline-generation-development-plan.md`；验证命令：`pnpm --filter api test:agent`、`pnpm --filter api build`、`git diff --check`。
 - TL-P1-03：在 timeline helper 中新增章节引用校验，要求候选 `chapterId/chapterNo` 能解析到当前项目同一章节，跨项目章节索引、缺失章节和 id/no 不匹配都会直接报错；涉及文件：`apps/api/src/modules/agent-tools/tools/timeline-preview.support.ts`、`apps/api/src/modules/agent-runs/agent-services.spec.ts`、`docs/architecture/timeline-generation-development-plan.md`；验证命令：`pnpm --filter api test:agent`、`pnpm --filter api build`、`git diff --check`。
 - TL-P1-04：新增重复时间线事件检测，拒绝同项目同章同标题同时间的候选互撞或撞上既有 `TimelineEvent`，并保留更新自身事件的合法场景；涉及文件：`apps/api/src/modules/agent-tools/tools/timeline-preview.support.ts`、`apps/api/src/modules/agent-runs/agent-services.spec.ts`、`docs/architecture/timeline-generation-development-plan.md`；验证命令：`pnpm --filter api test:agent`、`pnpm --filter api build`、`git diff --check`。
+- TL-P1-05：新增 LLM 时间线预览输出 normalize 入口，LLM 报错、缺失 `candidates`、关键字段缺失或候选数量不足都会直接抛错，成功输出保持 `preview_only` 且要求校验和写入前审批；涉及文件：`apps/api/src/modules/agent-tools/tools/timeline-preview.support.ts`、`apps/api/src/modules/agent-runs/agent-services.spec.ts`、`docs/architecture/timeline-generation-development-plan.md`；验证命令：`pnpm --filter api test:agent`、`pnpm --filter api build`、`git diff --check`。
 
 ### Phase 1：时间线候选契约与校验核心
 
@@ -186,7 +187,7 @@
 | TL-P1-02 | done | 实现通用时间线候选 normalize，但不得补齐关键内容 | 新增 `timeline-preview.support.ts` 或同类 helper | 缺 title/cause/result/impactScope/knownBy 等直接报错 |
 | TL-P1-03 | done | 实现章节引用校验 | `timeline-events.service.ts` 或工具 helper | `chapterId/chapterNo` 必须属于当前项目且互相匹配 |
 | TL-P1-04 | done | 实现重复事件和冲突检测 | 新增工具测试 | 同项目同章同标题同时间重复会拒绝 |
-| TL-P1-05 | todo | 测试 LLM 失败、JSON 不完整、字段缺失、数量不足直接抛错 | `agent-services.spec.ts` | 不产生可审批候选，不写库 |
+| TL-P1-05 | done | 测试 LLM 失败、JSON 不完整、字段缺失、数量不足直接抛错 | `agent-services.spec.ts` | 不产生可审批候选，不写库 |
 
 ### Phase 2：大纲与细纲阶段生成计划时间线
 
