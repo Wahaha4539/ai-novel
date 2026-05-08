@@ -144,12 +144,13 @@
 | ID | 状态 | 任务 | 主要文件 | 验收标准 |
 |---|---|---|---|---|
 | TL-P0-01 | done | 补充当前时间线行为说明，明确普通章节生成目前不写 `TimelineEvent` | `docs/architecture/*` | 文档说明当前行为和目标行为，避免误判 |
-| TL-P0-02 | todo | 增加测试锁定现状：`extract_chapter_facts` 只写 `StoryEvent` 等事实表，不写 `TimelineEvent` | `apps/api/src/modules/agent-runs/agent-services.spec.ts` 或新测试 | 改造前测试通过；后续实现时按计划调整断言 |
+| TL-P0-02 | done | 增加测试锁定现状：`extract_chapter_facts` 只写 `StoryEvent` 等事实表，不写 `TimelineEvent` | `apps/api/src/modules/agent-runs/agent-services.spec.ts` 或新测试 | 改造前测试通过；后续实现时按计划调整断言 |
 | TL-P0-03 | todo | 梳理 `TimelineEvent` 字段和 metadata 约定 | `packages/shared-types/src/index.ts`、文档 | 明确 sourceType、eventStatus、sourceTrace 语义 |
 
 完成记录：
 
 - TL-P0-01：补充当前普通章节生成边界，明确生成和润色后只调用事实抽取、校验、记忆重建与复核，当前不会写入 `TimelineEvent`；涉及文件：`docs/architecture/timeline-generation-development-plan.md`；验证命令：`git diff --check`。
+- TL-P0-02：在事实抽取成功用例中加入 `timelineEvent` 写方法探针，锁定 `extractChapterFacts` 当前只写事实层、记忆层和首登场候选，不写 `TimelineEvent`；涉及文件：`apps/api/src/modules/agent-runs/agent-services.spec.ts`、`docs/architecture/timeline-generation-development-plan.md`；验证命令：`pnpm --filter api test:agent`、`pnpm --filter api build`、`git diff --check`。
 
 ### Phase 1：时间线候选契约与校验核心
 
