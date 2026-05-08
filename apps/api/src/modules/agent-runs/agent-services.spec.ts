@@ -7164,6 +7164,7 @@ function makeAlignmentTimelinePrisma(reads: string[], writes: string[], options:
         return [{ id: 'chapter-7', projectId: 'p1', chapterNo: 7, title: 'Chapter 7' }];
       },
       create: writeGuard('chapter.create'),
+      createMany: writeGuard('chapter.createMany'),
       update: writeGuard('chapter.update'),
       delete: writeGuard('chapter.delete'),
       upsert: writeGuard('chapter.upsert'),
@@ -7176,6 +7177,7 @@ function makeAlignmentTimelinePrisma(reads: string[], writes: string[], options:
         return storyEvents;
       },
       create: writeGuard('storyEvent.create'),
+      createMany: writeGuard('storyEvent.createMany'),
       update: writeGuard('storyEvent.update'),
       delete: writeGuard('storyEvent.delete'),
       upsert: writeGuard('storyEvent.upsert'),
@@ -7188,6 +7190,7 @@ function makeAlignmentTimelinePrisma(reads: string[], writes: string[], options:
         return timelineEvents;
       },
       create: writeGuard('timelineEvent.create'),
+      createMany: writeGuard('timelineEvent.createMany'),
       update: writeGuard('timelineEvent.update'),
       delete: writeGuard('timelineEvent.delete'),
       upsert: writeGuard('timelineEvent.upsert'),
@@ -7362,6 +7365,7 @@ test('generate_timeline_preview tool returns planned read-only candidates and re
         return [{ id: 'chapter-7', projectId: 'p1', chapterNo: 7 }];
       },
       create: writeGuard('chapter.create'),
+      createMany: writeGuard('chapter.createMany'),
       update: writeGuard('chapter.update'),
       delete: writeGuard('chapter.delete'),
       upsert: writeGuard('chapter.upsert'),
@@ -7374,6 +7378,7 @@ test('generate_timeline_preview tool returns planned read-only candidates and re
         return [];
       },
       create: writeGuard('timelineEvent.create'),
+      createMany: writeGuard('timelineEvent.createMany'),
       update: writeGuard('timelineEvent.update'),
       delete: writeGuard('timelineEvent.delete'),
       upsert: writeGuard('timelineEvent.upsert'),
@@ -7688,6 +7693,7 @@ test('validate_timeline_preview returns accepted rejected writePreview and stays
         ];
       },
       create: writeGuard('chapter.create'),
+      createMany: writeGuard('chapter.createMany'),
       update: writeGuard('chapter.update'),
       delete: writeGuard('chapter.delete'),
       upsert: writeGuard('chapter.upsert'),
@@ -7700,6 +7706,7 @@ test('validate_timeline_preview returns accepted rejected writePreview and stays
         return [];
       },
       create: writeGuard('timelineEvent.create'),
+      createMany: writeGuard('timelineEvent.createMany'),
       update: writeGuard('timelineEvent.update'),
       delete: writeGuard('timelineEvent.delete'),
       upsert: writeGuard('timelineEvent.upsert'),

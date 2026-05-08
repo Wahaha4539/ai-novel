@@ -200,6 +200,7 @@
 - TL-P5-03：更新 `GenerationConfigPanel` 中 `autoUpdateTimeline` 的说明，明确开启后会运行章节后时间线 preview/validate，默认不写库，只有 `metadata.timelineAutoWritePolicy=validated_auto_write` 且校验零 issue 时才允许自动写入；涉及文件：`apps/web/components/GenerationConfigPanel.tsx`、`docs/architecture/timeline-generation-development-plan.md`；验证命令：`pnpm --filter web build`、`git diff --check`。
 - TL-P5-04：Agent Artifact 为 timeline-only preview/validate/persist 补充来源 tool 展示，并在 continuity mixed 校验中保留原关系/时间线 summary 的同时复用 `TimelineUpdatePreview` 展示时间线写入前 diff；涉及文件：`apps/web/components/agent/AgentArtifactPanel.tsx`、`docs/architecture/timeline-generation-development-plan.md`；验证命令：`pnpm --filter web build`、`git diff --check`。
 - TL-P5-05：按根目录 Docker Compose 执行真实浏览器验证，重建服务后用 Browser Use 打开 `http://localhost:3002`，确认时间线页面可见 planned/active/changed/archived 状态计数与状态下拉，浏览器 error/warning 日志为空；涉及文件：`docs/architecture/timeline-generation-development-plan.md`；验证命令：`docker compose ps`、`docker compose down`、`docker compose up -d --build`、Browser Use DOM/console 检查、`git diff --check`。
+- TL-P6-01：补强 timeline preview/validate 只读单元测试的 Prisma 写方法探针，覆盖 `createMany` 与既有 create/update/delete/upsert/updateMany/deleteMany 守卫，确保 generate/align/validate 时间线预览链路不写业务表；涉及文件：`apps/api/src/modules/agent-runs/agent-services.spec.ts`、`docs/architecture/timeline-generation-development-plan.md`；验证命令：`pnpm --filter api test:agent`、`pnpm --filter api build`、`git diff --check`。
 
 ### Phase 1：时间线候选契约与校验核心
 
@@ -257,7 +258,7 @@
 
 | ID | 状态 | 任务 | 主要文件 | 验收标准 |
 |---|---|---|---|---|
-| TL-P6-01 | todo | 单元测试：preview/validate 只读 | `agent-services.spec.ts` | spy 断言只读工具不调用 create/update/delete |
+| TL-P6-01 | done | 单元测试：preview/validate 只读 | `agent-services.spec.ts` | spy 断言只读工具不调用 create/update/delete |
 | TL-P6-02 | todo | 单元测试：persist 审批边界 | `agent-services.spec.ts` | plan 模式、未审批、伪造前序输出全部拒绝 |
 | TL-P6-03 | todo | 单元测试：章节后自动更新 | `agent-services.spec.ts` | `autoUpdateTimeline` true/false 行为明确 |
 | TL-P6-04 | todo | Agent Eval 增加计划时间线和章节确认用例 | `agent-eval-cases.json`、eval scripts | Planner 使用 timeline-only preview/validate/persist |
