@@ -1,5 +1,6 @@
-import { BadRequestException, Injectable } from '@nestjs/common';
+import { BadRequestException, Injectable, Optional } from '@nestjs/common';
 import { Prisma } from '@prisma/client';
+import { NovelCacheService } from '../../../common/cache/novel-cache.service';
 import { PrismaService } from '../../../prisma/prisma.service';
 import { BaseTool, ToolContext } from '../base-tool';
 import type { ToolManifestV2 } from '../tool-manifest.types';
@@ -111,7 +112,10 @@ export class PersistTimelineEventsTool implements BaseTool<PersistTimelineEvents
     },
   };
 
-  constructor(private readonly prisma: PrismaService) {}
+  constructor(
+    private readonly prisma: PrismaService,
+    @Optional() private readonly cacheService?: NovelCacheService,
+  ) {}
 
   async run(args: PersistTimelineEventsInput, context: ToolContext): Promise<PersistTimelineEventsOutput> {
     this.assertExecutableInput(args, context);
@@ -141,7 +145,7 @@ export class PersistTimelineEventsTool implements BaseTool<PersistTimelineEvents
     }
 
     const persistedAt = new Date().toISOString();
-    return this.prisma.$transaction(async (tx) => {
+    const result = await this.prisma.$transaction(async (tx) => {
       const decisions = await this.buildPersistDecisions(tx, selected, context.projectId);
       const events: PersistTimelineEventsOutput['events'] = [];
       let createdCount = 0;
@@ -183,6 +187,10 @@ export class PersistTimelineEventsTool implements BaseTool<PersistTimelineEvents
         events,
       };
     });
+    if (result.createdCount + result.confirmedCount + result.updatedCount + result.archivedCount > 0) {
+      await this.cacheService?.deleteProjectRecallResults(context.projectId);
+    }
+    return result;
   }
 
   private assertExecutableInput(args: PersistTimelineEventsInput, context: ToolContext): void {

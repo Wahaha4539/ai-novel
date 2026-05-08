@@ -7813,7 +7813,9 @@ test('persist_timeline_events requires approved act validation and writes only c
     policy: {},
   } as never);
   assert.equal(validation.valid, true);
-  const persistTool = new PersistTimelineEventsTool(prisma as never);
+  const invalidatedProjectIds: string[] = [];
+  const cache = { async deleteProjectRecallResults(projectId: string) { invalidatedProjectIds.push(projectId); } };
+  const persistTool = new PersistTimelineEventsTool(prisma as never, cache as never);
   const actContext = {
     agentRunId: 'run-timeline',
     projectId: 'p1',
@@ -7845,6 +7847,7 @@ test('persist_timeline_events requires approved act validation and writes only c
   );
   assert.equal(autoPolicyDryRun.createdCount, 0);
   assert.equal(createdData.length, 0);
+  assert.deepEqual(invalidatedProjectIds, []);
 
   const result = await persistTool.run({ preview, validation }, actContext as never);
 
@@ -7855,6 +7858,7 @@ test('persist_timeline_events requires approved act validation and writes only c
   assert.equal(result.skippedUnselectedCount, 0);
   assert.deepEqual(result.events, [{ candidateId: 'tlc_plan_7', action: 'create_planned', timelineEventId: 'timeline-created', eventStatus: 'planned' }]);
   assert.equal(createdData.length, 1);
+  assert.deepEqual(invalidatedProjectIds, ['p1']);
   assert.deepEqual(createdData[0].project, { connect: { id: 'p1' } });
   assert.deepEqual(createdData[0].chapter, { connect: { id: 'chapter-7' } });
   assert.equal(createdData[0].sourceType, 'agent_timeline_plan');
@@ -7871,6 +7875,7 @@ test('persist_timeline_events requires approved act validation and writes only c
     /sourceTrace does not match validation\.accepted/,
   );
   assert.equal(createdData.length, 1);
+  assert.deepEqual(invalidatedProjectIds, ['p1']);
 });
 
 test('RetrievalService 使用 querySpec hash 缓存召回并按开关和 Planner 查询隔离', async () => {

@@ -194,6 +194,7 @@
 - TL-P4-03：为 `FactExtractorService` 写入的 `StoryEvent.metadata` 增加 `draftId` 与 `sourceTrace`，保留 `generatedBy` 和章节摘要，便于章节后时间线对齐追溯正文证据来源；涉及文件：`apps/api/src/modules/facts/fact-extractor.service.ts`、`apps/api/src/modules/agent-runs/agent-services.spec.ts`、`docs/architecture/timeline-generation-development-plan.md`；验证命令：`pnpm --filter api test:agent`、`pnpm --filter api build`、`git diff --check`。
 - TL-P4-04：在普通章节生成与润色后的事实抽取之后按 `GenerationProfile.autoUpdateTimeline` 接入只读时间线对齐预览与校验，关闭时明确跳过，开启时运行 preview/validate 且校验失败会让生成任务失败；涉及文件：`apps/api/src/modules/generation/generation.service.ts`、`apps/api/src/modules/generation/generate-chapter.service.ts`、`apps/api/src/modules/generation/generation.module.ts`、`apps/api/src/modules/agent-runs/agent-services.spec.ts`、`docs/architecture/timeline-generation-development-plan.md`；验证命令：`pnpm --filter api test:agent`、`pnpm --filter api build`、`git diff --check`。
 - TL-P4-05：明确普通章节生成后的时间线自动写入策略，默认 `autoUpdateTimeline` 只运行 preview/validate；仅当 `GenerationProfile.metadata.timelineAutoWritePolicy="validated_auto_write"` 且校验零 issue 时才通过受策略保护的 `persist_timeline_events` 写入，有 error 或 warning 均失败；涉及文件：`apps/api/src/modules/generation/generation.service.ts`、`apps/api/src/modules/generation/generation.module.ts`、`apps/api/src/modules/agent-tools/tools/persist-timeline-events.tool.ts`、`apps/api/src/modules/agent-runs/agent-services.spec.ts`、`docs/architecture/timeline-generation-development-plan.md`；验证命令：`pnpm --filter api test:agent`、`pnpm --filter api build`、`git diff --check`。
+- TL-P4-06：`persist_timeline_events` 在真实写入 `TimelineEvent` 后清理项目召回缓存，dryRun 与失败路径不会清理；涉及文件：`apps/api/src/modules/agent-tools/tools/persist-timeline-events.tool.ts`、`apps/api/src/modules/agent-runs/agent-services.spec.ts`、`docs/architecture/timeline-generation-development-plan.md`；验证命令：`pnpm --filter api test:agent`、`pnpm --filter api build`、`git diff --check`。
 
 ### Phase 1：时间线候选契约与校验核心
 
@@ -235,7 +236,7 @@
 | TL-P4-03 | done | `FactExtractorService` 输出足够 sourceTrace | `fact-extractor.service.ts` | `StoryEvent` metadata 能追踪 draftId、generatedBy、summary |
 | TL-P4-04 | done | 普通章节生成后接入对齐预览 | `generation.service.ts`、`generate-chapter.service.ts` | `autoUpdateTimeline=false` 时不运行；true 时运行预览与校验 |
 | TL-P4-05 | done | 明确普通生成的写入策略 | `GenerationProfile` 相关代码 | 第一版建议：校验全通过才可自动写；有 error 直接报错；有 warning 进入待审或失败 |
-| TL-P4-06 | todo | 写入后清理召回缓存 | persist 工具、service | 成功写 `TimelineEvent` 后调用 `NovelCacheService.deleteProjectRecallResults(projectId)` |
+| TL-P4-06 | done | 写入后清理召回缓存 | persist 工具、service | 成功写 `TimelineEvent` 后调用 `NovelCacheService.deleteProjectRecallResults(projectId)` |
 
 ### Phase 5：前端时间线更新体验
 
