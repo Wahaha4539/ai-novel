@@ -12948,7 +12948,7 @@ test('generate_volume_outline_preview 生成卷大纲故事单元且不生成章
   };
   const tool = new GenerateVolumeOutlinePreviewTool(llm as never);
   const result = await tool.run(
-    { context: { project: { title: '逆潮脊梁', tone: '史诗厚重' } }, instruction: '重写第一卷卷大纲，目标 6 章', volumeNo: 1, chapterCount: 6 },
+    { context: { project: { title: '逆潮脊梁', tone: '史诗厚重' }, characters: [{ name: '林澈' }, { name: '沈栖' }] }, instruction: '重写第一卷卷大纲，目标 6 章', volumeNo: 1, chapterCount: 6 },
     { agentRunId: 'run1', projectId: 'p1', mode: 'plan', approved: false, outputs: {}, policy: {} },
   );
 
