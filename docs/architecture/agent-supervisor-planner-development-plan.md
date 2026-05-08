@@ -70,7 +70,7 @@
 
 ### ASP-P1-001 增加 LangGraph TS 依赖
 
-- 状态：`[ ]`
+- 状态：`[x]`
 - 模块：API
 - 文件：
   - `apps/api/package.json`
@@ -82,6 +82,11 @@
   - 没有引入 Python LangGraph 或独立 worker。
 - 验证：
   - `pnpm --filter api build`
+- 完成记录（2026-05-09）：
+  - 使用 pnpm 为 API 包新增 `@langchain/langgraph` 与 `@langchain/core` 依赖，锁定到当前解析版本 `@langchain/langgraph@1.3.0`、`@langchain/core@1.1.45`。
+  - 未引入 Python LangGraph、独立 worker 或执行链路替换。
+  - 修改文件：`apps/api/package.json`、`pnpm-lock.yaml`、`docs/architecture/agent-supervisor-planner-development-plan.md`。
+  - 测试：`pnpm --filter api build`，通过。
 
 ### ASP-P1-002 新增 planner graph 目录和状态类型
 
