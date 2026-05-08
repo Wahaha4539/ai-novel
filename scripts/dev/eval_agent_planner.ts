@@ -115,6 +115,20 @@ type EvalMetricKey =
 
 type EvalMetric = { passed: number; total: number; rate: number };
 
+type PromptSizeGateResult = {
+  id: string;
+  caseId: string;
+  bundleName: string;
+  selectedToolCount: number;
+  allToolCount: number;
+  selectedToolsChars: number;
+  allToolsChars: number;
+  selectedToAllRatio: number;
+  maxSelectedToAllRatio: number;
+  passed: boolean;
+  failure?: string;
+};
+
 type CaseEvaluation = {
   id: string;
   passed: boolean;
@@ -134,6 +148,7 @@ type EvalReport = {
   metrics: Record<EvalMetricKey, EvalMetric>;
   failures: Array<{ id: string; failures: string[] }>;
   comparedReports?: EvalReport[];
+  promptSizeGates?: PromptSizeGateResult[];
 };
 
 type PromptBaselineReport = {
@@ -163,6 +178,10 @@ const retrievalEval = process.argv.includes('--retrieval-eval');
 const experimentalLlmEvidenceReport = process.argv.includes('--experimental-llm-evidence-report');
 const promptBaseline = process.argv.includes('--prompt-baseline');
 const promptBaselineCaseId = readArg('--case-id');
+
+const PROMPT_SIZE_GATES = [
+  { id: 'outline.volume.selected-tools', caseId: 'outline_volume_cn_024', expectedBundle: 'outline.volume', maxSelectedToAllRatio: 0.35 },
+];
 
 /**
  * Agent Planner 评测入口。
@@ -245,14 +264,16 @@ async function main() {
     const legacyResults = evaluateLivePlanResults(await runLivePlannerEval({ plannerMode: 'legacy' }), 'Planner 调用失败');
     const legacyReport = buildReport(legacyResults, 'live-planner-legacy', 'live_planner_mock_llm', 'legacy');
     const graphResults = evaluateLivePlanResults(await runLivePlannerEval({ plannerMode: 'graph' }), 'Graph Planner 调用失败');
-    const graphReport = buildReport(graphResults, 'live-planner-graph', 'live_planner_mock_llm', 'graph', [legacyReport]);
+    const promptSizeGates = evaluatePromptSizeGates();
+    const graphReport = buildReport(graphResults, 'live-planner-graph', 'live_planner_mock_llm', 'graph', [legacyReport], promptSizeGates);
     printCaseResults('legacy planner', legacyResults);
     printMetricSummary(legacyReport);
     printCaseResults('graph planner', graphResults);
     printMetricSummary(graphReport);
+    printPromptSizeGates(promptSizeGates);
     if (reportPath) writeJson(reportPath, graphReport);
     if (historyPath) appendHistory(historyPath, graphReport, failOnRegression);
-    if (legacyReport.passedCases !== legacyResults.length || graphReport.passedCases !== graphResults.length) process.exitCode = 1;
+    if (legacyReport.passedCases !== legacyResults.length || graphReport.passedCases !== graphResults.length || promptSizeGates.some((gate) => !gate.passed)) process.exitCode = 1;
     return;
   }
 
@@ -610,6 +631,7 @@ function buildReport(
   sourceMode: EvalReport['sourceMode'],
   plannerMode?: PlannerEvalMode,
   comparedReports?: EvalReport[],
+  promptSizeGates?: PromptSizeGateResult[],
 ): EvalReport {
   const metrics = Object.fromEntries(metricKeys().map((key) => {
     return [key, buildMetric(key, results)];
@@ -625,6 +647,7 @@ function buildReport(
     metrics,
     failures: results.filter((item) => item.failures.length).map((item) => ({ id: item.id, failures: item.failures })),
     ...(comparedReports?.length ? { comparedReports } : {}),
+    ...(promptSizeGates?.length ? { promptSizeGates } : {}),
   };
 }
 
@@ -765,6 +788,56 @@ function withGraphEvalDiagnostics(
       },
     },
   };
+}
+
+function evaluatePromptSizeGates(): PromptSizeGateResult[] {
+  const toolRegistry = new EvalToolRegistry();
+  const supervisor = new RootSupervisor();
+  const bundleRegistry = new ToolBundleRegistry(toolRegistry as unknown as ToolRegistryService);
+  const allTools = toolRegistry.listManifestsForPlanner();
+  const allToolsChars = JSON.stringify(allTools).length;
+
+  return PROMPT_SIZE_GATES.map((gate) => {
+    const item = cases.find((candidate) => candidate.id === gate.caseId);
+    if (!item) {
+      return {
+        id: gate.id,
+        caseId: gate.caseId,
+        bundleName: gate.expectedBundle,
+        selectedToolCount: 0,
+        allToolCount: allTools.length,
+        selectedToolsChars: 0,
+        allToolsChars,
+        selectedToAllRatio: 1,
+        maxSelectedToAllRatio: gate.maxSelectedToAllRatio,
+        passed: false,
+        failure: `Prompt size gate case not found: ${gate.caseId}`,
+      };
+    }
+    const context = buildEvalContext(item, toolRegistry);
+    const route = supervisor.classify({ goal: item.message, context });
+    const selectedBundle = context.session.guided?.currentStep
+      ? bundleRegistry.resolveBundle('guided.step')
+      : bundleRegistry.resolveForRoute(route);
+    const selectedTools = bundleRegistry.listManifestsForBundle(selectedBundle);
+    const selectedToolsChars = JSON.stringify(selectedTools).length;
+    const ratio = allToolsChars ? selectedToolsChars / allToolsChars : 1;
+    const wrongBundle = selectedBundle.bundleName !== gate.expectedBundle;
+    const tooLarge = ratio > gate.maxSelectedToAllRatio;
+    return {
+      id: gate.id,
+      caseId: gate.caseId,
+      bundleName: selectedBundle.bundleName,
+      selectedToolCount: selectedTools.length,
+      allToolCount: allTools.length,
+      selectedToolsChars,
+      allToolsChars,
+      selectedToAllRatio: roundRate(ratio),
+      maxSelectedToAllRatio: gate.maxSelectedToAllRatio,
+      passed: !wrongBundle && !tooLarge,
+      ...(wrongBundle ? { failure: `expected bundle ${gate.expectedBundle}, got ${selectedBundle.bundleName}` } : tooLarge ? { failure: `selected tools ratio ${roundRate(ratio)} exceeds ${gate.maxSelectedToAllRatio}` } : {}),
+    };
+  });
 }
 
 async function createPlannerPromptBaselineReport(caseId?: string): Promise<PromptBaselineReport> {
@@ -1367,6 +1440,16 @@ function printCaseResults(label: string, results: CaseEvaluation[]) {
   console.log(`\n[${label}]`);
   for (const result of results) {
     console.log(`${result.passed ? '✓' : '✗'} ${result.id}${result.failures.length ? `：${result.failures.join('；')}` : ''}`);
+  }
+}
+
+function printPromptSizeGates(gates: PromptSizeGateResult[]) {
+  if (!gates.length) return;
+  console.log('\n[prompt size gates]');
+  for (const gate of gates) {
+    const ratio = (gate.selectedToAllRatio * 100).toFixed(1);
+    const limit = (gate.maxSelectedToAllRatio * 100).toFixed(1);
+    console.log(`${gate.passed ? '✓' : '✗'} ${gate.id}: ${gate.selectedToolsChars}/${gate.allToolsChars} chars (${ratio}%, limit ${limit}%)${gate.failure ? `：${gate.failure}` : ''}`);
   }
 }
 

@@ -352,7 +352,7 @@
 
 ### ASP-P5-001 扩展 Agent Eval 指标
 
-- 状态：`[ ]`
+- 状态：`[x]`
 - 模块：API / Scripts
 - 文件：
   - `scripts/dev/eval_agent_planner.ts`
@@ -386,6 +386,11 @@
   - 发生 bundle 外扩导致 prompt size 大幅增长时 eval 失败。
 - 验证：
   - `pnpm --dir apps/api run eval:agent:live:report`
+- 完成记录（2026-05-09）：
+  - 在 live eval report 中新增 `promptSizeGates`，对 `outline.volume` 计算 selected tools 与全量 tools 的 prompt 字符比例。
+  - 增加 `outline.volume.selected-tools` 门禁，阈值为 selected tools 不超过全量 tools 字符量的 35%；bundle 外扩或 manifest 过滤失效导致比例超限时 eval 失败。
+  - 修改文件：`scripts/dev/eval_agent_planner.ts`、`docs/architecture/agent-supervisor-planner-development-plan.md`。
+  - 测试：`pnpm --dir apps/api run eval:agent:live:report`，通过（legacy 24/24，graph 8/8，`outline.volume.selected-tools` 为 1549/34214 chars，4.5% < 35%）。
 
 ### ASP-P5-003 更新 CI gate
 
