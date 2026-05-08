@@ -375,7 +375,7 @@
 
 ### ASP-P5-002 加入 prompt size 回归保护
 
-- 状态：`[ ]`
+- 状态：`[x]`
 - 模块：API / Scripts
 - 文件：
   - `scripts/dev/eval_agent_planner.ts`
@@ -394,7 +394,7 @@
 
 ### ASP-P5-003 更新 CI gate
 
-- 状态：`[ ]`
+- 状态：`[x]`
 - 模块：CI / API
 - 文件：
   - `apps/api/package.json`
@@ -406,6 +406,11 @@
   - CI 能展示失败 case。
 - 验证：
   - `pnpm run eval:agent:gate`
+- 完成记录（2026-05-09）：
+  - 将 `eval:agent:gate` 切换为 report 版 live/retrieval/replan eval，确保 route/bundle/prompt 指标和失败 case 进入本地与 CI 报告。
+  - CI workflow 新增 deterministic Agent Eval artifact 上传，gate 失败时也能查看 live、retrieval、replan report 和 history。
+  - 修改文件：`apps/api/package.json`、`.github/workflows/agent-eval.yml`、`docs/architecture/agent-supervisor-planner-development-plan.md`。
+  - 测试：`pnpm run eval:agent:gate`，通过（live legacy 24/24、graph 8/8；retrieval 24/24；replan 16/16）。
 
 ## 8. P6 Outline Subgraph
 

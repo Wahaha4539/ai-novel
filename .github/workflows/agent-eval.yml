@@ -31,6 +31,19 @@ jobs:
       - name: Run Agent Eval gate
         run: pnpm run eval:agent:gate
 
+      - name: Upload deterministic Agent Eval artifacts
+        if: ${{ always() }}
+        uses: actions/upload-artifact@v4
+        with:
+          name: agent-eval-gate
+          path: |
+            tmp/agent-eval-live-report.json
+            tmp/agent-eval-retrieval-report.json
+            tmp/agent-eval-history.json
+            tmp/agent-replan-eval-report.json
+            tmp/agent-replan-eval-history.json
+          if-no-files-found: ignore
+
       # 真实 LLM 抽样只作为漂移观察：优先复用数据库 Provider；若团队未配置数据库 Provider，可选传入 LLM_* 兜底变量，失败不阻断门禁。
       - name: Run optional real LLM sample eval
         if: ${{ env.RUN_REAL_LLM_SAMPLE == 'true' }}
