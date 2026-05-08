@@ -2,6 +2,7 @@ import { Injectable, OnModuleInit } from '@nestjs/common';
 import { BaseTool } from './base-tool';
 import { ToolManifestForPlanner } from './tool-manifest.types';
 import { AiQualityReviewTool } from './tools/ai-quality-review.tool';
+import { AlignChapterTimelinePreviewTool } from './tools/align-chapter-timeline-preview.tool';
 import { AnalyzeSourceTextTool } from './tools/analyze-source-text.tool';
 import { AutoRepairChapterTool } from './tools/auto-repair-chapter.tool';
 import { BuildImportBriefTool } from './tools/build-import-brief.tool';
@@ -74,6 +75,7 @@ export class ToolRegistryService implements OnModuleInit {
     private readonly validateContinuityChangesTool: ValidateContinuityChangesTool,
     private readonly persistContinuityChangesTool: PersistContinuityChangesTool,
     private readonly generateTimelinePreviewTool: GenerateTimelinePreviewTool,
+    private readonly alignChapterTimelinePreviewTool: AlignChapterTimelinePreviewTool,
     private readonly validateTimelinePreviewTool: ValidateTimelinePreviewTool,
     private readonly persistTimelineEventsTool: PersistTimelineEventsTool,
     private readonly writeChapterTool: WriteChapterTool,
@@ -137,6 +139,7 @@ export class ToolRegistryService implements OnModuleInit {
     this.register(this.validateContinuityChangesTool);
     this.register(this.persistContinuityChangesTool);
     this.register(this.generateTimelinePreviewTool);
+    this.register(this.alignChapterTimelinePreviewTool);
     this.register(this.validateTimelinePreviewTool);
     this.register(this.persistTimelineEventsTool);
     this.register(this.writeChapterTool);

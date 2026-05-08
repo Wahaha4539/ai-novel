@@ -63,6 +63,7 @@ import { GenerateStoryBiblePreviewTool } from '../agent-tools/tools/generate-sto
 import { ValidateStoryBibleTool } from '../agent-tools/tools/validate-story-bible.tool';
 import { PersistStoryBibleTool } from '../agent-tools/tools/persist-story-bible.tool';
 import { GenerateContinuityPreviewTool, PersistContinuityChangesTool, ValidateContinuityChangesTool } from '../agent-tools/tools/continuity-changes.tool';
+import { AlignChapterTimelinePreviewTool } from '../agent-tools/tools/align-chapter-timeline-preview.tool';
 import { GenerateTimelinePreviewTool } from '../agent-tools/tools/generate-timeline-preview.tool';
 import { ValidateTimelinePreviewTool } from '../agent-tools/tools/validate-timeline-preview.tool';
 import { PersistTimelineEventsTool } from '../agent-tools/tools/persist-timeline-events.tool';
@@ -6887,6 +6888,137 @@ function makeTimelineCandidateRaw(overrides: Record<string, unknown> = {}) {
   };
 }
 
+function makeAlignmentTimelineCandidateRaw(overrides: Record<string, unknown> = {}) {
+  const candidateOverrides = { ...overrides };
+  const sourceTraceOverrides = candidateOverrides.sourceTrace && typeof candidateOverrides.sourceTrace === 'object' && !Array.isArray(candidateOverrides.sourceTrace)
+    ? candidateOverrides.sourceTrace as Record<string, unknown>
+    : {};
+  delete candidateOverrides.sourceTrace;
+  const candidateId = typeof candidateOverrides.candidateId === 'string' ? candidateOverrides.candidateId : 'tl_align_confirm_7';
+  const action = typeof candidateOverrides.action === 'string' ? candidateOverrides.action : 'confirm_planned';
+  return makeTimelineCandidateRaw({
+    candidateId,
+    action,
+    existingTimelineEventId: 'timeline-planned-7',
+    chapterId: 'chapter-7',
+    chapterNo: 7,
+    title: 'Archive key revealed',
+    eventTime: 'Chapter 7 night',
+    locationName: 'Archive',
+    participants: ['Lin Che'],
+    cause: 'Lin Che follows the false key.',
+    result: 'The planned archive breach happens in the draft.',
+    impactScope: 'archive',
+    isPublic: false,
+    knownBy: ['Lin Che'],
+    unknownBy: ['Shen Yan'],
+    eventStatus: 'active',
+    sourceType: 'agent_timeline_alignment',
+    impactAnalysis: 'Confirms planned timeline from chapter evidence.',
+    conflictRisk: 'No leak beyond knownBy.',
+    ...candidateOverrides,
+    sourceTrace: {
+      sourceKind: 'chapter_timeline_alignment',
+      projectId: 'p1',
+      originTool: 'align_chapter_timeline_preview',
+      agentRunId: 'run-align',
+      toolName: 'align_chapter_timeline_preview',
+      candidateId,
+      candidateAction: action,
+      chapterId: 'chapter-7',
+      chapterNo: 7,
+      draftId: 'draft-7',
+      contextSources: [
+        { sourceType: 'story_event', sourceId: 'story-1', title: 'Archive key revealed', chapterId: 'chapter-7', chapterNo: 7 },
+        { sourceType: 'timeline_event', sourceId: 'timeline-planned-7', title: 'Archive key revealed', chapterId: 'chapter-7', chapterNo: 7 },
+      ],
+      evidence: 'StoryEvent story-1 confirms the planned archive breach.',
+      generatedAt: '2026-05-08T00:00:00.000Z',
+      ...sourceTraceOverrides,
+    },
+  });
+}
+
+function makeAlignmentTimelinePrisma(reads: string[], writes: string[], options: { storyEvents?: Array<Record<string, unknown>>; timelineEvents?: Array<Record<string, unknown>> } = {}) {
+  const writeGuard = (name: string) => async () => {
+    writes.push(name);
+    throw new Error(`should not write ${name}`);
+  };
+  const storyEvents = options.storyEvents ?? [{
+    id: 'story-1',
+    projectId: 'p1',
+    chapterId: 'chapter-7',
+    chapterNo: 7,
+    sourceDraftId: 'draft-7',
+    title: 'Archive key revealed',
+    eventType: 'plot',
+    description: 'Lin Che confirms that the archive key is false.',
+    participants: ['Lin Che'],
+    timelineSeq: 1,
+    status: 'detected',
+    metadata: { sourceTrace: { draftId: 'draft-7' } },
+    updatedAt: new Date('2026-05-08T00:00:00.000Z'),
+  }];
+  const timelineEvents = options.timelineEvents ?? [{
+    id: 'timeline-planned-7',
+    projectId: 'p1',
+    chapterId: 'chapter-7',
+    chapterNo: 7,
+    title: 'Archive key revealed',
+    eventTime: 'Chapter 7 night',
+    locationName: 'Archive',
+    participants: ['Lin Che'],
+    cause: 'Lin Che follows the false key.',
+    result: 'The archive gate opens.',
+    impactScope: 'archive',
+    isPublic: false,
+    knownBy: ['Lin Che'],
+    unknownBy: ['Shen Yan'],
+    eventStatus: 'planned',
+    sourceType: 'agent_timeline_plan',
+    metadata: {},
+    updatedAt: new Date('2026-05-08T00:00:00.000Z'),
+  }];
+  return {
+    chapter: {
+      async findFirst() {
+        reads.push('chapter.findFirst');
+        return { id: 'chapter-7', projectId: 'p1', chapterNo: 7, title: 'Chapter 7' };
+      },
+      create: writeGuard('chapter.create'),
+      update: writeGuard('chapter.update'),
+      delete: writeGuard('chapter.delete'),
+      upsert: writeGuard('chapter.upsert'),
+      updateMany: writeGuard('chapter.updateMany'),
+      deleteMany: writeGuard('chapter.deleteMany'),
+    },
+    storyEvent: {
+      async findMany() {
+        reads.push('storyEvent.findMany');
+        return storyEvents;
+      },
+      create: writeGuard('storyEvent.create'),
+      update: writeGuard('storyEvent.update'),
+      delete: writeGuard('storyEvent.delete'),
+      upsert: writeGuard('storyEvent.upsert'),
+      updateMany: writeGuard('storyEvent.updateMany'),
+      deleteMany: writeGuard('storyEvent.deleteMany'),
+    },
+    timelineEvent: {
+      async findMany() {
+        reads.push('timelineEvent.findMany');
+        return timelineEvents;
+      },
+      create: writeGuard('timelineEvent.create'),
+      update: writeGuard('timelineEvent.update'),
+      delete: writeGuard('timelineEvent.delete'),
+      upsert: writeGuard('timelineEvent.upsert'),
+      updateMany: writeGuard('timelineEvent.updateMany'),
+      deleteMany: writeGuard('timelineEvent.deleteMany'),
+    },
+  };
+}
+
 test('timeline preview normalize preserves supplied fields and sourceTrace without content fallback', () => {
   const candidate = normalizeTimelineCandidate(makeTimelineCandidateRaw(), {
     expectedProjectId: 'p1',
@@ -7118,6 +7250,98 @@ test('generate_timeline_preview tool returns planned read-only candidates and re
     /eventStatus must be planned/,
   );
   assert.deepEqual(writes, []);
+});
+
+test('align_chapter_timeline_preview returns read-only alignment candidates from StoryEvent evidence', async () => {
+  const writes: string[] = [];
+  const reads: string[] = [];
+  const usages: Array<Record<string, unknown>> = [];
+  const llmCalls: Array<{ messages: Array<{ role: string; content: string }>; options: Record<string, unknown> }> = [];
+  const candidate = makeAlignmentTimelineCandidateRaw();
+  const prisma = makeAlignmentTimelinePrisma(reads, writes);
+  const llm = {
+    async chatJson(messages: Array<{ role: string; content: string }>, options: Record<string, unknown>) {
+      llmCalls.push({ messages, options });
+      return {
+        data: { candidates: [candidate], assumptions: [], risks: [] },
+        result: { model: 'mock-align', usage: { total_tokens: 20 } },
+      };
+    },
+  };
+  const context = {
+    agentRunId: 'run-align',
+    projectId: 'p1',
+    mode: 'plan' as const,
+    approved: false,
+    outputs: {},
+    policy: {},
+    recordLlmUsage: (usage: Record<string, unknown>) => usages.push(usage),
+  };
+  const tool = new AlignChapterTimelinePreviewTool(llm as never, prisma as never);
+
+  const result = await tool.run({ chapterId: 'chapter-7', draftId: 'draft-7', maxCandidates: 1 }, context as never);
+
+  assert.equal(result.candidates.length, 1);
+  assert.equal(result.candidates[0].action, 'confirm_planned');
+  assert.equal(result.candidates[0].existingTimelineEventId, 'timeline-planned-7');
+  assert.equal(result.candidates[0].eventStatus, 'active');
+  assert.equal(result.candidates[0].sourceType, 'agent_timeline_alignment');
+  assert.equal(result.writePlan.mode, 'preview_only');
+  assert.equal(result.writePlan.sourceKind, 'chapter_timeline_alignment');
+  assert.deepEqual(reads, ['chapter.findFirst', 'storyEvent.findMany', 'timelineEvent.findMany']);
+  assert.deepEqual(writes, []);
+  assert.equal(llmCalls[0].options.jsonMode, true);
+  assert.match(llmCalls[0].messages[1].content, /story-1/);
+  assert.match(llmCalls[0].messages[1].content, /timeline-planned-7/);
+  assert.equal(usages[0].appStep, 'align_chapter_timeline_preview');
+});
+
+test('align_chapter_timeline_preview fails fast on LLM errors incomplete output and illegal trace refs', async () => {
+  const allWrites: string[] = [];
+  const context = {
+    agentRunId: 'run-align',
+    projectId: 'p1',
+    mode: 'plan' as const,
+    approved: false,
+    outputs: {},
+    policy: {},
+  };
+  const makeTool = (dataOrError: unknown, options: { storyEvents?: Array<Record<string, unknown>> } = {}) => {
+    const reads: string[] = [];
+    const llm = {
+      async chatJson() {
+        if (dataOrError instanceof Error) throw dataOrError;
+        return { data: dataOrError, result: null };
+      },
+    };
+    return { tool: new AlignChapterTimelinePreviewTool(llm as never, makeAlignmentTimelinePrisma(reads, allWrites, options) as never) };
+  };
+
+  await assert.rejects(
+    () => makeTool(new Error('alignment LLM timeout')).tool.run({ chapterId: 'chapter-7', draftId: 'draft-7' }, context as never),
+    /alignment LLM timeout/,
+  );
+  await assert.rejects(
+    () => makeTool({ candidates: [], assumptions: [], risks: [] }).tool.run({ chapterId: 'chapter-7', draftId: 'draft-7' }, context as never),
+    /below required minimum/,
+  );
+  await assert.rejects(
+    () => makeTool({ candidates: [makeAlignmentTimelineCandidateRaw({ cause: '' })], assumptions: [], risks: [] }).tool.run({ chapterId: 'chapter-7', draftId: 'draft-7' }, context as never),
+    /timelineCandidates\[0\]\.cause/,
+  );
+  await assert.rejects(
+    () => makeTool({ candidates: [makeAlignmentTimelineCandidateRaw({ sourceTrace: { projectId: 'p2' } })], assumptions: [], risks: [] }).tool.run({ chapterId: 'chapter-7', draftId: 'draft-7' }, context as never),
+    /cross-project or mismatched/,
+  );
+  await assert.rejects(
+    () => makeTool({ candidates: [makeAlignmentTimelineCandidateRaw({ chapterNo: 8, sourceTrace: { chapterNo: 8 } })], assumptions: [], risks: [] }).tool.run({ chapterId: 'chapter-7', draftId: 'draft-7' }, context as never),
+    /chapterNo must match current chapter/,
+  );
+  await assert.rejects(
+    () => makeTool({ candidates: [makeAlignmentTimelineCandidateRaw()], assumptions: [], risks: [] }, { storyEvents: [] }).tool.run({ chapterId: 'chapter-7', draftId: 'draft-7' }, context as never),
+    /requires current chapter StoryEvent evidence/,
+  );
+  assert.deepEqual(allWrites, []);
 });
 
 test('validate_timeline_preview returns accepted rejected writePreview and stays read-only', async () => {
@@ -10162,6 +10386,7 @@ test('AppModule compiles with phase4 CRUD and phase5 quality modules registered'
   assert.ok(registry.get('validate_continuity_changes'));
   assert.ok(registry.get('persist_continuity_changes'));
   assert.ok(registry.get('generate_timeline_preview'));
+  assert.ok(registry.get('align_chapter_timeline_preview'));
   assert.ok(registry.get('validate_timeline_preview'));
   assert.ok(registry.get('persist_timeline_events'));
   assert.ok(registry.get('list_scene_cards'));
@@ -10179,6 +10404,12 @@ test('AppModule compiles with phase4 CRUD and phase5 quality modules registered'
   assert.equal(timelineGenerateManifest.requiresApproval, false);
   assert.deepEqual(timelineGenerateManifest.sideEffects, []);
   assert.equal(timelineGenerateManifest.riskLevel, 'low');
+  const timelineAlignManifest = manifests.find((item) => item.name === 'align_chapter_timeline_preview');
+  assert.ok(timelineAlignManifest);
+  assert.deepEqual(timelineAlignManifest.allowedModes, ['plan', 'act']);
+  assert.equal(timelineAlignManifest.requiresApproval, false);
+  assert.deepEqual(timelineAlignManifest.sideEffects, []);
+  assert.equal(timelineAlignManifest.riskLevel, 'low');
   const timelineValidateManifest = manifests.find((item) => item.name === 'validate_timeline_preview');
   assert.ok(timelineValidateManifest);
   assert.deepEqual(timelineValidateManifest.allowedModes, ['plan', 'act']);
@@ -10194,6 +10425,7 @@ test('AppModule compiles with phase4 CRUD and phase5 quality modules registered'
   const builtinSkill = BUILTIN_SKILLS.find((skill) => skill.name === 'creative-agent-mvp');
   assert.ok(builtinSkill);
   assert.ok(builtinSkill.defaultTools.includes('generate_timeline_preview'));
+  assert.ok(builtinSkill.defaultTools.includes('align_chapter_timeline_preview'));
   assert.ok(builtinSkill.defaultTools.includes('validate_timeline_preview'));
   assert.ok(builtinSkill.defaultTools.includes('persist_timeline_events'));
   const briefManifest = manifests.find((item) => item.name === 'build_import_brief');
