@@ -153,6 +153,7 @@ const WRITE_TOOL_LABELS: Record<string, string> = {
   persist_continuity_changes: '连续性资料',
   persist_timeline_events: '计划时间线',
   persist_guided_step_result: '创作引导结果',
+  persist_volume_character_candidates: '卷级角色候选',
 };
 
 export interface AgentToolUiExplanation {
@@ -247,20 +248,60 @@ const AGENT_TOOL_UI_EXPLANATIONS: Record<string, AgentToolUiExplanation> = {
     artifactTypes: ['import_persist_result'],
     usesLlm: false,
   },
+  generate_volume_outline_preview: {
+    label: '生成卷级大纲',
+    purpose: '生成单卷结构、卷内主线、storyUnits 和卷级角色规划候选，作为后续逐章细纲的稳定上游。',
+    output: '卷级大纲预览',
+    frontendSurface: 'Agent 产物预览 / 大纲预览中的卷摘要与角色规划指标',
+    artifactTypes: ['outline_preview'],
+    usesLlm: true,
+  },
   generate_outline_preview: {
     label: '生成大纲预览',
-    purpose: '生成或改写项目大纲、卷和章节规划。',
+    purpose: '生成或改写项目大纲、卷、章节规划、Chapter.craftBrief 和角色执行信息。',
     output: '大纲预览',
     frontendSurface: '剧情大纲 / 卷与章节列表',
     artifactTypes: ['outline_preview'],
     usesLlm: true,
   },
+  generate_chapter_outline_preview: {
+    label: '生成章节细纲',
+    purpose: '基于卷纲为单章生成章节目标、场景段、执行卡和 craftBrief.characterExecution。',
+    output: '单章章节细纲预览',
+    frontendSurface: 'Agent 产物预览 / 合并后的大纲预览章节摘要',
+    artifactTypes: ['outline_preview'],
+    usesLlm: true,
+  },
+  merge_chapter_outline_previews: {
+    label: '合并章节细纲',
+    purpose: '把多个单章章节细纲预览合并为完整 outline_preview，并保留每章 craftBrief 和角色执行信息。',
+    output: '完整大纲预览',
+    frontendSurface: 'Agent 产物预览 / 大纲校验与写入前输入',
+    artifactTypes: ['outline_preview'],
+    usesLlm: false,
+  },
+  validate_outline: {
+    label: '校验大纲',
+    purpose: '只读校验大纲预览的章节连续性、执行卡、角色规划、未知角色引用和写入前 diff。',
+    output: '大纲校验报告',
+    frontendSurface: 'Agent 产物预览中的校验报告和写入前 Diff',
+    artifactTypes: ['outline_validation_report'],
+    usesLlm: false,
+  },
   persist_outline: {
     label: '写入大纲',
-    purpose: '把已确认的大纲预览写入项目卷章结构。',
+    purpose: '把已确认且校验通过的大纲预览写入项目卷章结构；只写规划 JSON，不自动创建正式角色。',
     output: '大纲写入结果',
     frontendSurface: '剧情大纲 / 卷与章节列表',
     artifactTypes: ['outline_persist_result'],
+    usesLlm: false,
+  },
+  persist_volume_character_candidates: {
+    label: '写入卷级角色候选',
+    purpose: '在用户明确审批后，把卷级 characterPlan 中选定候选写入正式 Character，并可写入对应关系边；章节临时角色不会写入。',
+    output: '卷级角色候选写入结果',
+    frontendSurface: '角色与人设面板 / 关系图面板',
+    artifactTypes: ['volume_character_candidates_persist_result'],
     usesLlm: false,
   },
   generate_timeline_preview: {
@@ -424,6 +465,9 @@ export function approvalRiskSummary(plan: AgentPlanPayload | undefined, approved
     summaries.push(`项目资产写入：确认后会按当前计划范围写入 ${scope}。`);
   } else if (requiredTools.includes('persist_outline')) {
     summaries.push('项目资产写入：确认后会新增或更新剧情大纲、卷和章节规划。');
+  }
+  if (requiredTools.includes('persist_volume_character_candidates')) {
+    summaries.push('角色候选写入：确认后会把已审批的卷级角色候选写入正式角色表，可同时创建关系边；章节临时角色不会写入。');
   }
   if (requiredTools.includes('persist_timeline_events')) summaries.push('时间线写入：确认后会把已校验的 planned/changed TimelineEvent 候选写入当前项目。');
   return summaries;

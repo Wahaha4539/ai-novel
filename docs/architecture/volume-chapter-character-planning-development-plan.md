@@ -231,10 +231,10 @@ type ChapterCharacterExecution = {
 | ID | 状态 | 任务 | 影响文件 | 验收标准 |
 |---|---|---|---|---|
 | VCC-P5-01 | done | 更新 Tool Manifest 示例和 Planner guidance。 | `generate-outline-preview.tool.ts`, `generate-volume-outline-preview.tool.ts`, `chapter-outline-preview-tools.tool.ts`, `agent-planner.service.ts` | 用户说“卷纲/章节细纲/角色安排”时走 outline 链路，不误走正文生成。 |
-| VCC-P5-02 | todo | `OutlinePreviewSummary` 增加角色规划指标。 | `apps/web/components/agent/AgentArtifactPanel.tsx` | 展示候选角色数、章节角色执行覆盖、未知角色风险。 |
-| VCC-P5-03 | todo | 章节摘要展示本章 cast、POV、角色目标和关系变化。 | `AgentArtifactPanel.tsx` | 前 5 章摘要能看到角色执行，不只看到行动链。 |
+| VCC-P5-02 | done | `OutlinePreviewSummary` 增加角色规划指标。 | `apps/web/components/agent/AgentArtifactPanel.tsx` | 展示候选角色数、章节角色执行覆盖、未知角色风险。 |
+| VCC-P5-03 | done | 章节摘要展示本章 cast、POV、角色目标和关系变化。 | `AgentArtifactPanel.tsx` | 前 5 章摘要能看到角色执行，不只看到行动链。 |
 | VCC-P5-04 | todo | 卷管理或章节详情展示 `craftBrief.characterExecution` 摘要。 | `apps/web/components/VolumePanel.tsx`, `EditorPanel.tsx` 或相关组件 | 写入后用户能查看本章角色执行。 |
-| VCC-P5-05 | todo | 角色候选入库审批结果提供专用 Artifact。 | `AgentArtifactPanel.tsx`、新增 persist Tool | 展示 created/updated/skipped 角色数和关系数。 |
+| VCC-P5-05 | done | 角色候选入库审批结果提供专用 Artifact。 | `AgentArtifactPanel.tsx`、新增 persist Tool | 展示 created/updated/skipped 角色数和关系数。 |
 
 ### P6：测试与验收
 
@@ -359,3 +359,4 @@ docker compose up -d --build
 | 2026-05-08 | VCC-P3-04..P3-06 | 新增高风险审批 Tool `persist_volume_character_candidates`，审批后把卷级候选写入正式 `Character`，跳过手工/非 agent 角色，允许更新 `source='agent_outline'` 的候选；可选写入可解析两端的 `RelationshipEdge`，并在 description/manifest/output 中区分正式角色写入、卷/章节 JSON 规划和章节临时角色。 | `AGENT_TEST_FILTER='VCC persist_volume_character_candidates' pnpm --filter api test:agent` 通过 3/293 项；`AGENT_TEST_FILTER='AppModule compiles' pnpm --filter api test:agent` 通过 1/293 项。 |
 | 2026-05-08 | VCC-P4-01..P4-04 | `guided_volume`/`guided_chapter` prompt 与 schema 对齐角色规划契约；生成与写入前显式校验 `narrativePlan.characterPlan` 和 `craftBrief.characterExecution`；单章细化遇到卷号/章号错配直接失败；旧 `supportingCharacters` 仅保存在 guided session 兼容展示，不再自动创建正式 `Character`。 | `AGENT_TEST_FILTER='VCC guided_' pnpm --filter api test:agent` 通过 4/297 项。 |
 | 2026-05-08 | VCC-P5-01 | 将 `generate_volume_outline_preview` 接入生产 `ToolRegistryService`，并把卷纲/章节细纲 outline 工具组加入默认 skill tools；AppModule 测试断言 registry、planner manifest 与默认工具列表都包含新 outline 链路。 | `AGENT_TEST_FILTER='AppModule compiles' pnpm --filter api test:agent` 通过 1/297 项。 |
+| 2026-05-08 | VCC-P5-02/P5-03/P5-05 | Agent Artifact 的 `outline_preview` 增加角色候选、角色执行覆盖、临时角色与角色风险指标；章节摘要展示 POV、cast、角色目标、关系变化和临时角色；新增 `volume_character_candidates_persist_result` 专用展示，并补齐前端 tool 说明与 guided 类型。 | `pnpm --dir apps/web build` 通过。 |

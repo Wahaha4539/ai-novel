@@ -1,4 +1,6 @@
 export type CraftBriefProgressType = 'info' | 'relationship' | 'resource' | 'status' | 'foreshadow' | 'rule' | 'emotion' | string;
+export type VolumeCharacterRoleType = 'protagonist' | 'antagonist' | 'supporting' | 'minor';
+export type ChapterCharacterSource = 'existing' | 'volume_candidate' | 'minor_temporary';
 
 export interface ChapterConcreteClue {
   name: string;
@@ -51,6 +53,85 @@ export interface VolumeNarrativePlan {
   foreshadowPlan?: string[];
   endingHook?: string;
   handoffToNextVolume?: string;
+  characterPlan?: VolumeCharacterPlan;
+}
+
+export interface VolumeCharacterPlan {
+  existingCharacterArcs: Array<{
+    characterId?: string;
+    characterName: string;
+    roleInVolume: string;
+    entryState: string;
+    volumeGoal: string;
+    hiddenNeed?: string;
+    pressure: string;
+    keyChoices: string[];
+    firstActiveChapter: number;
+    lastActiveChapter?: number;
+    endState: string;
+  }>;
+  newCharacterCandidates: Array<{
+    candidateId: string;
+    name: string;
+    roleType: VolumeCharacterRoleType;
+    scope: 'volume';
+    narrativeFunction: string;
+    personalityCore: string;
+    motivation: string;
+    backstorySeed?: string;
+    conflictWith: string[];
+    relationshipAnchors: string[];
+    firstAppearChapter: number;
+    expectedArc: string;
+    approvalStatus: 'candidate';
+  }>;
+  relationshipArcs: Array<{
+    participants: string[];
+    startState: string;
+    hiddenTension?: string;
+    turnChapterNos: number[];
+    endState: string;
+  }>;
+  roleCoverage: {
+    mainlineDrivers: string[];
+    antagonistPressure: string[];
+    emotionalCounterweights: string[];
+    expositionCarriers: string[];
+  };
+}
+
+export interface ChapterCharacterExecution {
+  povCharacter?: string;
+  cast: Array<{
+    characterName: string;
+    characterId?: string;
+    source: ChapterCharacterSource;
+    functionInChapter: string;
+    visibleGoal: string;
+    hiddenGoal?: string;
+    pressure: string;
+    actionBeatRefs: number[];
+    sceneBeatRefs: string[];
+    entryState: string;
+    exitState: string;
+    dialogueJob?: string;
+  }>;
+  relationshipBeats: Array<{
+    participants: string[];
+    publicStateBefore: string;
+    hiddenStateBefore?: string;
+    trigger: string;
+    shift: string;
+    publicStateAfter: string;
+    hiddenStateAfter?: string;
+  }>;
+  newMinorCharacters: Array<{
+    nameOrLabel: string;
+    narrativeFunction: string;
+    interactionScope: string;
+    firstAndOnlyUse: boolean;
+    approvalPolicy: 'preview_only' | 'needs_approval';
+  }>;
 }
 
 export interface ChapterSceneBeat {
@@ -96,6 +177,7 @@ export interface ChapterCraftBrief {
   closedLoops?: string[];
   handoffToNextChapter?: string;
   continuityState?: ChapterContinuityState;
+  characterExecution?: ChapterCharacterExecution;
 }
 
 export interface GuidedChapterData {

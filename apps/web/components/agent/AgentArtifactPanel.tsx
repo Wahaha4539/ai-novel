@@ -89,6 +89,7 @@ function artifactSourceInfo(artifactType: string | undefined, targetSources: Pro
   if (artifactType === 'timeline_preview') return { label: '计划时间线', tool: 'generate_timeline_preview', verb: '生成', scope: 'TimelineEvent 候选' };
   if (artifactType === 'timeline_validation_report') return { label: '时间线校验', tool: 'validate_timeline_preview', verb: '校验', scope: '写入前 diff' };
   if (artifactType === 'timeline_persist_result') return { label: '时间线写入', tool: 'persist_timeline_events', verb: '写入', scope: 'TimelineEvent' };
+  if (artifactType === 'volume_character_candidates_persist_result') return { label: '卷级角色候选', tool: 'persist_volume_character_candidates', verb: '写入', scope: 'Character / RelationshipEdge' };
   return undefined;
 }
 
@@ -298,6 +299,7 @@ function TypedArtifactPreview({
   if (artifactType === 'plot_consistency_report') return <PlotConsistencySummary content={content} />;
   if (artifactType === 'task_context_preview') return <TaskContextSummary content={content} />;
   if (artifactType === 'outline_persist_result') return <OutlinePersistSummary content={content} />;
+  if (artifactType === 'volume_character_candidates_persist_result') return <VolumeCharacterCandidatesPersistSummary content={content} />;
   if (artifactType === 'import_persist_result') return <PersistSummary content={content} />;
   if (artifactType === 'chapter_draft_result') return <ChapterDraftSummary content={content} />;
   if (artifactType === 'chapter_generation_quality_report') return <GenerationQualitySummary content={content} />;
@@ -316,6 +318,7 @@ function OutlinePreviewSummary({ content }: { content: unknown }) {
   const data = asRecord(content);
   const volume = asRecord(data?.volume);
   const volumes = asArray(data?.volumes);
+  const volumeRecords = volume ? [volume] : recordList(volumes);
   const chapters = asArray(data?.chapters);
   const chapterRecords = chapters.map((item) => asRecord(item) ?? {});
   const totalExpectedWordCount = chapters.reduce<number>((sum, item) => sum + numberValue(asRecord(item)?.expectedWordCount), 0);
@@ -324,12 +327,22 @@ function OutlinePreviewSummary({ content }: { content: unknown }) {
   const risks = asArray(data?.risks);
   const riskTexts = risks.map((item) => textValue(item)).filter(Boolean);
   const fallbackChapterCount = fallbackChapterCountFromRisks(riskTexts, chapters.length);
+  const validation = asRecord(data?.validation);
+  const stats = asRecord(data?.stats ?? validation?.stats);
+  const volumeCandidateCount = numberValue(stats?.volumeCharacterCandidateCount, volumeCharacterCandidateCount(volumeRecords));
+  const chapterCharacterExecutionCount = numberValue(stats?.chapterCharacterExecutionCount, chapterRecords.filter(hasChapterCharacterExecution).length);
+  const temporaryCharacterCount = numberValue(stats?.temporaryCharacterCount, chapterRecords.reduce((sum, chapter) => sum + chapterTemporaryCharacterCount(chapter), 0));
+  const characterRiskCount = outlineCharacterRiskCount(stats, riskTexts);
   return (
     <div className="space-y-3">
       <div className="grid gap-2 md:grid-cols-5">
         <Metric label="卷" value={volumeTitle} />
         <Metric label="章节数" value={chapters.length} />
         <Metric label="执行卡覆盖" value={`${craftBriefCount}/${chapters.length}`} tone={craftBriefCount === chapters.length ? 'ok' : craftBriefCount > 0 ? 'warn' : 'danger'} />
+        <Metric label="角色候选" value={volumeCandidateCount} tone={volumeCandidateCount ? 'warn' : 'ok'} />
+        <Metric label="角色执行覆盖" value={`${chapterCharacterExecutionCount}/${chapters.length}`} tone={chapterCharacterExecutionCount === chapters.length ? 'ok' : chapterCharacterExecutionCount > 0 ? 'warn' : 'danger'} />
+        <Metric label="临时角色" value={temporaryCharacterCount} tone={temporaryCharacterCount ? 'warn' : 'ok'} />
+        <Metric label="角色引用风险" value={characterRiskCount} tone={characterRiskCount ? 'danger' : 'ok'} />
         <Metric label="Fallback 章节" value={fallbackChapterCount} tone={fallbackChapterCount ? 'warn' : 'ok'} />
         <Metric label="风险" value={riskTexts.length} tone={riskTexts.length ? 'warn' : 'ok'} />
         <Metric label="总目标字数" value={totalExpectedWordCount} />
@@ -356,6 +369,7 @@ function OutlinePreviewSummary({ content }: { content: unknown }) {
 
 function OutlineChapterSummary({ chapter, index }: { chapter: Record<string, unknown>; index: number }) {
   const craftBrief = asCraftBriefRecord(chapter.craftBrief);
+  const characterExecution = asRecord(craftBrief.characterExecution) ?? {};
   const actionBeats = stringList(craftBrief.actionBeats);
   const clues = asArray(craftBrief.concreteClues)
     .map((item) => textValue(asRecord(item)?.name, ''))
@@ -383,6 +397,7 @@ function OutlineChapterSummary({ chapter, index }: { chapter: Record<string, unk
           {textValue(storyUnit?.title, '') && <div>单元故事：{[textValue(storyUnit?.title, ''), storyUnitRangeText, textValue(storyUnit?.chapterRole, '')].filter(Boolean).join(' · ')}</div>}
           {textValue(storyUnit?.unitPayoff, '') && <div>单元结局：{textValue(storyUnit?.unitPayoff)}</div>}
           {actionBeats.length > 0 && <div>行动链：{actionBeats.slice(0, 3).join(' → ')}</div>}
+          <ChapterCharacterExecutionSummary characterExecution={characterExecution} />
           {clues.length > 0 && <div>线索：{clues.slice(0, 3).join('、')}</div>}
           {dialogueSubtext && <div>潜台词：{dialogueSubtext}</div>}
           {characterShift && <div>人物变化：{characterShift}</div>}
@@ -393,6 +408,49 @@ function OutlineChapterSummary({ chapter, index }: { chapter: Record<string, unk
       )}
     </div>
   );
+}
+
+function ChapterCharacterExecutionSummary({ characterExecution }: { characterExecution: Record<string, unknown> }) {
+  if (!Object.keys(characterExecution).length) return null;
+  const pov = textValue(characterExecution.povCharacter, '');
+  const cast = recordList(characterExecution.cast);
+  const relationshipBeats = recordList(characterExecution.relationshipBeats);
+  const minorCharacters = recordList(characterExecution.newMinorCharacters);
+  return (
+    <div className="space-y-1">
+      {pov && <div>POV：{pov}</div>}
+      {cast.length > 0 && <div>出场角色：{cast.slice(0, 4).map(formatCastMember).join('；')}</div>}
+      {relationshipBeats.length > 0 && <div>关系变化：{relationshipBeats.slice(0, 3).map(formatRelationshipBeat).join('；')}</div>}
+      {minorCharacters.length > 0 && <div>临时角色：{minorCharacters.slice(0, 3).map(formatMinorCharacter).join('；')}</div>}
+    </div>
+  );
+}
+
+function formatCastMember(member: Record<string, unknown>) {
+  const name = textValue(member.characterName, '未命名角色');
+  const source = characterSourceLabel(member.source);
+  const goal = textValue(member.visibleGoal ?? member.functionInChapter, '暂无目标');
+  return `${name}（${source}：${goal}）`;
+}
+
+function formatRelationshipBeat(beat: Record<string, unknown>) {
+  const participants = stringList(beat.participants).join('/');
+  const shift = textValue(beat.shift ?? beat.publicStateAfter ?? beat.trigger, '暂无变化');
+  return `${participants || '未标注关系'}：${shift}`;
+}
+
+function formatMinorCharacter(minor: Record<string, unknown>) {
+  const name = textValue(minor.nameOrLabel, '临时角色');
+  const functionText = textValue(minor.narrativeFunction ?? minor.interactionScope, '临时功能');
+  return `${name}（${functionText}）`;
+}
+
+function characterSourceLabel(value: unknown) {
+  const source = textValue(value, 'unknown');
+  if (source === 'existing') return '既有';
+  if (source === 'volume_candidate') return '卷候选';
+  if (source === 'minor_temporary') return '临时';
+  return source;
 }
 
 function OutlineWriteNotice({ fallbackChapterCount, riskCount }: { fallbackChapterCount: number; riskCount: number }) {
@@ -537,6 +595,7 @@ function ChapterCraftBriefCandidateSummary({ candidate, index }: { candidate: Re
 
 function ChapterCraftBriefFields({ craftBrief }: { craftBrief: Record<string, unknown> }) {
   if (!Object.keys(craftBrief).length) return <div className="text-[11px]" style={{ color: '#fbbf24' }}>缺少 Chapter.craftBrief 字段。</div>;
+  const characterExecution = asRecord(craftBrief.characterExecution) ?? {};
   const actionBeats = stringList(craftBrief.actionBeats);
   const subplotTasks = stringList(craftBrief.subplotTasks);
   const progressTypes = stringList(craftBrief.progressTypes);
@@ -566,6 +625,7 @@ function ChapterCraftBriefFields({ craftBrief }: { craftBrief: Record<string, un
       {storyUnitFunctions.length > 0 && <div>单元功能：{storyUnitFunctions.slice(0, 4).join(' / ')}</div>}
       {textValue(storyUnit?.unitPayoff, '') && <div>单元结局：{textValue(storyUnit?.unitPayoff)}</div>}
       {actionBeats.length > 0 && <div>行动链：{actionBeats.slice(0, 5).join(' -> ')}</div>}
+      <ChapterCharacterExecutionSummary characterExecution={characterExecution} />
       {clues.length > 0 && <div>具体线索：{clues.slice(0, 4).join('；')}</div>}
       {textValue(craftBrief.dialogueSubtext, '') && <div>潜台词：{textValue(craftBrief.dialogueSubtext)}</div>}
       {textValue(craftBrief.characterShift, '') && <div>人物变化：{textValue(craftBrief.characterShift)}</div>}
@@ -635,10 +695,47 @@ function asCraftBriefRecord(value: unknown): Record<string, unknown> {
   return value && typeof value === 'object' && !Array.isArray(value) ? value as Record<string, unknown> : {};
 }
 
+function recordList(value: unknown): Array<Record<string, unknown>> {
+  return asArray(value).map((item) => asRecord(item)).filter((item): item is Record<string, unknown> => Boolean(item));
+}
+
 function stringList(value: unknown): string[] {
   return Array.isArray(value)
     ? value.map((item) => (typeof item === 'string' ? item.trim() : '')).filter(Boolean)
     : [];
+}
+
+function optionalNumber(value: unknown): number | undefined {
+  return typeof value === 'number' && Number.isFinite(value) ? value : undefined;
+}
+
+function volumeCharacterCandidateCount(volumes: Array<Record<string, unknown>>) {
+  return volumes.reduce((sum, volume) => {
+    const narrativePlan = asRecord(volume.narrativePlan);
+    const characterPlan = asRecord(narrativePlan?.characterPlan);
+    return sum + asArray(characterPlan?.newCharacterCandidates).length;
+  }, 0);
+}
+
+function chapterCharacterExecution(chapter: Record<string, unknown>) {
+  return asRecord(asCraftBriefRecord(chapter.craftBrief).characterExecution) ?? {};
+}
+
+function hasChapterCharacterExecution(chapter: Record<string, unknown>) {
+  return Object.keys(chapterCharacterExecution(chapter)).length > 0;
+}
+
+function chapterTemporaryCharacterCount(chapter: Record<string, unknown>) {
+  return asArray(chapterCharacterExecution(chapter).newMinorCharacters).length;
+}
+
+function outlineCharacterRiskCount(stats: Record<string, unknown> | undefined, risks: string[]) {
+  const characterRiskCount = optionalNumber(stats?.characterRiskCount);
+  const unknownReferenceCount = optionalNumber(stats?.unknownCharacterReferenceCount);
+  if (characterRiskCount !== undefined || unknownReferenceCount !== undefined) {
+    return Math.max(characterRiskCount ?? 0, unknownReferenceCount ?? 0);
+  }
+  return risks.filter((risk) => /character|角色|pov|cast|minor_temporary|volume_candidate|characterExecution|unknown|未知|未进入|未出现在|未被|候选/i.test(risk)).length;
 }
 
 function GuidedStepPreviewSummary({ content }: { content: unknown }) {
@@ -1471,6 +1568,86 @@ function OutlinePersistSummary({ content }: { content: unknown }) {
       )}
     </div>
   );
+}
+
+function VolumeCharacterCandidatesPersistSummary({ content }: { content: unknown }) {
+  const data = asRecord(content) ?? {};
+  const characterResults = recordList(data?.characterResults);
+  const relationshipResults = recordList(data?.relationshipResults);
+  const createdCount = numberValue(data?.createdCount, characterResults.filter((item) => item.action === 'created').length);
+  const updatedCount = numberValue(data?.updatedCount, characterResults.filter((item) => item.action === 'updated').length);
+  const skippedCount = numberValue(data?.skippedCount, characterResults.filter((item) => item.action === 'skipped').length);
+  const relationshipCreatedCount = numberValue(data?.relationshipCreatedCount, relationshipResults.filter((item) => item.action === 'created').length);
+  const relationshipSkippedCount = numberValue(data?.relationshipSkippedCount, relationshipResults.filter((item) => item.action === 'skipped').length);
+  return (
+    <div className="space-y-3">
+      <div className="grid gap-2 md:grid-cols-5">
+        <Metric label="新增角色" value={createdCount} tone={createdCount ? 'ok' : undefined} />
+        <Metric label="更新角色" value={updatedCount} tone={updatedCount ? 'warn' : undefined} />
+        <Metric label="跳过角色" value={skippedCount} tone={skippedCount ? 'warn' : 'ok'} />
+        <Metric label="新增关系" value={relationshipCreatedCount} tone={relationshipCreatedCount ? 'ok' : undefined} />
+        <Metric label="跳过关系" value={relationshipSkippedCount} tone={relationshipSkippedCount ? 'warn' : 'ok'} />
+      </div>
+      {textValue(data?.approvalMessage, '') && (
+        <div className="rounded-lg border px-3 py-2 text-xs leading-5" style={{ borderColor: 'rgba(20,184,166,0.30)', background: 'rgba(20,184,166,0.07)', color: 'var(--text-muted)' }}>
+          {textValue(data?.approvalMessage)}
+        </div>
+      )}
+      <VolumeCharacterResultList items={characterResults} />
+      <VolumeRelationshipResultList items={relationshipResults} />
+    </div>
+  );
+}
+
+function VolumeCharacterResultList({ items }: { items: Array<Record<string, unknown>> }) {
+  if (!items.length) return <div className="text-xs" style={{ color: 'var(--text-muted)' }}>暂无角色写入明细。</div>;
+  return (
+    <div className="space-y-1">
+      <div className="text-xs font-semibold" style={{ color: 'var(--text-main)' }}>角色写入</div>
+      {items.slice(0, 8).map((item, index) => {
+        const action = textValue(item.action, 'unknown');
+        return (
+          <div key={textValue(item.candidateId, `character-${index}`)} className="text-xs leading-5" style={{ color: persistActionColor(action) }}>
+            {persistActionLabel(action)}：{textValue(item.name, '未命名角色')} · {textValue(item.candidateId, '无候选 ID')}{item.reason ? ` · ${textValue(item.reason)}` : ''}
+          </div>
+        );
+      })}
+      {items.length > 8 && <div className="text-xs" style={{ color: 'var(--text-dim)' }}>还有 {items.length - 8} 条角色明细，完整内容见原始 JSON。</div>}
+    </div>
+  );
+}
+
+function VolumeRelationshipResultList({ items }: { items: Array<Record<string, unknown>> }) {
+  if (!items.length) return <div className="text-xs" style={{ color: 'var(--text-muted)' }}>暂无关系写入明细。</div>;
+  return (
+    <div className="space-y-1" style={{ borderTop: '1px solid var(--border-dim)', paddingTop: '0.75rem' }}>
+      <div className="text-xs font-semibold" style={{ color: 'var(--text-main)' }}>关系写入</div>
+      {items.slice(0, 6).map((item, index) => {
+        const action = textValue(item.action, 'unknown');
+        const participants = stringList(item.participants).join(' / ') || '未标注双方';
+        return (
+          <div key={`${participants}-${index}`} className="text-xs leading-5" style={{ color: persistActionColor(action) }}>
+            {persistActionLabel(action)}：{participants}{item.reason ? ` · ${textValue(item.reason)}` : ''}
+          </div>
+        );
+      })}
+      {items.length > 6 && <div className="text-xs" style={{ color: 'var(--text-dim)' }}>还有 {items.length - 6} 条关系明细，完整内容见原始 JSON。</div>}
+    </div>
+  );
+}
+
+function persistActionLabel(action: string) {
+  if (action === 'created') return '新增';
+  if (action === 'updated') return '更新';
+  if (action === 'skipped') return '跳过';
+  return action;
+}
+
+function persistActionColor(action: string) {
+  if (action === 'created') return '#86efac';
+  if (action === 'updated') return '#fbbf24';
+  if (action === 'skipped') return 'var(--text-muted)';
+  return 'var(--text-muted)';
 }
 
 function PersistSummary({ content }: { content: unknown }) {
