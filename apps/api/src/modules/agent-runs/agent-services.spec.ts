@@ -3945,6 +3945,10 @@ test('VCC guided_chapter finalize does not create supporting Character', async (
   const existingName = (validVolume.narrativePlan.characterPlan as ReturnType<typeof createVccCharacterPlan>).existingCharacterArcs[0].characterName;
   const characterWrites: string[] = [];
   let savedStepData: Record<string, unknown> | undefined;
+  const persistedVolume = { id: 'v1', ...validVolume };
+  const pickSelected = (source: Record<string, unknown>, select: Record<string, unknown>) => Object.fromEntries(
+    Object.entries(source).filter(([key]) => select[key] === true),
+  );
   const prisma = {
     character: {
       async findMany() { return [{ name: existingName, alias: [] }, { name: '沈栖', alias: [] }]; },
@@ -3960,8 +3964,9 @@ test('VCC guided_chapter finalize does not create supporting Character', async (
     },
     volume: {
       async findMany(args: { select?: Record<string, unknown> }) {
-        if (args.select?.id) return [{ id: 'v1', volumeNo: 1 }];
-        return [];
+        const select = args.select ?? {};
+        if (select.id) return [pickSelected({ id: 'v1', volumeNo: 1 }, select)];
+        return [pickSelected(persistedVolume as Record<string, unknown>, select)];
       },
     },
     chapter: {
