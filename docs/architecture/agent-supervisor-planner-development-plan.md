@@ -139,7 +139,7 @@
 
 ### ASP-P2-001 新增 ToolBundleRegistry
 
-- 状态：`[ ]`
+- 状态：`[x]`
 - 模块：API
 - 文件：
   - `apps/api/src/modules/agent-runs/planner-graph/tool-bundles/tool-bundle.registry.ts`
@@ -153,6 +153,12 @@
 - 验证：
   - 新增服务级测试覆盖 bundle 工具存在性。
   - `pnpm --dir apps/api run test:agent`
+- 完成记录（2026-05-09）：
+  - 新增 `ToolBundleRegistry` 和按领域拆分的 bundle 定义，覆盖 `outline.volume`、`outline.chapter`、`writing.chapter`、`revision.chapter`、`import.project_assets`、`guided.step`，并预置 timeline/quality/worldbuilding 基础 bundle。
+  - registry 在 resolve 时校验 strict/optional/denied 工具名全部来自 `ToolRegistryService.list()`；缺失工具直接抛错，不静默扩大到全量工具。
+  - 修改文件：`apps/api/src/modules/agent-runs/planner-graph/tool-bundles/*`、`apps/api/src/modules/agent-runs/agent-services.spec.ts`、`docs/architecture/agent-supervisor-planner-development-plan.md`。
+  - 测试：`AGENT_TEST_FILTER="ToolBundleRegistry" pnpm --dir apps/api run test:agent`，通过（1/330 targeted）。
+  - 测试：`pnpm --filter api build`，通过。
 
 ### ASP-P2-002 支持按工具名过滤 manifests
 

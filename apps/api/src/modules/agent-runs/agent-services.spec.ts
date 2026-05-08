@@ -22,6 +22,7 @@ import { AgentReplannerService } from './agent-replanner.service';
 import { AgentRuntimeService } from './agent-runtime.service';
 import { AgentPlannerService } from './agent-planner.service';
 import { AgentPlannerGraphService } from './planner-graph/agent-planner-graph.service';
+import { TOOL_BUNDLE_DEFINITIONS, ToolBundleRegistry } from './planner-graph/tool-bundles';
 import { AgentPolicyService, AgentSecondConfirmationRequiredError } from './agent-policy.service';
 import { AgentTraceService } from './agent-trace.service';
 import { AgentRunsService } from './agent-runs.service';
@@ -8273,6 +8274,42 @@ test('Planner graph feature flag wraps legacy plan diagnostics without changing 
     if (previousFlag === undefined) delete process.env.AGENT_PLANNER_GRAPH_ENABLED;
     else process.env.AGENT_PLANNER_GRAPH_ENABLED = previousFlag;
   }
+});
+
+test('ToolBundleRegistry resolves core bundles and rejects missing registered tools', () => {
+  const allBundleToolNames = [...new Set(TOOL_BUNDLE_DEFINITIONS.flatMap((definition) => [
+    ...definition.strictToolNames,
+    ...(definition.optionalToolNames ?? []),
+    ...(definition.deniedToolNames ?? []),
+  ]))];
+  const tools = {
+    list: () => allBundleToolNames.map((name) => createTool({
+      name,
+      requiresApproval: name.startsWith('persist_') || name === 'write_chapter' || name === 'rewrite_chapter' || name === 'write_chapter_series',
+      riskLevel: name.startsWith('persist_') ? 'high' : 'low',
+      sideEffects: name.startsWith('persist_') ? ['write'] : [],
+    })),
+  } as unknown as ToolRegistryService;
+  const registry = new ToolBundleRegistry(tools);
+
+  registry.assertAllBundlesRegistered();
+  for (const bundleName of ['outline.volume', 'outline.chapter', 'writing.chapter', 'revision.chapter', 'import.project_assets', 'guided.step']) {
+    assert.ok(TOOL_BUNDLE_DEFINITIONS.some((definition) => definition.name === bundleName));
+    assert.equal(registry.resolveBundle(bundleName).bundleName, bundleName);
+  }
+  assert.equal(registry.resolveForRoute({ domain: 'outline', intent: 'generate_volume_outline' }).bundleName, 'outline.volume');
+  assert.equal(registry.resolveForRoute({ domain: 'outline', intent: 'split_volume_to_chapters' }).bundleName, 'outline.chapter');
+  assert.equal(registry.resolveForRoute({ domain: 'guided', intent: 'guided_step_consultation' }).bundleName, 'guided.step');
+
+  const missingVolumePersistTools = {
+    list: () => allBundleToolNames
+      .filter((name) => name !== 'persist_volume_outline')
+      .map((name) => createTool({ name, requiresApproval: false, riskLevel: 'low', sideEffects: [] })),
+  } as unknown as ToolRegistryService;
+  assert.throws(
+    () => new ToolBundleRegistry(missingVolumePersistTools).resolveBundle('outline.volume'),
+    /ToolBundle outline\.volume references unregistered tools: persist_volume_outline/,
+  );
 });
 
 test('Planner prompt compacts tool manifests without losing callable input schema', async () => {
