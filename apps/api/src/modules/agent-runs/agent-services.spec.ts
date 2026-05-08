@@ -45,6 +45,7 @@ import { ValidateGuidedStepPreviewTool } from '../agent-tools/tools/validate-gui
 import { PersistGuidedStepResultTool } from '../agent-tools/tools/persist-guided-step-result.tool';
 import { BuildImportBriefTool } from '../agent-tools/tools/build-import-brief.tool';
 import { BuildImportPreviewTool } from '../agent-tools/tools/build-import-preview.tool';
+import { GenerateChapterOutlinePreviewTool, MergeChapterOutlinePreviewsTool } from '../agent-tools/tools/chapter-outline-preview-tools.tool';
 import { GenerateImportCharactersPreviewTool } from '../agent-tools/tools/generate-import-characters-preview.tool';
 import { GenerateImportOutlinePreviewTool } from '../agent-tools/tools/generate-import-outline-preview.tool';
 import { GenerateImportProjectProfilePreviewTool } from '../agent-tools/tools/generate-import-project-profile-preview.tool';
@@ -272,7 +273,7 @@ function createGenerationProfile(overrides: Record<string, unknown> = {}) {
 
 test('RuleEngine 暴露统一策略上限和硬规则', () => {
   const rules = new RuleEngineService();
-  assert.equal(rules.getPolicy().limits.maxSteps, 20);
+  assert.equal(rules.getPolicy().limits.maxSteps, 100);
   assert.equal(rules.getPolicy().limits.maxLlmCalls, 2);
   assert.ok(rules.listHardRules().some((rule) => rule.includes('Plan 模式禁止')));
 });
@@ -302,8 +303,9 @@ test('Policy 阻止 Act 执行未出现在计划中的 Tool', () => {
 });
 
 test('Policy 阻止超过步骤上限的计划执行', () => {
-  const policy = new AgentPolicyService(new RuleEngineService());
-  const tooManySteps = Array.from({ length: 21 }, (_, index) => ({ stepNo: index + 1, name: `步骤${index + 1}`, tool: 'echo_report', mode: 'act' as const, requiresApproval: false, args: {} }));
+  const rules = new RuleEngineService();
+  const policy = new AgentPolicyService(rules);
+  const tooManySteps = Array.from({ length: rules.getPolicy().limits.maxSteps + 1 }, (_, index) => ({ stepNo: index + 1, name: `步骤${index + 1}`, tool: 'echo_report', mode: 'act' as const, requiresApproval: false, args: {} }));
   assert.throws(() => policy.assertPlanExecutable(tooManySteps), /步骤数超过上限/);
 });
 
@@ -4299,7 +4301,7 @@ test('PersistOutlineTool 兼容旧 outline_preview 缺 craftBrief，不覆盖 pl
   assert.equal(Object.prototype.hasOwnProperty.call(updatedChapters[0], 'craftBrief'), false);
 });
 
-test('GenerateOutlinePreviewTool keeps long outer timeout but bounds each LLM call', async () => {
+test('GenerateOutlinePreviewTool keeps long outer timeout without output token cap', async () => {
   let receivedOptions: Record<string, unknown> | undefined;
   let receivedMessages: Array<{ role: string; content: string }> | undefined;
   const llmUsages: Array<{ model?: string }> = [];
@@ -4337,7 +4339,7 @@ test('GenerateOutlinePreviewTool keeps long outer timeout but bounds each LLM ca
   assert.equal(tool.executionTimeoutMs, DEFAULT_LLM_TIMEOUT_MS * 80 + 60_000);
   assert.equal(receivedOptions?.timeoutMs, DEFAULT_LLM_TIMEOUT_MS);
   assert.equal(receivedOptions?.retries, 0);
-  assert.equal(receivedOptions?.maxTokens, 5000);
+  assert.equal(receivedOptions?.maxTokens, undefined);
   assert.equal(receivedOptions?.jsonMode, true);
   assert.match(receivedMessages?.[0]?.content ?? '', /actionBeats 至少 3 个节点/);
   assert.match(receivedMessages?.[0]?.content ?? '', /concreteClues 至少 1 个/);
@@ -5677,6 +5679,8 @@ test('Planner prompt 将长章节细纲引导到 outline_design 而非正文写�
   const toolList = [
     createTool({ name: 'inspect_project_context', requiresApproval: false, riskLevel: 'low', sideEffects: [] }),
     createTool({ name: 'generate_outline_preview', description: '生成卷/章节细纲与执行卡预览，章节细纲每章一次 LLM。', requiresApproval: false, riskLevel: 'low', sideEffects: [] }),
+    createTool({ name: 'generate_chapter_outline_preview', description: '生成单章章节细纲与执行卡预览。', requiresApproval: false, riskLevel: 'low', sideEffects: [] }),
+    createTool({ name: 'merge_chapter_outline_previews', description: '合并单章章节细纲预览。', requiresApproval: false, riskLevel: 'low', sideEffects: [] }),
     createTool({ name: 'validate_outline', requiresApproval: false, riskLevel: 'low', sideEffects: [] }),
     createTool({ name: 'persist_outline', requiresApproval: true, riskLevel: 'high', sideEffects: ['create_chapters', 'update_chapters'] }),
   ];
@@ -5686,7 +5690,7 @@ test('Planner prompt 将长章节细纲引导到 outline_design 而非正文写�
       name: tool.name,
       displayName: tool.name,
       description: tool.description,
-      whenToUse: tool.name === 'generate_outline_preview' ? ['卷细纲', '章节细纲', '60 章细纲', '执行卡预览'] : [],
+      whenToUse: tool.name === 'generate_chapter_outline_preview' ? ['卷细纲', '章节细纲', '60 章细纲', '执行卡预览'] : [],
       whenNotToUse: [],
       allowedModes: tool.allowedModes,
       riskLevel: tool.riskLevel,
@@ -5721,15 +5725,64 @@ test('Planner prompt 将长章节细纲引导到 outline_design 而非正文写�
   const promptPayload = JSON.parse(capturedMessages[1].content);
 
   assert.equal(plan.taskType, 'outline_design');
-  assert.deepEqual(plan.steps.map((step) => step.tool), ['inspect_project_context', 'generate_outline_preview', 'validate_outline', 'persist_outline']);
-  assert.equal(plan.steps[3].requiresApproval, true);
+  assert.equal(plan.steps.length, 64);
+  assert.equal(plan.steps[0].tool, 'inspect_project_context');
+  assert.equal(plan.steps.filter((step) => step.tool === 'generate_chapter_outline_preview').length, 60);
+  assert.equal(plan.steps[1].tool, 'generate_chapter_outline_preview');
+  assert.equal(plan.steps[1].args.chapterNo, 1);
+  assert.equal(plan.steps[2].args.previousChapter, '{{steps.2.output.chapter}}');
+  assert.equal(plan.steps[60].args.previousChapter, '{{steps.60.output.chapter}}');
+  assert.equal(plan.steps[61].tool, 'merge_chapter_outline_previews');
+  assert.equal((plan.steps[61].args.previews as unknown[]).length, 60);
+  assert.equal(plan.steps[62].tool, 'validate_outline');
+  assert.equal(plan.steps[63].tool, 'persist_outline');
+  assert.equal(plan.steps[63].requiresApproval, true);
   assert.equal(capturedOptions?.timeoutMs, DEFAULT_LLM_TIMEOUT_MS);
   assert.match(capturedMessages[0].content, /卷细纲 \/ 章节细纲 \/ 60 章细纲/);
   assert.match(capturedMessages[0].content, /不要误判为 write_chapter/);
   assert.match(promptPayload.taskTypeGuidance.outline_design, /60章细纲/);
-  assert.match(promptPayload.taskTypeGuidance.outline_design, /generate_outline_preview/);
-  assert.match(promptPayload.taskTypeGuidance.outline_design, /逐章请求 LLM/);
+  assert.match(promptPayload.taskTypeGuidance.outline_design, /generate_chapter_outline_preview/);
+  assert.match(promptPayload.taskTypeGuidance.outline_design, /merge_chapter_outline_previews/);
   assert.match(JSON.stringify(promptPayload.availableTools), /执行卡预览/);
+});
+
+test('Planner 将残缺单章细纲计划展开为所有章节 Tool 调用', () => {
+  const toolList = [
+    createTool({ name: 'inspect_project_context', requiresApproval: false, riskLevel: 'low', sideEffects: [] }),
+    createTool({ name: 'generate_chapter_outline_preview', requiresApproval: false, riskLevel: 'low', sideEffects: [] }),
+    createTool({ name: 'merge_chapter_outline_previews', requiresApproval: false, riskLevel: 'low', sideEffects: [] }),
+    createTool({ name: 'validate_outline', requiresApproval: false, riskLevel: 'low', sideEffects: [] }),
+    createTool({ name: 'persist_outline', requiresApproval: true, riskLevel: 'high', sideEffects: ['create_chapters', 'update_chapters'] }),
+  ];
+  const tools = { list: () => toolList } as unknown as ToolRegistryService;
+  const planner = new AgentPlannerService(new SkillRegistryService(), tools, new RuleEngineService(), {} as LlmGatewayService) as unknown as {
+    validateAndNormalizeLlmPlan: (data: unknown, baseline: { taskType: string; summary: string; assumptions: string[]; risks: string[] }) => { taskType: string; steps: Array<{ tool: string; args: Record<string, unknown>; requiresApproval: boolean }> };
+  };
+
+  const plan = planner.validateAndNormalizeLlmPlan(
+    {
+      taskType: 'outline_design',
+      summary: '生成 3 章细纲',
+      assumptions: [],
+      risks: [],
+      steps: [
+        { stepNo: 1, name: '巡检上下文', tool: 'inspect_project_context', mode: 'act', requiresApproval: false, args: { focus: ['outline'] } },
+        { stepNo: 2, name: '生成第一章细纲', tool: 'generate_chapter_outline_preview', mode: 'act', requiresApproval: false, args: { context: '{{steps.1.output}}', instruction: '{{context.userMessage}}', volumeNo: 1, chapterNo: 1, chapterCount: 3 } },
+        { stepNo: 3, name: '错误提前合并', tool: 'merge_chapter_outline_previews', mode: 'act', requiresApproval: false, args: { previews: ['{{steps.2.output}}'], volumeNo: 1, chapterCount: 3 } },
+      ],
+    },
+    { taskType: 'general', summary: 'fallback', assumptions: [], risks: [] },
+  );
+
+  assert.equal(plan.steps.length, 7);
+  assert.deepEqual(plan.steps.slice(1, 4).map((step) => step.tool), ['generate_chapter_outline_preview', 'generate_chapter_outline_preview', 'generate_chapter_outline_preview']);
+  assert.deepEqual(plan.steps.slice(1, 4).map((step) => step.args.chapterNo), [1, 2, 3]);
+  assert.equal(plan.steps[2].args.previousChapter, '{{steps.2.output.chapter}}');
+  assert.equal(plan.steps[3].args.previousChapter, '{{steps.3.output.chapter}}');
+  assert.equal(plan.steps[4].tool, 'merge_chapter_outline_previews');
+  assert.deepEqual(plan.steps[4].args.previews, ['{{steps.2.output}}', '{{steps.3.output}}', '{{steps.4.output}}']);
+  assert.equal(plan.steps[6].tool, 'persist_outline');
+  assert.equal(plan.steps[6].requiresApproval, true);
 });
 
 test('Planner routes chapter progress card requests to craft brief tools and keeps SceneCard boundary', async () => {
@@ -9335,7 +9388,9 @@ test('LlmGatewayService records provider context when HTTP transport fails', asy
   assert.equal(logged[0].payload.source, 'default_provider');
   assert.equal(logged[0].payload.baseUrl, `http://127.0.0.1:${address.port}/v1`);
   assert.equal(logged[0].payload.model, 'gpt-5.5');
-  assert.equal(logged[0].payload.maxTokens, 123);
+  assert.equal(logged[0].payload.requestedMaxTokens, 123);
+  assert.equal(logged[0].payload.maxTokensSent, null);
+  assert.equal(logged[0].payload.maxTokensOmitted, true);
   assert.equal(logged[0].payload.timeoutMs, 1000);
   assert.match(String((logged[0].payload.cause as Record<string, unknown>).message), /socket|ECONNRESET|hang up/i);
 });
@@ -9377,6 +9432,7 @@ test('LlmGatewayService uses long-timeout transport without global fetch header 
     assert.equal(result.text, 'OK');
     assert.equal(result.model, 'mock-chat-model');
     assert.match(requestBody, /"model":"gpt-5\.5"/);
+    assert.doesNotMatch(requestBody, /"max_tokens"/);
   } finally {
     (globalThis as unknown as { fetch: typeof fetch }).fetch = originalFetch;
     await new Promise<void>((resolve, reject) => server.close((error) => (error ? reject(error) : resolve())));
@@ -9385,6 +9441,7 @@ test('LlmGatewayService uses long-timeout transport without global fetch header 
 
 test('LlmGatewayService sends OpenAI-compatible JSON mode when requested', async () => {
   let requestBody = '';
+  const logged: Array<{ event: string; payload: Record<string, unknown> }> = [];
   const server = createServer((req, res) => {
     req.setEncoding('utf8');
     req.on('data', (chunk) => {
@@ -9392,7 +9449,7 @@ test('LlmGatewayService sends OpenAI-compatible JSON mode when requested', async
     });
     req.on('end', () => {
       res.writeHead(200, { 'Content-Type': 'application/json' });
-      res.end(JSON.stringify({ model: 'mock-chat-model', choices: [{ message: { content: '{"ok":true}' } }] }));
+      res.end(JSON.stringify({ model: 'mock-chat-model', choices: [{ finish_reason: 'stop', message: { content: '{"ok":true}' } }] }));
     });
   });
   await new Promise<void>((resolve) => server.listen(0, '127.0.0.1', resolve));
@@ -9409,11 +9466,28 @@ test('LlmGatewayService sends OpenAI-compatible JSON mode when requested', async
       };
     },
   } as never);
+  (gateway as unknown as { logger: { log: (event: string, payload: Record<string, unknown>) => void; warn: () => void; error: () => void } }).logger = {
+    log(event, payload) {
+      logged.push({ event, payload });
+    },
+    warn() {},
+    error() {},
+  };
 
   try {
-    const result = await gateway.chatJson<{ ok: boolean }>([{ role: 'user', content: 'Return JSON.' }], { appStep: 'planner', timeoutMs: DEFAULT_LLM_TIMEOUT_MS, retries: 0, jsonMode: true });
+    const result = await gateway.chatJson<{ ok: boolean }>([{ role: 'user', content: 'Return JSON.' }], { appStep: 'planner', maxTokens: 777, timeoutMs: DEFAULT_LLM_TIMEOUT_MS, retries: 0, jsonMode: true });
     assert.equal(result.data.ok, true);
+    assert.equal(result.result.rawPayloadSummary.finishReason, 'stop');
     assert.match(requestBody, /"response_format":\{"type":"json_object"\}/);
+    assert.doesNotMatch(requestBody, /"max_tokens"/);
+    const requested = logged.find((item) => item.event === 'llm.gateway.chat.requested');
+    assert.ok(requested);
+    const loggedRequestBody = requested.payload.requestBody as Record<string, unknown>;
+    assert.equal(loggedRequestBody.requestedMaxTokens, 777);
+    assert.equal(loggedRequestBody.maxTokensSent, null);
+    assert.equal(loggedRequestBody.maxTokensOmitted, true);
+    assert.match(JSON.stringify(loggedRequestBody.messages), /Return JSON/);
+    assert.doesNotMatch(JSON.stringify(loggedRequestBody), /test-key/);
   } finally {
     await new Promise<void>((resolve, reject) => server.close((error) => (error ? reject(error) : resolve())));
   }
@@ -9454,10 +9528,21 @@ test('LlmGatewayService chatJson extracts one complete JSON value before trailin
 
 test('LlmGatewayService chatJson keeps malformed JSON fail-fast', async () => {
   const gateway = new LlmGatewayService({} as never);
+  const logged: Array<{ event: string; error: unknown; payload: Record<string, unknown> }> = [];
+  (gateway as unknown as { logger: { log: () => void; warn: () => void; error: (event: string, error: unknown, payload: Record<string, unknown>) => void } }).logger = {
+    log() {},
+    warn() {},
+    error(event, error, payload) {
+      logged.push({ event, error, payload });
+    },
+  };
+  const rawText = '{"outline":{"title":"bad shape"}]\nLater prose {"outline":{"title":"must not be parsed"}}';
   (gateway as unknown as { chat: LlmGatewayService['chat'] }).chat = async () => ({
-    text: '{"outline":{"title":"bad shape"}]\nLater prose {"outline":{"title":"must not be parsed"}}',
+    text: rawText,
     model: 'mock-json',
-    rawPayloadSummary: {},
+    usage: { completion_tokens: 9 },
+    elapsedMs: 12,
+    rawPayloadSummary: { finishReason: 'stop' },
   });
 
   await assert.rejects(
@@ -9468,6 +9553,19 @@ test('LlmGatewayService chatJson keeps malformed JSON fail-fast', async () => {
       return true;
     },
   );
+  assert.equal(logged.length, 1);
+  assert.equal(logged[0].event, 'llm.gateway.chat_json.parse_failed');
+  assert.equal(logged[0].payload.appStep, 'planner');
+  assert.equal(logged[0].payload.model, 'mock-json');
+  assert.deepEqual(logged[0].payload.tokenUsage, { completion_tokens: 9 });
+  assert.deepEqual(logged[0].payload.rawPayloadSummary, { finishReason: 'stop' });
+  assert.equal(logged[0].payload.requestedMaxTokens, null);
+  assert.equal(logged[0].payload.maxTokensSent, null);
+  assert.equal(logged[0].payload.rawResponseLength, rawText.length);
+  assert.equal(logged[0].payload.rawResponseTruncated, false);
+  assert.equal(logged[0].payload.rawResponseText, rawText);
+  assert.equal(logged[0].payload.jsonCandidateText, rawText);
+  assert.match(String(logged[0].payload.parseErrorWindow), /bad shape/);
 });
 
 test('generate_outline_preview LLM timeout 直接抛错且不生成 fallback', async () => {
@@ -9522,6 +9620,126 @@ test('generate_outline_preview LLM 返回章节数不足时直接报错', async 
   );
 });
 
+test('generate_chapter_outline_preview 生成单章细纲并保留上一章接力卡', async () => {
+  let receivedMessages: Array<{ role: string; content: string }> = [];
+  let receivedOptions: Record<string, unknown> | undefined;
+  const llmUsages: Array<{ model?: string }> = [];
+  const llm = {
+    async chatJson(messages: Array<{ role: string; content: string }>, options: Record<string, unknown>) {
+      receivedMessages = messages;
+      receivedOptions = options;
+      return {
+        data: {
+          volume: { volumeNo: 1, title: '第一卷', synopsis: '卷简介', objective: '完成卷主线', chapterCount: 60 },
+          chapter: createOutlineChapter(3, 1, { title: '第三章细纲', objective: '承接第二章压力' }),
+          chapters: [createOutlineChapter(3, 1, { title: '第三章细纲', objective: '承接第二章压力' })],
+          risks: [],
+        },
+        result: { model: 'mock-chapter-outline', usage: { total_tokens: 77 }, rawPayloadSummary: { finishReason: 'stop' } },
+      };
+    },
+  };
+  const tool = new GenerateChapterOutlinePreviewTool(llm as never);
+  const result = await tool.run(
+    {
+      context: { project: { title: '逆潮脊梁' }, volumes: [{ volumeNo: 1, title: '罪桥初潮', synopsis: '小归潮逃生', objective: '修成逃生桥' }] },
+      instruction: '为第 1 卷生成 60 章细纲',
+      volumeNo: 1,
+      chapterNo: 3,
+      chapterCount: 60,
+      previousChapter: createOutlineChapter(2, 1, { hook: '第二章钩子' }) as unknown as Record<string, unknown>,
+    },
+    { agentRunId: 'run1', projectId: 'p1', mode: 'plan', approved: false, outputs: {}, policy: {}, recordLlmUsage: (usage) => llmUsages.push(usage) },
+  );
+
+  assert.equal(result.chapter.chapterNo, 3);
+  assert.equal(result.chapters.length, 1);
+  assert.equal(result.volume.chapterCount, 60);
+  assert.equal(result.chapter.craftBrief?.storyUnit?.unitId, 'v1_unit_01');
+  assert.equal(receivedOptions?.jsonMode, true);
+  assert.equal(receivedOptions?.maxTokens, undefined);
+  assert.match(receivedMessages[1].content, /目标章：第 3 章/);
+  assert.match(receivedMessages[1].content, /第二章钩子/);
+  assert.equal(llmUsages[0].model, 'mock-chapter-outline');
+});
+
+test('generate_chapter_outline_preview LLM timeout 直接抛错且不生成 fallback', async () => {
+  let calls = 0;
+  const llm = {
+    async chatJson() {
+      calls += 1;
+      throw new LlmTimeoutError('单章细纲超时', 'planner', DEFAULT_LLM_TIMEOUT_MS);
+    },
+  };
+  const tool = new GenerateChapterOutlinePreviewTool(llm as never);
+  await assert.rejects(
+    () => tool.run(
+      {
+        context: { project: { title: '逆潮脊梁' }, volumes: [{ volumeNo: 1, title: '罪桥初潮', synopsis: '小归潮逃生', objective: '修成逃生桥' }] },
+        instruction: '为第 1 卷生成 60 章细纲',
+        volumeNo: 1,
+        chapterNo: 1,
+        chapterCount: 60,
+      },
+      { agentRunId: 'run1', projectId: 'p1', mode: 'plan', approved: false, outputs: {}, policy: {} },
+    ),
+    /单章细纲超时/,
+  );
+  assert.equal(calls, 1);
+});
+
+test('generate_chapter_outline_preview 缺失 craftBrief 字段时直接报错', async () => {
+  const chapter = { ...createOutlineChapter(1, 1) } as Record<string, unknown>;
+  delete chapter.craftBrief;
+  const llm = {
+    async chatJson() {
+      return {
+        data: {
+          volume: { volumeNo: 1, title: '第一卷', synopsis: '卷简介', objective: '完成卷主线', chapterCount: 60 },
+          chapter,
+          chapters: [chapter],
+          risks: [],
+        },
+        result: { model: 'mock-chapter-outline' },
+      };
+    },
+  };
+  const tool = new GenerateChapterOutlinePreviewTool(llm as never);
+  await assert.rejects(
+    () => tool.run(
+      {
+        context: { project: { title: '逆潮脊梁' }, volumes: [{ volumeNo: 1, title: '罪桥初潮', synopsis: '小归潮逃生', objective: '修成逃生桥' }] },
+        instruction: '为第 1 卷生成 60 章细纲',
+        volumeNo: 1,
+        chapterNo: 1,
+        chapterCount: 60,
+      },
+      { agentRunId: 'run1', projectId: 'p1', mode: 'plan', approved: false, outputs: {}, policy: {} },
+    ),
+    /缺少 craftBrief/,
+  );
+});
+
+test('merge_chapter_outline_previews 合并单章输出并拦截缺章', async () => {
+  const tool = new MergeChapterOutlinePreviewsTool();
+  const previews = [1, 2, 3].map((chapterNo) => ({
+    volume: { volumeNo: 1, title: '第一卷', synopsis: '卷简介', objective: '完成卷主线', chapterCount: 3 },
+    chapter: createOutlineChapter(chapterNo, 1),
+    chapters: [createOutlineChapter(chapterNo, 1)],
+    risks: chapterNo === 2 ? ['中段风险'] : [],
+  }));
+
+  const result = await tool.run({ previews, volumeNo: 1, chapterCount: 3 }, { agentRunId: 'run1', projectId: 'p1', mode: 'plan', approved: false, outputs: {}, policy: {} });
+
+  assert.equal(result.volume.chapterCount, 3);
+  assert.deepEqual(result.chapters.map((chapter) => chapter.chapterNo), [1, 2, 3]);
+  assert.match(result.risks.join('\n'), /第 2 章：中段风险/);
+  await assert.rejects(
+    () => tool.run({ previews: previews.slice(0, 2), volumeNo: 1, chapterCount: 3 }, { agentRunId: 'run1', projectId: 'p1', mode: 'plan', approved: false, outputs: {}, policy: {} }),
+    /2\/3/,
+  );
+});
+
 test('generate_outline_preview 为 60 章逐章请求 LLM 并传递章节接力卡', async () => {
   const calls: Array<{ start: number; end: number; options: Record<string, unknown>; prompt: string }> = [];
   const progress: Array<Record<string, unknown>> = [];
@@ -9573,7 +9791,7 @@ test('generate_outline_preview 为 60 章逐章请求 LLM 并传递章节接力�
   assert.equal(calls.every((call) => call.options.timeoutMs === DEFAULT_LLM_TIMEOUT_MS), true);
   assert.equal(calls.every((call) => call.options.retries === 0), true);
   assert.equal(calls.every((call) => call.options.jsonMode === true), true);
-  assert.equal(calls.every((call) => call.options.maxTokens === 5000), true);
+  assert.equal(calls.every((call) => call.options.maxTokens === undefined), true);
   assert.match(calls[1].prompt, /本次运行已生成章节短表/);
   assert.match(calls[1].prompt, /章节接力卡/);
   assert.match(calls[1].prompt, /"previousRequestLastChapterNo": 1/);
@@ -9593,6 +9811,8 @@ test('generate_outline_preview 为 60 章逐章请求 LLM 并传递章节接力�
   assert.equal(logs.filter((item) => item.event === 'outline_preview.llm_request.completed').length, 60);
   assert.equal(logs[0].payload.requestChapterStart, 1);
   assert.equal(logs[0].payload.requestChapterEnd, 1);
+  assert.equal(logs[0].payload.maxTokensSent, null);
+  assert.equal(logs[0].payload.maxTokensOmitted, true);
   assert.equal(logs[2].payload.requestChapterStart, 2);
   assert.equal(logs[2].payload.previousChapterNo, 1);
   assert.equal(logs.every((item) => item.payload.totalMessageChars !== undefined), true);

@@ -170,7 +170,6 @@ export class LlmProvidersService implements OnModuleInit {
           messages: [{ role: 'user', content: '测试连通性，请只回复 OK。' }],
           ...buildProviderChatParams(provider.extraConfig),
           temperature: 0,
-          max_tokens: 64,
         }),
         signal: AbortSignal.timeout(DEFAULT_LLM_TIMEOUT_MS),
       });

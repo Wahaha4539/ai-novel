@@ -16,6 +16,7 @@ import { ExtractChapterFactsTool } from './tools/extract-chapter-facts.tool';
 import { FactValidationTool } from './tools/fact-validation.tool';
 import { GenerateGuidedStepPreviewTool } from './tools/generate-guided-step-preview.tool';
 import { GenerateChapterCraftBriefPreviewTool, PersistChapterCraftBriefTool, ValidateChapterCraftBriefTool } from './tools/chapter-craft-brief-tools.tool';
+import { GenerateChapterOutlinePreviewTool, MergeChapterOutlinePreviewsTool } from './tools/chapter-outline-preview-tools.tool';
 import { GenerateImportCharactersPreviewTool } from './tools/generate-import-characters-preview.tool';
 import { GenerateImportOutlinePreviewTool } from './tools/generate-import-outline-preview.tool';
 import { GenerateImportProjectProfilePreviewTool } from './tools/generate-import-project-profile-preview.tool';
@@ -85,6 +86,8 @@ export class ToolRegistryService implements OnModuleInit {
     private readonly validateGuidedStepPreviewTool: ValidateGuidedStepPreviewTool,
     private readonly persistGuidedStepResultTool: PersistGuidedStepResultTool,
     private readonly generateOutlinePreviewTool: GenerateOutlinePreviewTool,
+    private readonly generateChapterOutlinePreviewTool: GenerateChapterOutlinePreviewTool,
+    private readonly mergeChapterOutlinePreviewsTool: MergeChapterOutlinePreviewsTool,
     private readonly generateWorldbuildingPreviewTool: GenerateWorldbuildingPreviewTool,
     private readonly generateStoryBiblePreviewTool: GenerateStoryBiblePreviewTool,
     private readonly validateOutlineTool: ValidateOutlineTool,
@@ -143,6 +146,8 @@ export class ToolRegistryService implements OnModuleInit {
     this.register(this.validateGuidedStepPreviewTool);
     this.register(this.persistGuidedStepResultTool);
     this.register(this.generateOutlinePreviewTool);
+    this.register(this.generateChapterOutlinePreviewTool);
+    this.register(this.mergeChapterOutlinePreviewsTool);
     this.register(this.generateWorldbuildingPreviewTool);
     this.register(this.generateStoryBiblePreviewTool);
     this.register(this.validateOutlineTool);

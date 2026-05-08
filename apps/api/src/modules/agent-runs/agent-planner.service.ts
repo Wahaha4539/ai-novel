@@ -74,6 +74,9 @@ const IMPORT_TARGET_ASSET_BY_TOOL = new Map<string, ImportAssetType>(
 
 const BUILD_IMPORT_BRIEF_TOOL = 'build_import_brief';
 const CROSS_TARGET_CONSISTENCY_CHECK_TOOL = 'cross_target_consistency_check';
+const GENERATE_OUTLINE_PREVIEW_TOOL = 'generate_outline_preview';
+const GENERATE_CHAPTER_OUTLINE_PREVIEW_TOOL = 'generate_chapter_outline_preview';
+const MERGE_CHAPTER_OUTLINE_PREVIEWS_TOOL = 'merge_chapter_outline_previews';
 const MERGE_PREVIEW_ARG_BY_ASSET_TYPE: Record<ImportAssetType, string> = {
   projectProfile: 'projectProfilePreview',
   outline: 'outlinePreview',
@@ -159,7 +162,7 @@ export class AgentPlannerService {
           '只要导入预览未来可写入，计划中必须包含 persist_project_assets，且它必须是需要审批的写入步骤；validate_imported_assets 必须读取 merge_import_previews 或 build_import_preview 的统一预览输出。',
           '可引用上下文：{{context.session.currentProjectId}}、{{context.session.currentChapterId}}、{{context.project.defaultWordCount}}、{{context.attachments.0}}、{{context.attachments.0.url}}、{{context.session.guided.currentStep}}、{{context.session.guided.currentStepData}}。',
           '如果 agentContext.session.guided.currentStep 存在，说明用户正在创作引导页；当前步骤问答优先选择 guided_step_consultation，当前步骤生成优先选择 guided_step_generate，确认保存/写入优先选择 guided_step_finalize，不要误判成普通章节正文写作。',
-          '用户要求“卷细纲 / 章节细纲 / 60 章细纲 / 等长细纲 / 章节规划”时选择 outline_design，并优先编排 inspect_project_context -> generate_outline_preview -> validate_outline -> persist_outline；不要误判为 write_chapter。',
+          '用户要求“卷细纲 / 章节细纲 / 60 章细纲 / 等长细纲 / 章节规划”时选择 outline_design，并优先编排 inspect_project_context -> generate_chapter_outline_preview（每章一个步骤）-> merge_chapter_outline_previews -> validate_outline -> persist_outline；不要误判为 write_chapter。',
           '用户明确说“写正文 / 生成正文 / 续写正文”才选择 chapter_write 或 multi_chapter_write；用户说“拆成场景 / 场景卡 / SceneCard”时选择 scene_card_planning。',
           '用户明确说“重写章节 / 重新生成章节 / 从头写 / 推倒重来 / 不沿用旧稿”时必须使用 rewrite_chapter；不要使用 polish_chapter。',
           '可引用前序步骤：{{steps.N.output.field}} 或 {{steps.step_id.output.field}}；不要引用当前或未来步骤。',
@@ -179,7 +182,7 @@ export class AgentPlannerService {
               chapter_write: '写某一章正文、章节内容、目标字数、续写正文；若明确要求重写旧章节，应使用 rewrite_chapter。',
               multi_chapter_write: '连续生成多章正文，例如接下来三章、第 1-5 章、多个指定章节；应优先使用 write_chapter_series，不要展开多个 write_chapter。默认设置 qualityPipeline=full，除非用户明确要求只要草稿。',
               chapter_polish: '润色、局部修改、改稿、优化文风、去 AI 味；不用于从头重写章节。',
-              outline_design: '设计大纲、卷细纲、章节细纲、60章细纲、等长细纲、拆卷、把某卷拆成多章、章节规划；应使用 generate_outline_preview 生成卷/章节细纲与执行卡预览，章节细纲会逐章请求 LLM 并用接力卡保持连贯性；不要误判为写正文。',
+              outline_design: '设计大纲、卷细纲、章节细纲、60章细纲、等长细纲、拆卷、把某卷拆成多章、章节规划；应使用 generate_chapter_outline_preview 为每一章生成可见 Tool 调用，再用 merge_chapter_outline_previews 合并为 outline_preview；不要误判为写正文。',
               project_import_preview: '拆解导入文案，并按用户指定目标产物生成预览。只要大纲时不要生成角色/世界观/写作规则；要求全套时才生成项目资料、剧情大纲、角色、世界观和写作规则。',
               chapter_revision: '修改当前章或已有章节草稿、增强节奏/压迫感、保留结局等禁改约束；若用户要求重写或不沿用旧稿，使用 rewrite_chapter。',
               character_consistency_check: '检查人设是否崩、角色动机/对话是否符合设定。',
@@ -268,7 +271,7 @@ export class AgentPlannerService {
             '修复导入分目标计划时，优先使用 build_import_brief（若可用）和已注册的 generate_import_*_preview 专用工具；目标专用预览后必须调用 merge_import_previews、cross_target_consistency_check（若可用），再把合并结果传给 validate_imported_assets。',
             '如果专用目标工具未注册，使用 build_import_preview fallback，但 requestedAssetTypes 仍必须等于用户选择的目标范围；persist_project_assets 必须作为需审批写入步骤保留。',
             '如果 agentContext.session.guided.currentStep 存在，修复后的 taskType 仍应优先使用 guided_step_consultation、guided_step_generate 或 guided_step_finalize，不要修成 chapter_write。',
-            '修复卷细纲、章节细纲、60 章细纲或等长细纲计划时，taskType 应为 outline_design，并使用 generate_outline_preview；只有写正文/生成正文才使用 chapter_write，明确重写/不沿用旧稿时使用 rewrite_chapter，拆成场景/SceneCard 才使用 scene_card_planning。',
+            '修复卷细纲、章节细纲、60 章细纲或等长细纲计划时，taskType 应为 outline_design，并使用 generate_chapter_outline_preview 为每章生成独立步骤，再用 merge_chapter_outline_previews 合并；只有写正文/生成正文才使用 chapter_write，明确重写/不沿用旧稿时使用 rewrite_chapter，拆成场景/SceneCard 才使用 scene_card_planning。',
             'steps[].mode 是后端计划步骤字段，固定填 act；Plan/Act 运行时模式由后端注入，不由 LLM 决定。',
             '引用前序步骤输出时，完整对象用 {{steps.N.output}}，对象字段用 {{steps.N.output.field}}；不要把对象序列化成字符串。',
             '连续生成多章正文时必须使用 write_chapter_series；不要把多个 write_chapter 展开为多套步骤。',
@@ -358,13 +361,18 @@ export class AgentPlannerService {
       return onFailure ? { ...normalized, onFailure } : normalized;
     });
 
-    const normalizedSteps = this.enforceProjectImportPipeline(
+    const normalizedSteps = this.enforceOutlineDesignPipeline(
       record.taskType,
-      this.enforceChapterWriteQualityPipeline(steps, (tool) => toolRequiresApproval.get(tool) ?? false),
+      this.enforceProjectImportPipeline(
+        record.taskType,
+        this.enforceChapterWriteQualityPipeline(steps, (tool) => toolRequiresApproval.get(tool) ?? false),
+        registeredTools,
+        (tool) => toolRequiresApproval.get(tool) ?? false,
+        this.explicitImportAssetTypes(context?.session.requestedAssetTypes),
+        context?.session.importPreviewMode,
+      ),
       registeredTools,
       (tool) => toolRequiresApproval.get(tool) ?? false,
-      this.explicitImportAssetTypes(context?.session.requestedAssetTypes),
-      context?.session.importPreviewMode,
     );
     if (normalizedSteps.length > maxSteps) throw new Error(`规范化后的 Agent Plan steps 数量非法，最多 ${maxSteps} 步`);
     const missingTool = normalizedSteps.find((step) => !registeredTools.has(step.tool));
@@ -421,6 +429,136 @@ export class AgentPlannerService {
 
   private createPlannedStep(name: string, tool: string, args: Record<string, unknown>, requiresApproval: (tool: string) => boolean, runIf?: AgentStepCondition): AgentPlanStepSpec {
     return { id: tool, stepNo: 0, name, purpose: name, tool, mode: 'act', requiresApproval: requiresApproval(tool), args, ...(runIf ? { runIf } : {}) };
+  }
+
+  /**
+   * 大纲计划需要在 UI 时间线里显式展示每章 Tool 调用。
+   * LLM 可以先给出旧的 generate_outline_preview 聚合步骤；这里将其稳定展开为 N 个单章步骤。
+   */
+  private enforceOutlineDesignPipeline(taskType: unknown, steps: AgentPlanStepSpec[], registeredTools: Set<string>, requiresApproval: (tool: string) => boolean): AgentPlanStepSpec[] {
+    if (taskType !== 'outline_design') return steps;
+    if (!registeredTools.has(GENERATE_CHAPTER_OUTLINE_PREVIEW_TOOL) || !registeredTools.has(MERGE_CHAPTER_OUTLINE_PREVIEWS_TOOL)) return steps;
+
+    const aggregateStep = steps.find((step) => step.tool === GENERATE_OUTLINE_PREVIEW_TOOL);
+    if (aggregateStep) {
+      const args = aggregateStep.args;
+      const chapterCount = this.positiveInt(args.chapterCount) ?? 0;
+      if (!chapterCount) return steps;
+      const volumeNo = this.positiveInt(args.volumeNo) ?? 1;
+      const prefix = this.renumberSteps(steps.filter((step) => step.stepNo < aggregateStep.stepNo));
+      const contextArg = args.context ?? this.latestStepOutputRef(prefix, 'inspect_project_context') ?? '{{context.project}}';
+      const instructionArg = args.instruction ?? '{{context.userMessage}}';
+      return this.buildExpandedChapterOutlineSteps(prefix, contextArg, instructionArg, volumeNo, chapterCount, registeredTools, requiresApproval);
+    }
+
+    const chapterSteps = steps.filter((step) => step.tool === GENERATE_CHAPTER_OUTLINE_PREVIEW_TOOL);
+    if (!chapterSteps.length) return steps;
+    const firstChapterStep = chapterSteps[0];
+    const chapterCount = this.positiveInt(firstChapterStep.args.chapterCount) ?? chapterSteps.length;
+    const volumeNo = this.positiveInt(firstChapterStep.args.volumeNo) ?? 1;
+    const prefix = this.renumberSteps(steps.filter((step) => step.stepNo < firstChapterStep.stepNo));
+    const contextArg = firstChapterStep.args.context ?? this.latestStepOutputRef(prefix, 'inspect_project_context') ?? '{{context.project}}';
+    const instructionArg = firstChapterStep.args.instruction ?? '{{context.userMessage}}';
+    return this.buildExpandedChapterOutlineSteps(prefix, contextArg, instructionArg, volumeNo, chapterCount, registeredTools, requiresApproval);
+  }
+
+  private buildExpandedChapterOutlineSteps(
+    prefix: AgentPlanStepSpec[],
+    contextArg: unknown,
+    instructionArg: unknown,
+    volumeNo: number,
+    chapterCount: number,
+    registeredTools: Set<string>,
+    requiresApproval: (tool: string) => boolean,
+  ): AgentPlanStepSpec[] {
+    const steps = [...prefix];
+    const chapterSteps: AgentPlanStepSpec[] = [];
+    for (let chapterNo = 1; chapterNo <= chapterCount; chapterNo += 1) {
+      const previous = chapterSteps.at(-1);
+      const stepNo = steps.length + 1;
+      const step: AgentPlanStepSpec = {
+        id: `chapter_outline_${String(chapterNo).padStart(3, '0')}`,
+        stepNo,
+        name: `生成第 ${chapterNo} 章单章细纲`,
+        purpose: `生成第 ${chapterNo}/${chapterCount} 章章节细纲与 Chapter.craftBrief 执行卡。`,
+        tool: GENERATE_CHAPTER_OUTLINE_PREVIEW_TOOL,
+        mode: 'act',
+        requiresApproval: requiresApproval(GENERATE_CHAPTER_OUTLINE_PREVIEW_TOOL),
+        args: this.removeUndefinedArgs({
+          context: contextArg,
+          instruction: instructionArg,
+          volumeNo,
+          chapterNo,
+          chapterCount,
+          previousChapter: previous ? `{{steps.${previous.stepNo}.output.chapter}}` : undefined,
+        }),
+      };
+      steps.push(step);
+      chapterSteps.push(step);
+    }
+    steps.push({
+      id: MERGE_CHAPTER_OUTLINE_PREVIEWS_TOOL,
+      stepNo: steps.length + 1,
+      name: '合并所有单章细纲预览',
+      purpose: '把每章细纲预览合并为完整 outline_preview，供校验和审批写入使用。',
+      tool: MERGE_CHAPTER_OUTLINE_PREVIEWS_TOOL,
+      mode: 'act',
+      requiresApproval: requiresApproval(MERGE_CHAPTER_OUTLINE_PREVIEWS_TOOL),
+      args: {
+        previews: chapterSteps.map((step) => `{{steps.${step.stepNo}.output}}`),
+        volumeNo,
+        chapterCount,
+        instruction: instructionArg,
+      },
+    });
+    return this.ensureOutlineValidateAndPersistSteps(steps, MERGE_CHAPTER_OUTLINE_PREVIEWS_TOOL, registeredTools, requiresApproval);
+  }
+
+  private ensureOutlineValidateAndPersistSteps(steps: AgentPlanStepSpec[], previewTool: string, registeredTools: Set<string>, requiresApproval: (tool: string) => boolean): AgentPlanStepSpec[] {
+    const withoutOld = this.renumberSteps(steps.filter((step) => step.tool !== 'validate_outline' && step.tool !== 'persist_outline'));
+    const previewStep = [...withoutOld].reverse().find((step) => step.tool === previewTool);
+    if (!previewStep) return steps;
+    let normalized = withoutOld;
+    if (registeredTools.has('validate_outline')) {
+      normalized = [
+        ...normalized,
+        {
+          id: 'validate_outline',
+          stepNo: normalized.length + 1,
+          name: '校验合并后的完整细纲',
+          purpose: '校验章节数量、编号连续性、字段完整性和 craftBrief 质量。',
+          tool: 'validate_outline',
+          mode: 'act',
+          requiresApproval: requiresApproval('validate_outline'),
+          args: { preview: `{{steps.${previewStep.stepNo}.output}}` },
+        },
+      ];
+    }
+    if (registeredTools.has('persist_outline')) {
+      const validateStep = [...normalized].reverse().find((step) => step.tool === 'validate_outline');
+      normalized = [
+        ...normalized,
+        {
+          id: 'persist_outline',
+          stepNo: normalized.length + 1,
+          name: '审批后写入完整细纲',
+          purpose: '用户审批后把完整 outline_preview 写入卷和 planned 章节。',
+          tool: 'persist_outline',
+          mode: 'act',
+          requiresApproval: requiresApproval('persist_outline'),
+          args: this.removeUndefinedArgs({
+            preview: `{{steps.${previewStep.stepNo}.output}}`,
+            validation: validateStep ? `{{steps.${validateStep.stepNo}.output}}` : undefined,
+          }),
+        },
+      ];
+    }
+    return normalized;
+  }
+
+  private latestStepOutputRef(steps: AgentPlanStepSpec[], tool: string): string | undefined {
+    const step = [...steps].reverse().find((item) => item.tool === tool);
+    return step ? `{{steps.${step.stepNo}.output}}` : undefined;
   }
 
   /**
@@ -780,6 +918,11 @@ export class AgentPlannerService {
 
   private removeUndefinedArgs(args: Record<string, unknown>) {
     return Object.fromEntries(Object.entries(args).filter(([, value]) => value !== undefined));
+  }
+
+  private positiveInt(value: unknown): number | undefined {
+    const numeric = Number(value);
+    return Number.isInteger(numeric) && numeric > 0 ? numeric : undefined;
   }
 
   /** 统计 Planner 的模型调用次数，避免 JSON 修复循环失控。 */

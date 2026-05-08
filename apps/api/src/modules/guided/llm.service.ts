@@ -47,12 +47,11 @@ export class LlmService {
       messages,
       ...buildProviderChatParams(config.params),
       temperature: options?.temperature ?? (config.params.temperature as number | undefined) ?? 0.8,
-      max_tokens: options?.maxTokens ?? 2000,
     });
 
     const t0 = Date.now();
     const msgPreview = messages.map((m) => `[${m.role}](${m.content.length}ch)`).join(' ');
-    console.log(`[LLM] → ${config.model} src=${config.source} msgs=${messages.length} temp=${options?.temperature ?? 0.8} ${msgPreview}`);
+    console.log(`[LLM] → ${config.model} src=${config.source} msgs=${messages.length} temp=${options?.temperature ?? 0.8} maxTokensSent=none requestedMaxTokens=${options?.maxTokens ?? 'none'} ${msgPreview}`);
 
     const response = await fetch(url, {
       method: 'POST',

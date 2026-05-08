@@ -232,14 +232,13 @@ export class GenerateOutlinePreviewTool implements BaseTool<GenerateOutlinePrevi
       { role: 'system' as const, content: this.buildSystemPrompt() },
       { role: 'user' as const, content: this.buildUserPrompt(args, volumeNo, chapterCount, batch, previousChapters) },
     ];
-    const maxTokens = this.estimateMaxTokens(batch?.chapterCount ?? chapterCount);
-    const logContext = this.buildLlmRequestLogContext(context, messages, volumeNo, chapterCount, batch, previousChapters, maxTokens);
+    const logContext = this.buildLlmRequestLogContext(context, messages, volumeNo, chapterCount, batch, previousChapters);
     const startedAt = Date.now();
     this.logger.log('outline_preview.llm_request.started', logContext);
     try {
       const response = await this.llm.chatJson<OutlinePreviewOutput>(
         messages,
-        { appStep: 'planner', maxTokens, timeoutMs: OUTLINE_PREVIEW_LLM_TIMEOUT_MS, retries: 0, jsonMode: true },
+        { appStep: 'planner', timeoutMs: OUTLINE_PREVIEW_LLM_TIMEOUT_MS, retries: 0, jsonMode: true },
       );
       this.logger.log('outline_preview.llm_request.completed', {
         ...logContext,
@@ -264,7 +263,6 @@ export class GenerateOutlinePreviewTool implements BaseTool<GenerateOutlinePrevi
     chapterCount: number,
     batch: OutlinePreviewBatch | undefined,
     previousChapters: OutlinePreviewOutput['chapters'],
-    maxTokens: number,
   ): Record<string, unknown> {
     const previousChapter = previousChapters.at(-1);
     return {
@@ -281,7 +279,8 @@ export class GenerateOutlinePreviewTool implements BaseTool<GenerateOutlinePrevi
       previousChapterNo: previousChapter?.chapterNo ?? null,
       previousChaptersCount: previousChapters.length,
       timeoutMs: OUTLINE_PREVIEW_LLM_TIMEOUT_MS,
-      maxTokens,
+      maxTokensSent: null,
+      maxTokensOmitted: true,
       messageCount: messages.length,
       totalMessageChars: messages.reduce((sum, message) => sum + message.content.length, 0),
     };
@@ -729,10 +728,6 @@ export class GenerateOutlinePreviewTool implements BaseTool<GenerateOutlinePrevi
 
   private isReplanningInstruction(instruction: string | undefined): boolean {
     return /重新|重编|重写|重做|重排|再规划|推倒|replan|regenerate|rewrite/i.test(instruction ?? '');
-  }
-
-  private estimateMaxTokens(chapterCount: number): number {
-    return Math.min(16_000, Math.max(5000, chapterCount * 980 + 2200));
   }
 
   private createBatches(chapterCount: number): OutlinePreviewBatch[] {

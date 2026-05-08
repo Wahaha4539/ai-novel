@@ -15,7 +15,7 @@ export interface BuiltinHardRule {
 
 export const BUILTIN_POLICY_CONFIG: AgentPolicyConfig = {
   limits: {
-    maxSteps: 20,
+    maxSteps: 100,
     maxLlmCalls: 2,
   },
   secondConfirmRiskIds: ['high_risk', 'destructive_side_effect', 'fact_layer_write', 'delete_side_effect'],

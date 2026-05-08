@@ -39,6 +39,11 @@ export class LlmJsonInvalidError extends Error {
  */
 @Injectable()
 export class LlmGatewayService {
+  private static readonly JSON_PARSE_LOG_TEXT_LIMIT = 32_000;
+  private static readonly JSON_PARSE_LOG_EDGE_LIMIT = 4_000;
+  private static readonly JSON_PARSE_LOG_WINDOW_RADIUS = 1_200;
+  private static readonly REQUEST_LOG_MESSAGE_LIMIT = 16_000;
+
   private readonly logger = new StructuredLogger(LlmGatewayService.name);
   private readonly envBaseUrl = process.env.LLM_BASE_URL ?? 'http://localhost:8318/v1';
   private readonly envApiKey = process.env.LLM_API_KEY ?? '';
@@ -70,7 +75,14 @@ export class LlmGatewayService {
    */
   async chatJson<T = unknown>(messages: LlmChatMessage[], options: LlmChatOptions = {}): Promise<{ data: T; result: LlmChatResult }> {
     const result = await this.chat(messages, options);
-    return { data: this.parseJson<T>(result.text, options.appStep), result };
+    try {
+      return { data: this.parseJson<T>(result.text, options.appStep), result };
+    } catch (error) {
+      if (error instanceof LlmJsonInvalidError) {
+        this.logger.error('llm.gateway.chat_json.parse_failed', error, this.buildJsonParseFailureLogPayload(error, result, options));
+      }
+      throw error;
+    }
   }
 
   private parseJson<T>(text: string, appStep?: string): T {
@@ -81,8 +93,59 @@ export class LlmGatewayService {
     try {
       return JSON.parse(candidate) as T;
     } catch (error) {
-      throw new LlmJsonInvalidError(`LLM JSON 解析失败：${error instanceof Error ? error.message : String(error)}`, appStep, candidate.slice(0, 2000), error);
+      throw new LlmJsonInvalidError(`LLM JSON 解析失败：${error instanceof Error ? error.message : String(error)}`, appStep, candidate, error);
     }
+  }
+
+  private buildJsonParseFailureLogPayload(error: LlmJsonInvalidError, result: LlmChatResult, options: LlmChatOptions): Record<string, unknown> {
+    const parseErrorPosition = this.extractJsonParseErrorPosition(error);
+    return {
+      appStep: options.appStep,
+      model: result.model,
+      tokenUsage: result.usage,
+      elapsedMs: result.elapsedMs,
+      rawPayloadSummary: result.rawPayloadSummary,
+      jsonMode: options.jsonMode ?? false,
+      requestedMaxTokens: options.maxTokens ?? null,
+      maxTokensSent: null,
+      rawResponseLength: result.text.length,
+      rawResponseTruncated: result.text.length > LlmGatewayService.JSON_PARSE_LOG_TEXT_LIMIT,
+      rawResponseText: this.truncateForLog(result.text, LlmGatewayService.JSON_PARSE_LOG_TEXT_LIMIT),
+      rawResponsePreview: this.edgeForLog(result.text, 'head'),
+      rawResponseTail: this.edgeForLog(result.text, 'tail'),
+      jsonCandidateLength: error.rawText.length,
+      jsonCandidateTruncated: error.rawText.length > LlmGatewayService.JSON_PARSE_LOG_TEXT_LIMIT,
+      jsonCandidateText: this.truncateForLog(error.rawText, LlmGatewayService.JSON_PARSE_LOG_TEXT_LIMIT),
+      jsonCandidateTail: this.edgeForLog(error.rawText, 'tail'),
+      parseErrorPosition,
+      parseErrorWindow: this.windowForLog(error.rawText, parseErrorPosition),
+    };
+  }
+
+  private extractJsonParseErrorPosition(error: LlmJsonInvalidError): number | undefined {
+    const causeMessage = error.cause instanceof Error ? error.cause.message : '';
+    const message = causeMessage || error.message;
+    const match = message.match(/position\s+(\d+)/i);
+    return match ? Number(match[1]) : undefined;
+  }
+
+  private truncateForLog(text: string, limit: number): string {
+    if (text.length <= limit) return text;
+    return `${text.slice(0, limit)}\n...[truncated ${text.length - limit} chars]`;
+  }
+
+  private edgeForLog(text: string, edge: 'head' | 'tail'): string {
+    const limit = LlmGatewayService.JSON_PARSE_LOG_EDGE_LIMIT;
+    if (text.length <= limit) return text;
+    return edge === 'head' ? text.slice(0, limit) : text.slice(-limit);
+  }
+
+  private windowForLog(text: string, position: number | undefined): string | undefined {
+    if (position === undefined || !Number.isFinite(position)) return undefined;
+    const radius = LlmGatewayService.JSON_PARSE_LOG_WINDOW_RADIUS;
+    const start = Math.max(0, position - radius);
+    const end = Math.min(text.length, position + radius);
+    return text.slice(start, end);
   }
 
   private extractJsonCandidate(text: string): string {
@@ -159,20 +222,25 @@ export class LlmGatewayService {
     const startedAt = Date.now();
     const timeoutMs = options.timeoutMs ?? DEFAULT_LLM_TIMEOUT_MS;
     const logContext = this.buildRequestLogContext(config, messages, options, timeoutMs, startedAt);
+    const temperature = options.temperature ?? (config.params.temperature as number | undefined) ?? 0.2;
+    const requestBody: Record<string, unknown> = {
+      model: config.model,
+      messages,
+      ...buildProviderChatParams(config.params),
+      temperature,
+      ...(options.tools ? { tools: options.tools } : {}),
+      ...(options.jsonMode ? { response_format: { type: 'json_object' } } : {}),
+    };
     let response: { status: number; bodyText: string };
     try {
+      this.logger.log('llm.gateway.chat.requested', {
+        ...logContext,
+        requestBody: this.summarizeRequestBodyForLog(requestBody, messages, options),
+      });
       response = await postJson(
         `${config.baseUrl.replace(/\/+$/, '')}/chat/completions`,
         { 'Content-Type': 'application/json', Authorization: `Bearer ${config.apiKey}` },
-        {
-          model: config.model,
-          messages,
-          ...buildProviderChatParams(config.params),
-          temperature: options.temperature ?? (config.params.temperature as number | undefined) ?? 0.2,
-          max_tokens: options.maxTokens ?? 2000,
-          ...(options.tools ? { tools: options.tools } : {}),
-          ...(options.jsonMode ? { response_format: { type: 'json_object' } } : {}),
-        },
+        requestBody,
         timeoutMs,
       );
     } catch (error) {
@@ -209,13 +277,14 @@ export class LlmGatewayService {
     }
 
     const payload = this.parseProviderJson(response.bodyText, options.appStep);
+    const rawPayloadSummary = this.summarizeProviderPayload(payload);
     const text = this.extractText(payload);
     if (!text) {
       const error = new LlmProviderError(`LLM 返回内容为空：${JSON.stringify(payload).slice(0, 500)}`, options.appStep);
       this.logger.error('llm.gateway.chat.failed', error, {
         ...logContext,
         elapsedMs: Date.now() - startedAt,
-        rawPayloadSummary: { id: payload.id, model: payload.model, usage: payload.usage },
+        rawPayloadSummary,
       });
       throw error;
     }
@@ -225,10 +294,75 @@ export class LlmGatewayService {
       model: String(payload.model ?? config.model),
       usage: payload.usage as Record<string, number> | undefined,
       elapsedMs: Date.now() - startedAt,
-      rawPayloadSummary: { id: payload.id, model: payload.model, usage: payload.usage },
+      rawPayloadSummary,
     };
     this.logger.log('llm.gateway.chat.completed', { ...logContext, model: result.model, tokenUsage: result.usage, elapsedMs: result.elapsedMs });
     return result;
+  }
+
+  private summarizeRequestBodyForLog(requestBody: Record<string, unknown>, messages: LlmChatMessage[], options: LlmChatOptions): Record<string, unknown> {
+    const providerParams = { ...requestBody };
+    delete providerParams.model;
+    delete providerParams.messages;
+    delete providerParams.temperature;
+    delete providerParams.tools;
+    delete providerParams.response_format;
+    return {
+      model: requestBody.model,
+      temperature: requestBody.temperature,
+      response_format: requestBody.response_format,
+      providerParams,
+      requestedMaxTokens: options.maxTokens ?? null,
+      maxTokensSent: null,
+      maxTokensOmitted: true,
+      messageCount: messages.length,
+      totalMessageChars: messages.reduce((sum, message) => sum + message.content.length, 0),
+      messages: messages.map((message, index) => this.summarizeMessageForLog(message, index)),
+      tools: this.summarizeToolsForLog(options.tools),
+    };
+  }
+
+  private summarizeMessageForLog(message: LlmChatMessage, index: number): Record<string, unknown> {
+    return {
+      index,
+      role: message.role,
+      contentLength: message.content.length,
+      contentTruncated: message.content.length > LlmGatewayService.REQUEST_LOG_MESSAGE_LIMIT,
+      content: this.truncateForLog(message.content, LlmGatewayService.REQUEST_LOG_MESSAGE_LIMIT),
+    };
+  }
+
+  private summarizeToolsForLog(tools: unknown[] | undefined): Array<Record<string, unknown>> | undefined {
+    if (!tools?.length) return undefined;
+    return tools.map((tool, index) => {
+      const record = tool && typeof tool === 'object' ? tool as Record<string, unknown> : {};
+      const fn = record.function && typeof record.function === 'object' ? record.function as Record<string, unknown> : {};
+      return {
+        index,
+        type: record.type,
+        name: typeof fn.name === 'string' ? fn.name : undefined,
+        descriptionLength: typeof fn.description === 'string' ? fn.description.length : undefined,
+        hasParameters: Boolean(fn.parameters),
+      };
+    });
+  }
+
+  private summarizeProviderPayload(payload: Record<string, unknown>): Record<string, unknown> {
+    return {
+      id: payload.id,
+      model: payload.model,
+      usage: payload.usage,
+      finishReason: this.extractFinishReason(payload),
+    };
+  }
+
+  private extractFinishReason(payload: Record<string, unknown>): unknown {
+    const choices = payload.choices;
+    if (!Array.isArray(choices)) return undefined;
+    const first = choices[0];
+    if (!first || typeof first !== 'object') return undefined;
+    const record = first as Record<string, unknown>;
+    return record.finish_reason ?? record.finishReason;
   }
 
   private buildRequestLogContext(config: ResolvedLlmConfig, messages: LlmChatMessage[], options: LlmChatOptions, timeoutMs: number, startedAt: number): Record<string, unknown> {
@@ -239,7 +373,9 @@ export class LlmGatewayService {
       baseUrl: config.baseUrl,
       model: config.model,
       timeoutMs,
-      maxTokens: options.maxTokens ?? 2000,
+      requestedMaxTokens: options.maxTokens ?? null,
+      maxTokensSent: null,
+      maxTokensOmitted: true,
       temperature: options.temperature ?? (config.params.temperature as number | undefined) ?? 0.2,
       messageCount: messages.length,
       totalMessageChars: messages.reduce((sum, message) => sum + message.content.length, 0),

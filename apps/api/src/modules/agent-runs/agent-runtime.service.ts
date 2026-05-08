@@ -1012,9 +1012,11 @@ export class AgentRuntimeService {
   /** Plan 阶段执行只读预览步骤后，把可展示内容提前提升为 Artifact。 */
   private buildPreviewArtifacts(taskType: string, outputs: Record<number, unknown>, steps: Pick<AgentPlanSpec, 'steps'>['steps'] = []): AgentArtifactDraft[] {
     if (taskType === 'outline_design') {
+      const preview = this.latestOutputByTools(outputs, steps, ['merge_chapter_outline_previews', 'generate_outline_preview']);
+      const validation = this.latestOutputByTools(outputs, steps, ['validate_outline']);
       return [
-        ...(outputs[2] ? [{ artifactType: 'outline_preview', title: '大纲预览', content: outputs[2] }] : []),
-        ...(outputs[3] ? [{ artifactType: 'outline_validation_report', title: '大纲校验报告', content: outputs[3] }] : []),
+        ...(preview ? [{ artifactType: 'outline_preview', title: '大纲预览', content: preview }] : []),
+        ...(validation ? [{ artifactType: 'outline_validation_report', title: '大纲校验报告', content: validation }] : []),
       ];
     }
 
@@ -1076,9 +1078,9 @@ export class AgentRuntimeService {
    */
   private buildExecutionArtifacts(taskType: string, outputs: Record<number, unknown>, steps: Pick<AgentPlanSpec, 'steps'>['steps'] = []): AgentArtifactDraft[] {
     if (taskType === 'outline_design') {
-      const preview = outputs[2];
-      const validation = outputs[3];
-      const persist = outputs[4];
+      const preview = this.latestOutputByTools(outputs, steps, ['merge_chapter_outline_previews', 'generate_outline_preview']);
+      const validation = this.latestOutputByTools(outputs, steps, ['validate_outline']);
+      const persist = this.latestOutputByTools(outputs, steps, ['persist_outline']);
       return [
         ...(preview ? [{ artifactType: 'outline_preview', title: '大纲预览', content: preview }] : []),
         ...(validation ? [{ artifactType: 'outline_validation_report', title: '大纲校验报告', content: validation }] : []),
