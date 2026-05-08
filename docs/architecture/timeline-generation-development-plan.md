@@ -205,6 +205,7 @@
 - TL-P6-03：补充章节润色后的自动时间线更新测试，验证 `autoUpdateTimeline=false` 时跳过 timeline alignment，`true` 时在 polish 后运行只读 preview/validate 且默认不 persist；涉及文件：`apps/api/src/modules/agent-runs/agent-services.spec.ts`、`docs/architecture/timeline-generation-development-plan.md`；验证命令：`pnpm --filter api test:agent`、`pnpm --filter api build`、`git diff --check`。
 - TL-P6-04：Agent Eval 新增计划时间线只读预览与章节后时间线确认写入用例，注册 timeline-only eval 工具，并让 Planner 规范化识别 `align_chapter_timeline_preview`，避免章节确认流程混入计划生成预览；涉及文件：`apps/api/test/fixtures/agent-eval-cases.json`、`scripts/dev/eval_agent_planner.ts`、`apps/api/src/modules/agent-runs/agent-planner.service.ts`、`docs/architecture/timeline-generation-development-plan.md`；验证命令：`pnpm --filter api eval:agent`、`pnpm --filter api eval:agent:live`、`pnpm --filter api test:agent`、`pnpm --filter api build`、`git diff --check`。
 - TL-P6-05：执行时间线功能回归命令并确认 API、Web、Agent 测试与 diff 检查均通过；涉及文件：`docs/architecture/timeline-generation-development-plan.md`；验证命令：`pnpm --filter api build`、`pnpm --filter web build`、`pnpm --filter api test:agent`、`git diff --check`。
+- TL-P6-06：按根目录 Docker Compose 干净重启真实服务，确认容器运行、API `/api/projects` 返回 200、Web 首页返回 200，并用 Browser Use 打开 `http://127.0.0.1:3002` 验证 UI 内容与浏览器 error/warning 日志为空；涉及文件：`docs/architecture/timeline-generation-development-plan.md`；验证命令：`docker compose ps`、`docker compose down`、`docker compose up -d --build`、API/Web `Invoke-WebRequest`、Browser Use DOM/console 检查、`git diff --check`。
 
 ### Phase 1：时间线候选契约与校验核心
 
@@ -267,7 +268,7 @@
 | TL-P6-03 | done | 单元测试：章节后自动更新 | `agent-services.spec.ts` | `autoUpdateTimeline` true/false 行为明确 |
 | TL-P6-04 | done | Agent Eval 增加计划时间线和章节确认用例 | `agent-eval-cases.json`、eval scripts | Planner 使用 timeline-only preview/validate/persist |
 | TL-P6-05 | done | 回归命令 | 根目录 | `pnpm --filter api build`、`pnpm --filter web build`、`pnpm --filter api test:agent`、`git diff --check` 通过 |
-| TL-P6-06 | todo | Docker Compose 真实验证 | 根目录 | `docker compose up -d --build` 后核心 API/UI 可用 |
+| TL-P6-06 | done | Docker Compose 真实验证 | 根目录 | `docker compose up -d --build` 后核心 API/UI 可用 |
 
 ## 6. 失败处理要求
 
