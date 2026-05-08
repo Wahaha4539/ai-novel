@@ -5785,6 +5785,119 @@ test('Planner 将残缺单章细纲计划展开为所有章节 Tool 调用', () 
   assert.equal(plan.steps[6].requiresApproval, true);
 });
 
+test('Planner prompt compacts tool manifests without losing callable input schema', async () => {
+  let promptPayload: Record<string, any> | undefined;
+  const inputSchema: NonNullable<BaseTool['inputSchema']> = {
+    type: 'object',
+    required: ['characterId', 'experimentalLlmEvidenceSummary'],
+    properties: {
+      characterId: { type: 'string' },
+      instruction: { type: 'string' },
+      experimentalLlmEvidenceSummary: { type: 'boolean' },
+    },
+  };
+  const outputSchema: NonNullable<BaseTool['outputSchema']> = {
+    type: 'object',
+    required: ['verdict'],
+    properties: {
+      verdict: { type: 'object' },
+      llmEvidenceSummary: { type: 'object' },
+    },
+  };
+  const toolList = [
+    createTool({
+      name: 'character_consistency_check',
+      requiresApproval: false,
+      riskLevel: 'low',
+      sideEffects: [],
+      inputSchema,
+      outputSchema,
+      manifest: {
+        name: 'character_consistency_check',
+        displayName: 'Character consistency check',
+        description: 'Check character consistency.',
+        whenToUse: ['check character consistency'],
+        whenNotToUse: [],
+        inputSchema,
+        outputSchema,
+        parameterHints: {
+          characterId: { source: 'resolver', resolverTool: 'resolve_character', description: 'Resolved character id.' },
+          instruction: { source: 'user_message', description: 'User focus.' },
+          experimentalLlmEvidenceSummary: { source: 'runtime', description: 'Runtime-only experiment flag.' },
+        },
+        examples: [{ user: 'check him', plan: [{ tool: 'character_consistency_check', args: { characterId: '{{steps.1.output.characterId}}', experimentalLlmEvidenceSummary: true } }] }],
+        allowedModes: ['plan', 'act'],
+        riskLevel: 'low',
+        requiresApproval: false,
+        sideEffects: [],
+      },
+    }),
+  ];
+  const tools = {
+    list: () => toolList,
+    listManifestsForPlanner: () => toolList.map((tool) => ({
+      name: tool.manifest?.name ?? tool.name,
+      displayName: tool.manifest?.displayName ?? tool.name,
+      description: tool.manifest?.description ?? tool.description,
+      whenToUse: tool.manifest?.whenToUse ?? [],
+      whenNotToUse: tool.manifest?.whenNotToUse ?? [],
+      inputSchema: tool.manifest?.inputSchema ?? tool.inputSchema,
+      outputSchema: tool.manifest?.outputSchema ?? tool.outputSchema,
+      parameterHints: tool.manifest?.parameterHints,
+      examples: tool.manifest?.examples,
+      allowedModes: tool.manifest?.allowedModes ?? tool.allowedModes,
+      riskLevel: tool.manifest?.riskLevel ?? tool.riskLevel,
+      requiresApproval: tool.manifest?.requiresApproval ?? tool.requiresApproval,
+      sideEffects: tool.manifest?.sideEffects ?? tool.sideEffects,
+    })),
+  } as unknown as ToolRegistryService;
+  const llm = {
+    async chatJson(messages: Array<{ role: string; content: string }>) {
+      promptPayload = JSON.parse(messages[1].content);
+      return {
+        data: {
+          taskType: 'general',
+          summary: 'Check character consistency.',
+          assumptions: [],
+          risks: [],
+          steps: [
+            { stepNo: 1, name: 'Check character', tool: 'character_consistency_check', mode: 'act', requiresApproval: false, args: { characterId: 'char1', instruction: '{{context.userMessage}}' } },
+          ],
+        },
+        result: { model: 'planner-mock' },
+      };
+    },
+  };
+  const planner = new AgentPlannerService(new SkillRegistryService(), tools, new RuleEngineService(), llm as never);
+  const context = {
+    schemaVersion: 2,
+    userMessage: 'check character',
+    runtime: { mode: 'plan', locale: 'zh-CN', maxSteps: 6, maxLlmCalls: 2 },
+    session: {},
+    recentChapters: [],
+    knownCharacters: [],
+    worldFacts: [],
+    memoryHints: [],
+    attachments: [],
+    constraints: { hardRules: [], styleRules: [], approvalRules: [], idPolicy: [] },
+    availableTools: tools.listManifestsForPlanner(),
+  };
+
+  await planner.createPlan('check character', context as never);
+
+  assert.ok(promptPayload);
+  assert.equal((promptPayload.agentContext as Record<string, unknown>).availableTools, undefined);
+  const manifest = (promptPayload.availableTools as Array<Record<string, any>>).find((item) => item.name === 'character_consistency_check');
+  assert.ok(manifest);
+  assert.equal('outputSchema' in manifest, false);
+  assert.deepEqual(manifest.outputFields, ['verdict', 'llmEvidenceSummary']);
+  assert.deepEqual(manifest.inputSchema.required, ['characterId']);
+  assert.ok(manifest.inputSchema.properties.characterId);
+  assert.equal(manifest.inputSchema.properties.experimentalLlmEvidenceSummary, undefined);
+  assert.equal(manifest.parameterHints.experimentalLlmEvidenceSummary, undefined);
+  assert.doesNotMatch(JSON.stringify(promptPayload), /experimentalLlmEvidenceSummary/);
+});
+
 test('Planner routes chapter progress card requests to craft brief tools and keeps SceneCard boundary', async () => {
   const capturedMessages: Array<Array<{ role: string; content: string }>> = [];
   const toolList = [
@@ -9632,7 +9745,6 @@ test('generate_chapter_outline_preview 生成单章细纲并保留上一章接�
         data: {
           volume: { volumeNo: 1, title: '第一卷', synopsis: '卷简介', objective: '完成卷主线', chapterCount: 60 },
           chapter: createOutlineChapter(3, 1, { title: '第三章细纲', objective: '承接第二章压力' }),
-          chapters: [createOutlineChapter(3, 1, { title: '第三章细纲', objective: '承接第二章压力' })],
           risks: [],
         },
         result: { model: 'mock-chapter-outline', usage: { total_tokens: 77 }, rawPayloadSummary: { finishReason: 'stop' } },
@@ -9658,7 +9770,9 @@ test('generate_chapter_outline_preview 生成单章细纲并保留上一章接�
   assert.equal(result.chapter.craftBrief?.storyUnit?.unitId, 'v1_unit_01');
   assert.equal(receivedOptions?.jsonMode, true);
   assert.equal(receivedOptions?.maxTokens, undefined);
+  assert.doesNotMatch(receivedMessages[0].content, /"chapters"|chapters/);
   assert.match(receivedMessages[1].content, /目标章：第 3 章/);
+  assert.match(receivedMessages[1].content, /不要输出章节数组/);
   assert.match(receivedMessages[1].content, /第二章钩子/);
   assert.equal(llmUsages[0].model, 'mock-chapter-outline');
 });
@@ -10383,6 +10497,29 @@ test('Watchdog 标记 phase timeout 为 TOOL_PHASE_TIMEOUT', async () => {
   await watchdog.scanOnce(now);
 
   assert.equal(stepUpdates[0].errorCode, 'TOOL_PHASE_TIMEOUT');
+});
+
+test('Watchdog 不再根据 AgentRun.deadlineAt 失败运行中的 Run', async () => {
+  const now = new Date('2026-05-06T00:20:00.000Z');
+  let stepScanCount = 0;
+  const prisma = {
+    agentStep: {
+      async findMany() {
+        stepScanCount += 1;
+        return [];
+      },
+      async updateMany() { throw new Error('watchdog should not fail any step'); },
+    },
+    agentRun: {
+      async findMany() { throw new Error('watchdog should not scan run deadlines'); },
+      async updateMany() { throw new Error('watchdog should not fail any run'); },
+    },
+  };
+  const watchdog = new AgentRunWatchdogService(prisma as never);
+
+  await watchdog.scanOnce(now);
+
+  assert.equal(stepScanCount, 2);
 });
 
 test('P3 import outline preview reports calling_llm with retry-aware phase timeout', async () => {

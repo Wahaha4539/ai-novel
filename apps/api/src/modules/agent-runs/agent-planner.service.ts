@@ -2,6 +2,8 @@ import { Injectable } from '@nestjs/common';
 import { RuleEngineService } from '../agent-rules/rule-engine.service';
 import { SkillRegistryService } from '../agent-skills/skill-registry.service';
 import { ImportAssetType, IMPORT_ASSET_TYPES } from '../agent-tools/tools/import-preview.types';
+import type { ToolJsonSchema } from '../agent-tools/base-tool';
+import type { ToolManifestExample, ToolManifestForPlanner, ToolParameterHint } from '../agent-tools/tool-manifest.types';
 import { ToolRegistryService } from '../agent-tools/tool-registry.service';
 import { LlmGatewayService } from '../llm/llm-gateway.service';
 import { DEFAULT_LLM_TIMEOUT_MS } from '../llm/llm-timeout.constants';
@@ -58,6 +60,15 @@ interface PlannerOutputDefaults {
   summary: string;
   assumptions: string[];
   risks: string[];
+}
+
+type AgentContextPromptPayload = Omit<AgentContextV2, 'availableTools'>;
+
+interface PlannerPromptToolManifest extends Omit<ToolManifestForPlanner, 'inputSchema' | 'outputSchema' | 'parameterHints' | 'examples'> {
+  inputSchema?: ToolJsonSchema;
+  outputFields?: string[];
+  parameterHints?: Record<string, ToolParameterHint>;
+  examples?: ToolManifestExample[];
 }
 
 const IMPORT_TARGET_TOOL_BY_ASSET_TYPE: Record<ImportAssetType, string> = {
@@ -136,7 +147,8 @@ export class AgentPlannerService {
   }
 
   private async createLlmPlan(goal: string, defaults: PlannerOutputDefaults, llmBudget: PlannerLlmBudget, context?: AgentContextV2): Promise<AgentPlanSpec> {
-    const tools = context?.availableTools ?? this.tools.listManifestsForPlanner();
+    const tools = this.toolManifestsForPrompt();
+    const promptContext = this.contextForPrompt(context);
     const availableTaskTypes = this.listTaskTypes();
     const skills = this.skills.list();
     const hardRules = this.rules.listHardRules();
@@ -174,7 +186,7 @@ export class AgentPlannerService {
         content: JSON.stringify(
           {
             userGoal: goal,
-            agentContext: context,
+            agentContext: promptContext,
             currentAgentMode: 'plan',
             stepModeContract: 'steps[].mode 固定为 act；Plan/Act 运行时模式由后端 AgentRuntimeService 注入，不由 LLM 决定。',
             availableTaskTypes,
@@ -215,6 +227,11 @@ export class AgentPlannerService {
               : undefined,
             skills,
             hardRules,
+            toolManifestContract: {
+              inputSchema: 'Callable args schema. Use it to build steps[].args.',
+              outputFields: 'Top-level fields that may be referenced as {{steps.N.output.field}}. Use {{steps.N.output}} when passing the whole output object.',
+              runtimeParams: 'Runtime-sourced params are omitted from inputSchema and injected by backend code; do not invent them in steps[].args.',
+            },
             availableTools: tools,
             outputContract: {
               schemaVersion: 2,
@@ -254,7 +271,8 @@ export class AgentPlannerService {
   }
 
   private async repairLlmPlan(goal: string, defaults: PlannerOutputDefaults, invalidPlan: unknown, validationError: string, llmBudget: PlannerLlmBudget, context?: AgentContextV2): Promise<AgentPlanSpec> {
-    const registeredTools = context?.availableTools ?? this.tools.listManifestsForPlanner();
+    const registeredTools = this.toolManifestsForPrompt();
+    const promptContext = this.contextForPrompt(context);
     const availableTaskTypes = this.listTaskTypes();
     this.consumeLlmCall(llmBudget, 'repair_plan');
     const { data, result } = await this.llm.chatJson<unknown>(
@@ -283,7 +301,7 @@ export class AgentPlannerService {
           content: JSON.stringify(
             {
               userGoal: goal,
-              agentContext: context,
+              agentContext: promptContext,
               currentAgentMode: 'plan',
               stepModeContract: 'steps[].mode 固定为 act；Plan/Act 运行时模式由后端 AgentRuntimeService 注入，不由 LLM 决定。',
               availableTaskTypes,
@@ -297,6 +315,11 @@ export class AgentPlannerService {
               invalidPlan,
               validationError,
               registeredTools,
+              toolManifestContract: {
+                inputSchema: 'Callable args schema. Use it to build steps[].args.',
+                outputFields: 'Top-level fields that may be referenced as {{steps.N.output.field}}. Use {{steps.N.output}} when passing the whole output object.',
+                runtimeParams: 'Runtime-sourced params are omitted from inputSchema and injected by backend code; do not invent them in steps[].args.',
+              },
               outputDefaults: defaults,
               outputContract: {
                 taskType: 'one_of_availableTaskTypes',
@@ -318,6 +341,80 @@ export class AgentPlannerService {
     );
 
     return { ...this.validateAndNormalizeLlmPlan(data, defaults, context), plannerDiagnostics: { source: 'llm_repair', model: result.model, usage: result.usage, repairedFromError: validationError, llmCalls: llmBudget.used, maxLlmCalls: llmBudget.max, schemaVersion: 2 } };
+  }
+
+  private contextForPrompt(context?: AgentContextV2): AgentContextPromptPayload | undefined {
+    if (!context) return undefined;
+    const { availableTools: _availableTools, ...promptContext } = context;
+    return promptContext;
+  }
+
+  private toolManifestsForPrompt(): PlannerPromptToolManifest[] {
+    return this.tools.listManifestsForPlanner().map((tool) => this.compactToolManifestForPrompt(tool));
+  }
+
+  private compactToolManifestForPrompt(tool: ToolManifestForPlanner): PlannerPromptToolManifest {
+    const runtimeParams = this.runtimeParameterNames(tool.parameterHints);
+    return this.removeUndefinedArgs({
+      name: tool.name,
+      displayName: tool.displayName,
+      description: tool.description,
+      whenToUse: tool.whenToUse,
+      whenNotToUse: tool.whenNotToUse,
+      inputSchema: this.inputSchemaForPrompt(tool.inputSchema, runtimeParams),
+      outputFields: this.outputFieldsForPrompt(tool.outputSchema),
+      parameterHints: this.parameterHintsForPrompt(tool.parameterHints),
+      examples: this.examplesForPrompt(tool.examples, runtimeParams),
+      failureHints: tool.failureHints,
+      allowedModes: tool.allowedModes,
+      riskLevel: tool.riskLevel,
+      requiresApproval: tool.requiresApproval,
+      sideEffects: tool.sideEffects,
+      idPolicy: tool.idPolicy,
+    }) as unknown as PlannerPromptToolManifest;
+  }
+
+  private runtimeParameterNames(parameterHints?: Record<string, ToolParameterHint>): Set<string> {
+    return new Set(
+      Object.entries(parameterHints ?? {})
+        .filter(([, hint]) => hint.source === 'runtime')
+        .map(([name]) => name),
+    );
+  }
+
+  private inputSchemaForPrompt(schema: ToolJsonSchema | undefined, runtimeParams: Set<string>): ToolJsonSchema | undefined {
+    if (!schema?.properties || !runtimeParams.size) return schema;
+    const properties = Object.fromEntries(Object.entries(schema.properties).filter(([name]) => !runtimeParams.has(name)));
+    const required = schema.required?.filter((name) => !runtimeParams.has(name));
+    return this.removeUndefinedArgs({
+      ...schema,
+      properties,
+      required: required?.length ? required : undefined,
+    }) as ToolJsonSchema;
+  }
+
+  private outputFieldsForPrompt(schema: ToolJsonSchema | undefined): string[] | undefined {
+    const propertyNames = Object.keys(schema?.properties ?? {});
+    if (!propertyNames.length) return undefined;
+    return [...new Set([...(schema?.required ?? []), ...propertyNames])];
+  }
+
+  private parameterHintsForPrompt(parameterHints?: Record<string, ToolParameterHint>): Record<string, ToolParameterHint> | undefined {
+    const entries = Object.entries(parameterHints ?? {}).filter(([, hint]) => hint.source !== 'runtime');
+    return entries.length ? Object.fromEntries(entries) : undefined;
+  }
+
+  private examplesForPrompt(examples: ToolManifestExample[] | undefined, runtimeParams: Set<string>): ToolManifestExample[] | undefined {
+    if (!examples?.length) return undefined;
+    return examples.slice(0, 1).map((example) => ({
+      ...example,
+      plan: example.plan.map((step) => ({ ...step, args: this.omitRuntimeArgs(step.args, runtimeParams) })),
+    }));
+  }
+
+  private omitRuntimeArgs(args: Record<string, unknown>, runtimeParams: Set<string>): Record<string, unknown> {
+    if (!runtimeParams.size) return args;
+    return Object.fromEntries(Object.entries(args).filter(([name]) => !runtimeParams.has(name)));
   }
 
   private validateAndNormalizeLlmPlan(data: unknown, defaults: PlannerOutputDefaults, context?: AgentContextV2): AgentPlanSpec {

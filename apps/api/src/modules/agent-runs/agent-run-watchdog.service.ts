@@ -7,7 +7,7 @@ const WATCHDOG_INTERVAL_MS = 10_000;
 const HEARTBEAT_STALE_MS = 120_000;
 const ACTIVE_RUN_STATUSES = ['planning', 'acting'] as const;
 
-type WatchdogErrorCode = 'TOOL_PHASE_TIMEOUT' | 'TOOL_STUCK_TIMEOUT' | 'RUN_DEADLINE_EXCEEDED';
+type WatchdogErrorCode = 'TOOL_PHASE_TIMEOUT' | 'TOOL_STUCK_TIMEOUT';
 
 @Injectable()
 export class AgentRunWatchdogService implements OnModuleInit, OnModuleDestroy {
@@ -55,14 +55,6 @@ export class AgentRunWatchdogService implements OnModuleInit, OnModuleDestroy {
       await this.failStepAndRun(step, 'TOOL_STUCK_TIMEOUT', now, '系统检测到步骤卡住，长时间没有心跳');
     }
 
-    const expiredRuns = await this.prisma.agentRun.findMany({
-      where: { status: { in: [...ACTIVE_RUN_STATUSES] }, deadlineAt: { lt: now } },
-      orderBy: { deadlineAt: 'asc' },
-      take: 50,
-    });
-    for (const run of expiredRuns) {
-      await this.failRunDeadline(run.id, now);
-    }
   }
 
   private async failStepAndRun(
@@ -99,23 +91,6 @@ export class AgentRunWatchdogService implements OnModuleInit, OnModuleDestroy {
     if (updatedStep.count !== 1) return;
     await this.failRun(step.agentRunId, code, message, detail, now);
     this.logger.warn('agent.watchdog.step_failed', { agentRunId: step.agentRunId, stepNo: step.stepNo, mode: step.mode, planVersion: step.planVersion, code, phase: step.phase });
-  }
-
-  private async failRunDeadline(agentRunId: string, now: Date) {
-    const message = 'AgentRun 超过系统执行期限';
-    const detail = { code: 'RUN_DEADLINE_EXCEEDED', message, detectedAt: now };
-    await this.prisma.agentStep.updateMany({
-      where: { agentRunId, status: 'running' },
-      data: {
-        status: 'failed',
-        error: message,
-        errorCode: 'RUN_DEADLINE_EXCEEDED',
-        errorDetail: detail as Prisma.InputJsonValue,
-        finishedAt: now,
-        heartbeatAt: now,
-      },
-    });
-    await this.failRun(agentRunId, 'RUN_DEADLINE_EXCEEDED', message, detail, now);
   }
 
   private async failRun(agentRunId: string, code: WatchdogErrorCode, message: string, detail: Record<string, unknown>, now: Date) {

@@ -92,7 +92,7 @@ export class AgentRuntimeService {
           error: null,
           heartbeatAt: leaseStartedAt,
           leaseExpiresAt: new Date(leaseStartedAt.getTime() + 120_000),
-          deadlineAt: new Date(leaseStartedAt.getTime() + 15 * 60_000),
+          deadlineAt: null,
         },
       });
       if (lease.count !== 1) throw new AgentRunStateChangedError('AgentRun 当前状态已不再允许执行 Plan', run.status);
@@ -188,7 +188,7 @@ export class AgentRuntimeService {
           error: null,
           heartbeatAt: leaseStartedAt,
           leaseExpiresAt: new Date(leaseStartedAt.getTime() + 120_000),
-          deadlineAt: new Date(leaseStartedAt.getTime() + 30 * 60_000),
+          deadlineAt: null,
         },
       });
       if (lease.count !== 1) throw new Error('AgentRun 当前状态不允许进入 Act，可能正在执行或已结束');
@@ -290,7 +290,7 @@ export class AgentRuntimeService {
           currentPhase: 'resume_failed_step',
           heartbeatAt: leaseStartedAt,
           leaseExpiresAt: new Date(leaseStartedAt.getTime() + 120_000),
-          deadlineAt: new Date(leaseStartedAt.getTime() + 15 * 60_000),
+          deadlineAt: null,
         },
       });
       if (lease.count !== 1) throw new AgentRunStateChangedError('AgentRun 当前状态已不允许恢复 Plan 预览', 'changed');

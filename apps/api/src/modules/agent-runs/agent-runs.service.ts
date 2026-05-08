@@ -278,7 +278,6 @@ export class AgentRunsService {
         goal: dto.message,
         input: input as unknown as Prisma.InputJsonValue,
         heartbeatAt: now,
-        deadlineAt: new Date(now.getTime() + 15 * 60_000),
       },
     });
     void this.runtime.plan(run.id).catch((error) => {
