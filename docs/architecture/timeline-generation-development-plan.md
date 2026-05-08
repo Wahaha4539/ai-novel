@@ -188,6 +188,7 @@
 - TL-P3-02：新增 `planningContext.plannedTimelineEvents` 上下文包字段，章节生成时只读加载当前章 `planned` TimelineEvent，并二次过滤 active、未来章和跨项目返回；涉及文件：`apps/api/src/modules/generation/context-pack.types.ts`、`apps/api/src/modules/generation/generate-chapter.service.ts`、`apps/api/src/modules/agent-runs/agent-services.spec.ts`、`docs/architecture/timeline-generation-development-plan.md`；验证命令：`pnpm --filter api test:agent`、`pnpm --filter api build`、`git diff --check`。
 - TL-P3-03：PromptBuilder 新增【本章计划时间线】区块，渲染 `planningContext.plannedTimelineEvents` 并明确其只是 `current_chapter_planned_timeline`，不得当作 verified fact；涉及文件：`apps/api/src/modules/generation/prompt-builder.service.ts`、`apps/api/src/modules/agent-runs/agent-services.spec.ts`、`docs/architecture/timeline-generation-development-plan.md`；验证命令：`pnpm --filter api test:agent`、`pnpm --filter api build`、`git diff --check`。
 - TL-P3-04：Prompt debug 新增 verified/planned 时间线分层计数与 sourceTrace 记录，便于追踪生成上下文中的 active 事实层和本章计划层来源；涉及文件：`apps/api/src/modules/generation/prompt-builder.service.ts`、`apps/api/src/modules/agent-runs/agent-services.spec.ts`、`docs/architecture/timeline-generation-development-plan.md`；验证命令：`pnpm --filter api test:agent`、`pnpm --filter api build`、`git diff --check`。
+- TL-P3-05：补充章节生成 prompt 集成测试，捕获实际发送给 LLM 的 user prompt，断言未来章 planned、跨项目 planned 与当前章 active 事件不泄露，当前章 planned 只进入 planning context；涉及文件：`apps/api/src/modules/agent-runs/agent-services.spec.ts`、`docs/architecture/timeline-generation-development-plan.md`；验证命令：`pnpm --filter api test:agent`、`pnpm --filter api build`、`git diff --check`。
 
 ### Phase 1：时间线候选契约与校验核心
 
@@ -218,7 +219,7 @@
 | TL-P3-02 | done | 扩展上下文包：本章 planned 时间线进入 planning context | `GenerateChapterService`、`context-pack.types.ts` | 当前章 `planned` 事件不会混入 verified facts |
 | TL-P3-03 | done | PromptBuilder 新增【本章计划时间线】区块 | `PromptBuilderService` | 明确这是计划目标，不是已发生事实 |
 | TL-P3-04 | done | Prompt debug 记录 timeline hit 计数和来源 | `PromptBuilderService` | generationContext 可追踪 active/planned 分层 |
-| TL-P3-05 | todo | 测试未来章节不泄露、当前计划不当作事实 | `agent-services.spec.ts` | `chapterNo > current` 不进 Prompt；current planned 只进 planning context |
+| TL-P3-05 | done | 测试未来章节不泄露、当前计划不当作事实 | `agent-services.spec.ts` | `chapterNo > current` 不进 Prompt；current planned 只进 planning context |
 
 ### Phase 4：章节生成后 StoryEvent 对齐时间线
 

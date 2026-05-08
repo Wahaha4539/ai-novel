@@ -643,11 +643,12 @@ test('GenerateChapterService sorts SceneCards predictably and preserves trace me
   assert.deepEqual(plans[0].sourceTrace, { sourceType: 'scene_card', sourceId: 'scene-1', projectId: 'p1', volumeId: null, chapterId: 'c4', chapterNo: 4, sceneNo: 1 });
 });
 
-test('GenerateChapterService run carries current chapter SceneCards through contextPack retrievalPayload and prompt trace', async () => {
+test('GenerateChapterService run carries current chapter SceneCards and planned TimelineEvents without future prompt leaks', async () => {
   let sceneWhere: Record<string, unknown> | undefined;
   let timelineWhere: Record<string, unknown> | undefined;
   let draftCreateData: Record<string, unknown> | undefined;
   let qualityReportData: Record<string, unknown> | undefined;
+  let llmUserPrompt = '';
   const chapter = {
     id: 'c1',
     chapterNo: 4,
@@ -845,7 +846,8 @@ test('GenerateChapterService run carries current chapter SceneCards through cont
     },
   };
   const llm = {
-    async chat() {
+    async chat(messages: Array<{ role: string; content: string }>) {
+      llmUserPrompt = messages.find((message) => message.role === 'user')?.content ?? '';
       return {
         text: 'Lin Che reaches the Old archive. The ledger has a missing page. Lin Che gets a false key. '.repeat(20),
         model: 'mock-generate-model',
@@ -879,6 +881,15 @@ test('GenerateChapterService run carries current chapter SceneCards through cont
   assert.deepEqual(contextPack.planningContext.plannedTimelineEvents[0].participants, ['Lin Che']);
   assert.equal((contextPack.planningContext.plannedTimelineEvents[0].sourceTrace as Record<string, unknown>).sourceKind, 'planned_timeline_event');
   assert.equal(contextPack.verifiedContext.structuredHits.some((hit) => hit.sourceType === 'timeline_event'), false);
+  assert.equal(result.promptDebug.verifiedTimelineEventCount, 0);
+  assert.equal(result.promptDebug.plannedTimelineEventCount, 1);
+  assert.match(llmUserPrompt, /current_chapter_planned_timeline/);
+  assert.match(llmUserPrompt, /Planned archive gate breach/);
+  assert.match(llmUserPrompt, /sourceId=timeline-plan-current/);
+  assert.doesNotMatch(llmUserPrompt, /Future plan/);
+  assert.doesNotMatch(llmUserPrompt, /future planned event stays out/);
+  assert.doesNotMatch(llmUserPrompt, /Cross project plan/);
+  assert.doesNotMatch(llmUserPrompt, /Active should not be planning context/);
   assert.deepEqual(promptTrace[0], { sourceType: 'scene_card', sourceId: 'scene-run', projectId: 'p1', volumeId: null, chapterId: 'c1', chapterNo: 4, sceneNo: 1 });
   assert.equal(generationContext.retrievalPayload.contextPack.planningContext.sceneCards[0].id, 'scene-run');
   assert.equal(generationContext.retrievalPayload.contextPack.planningContext.plannedTimelineEvents[0].id, 'timeline-plan-current');
