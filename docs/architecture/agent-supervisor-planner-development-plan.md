@@ -90,7 +90,7 @@
 
 ### ASP-P1-002 新增 planner graph 目录和状态类型
 
-- 状态：`[ ]`
+- 状态：`[x]`
 - 模块：API
 - 文件：
   - `apps/api/src/modules/agent-runs/planner-graph/planner-graph.state.ts`
@@ -104,6 +104,12 @@
   - 不改变现有运行行为。
 - 验证：
   - `pnpm --filter api build`
+- 完成记录（2026-05-09）：
+  - 新增 `planner-graph` scaffold：graph state 类型、`RouteDecision`、`SelectedToolBundle`、diagnostics 类型、legacy pass-through node 和最小 `StateGraph` 构建/调用入口。
+  - 当前 graph 仅在显式调用时返回输入的 legacy plan，不注册到 Nest module，不改变现有 Planner 运行行为。
+  - 修改文件：`apps/api/src/modules/agent-runs/planner-graph/planner-graph.state.ts`、`apps/api/src/modules/agent-runs/planner-graph/agent-planner.graph.ts`、`apps/api/src/modules/agent-runs/planner-graph/nodes/legacy-planner.node.ts`、`apps/api/src/modules/agent-runs/planner-graph/nodes/index.ts`、`docs/architecture/agent-supervisor-planner-development-plan.md`。
+  - 测试：`pnpm --filter api build`，通过。
+  - 测试：`pnpm --dir apps/api exec ts-node --project tsconfig.json -e "<planner graph smoke invoke>"`，通过。
 
 ### ASP-P1-003 给 AgentPlannerService 增加 graph feature flag
 
