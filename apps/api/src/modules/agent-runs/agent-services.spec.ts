@@ -5809,6 +5809,175 @@ test('Planner 将残缺单章细纲计划展开为所有章节 Tool 调用', () 
   assert.equal(plan.steps[7].requiresApproval, true);
 });
 
+test('Planner connects outline artifacts to planned timeline preview when timeline tools are available', () => {
+  const toolList = [
+    createTool({ name: 'inspect_project_context', requiresApproval: false, riskLevel: 'low', sideEffects: [] }),
+    createTool({ name: 'generate_outline_preview', requiresApproval: false, riskLevel: 'low', sideEffects: [] }),
+    createTool({ name: 'generate_volume_outline_preview', requiresApproval: false, riskLevel: 'low', sideEffects: [] }),
+    createTool({ name: 'generate_chapter_outline_preview', requiresApproval: false, riskLevel: 'low', sideEffects: [] }),
+    createTool({ name: 'merge_chapter_outline_previews', requiresApproval: false, riskLevel: 'low', sideEffects: [] }),
+    createTool({ name: 'validate_outline', requiresApproval: false, riskLevel: 'low', sideEffects: [] }),
+    createTool({ name: 'persist_outline', requiresApproval: true, riskLevel: 'high', sideEffects: ['create_chapters', 'update_chapters'] }),
+    createTool({ name: 'generate_timeline_preview', requiresApproval: false, riskLevel: 'low', sideEffects: [] }),
+    createTool({ name: 'validate_timeline_preview', requiresApproval: false, riskLevel: 'low', sideEffects: [] }),
+  ];
+  const tools = { list: () => toolList } as unknown as ToolRegistryService;
+  const planner = new AgentPlannerService(new SkillRegistryService(), tools, new RuleEngineService(), {} as LlmGatewayService) as unknown as {
+    validateAndNormalizeLlmPlan: (data: unknown, baseline: { taskType: string; summary: string; assumptions: string[]; risks: string[] }) => { taskType: string; steps: Array<{ tool: string; args: Record<string, unknown>; requiresApproval: boolean }> };
+  };
+
+  const plan = planner.validateAndNormalizeLlmPlan(
+    {
+      taskType: 'outline_design',
+      summary: 'Generate outline with planned timeline candidates',
+      assumptions: [],
+      risks: [],
+      steps: [
+        { stepNo: 1, name: 'Inspect context', tool: 'inspect_project_context', mode: 'act', requiresApproval: false, args: { focus: ['outline'] } },
+        { stepNo: 2, name: 'Generate outline', tool: 'generate_outline_preview', mode: 'act', requiresApproval: false, args: { context: '{{steps.1.output}}', instruction: '{{context.userMessage}}', volumeNo: 1, chapterCount: 3 } },
+        { stepNo: 3, name: 'Validate outline', tool: 'validate_outline', mode: 'act', requiresApproval: false, args: { preview: '{{steps.2.output}}' } },
+        { stepNo: 4, name: 'Persist outline', tool: 'persist_outline', mode: 'act', requiresApproval: true, args: { preview: '{{steps.2.output}}', validation: '{{steps.3.output}}' } },
+      ],
+    },
+    { taskType: 'general', summary: 'fallback', assumptions: [], risks: [] },
+  );
+
+  assert.deepEqual(plan.steps.map((step) => step.tool), [
+    'inspect_project_context',
+    'generate_volume_outline_preview',
+    'generate_chapter_outline_preview',
+    'generate_chapter_outline_preview',
+    'generate_chapter_outline_preview',
+    'merge_chapter_outline_previews',
+    'validate_outline',
+    'generate_timeline_preview',
+    'validate_timeline_preview',
+    'persist_outline',
+  ]);
+  assert.deepEqual(plan.steps[7].args, {
+    context: { outlinePreview: '{{steps.6.output}}', outlineValidation: '{{steps.7.output}}' },
+    instruction: '{{context.userMessage}}',
+    sourceType: 'chapter_outline',
+  });
+  assert.deepEqual(plan.steps[8].args, {
+    preview: '{{steps.8.output}}',
+    taskContext: { outlinePreview: '{{steps.6.output}}', outlineValidation: '{{steps.7.output}}' },
+  });
+  assert.deepEqual(plan.steps[9].args, { preview: '{{steps.6.output}}', validation: '{{steps.7.output}}' });
+  assert.equal(plan.steps[7].requiresApproval, false);
+  assert.equal(plan.steps[8].requiresApproval, false);
+  assert.equal(plan.steps[9].requiresApproval, true);
+});
+
+test('Planner connects craftBrief artifacts to planned timeline preview when timeline tools are available', () => {
+  const toolList = [
+    createTool({ name: 'resolve_chapter', requiresApproval: false, riskLevel: 'low', sideEffects: [] }),
+    createTool({ name: 'collect_chapter_context', requiresApproval: false, riskLevel: 'low', sideEffects: [] }),
+    createTool({ name: 'generate_chapter_craft_brief_preview', requiresApproval: false, riskLevel: 'low', sideEffects: [] }),
+    createTool({ name: 'validate_chapter_craft_brief', requiresApproval: false, riskLevel: 'low', sideEffects: [] }),
+    createTool({ name: 'persist_chapter_craft_brief', requiresApproval: true, riskLevel: 'high', sideEffects: ['update_chapter_craft_brief'] }),
+    createTool({ name: 'generate_timeline_preview', requiresApproval: false, riskLevel: 'low', sideEffects: [] }),
+    createTool({ name: 'validate_timeline_preview', requiresApproval: false, riskLevel: 'low', sideEffects: [] }),
+  ];
+  const tools = { list: () => toolList } as unknown as ToolRegistryService;
+  const planner = new AgentPlannerService(new SkillRegistryService(), tools, new RuleEngineService(), {} as LlmGatewayService) as unknown as {
+    validateAndNormalizeLlmPlan: (data: unknown, baseline: { taskType: string; summary: string; assumptions: string[]; risks: string[] }) => { steps: Array<{ tool: string; args: Record<string, unknown>; requiresApproval: boolean }> };
+  };
+
+  const plan = planner.validateAndNormalizeLlmPlan(
+    {
+      taskType: 'chapter_craft_brief',
+      summary: 'Generate craftBrief and planned timeline candidates',
+      assumptions: [],
+      risks: [],
+      steps: [
+        { stepNo: 1, name: 'Resolve chapter', tool: 'resolve_chapter', mode: 'act', requiresApproval: false, args: { chapterNo: 3 } },
+        { stepNo: 2, name: 'Collect context', tool: 'collect_chapter_context', mode: 'act', requiresApproval: false, args: { chapterId: '{{steps.1.output.chapterId}}' } },
+        { stepNo: 3, name: 'Generate craftBrief', tool: 'generate_chapter_craft_brief_preview', mode: 'act', requiresApproval: false, args: { chapterId: '{{steps.1.output.chapterId}}', context: '{{steps.2.output}}', instruction: '{{context.userMessage}}' } },
+        { stepNo: 4, name: 'Validate craftBrief', tool: 'validate_chapter_craft_brief', mode: 'act', requiresApproval: false, args: { preview: '{{steps.3.output}}' } },
+        { stepNo: 5, name: 'Persist craftBrief', tool: 'persist_chapter_craft_brief', mode: 'act', requiresApproval: true, args: { preview: '{{steps.3.output}}', validation: '{{steps.4.output}}' } },
+      ],
+    },
+    { taskType: 'general', summary: 'fallback', assumptions: [], risks: [] },
+  );
+
+  assert.deepEqual(plan.steps.map((step) => step.tool), [
+    'resolve_chapter',
+    'collect_chapter_context',
+    'generate_chapter_craft_brief_preview',
+    'validate_chapter_craft_brief',
+    'generate_timeline_preview',
+    'validate_timeline_preview',
+    'persist_chapter_craft_brief',
+  ]);
+  assert.deepEqual(plan.steps[4].args, {
+    context: { craftBriefPreview: '{{steps.3.output}}', craftBriefValidation: '{{steps.4.output}}' },
+    instruction: '{{context.userMessage}}',
+    sourceType: 'craft_brief',
+  });
+  assert.deepEqual(plan.steps[5].args, {
+    preview: '{{steps.5.output}}',
+    taskContext: { craftBriefPreview: '{{steps.3.output}}', craftBriefValidation: '{{steps.4.output}}' },
+  });
+  assert.deepEqual(plan.steps[6].args, { preview: '{{steps.3.output}}', validation: '{{steps.4.output}}' });
+  assert.equal(plan.steps[4].requiresApproval, false);
+  assert.equal(plan.steps[5].requiresApproval, false);
+  assert.equal(plan.steps[6].requiresApproval, true);
+});
+
+test('Planner exposes timeline_plan for read-only planned timeline candidates', async () => {
+  let promptPayload: Record<string, any> | undefined;
+  const toolList = [
+    createTool({ name: 'inspect_project_context', requiresApproval: false, riskLevel: 'low', sideEffects: [] }),
+    createTool({ name: 'generate_timeline_preview', requiresApproval: false, riskLevel: 'low', sideEffects: [] }),
+    createTool({ name: 'validate_timeline_preview', requiresApproval: false, riskLevel: 'low', sideEffects: [] }),
+    createTool({ name: 'persist_timeline_events', requiresApproval: true, riskLevel: 'high', sideEffects: ['Writes TimelineEvent rows after validation and approval.'] }),
+  ];
+  const tools = {
+    list: () => toolList,
+    listManifestsForPlanner: () => toolList.map((tool) => ({
+      name: tool.name,
+      displayName: tool.name,
+      description: tool.description,
+      whenToUse: tool.name === 'generate_timeline_preview' ? ['planned timeline from outline/craftBrief artifacts'] : [],
+      whenNotToUse: [],
+      allowedModes: tool.allowedModes,
+      riskLevel: tool.riskLevel,
+      requiresApproval: tool.requiresApproval,
+      sideEffects: tool.sideEffects,
+    })),
+  } as unknown as ToolRegistryService;
+  const llm = {
+    async chatJson(messages: Array<{ role: string; content: string }>) {
+      promptPayload = JSON.parse(messages[1].content);
+      return {
+        data: {
+          taskType: 'timeline_plan',
+          summary: 'Generate planned timeline candidates',
+          assumptions: [],
+          risks: [],
+          steps: [
+            { stepNo: 1, name: 'Inspect planning artifacts', tool: 'inspect_project_context', mode: 'act', requiresApproval: false, args: { focus: ['outline', 'chapters', 'craftBrief'] } },
+            { stepNo: 2, name: 'Generate planned timeline preview', tool: 'generate_timeline_preview', mode: 'act', requiresApproval: false, args: { context: '{{steps.1.output}}', instruction: '{{context.userMessage}}', sourceType: 'book_outline' } },
+          ],
+        },
+        result: { model: 'planner-mock' },
+      };
+    },
+  };
+  const planner = new AgentPlannerService(new SkillRegistryService(), tools, new RuleEngineService(), llm as never);
+
+  const plan = await planner.createPlan('从现有大纲和 craftBrief 生成计划时间线候选');
+
+  assert.equal(plan.taskType, 'timeline_plan');
+  assert.deepEqual(plan.steps.map((step) => step.tool), ['inspect_project_context', 'generate_timeline_preview', 'validate_timeline_preview']);
+  assert.deepEqual(plan.steps[2].args, { preview: '{{steps.2.output}}', taskContext: '{{steps.1.output}}' });
+  assert.deepEqual(plan.requiredApprovals, []);
+  assert.ok(promptPayload?.availableTaskTypes.includes('timeline_plan'));
+  assert.match(promptPayload?.taskTypeGuidance.timeline_plan, /generate_timeline_preview/);
+  assert.match(promptPayload?.taskTypeGuidance.timeline_plan, /validate_timeline_preview/);
+});
+
 test('Planner prompt compacts tool manifests without losing callable input schema', async () => {
   let promptPayload: Record<string, any> | undefined;
   const inputSchema: NonNullable<BaseTool['inputSchema']> = {

@@ -89,6 +89,10 @@ const GENERATE_OUTLINE_PREVIEW_TOOL = 'generate_outline_preview';
 const GENERATE_VOLUME_OUTLINE_PREVIEW_TOOL = 'generate_volume_outline_preview';
 const GENERATE_CHAPTER_OUTLINE_PREVIEW_TOOL = 'generate_chapter_outline_preview';
 const MERGE_CHAPTER_OUTLINE_PREVIEWS_TOOL = 'merge_chapter_outline_previews';
+const GENERATE_TIMELINE_PREVIEW_TOOL = 'generate_timeline_preview';
+const VALIDATE_TIMELINE_PREVIEW_TOOL = 'validate_timeline_preview';
+const GENERATE_CHAPTER_CRAFT_BRIEF_PREVIEW_TOOL = 'generate_chapter_craft_brief_preview';
+const VALIDATE_CHAPTER_CRAFT_BRIEF_TOOL = 'validate_chapter_craft_brief';
 const MERGE_PREVIEW_ARG_BY_ASSET_TYPE: Record<ImportAssetType, string> = {
   projectProfile: 'projectProfilePreview',
   outline: 'outlinePreview',
@@ -176,6 +180,7 @@ export class AgentPlannerService {
           '可引用上下文：{{context.session.currentProjectId}}、{{context.session.currentChapterId}}、{{context.project.defaultWordCount}}、{{context.attachments.0}}、{{context.attachments.0.url}}、{{context.session.guided.currentStep}}、{{context.session.guided.currentStepData}}。',
           '如果 agentContext.session.guided.currentStep 存在，说明用户正在创作引导页；当前步骤问答优先选择 guided_step_consultation，当前步骤生成优先选择 guided_step_generate，确认保存/写入优先选择 guided_step_finalize，不要误判成普通章节正文写作。',
           '用户要求“卷细纲 / 章节细纲 / 60 章细纲 / 等长细纲 / 章节规划”时选择 outline_design，并优先编排 inspect_project_context -> generate_volume_outline_preview -> generate_chapter_outline_preview（每章一个步骤）-> merge_chapter_outline_previews -> validate_outline -> persist_outline；不要误判为 write_chapter。',
+          '用户要求从全书大纲、卷大纲、章节细纲、Chapter.craftBrief 或创作引导产物生成计划时间线时选择 timeline_plan，并使用 generate_timeline_preview -> validate_timeline_preview；除非用户明确要求审批后写入，不要加入 persist_timeline_events。',
           '用户明确说“写正文 / 生成正文 / 续写正文”才选择 chapter_write 或 multi_chapter_write；用户说“拆成场景 / 场景卡 / SceneCard”时选择 scene_card_planning。',
           '用户明确说“重写章节 / 重新生成章节 / 从头写 / 推倒重来 / 不沿用旧稿”时必须使用 rewrite_chapter；不要使用 polish_chapter。',
           '可引用前序步骤：{{steps.N.output.field}} 或 {{steps.step_id.output.field}}；不要引用当前或未来步骤。',
@@ -201,6 +206,7 @@ export class AgentPlannerService {
               character_consistency_check: '检查人设是否崩、角色动机/对话是否符合设定。',
               worldbuilding_expand: '扩展世界观、宗门、城市、能力体系，且不覆盖已确认剧情。',
               story_bible_expand: '批量扩展 Story Bible 设定资产；必须先 generate_story_bible_preview，再 validate_story_bible，写入步骤 persist_story_bible 必须等待审批。',
+              timeline_plan: 'Generate planned TimelineEvent candidates from book outline, volume outline, chapter outline, Chapter.craftBrief, or guided planning artifacts. Use generate_timeline_preview -> validate_timeline_preview only for preview/validation; keep candidates eventStatus=planned and sourceType=agent_timeline_plan. Do not call persist_timeline_events unless the user explicitly asks to save timeline events after approval.',
               chapter_craft_brief: 'Create or fill chapter-level Chapter.craftBrief progress/execution cards. Trigger phrases include 章节推进卡, 推进卡, 执行卡, craftBrief, 行动链, 本章执行卡, 补齐章节细纲, 细化当前章, 细化第 N 章, 补线索, 潜台词, 不可逆后果. Use resolve_chapter -> collect_chapter_context or collect_task_context -> generate_chapter_craft_brief_preview -> validate_chapter_craft_brief, and only after approval persist_chapter_craft_brief. If the user asks to write prose, use chapter_write. If the user asks to split into scenes/SceneCard, use scene_card_planning.',
               chapter_progress_card: 'Alias for chapter_craft_brief when the user says 章节推进卡 or progress card. Use the same generate_chapter_craft_brief_preview -> validate_chapter_craft_brief -> approved persist_chapter_craft_brief chain.',
               scene_card_planning: 'Plan or update SceneCard assets for chapters; new cards should use list_scene_cards/collect_task_context as needed, then generate_scene_cards_preview, validate_scene_cards, and approved persist_scene_cards. Direct edits to existing cards should list_scene_cards first, then approved update_scene_card. Use this for 拆成场景, 场景卡, or SceneCard, not for Chapter.craftBrief progress cards.',
@@ -291,6 +297,7 @@ export class AgentPlannerService {
             '如果专用目标工具未注册，使用 build_import_preview fallback，但 requestedAssetTypes 仍必须等于用户选择的目标范围；persist_project_assets 必须作为需审批写入步骤保留。',
             '如果 agentContext.session.guided.currentStep 存在，修复后的 taskType 仍应优先使用 guided_step_consultation、guided_step_generate 或 guided_step_finalize，不要修成 chapter_write。',
             '修复卷细纲、章节细纲、60 章细纲或等长细纲计划时，taskType 应为 outline_design，并使用 generate_volume_outline_preview 生成卷大纲，再用 generate_chapter_outline_preview 为每章生成独立步骤，最后用 merge_chapter_outline_previews 合并；只有写正文/生成正文才使用 chapter_write，明确重写/不沿用旧稿时使用 rewrite_chapter，拆成场景/SceneCard 才使用 scene_card_planning。',
+            '修复计划时间线任务时，taskType 应为 timeline_plan，并使用 generate_timeline_preview -> validate_timeline_preview 从规划产物生成 eventStatus=planned 的只读候选；除非用户明确要求审批后写入，不要加入 persist_timeline_events。',
             'steps[].mode 是后端计划步骤字段，固定填 act；Plan/Act 运行时模式由后端注入，不由 LLM 决定。',
             '引用前序步骤输出时，完整对象用 {{steps.N.output}}，对象字段用 {{steps.N.output.field}}；不要把对象序列化成字符串。',
             '连续生成多章正文时必须使用 write_chapter_series；不要把多个 write_chapter 展开为多套步骤。',
@@ -459,15 +466,20 @@ export class AgentPlannerService {
       return onFailure ? { ...normalized, onFailure } : normalized;
     });
 
-    const normalizedSteps = this.enforceOutlineDesignPipeline(
+    const normalizedSteps = this.enforcePlanningTimelinePreviewPipeline(
       record.taskType,
-      this.enforceProjectImportPipeline(
+      this.enforceOutlineDesignPipeline(
         record.taskType,
-        this.enforceChapterWriteQualityPipeline(steps, (tool) => toolRequiresApproval.get(tool) ?? false),
+        this.enforceProjectImportPipeline(
+          record.taskType,
+          this.enforceChapterWriteQualityPipeline(steps, (tool) => toolRequiresApproval.get(tool) ?? false),
+          registeredTools,
+          (tool) => toolRequiresApproval.get(tool) ?? false,
+          this.explicitImportAssetTypes(context?.session.requestedAssetTypes),
+          context?.session.importPreviewMode,
+        ),
         registeredTools,
         (tool) => toolRequiresApproval.get(tool) ?? false,
-        this.explicitImportAssetTypes(context?.session.requestedAssetTypes),
-        context?.session.importPreviewMode,
       ),
       registeredTools,
       (tool) => toolRequiresApproval.get(tool) ?? false,
@@ -676,9 +688,126 @@ export class AgentPlannerService {
     return normalized;
   }
 
+  private enforcePlanningTimelinePreviewPipeline(taskType: unknown, steps: AgentPlanStepSpec[], registeredTools: Set<string>, requiresApproval: (tool: string) => boolean): AgentPlanStepSpec[] {
+    const taskTypeText = typeof taskType === 'string' ? taskType : '';
+    if (!['timeline_plan', 'outline_design', 'chapter_craft_brief', 'chapter_progress_card'].includes(taskTypeText)) return steps;
+    if (!registeredTools.has(GENERATE_TIMELINE_PREVIEW_TOOL) || !registeredTools.has(VALIDATE_TIMELINE_PREVIEW_TOOL)) return steps;
+
+    let normalized = this.renumberSteps(steps);
+    const existingPreview = this.latestStepByTools(normalized, [GENERATE_TIMELINE_PREVIEW_TOOL]);
+    if (existingPreview) {
+      return this.ensureTimelineValidationStep(normalized, existingPreview, requiresApproval);
+    }
+
+    const source = this.timelinePlanningSource(normalized, taskTypeText);
+    if (!source) return normalized;
+    normalized = this.insertStepAfter(
+      normalized,
+      source.afterStepNo,
+      this.createPlannedStep(
+        '生成计划时间线候选',
+        GENERATE_TIMELINE_PREVIEW_TOOL,
+        {
+          context: source.contextArg,
+          instruction: '{{context.userMessage}}',
+          sourceType: source.sourceType,
+        },
+        requiresApproval,
+      ),
+    );
+    const previewStep = this.latestStepByTools(normalized, [GENERATE_TIMELINE_PREVIEW_TOOL]);
+    return previewStep ? this.ensureTimelineValidationStep(normalized, previewStep, requiresApproval) : normalized;
+  }
+
+  private timelinePlanningSource(steps: AgentPlanStepSpec[], taskType: string): { afterStepNo: number; sourceType: string; contextArg: unknown } | undefined {
+    if (taskType === 'outline_design') {
+      const previewStep = this.latestStepByTools(steps, [MERGE_CHAPTER_OUTLINE_PREVIEWS_TOOL, GENERATE_CHAPTER_OUTLINE_PREVIEW_TOOL, GENERATE_VOLUME_OUTLINE_PREVIEW_TOOL, GENERATE_OUTLINE_PREVIEW_TOOL]);
+      if (!previewStep) return undefined;
+      const validationStep = this.latestStepByTools(steps, ['validate_outline']);
+      return {
+        afterStepNo: validationStep?.stepNo ?? previewStep.stepNo,
+        sourceType: this.timelineSourceTypeForTool(previewStep.tool),
+        contextArg: validationStep
+          ? { outlinePreview: `{{steps.${previewStep.stepNo}.output}}`, outlineValidation: `{{steps.${validationStep.stepNo}.output}}` }
+          : `{{steps.${previewStep.stepNo}.output}}`,
+      };
+    }
+
+    if (taskType === 'chapter_craft_brief' || taskType === 'chapter_progress_card') {
+      const previewStep = this.latestStepByTools(steps, [GENERATE_CHAPTER_CRAFT_BRIEF_PREVIEW_TOOL]);
+      if (!previewStep) return undefined;
+      const validationStep = this.latestStepByTools(steps, [VALIDATE_CHAPTER_CRAFT_BRIEF_TOOL]);
+      return {
+        afterStepNo: validationStep?.stepNo ?? previewStep.stepNo,
+        sourceType: 'craft_brief',
+        contextArg: validationStep
+          ? { craftBriefPreview: `{{steps.${previewStep.stepNo}.output}}`, craftBriefValidation: `{{steps.${validationStep.stepNo}.output}}` }
+          : `{{steps.${previewStep.stepNo}.output}}`,
+      };
+    }
+
+    const previewStep = this.latestStepByTools(steps, [
+      GENERATE_CHAPTER_CRAFT_BRIEF_PREVIEW_TOOL,
+      MERGE_CHAPTER_OUTLINE_PREVIEWS_TOOL,
+      GENERATE_CHAPTER_OUTLINE_PREVIEW_TOOL,
+      GENERATE_VOLUME_OUTLINE_PREVIEW_TOOL,
+      GENERATE_OUTLINE_PREVIEW_TOOL,
+      'generate_guided_step_preview',
+      'collect_task_context',
+      'collect_chapter_context',
+      'inspect_project_context',
+    ]);
+    if (!previewStep) return undefined;
+    return {
+      afterStepNo: previewStep.stepNo,
+      sourceType: this.timelineSourceTypeForTool(previewStep.tool),
+      contextArg: `{{steps.${previewStep.stepNo}.output}}`,
+    };
+  }
+
+  private ensureTimelineValidationStep(steps: AgentPlanStepSpec[], previewStep: AgentPlanStepSpec, requiresApproval: (tool: string) => boolean): AgentPlanStepSpec[] {
+    const previewRef = `{{steps.${previewStep.stepNo}.output}}`;
+    const existingValidation = this.latestStepByTools(steps, [VALIDATE_TIMELINE_PREVIEW_TOOL]);
+    if (existingValidation) {
+      return steps.map((step) => step.tool === VALIDATE_TIMELINE_PREVIEW_TOOL
+        ? {
+            ...step,
+            requiresApproval: requiresApproval(VALIDATE_TIMELINE_PREVIEW_TOOL),
+            args: this.removeUndefinedArgs({
+              ...step.args,
+              preview: step.args.preview ?? previewRef,
+              taskContext: step.args.taskContext ?? previewStep.args.context,
+            }),
+          }
+        : step);
+    }
+    return this.insertStepAfter(
+      steps,
+      previewStep.stepNo,
+      this.createPlannedStep(
+        '校验计划时间线候选',
+        VALIDATE_TIMELINE_PREVIEW_TOOL,
+        this.removeUndefinedArgs({ preview: previewRef, taskContext: previewStep.args.context }),
+        requiresApproval,
+      ),
+    );
+  }
+
+  private timelineSourceTypeForTool(tool: string): string {
+    if (tool === GENERATE_CHAPTER_CRAFT_BRIEF_PREVIEW_TOOL) return 'craft_brief';
+    if (tool === GENERATE_VOLUME_OUTLINE_PREVIEW_TOOL) return 'volume_outline';
+    if (tool === GENERATE_CHAPTER_OUTLINE_PREVIEW_TOOL || tool === MERGE_CHAPTER_OUTLINE_PREVIEWS_TOOL) return 'chapter_outline';
+    return 'book_outline';
+  }
+
   private latestStepOutputRef(steps: AgentPlanStepSpec[], tool: string): string | undefined {
     const step = [...steps].reverse().find((item) => item.tool === tool);
     return step ? `{{steps.${step.stepNo}.output}}` : undefined;
+  }
+
+  private latestStepByTools(steps: AgentPlanStepSpec[], tools: string[]): AgentPlanStepSpec | undefined {
+    const toolSet = new Set(tools);
+    return [...steps].reverse().find((item) => toolSet.has(item.tool));
   }
 
   /**
