@@ -517,26 +517,16 @@ test('VCC character contract accepts complete volume plan and chapter execution'
 });
 
 test('VCC character contract rejects missing volume candidate required field', () => {
-  const plan = createVccCharacterPlan({
-    newCharacterCandidates: [
-      {
-        candidateId: 'cand_shaoheng',
-        name: '邵衡',
-        roleType: 'supporting',
-        scope: 'volume',
-        narrativeFunction: '作为巡检处内线，把制度压力具象化为可对抗的人',
-        personalityCore: '谨慎、讲秩序',
-        firstAppearChapter: 2,
-        expectedArc: '从旁观内线转为主动递交关键登记簿',
-        approvalStatus: 'candidate',
-      },
-    ],
-  });
+  for (const field of ['motivation', 'narrativeFunction', 'firstAppearChapter']) {
+    const candidate = { ...createVccCharacterPlan().newCharacterCandidates[0] } as Record<string, unknown>;
+    delete candidate[field];
+    const plan = createVccCharacterPlan({ newCharacterCandidates: [candidate] });
 
-  assert.throws(
-    () => assertVolumeCharacterPlan(plan, { chapterCount: 4, existingCharacterNames: ['林澈'] }),
-    /motivation/,
-  );
+    assert.throws(
+      () => assertVolumeCharacterPlan(plan, { chapterCount: 4, existingCharacterNames: ['林澈'] }),
+      new RegExp(field),
+    );
+  }
 });
 
 test('VCC character contract rejects candidate first appearance outside volume range', () => {

@@ -242,14 +242,14 @@ type ChapterCharacterExecution = {
 
 | ID | 状态 | 任务 | 影响文件 | 验收标准 |
 |---|---|---|---|---|
-| VCC-P6-01 | todo | LLM timeout 直接抛错，不生成角色占位。 | API 单测 | timeout mock 断言 reject。 |
-| VCC-P6-02 | todo | 卷级候选角色字段缺失直接抛错。 | API 单测 | 缺 `motivation`、`narrativeFunction`、`firstAppearChapter` 均失败。 |
-| VCC-P6-03 | todo | 章节引用未知角色直接抛错。 | API 单测 | `characterExecution.cast` 引用不存在角色且非候选/临时时失败。 |
-| VCC-P6-04 | todo | 章节级重要新角色直接抛错。 | API 单测 | 章节新增 `supporting` 但卷级无候选时失败。 |
-| VCC-P6-05 | todo | `sceneBeats.participants` 与 cast 不一致直接抛错。 | API 单测 | 参与者漏列时失败。 |
-| VCC-P6-06 | todo | `validate_outline` 拦截角色执行缺失。 | API 单测 | 缺 `craftBrief.characterExecution` 时 `valid=false`。 |
-| VCC-P6-07 | todo | 角色候选入库需要审批，并且不覆盖用户手工角色。 | API 单测 | 同名手工角色默认 skip 或需要明确 update intent。 |
-| VCC-P6-08 | todo | Web Artifact 展示角色规划指标。 | Web 组件测试或浏览器验证 | 页面显示角色候选数与章节角色执行覆盖。 |
+| VCC-P6-01 | done | LLM timeout 直接抛错，不生成角色占位。 | API 单测 | timeout mock 断言 reject。 |
+| VCC-P6-02 | done | 卷级候选角色字段缺失直接抛错。 | API 单测 | 缺 `motivation`、`narrativeFunction`、`firstAppearChapter` 均失败。 |
+| VCC-P6-03 | done | 章节引用未知角色直接抛错。 | API 单测 | `characterExecution.cast` 引用不存在角色且非候选/临时时失败。 |
+| VCC-P6-04 | done | 章节级重要新角色直接抛错。 | API 单测 | 章节新增 `supporting` 但卷级无候选时失败。 |
+| VCC-P6-05 | done | `sceneBeats.participants` 与 cast 不一致直接抛错。 | API 单测 | 参与者漏列时失败。 |
+| VCC-P6-06 | done | `validate_outline` 拦截角色执行缺失。 | API 单测 | 缺 `craftBrief.characterExecution` 时 `valid=false`。 |
+| VCC-P6-07 | done | 角色候选入库需要审批，并且不覆盖用户手工角色。 | API 单测 | 同名手工角色默认 skip 或需要明确 update intent。 |
+| VCC-P6-08 | done | Web Artifact 展示角色规划指标。 | Web 构建验证 | 页面显示角色候选数与章节角色执行覆盖。 |
 
 建议验证命令：
 
@@ -362,3 +362,4 @@ docker compose up -d --build
 | 2026-05-08 | VCC-P5-02/P5-03/P5-05 | Agent Artifact 的 `outline_preview` 增加角色候选、角色执行覆盖、临时角色与角色风险指标；章节摘要展示 POV、cast、角色目标、关系变化和临时角色；新增 `volume_character_candidates_persist_result` 专用展示，并补齐前端 tool 说明与 guided 类型。 | `pnpm --dir apps/web build` 通过。 |
 | 2026-05-08 | VCC-P5-04 | 卷管理章节展开行与章节详情顶部规划卡展示 `craftBrief.characterExecution` 摘要，包含 POV、cast 来源与目标/功能、关系变化以及临时角色数量和名称。 | `pnpm --dir apps/web build` 通过。 |
 | 2026-05-08 | VCC-P0-01/P0-03/P1-03 | `inspect_project_context` 读取并输出角色别名、scope、关系锚点、RelationshipEdge 摘要和近期 CharacterStateSnapshot；卷纲、整卷细纲和默认单章细纲 prompt 均注入角色/关系/状态摘要；角色契约校验接收既有角色别名，避免 prompt 允许别名但 normalize 判未知；Prompt 指南记录卷纲角色规划、章节角色执行与失败即失败边界。 | `AGENT_TEST_FILTER='VCC context injection' pnpm --filter api test:agent` 通过 2/300 项。 |
+| 2026-05-08 | VCC-P6-01..P6-08 | 回归测试覆盖 LLM timeout 直接抛错、卷级候选关键字段缺失、未知角色引用、章节级重要临时角色、scene participants 与 cast 不一致、`validate_outline` 缺失角色执行、角色候选入库审批/手工角色 skip，以及 Agent Artifact 角色规划指标展示构建验证。 | `AGENT_TEST_FILTER='VCC character contract rejects missing volume candidate required field' pnpm --filter api test:agent` 通过 1/300 项；相关 VCC 定向测试与 `pnpm --dir apps/web build` 已在对应实施记录中通过。 |
