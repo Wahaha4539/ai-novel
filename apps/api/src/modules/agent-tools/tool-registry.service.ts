@@ -26,6 +26,7 @@ import { GenerateImportWorldbuildingPreviewTool } from './tools/generate-import-
 import { GenerateImportWritingRulesPreviewTool } from './tools/generate-import-writing-rules-preview.tool';
 import { GenerateOutlinePreviewTool } from './tools/generate-outline-preview.tool';
 import { GenerateStoryBiblePreviewTool } from './tools/generate-story-bible-preview.tool';
+import { GenerateVolumeOutlinePreviewTool } from './tools/generate-volume-outline-preview.tool';
 import { GenerateWorldbuildingPreviewTool } from './tools/generate-worldbuilding-preview.tool';
 import { InspectProjectContextTool } from './tools/inspect-project-context.tool';
 import { MergeImportPreviewsTool } from './tools/merge-import-previews.tool';
@@ -94,6 +95,7 @@ export class ToolRegistryService implements OnModuleInit {
     private readonly generateGuidedStepPreviewTool: GenerateGuidedStepPreviewTool,
     private readonly validateGuidedStepPreviewTool: ValidateGuidedStepPreviewTool,
     private readonly persistGuidedStepResultTool: PersistGuidedStepResultTool,
+    private readonly generateVolumeOutlinePreviewTool: GenerateVolumeOutlinePreviewTool,
     private readonly generateOutlinePreviewTool: GenerateOutlinePreviewTool,
     private readonly generateChapterOutlinePreviewTool: GenerateChapterOutlinePreviewTool,
     private readonly mergeChapterOutlinePreviewsTool: MergeChapterOutlinePreviewsTool,
@@ -159,6 +161,7 @@ export class ToolRegistryService implements OnModuleInit {
     this.register(this.generateGuidedStepPreviewTool);
     this.register(this.validateGuidedStepPreviewTool);
     this.register(this.persistGuidedStepResultTool);
+    this.register(this.generateVolumeOutlinePreviewTool);
     this.register(this.generateOutlinePreviewTool);
     this.register(this.generateChapterOutlinePreviewTool);
     this.register(this.mergeChapterOutlinePreviewsTool);

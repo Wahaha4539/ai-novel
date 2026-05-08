@@ -11844,6 +11844,12 @@ test('AppModule compiles with phase4 CRUD and phase5 quality modules registered'
   assert.ok(registry.get('build_import_brief'));
   assert.ok(registry.get('merge_import_previews'));
   assert.ok(registry.get('cross_target_consistency_check'));
+  assert.ok(registry.get('generate_volume_outline_preview'));
+  assert.ok(registry.get('generate_outline_preview'));
+  assert.ok(registry.get('generate_chapter_outline_preview'));
+  assert.ok(registry.get('merge_chapter_outline_previews'));
+  assert.ok(registry.get('validate_outline'));
+  assert.ok(registry.get('persist_outline'));
   assert.ok(registry.get('persist_volume_character_candidates'));
   const manifests = registry.listManifestsForPlanner();
   const timelineGenerateManifest = manifests.find((item) => item.name === 'generate_timeline_preview');
@@ -11876,6 +11882,12 @@ test('AppModule compiles with phase4 CRUD and phase5 quality modules registered'
   assert.ok(builtinSkill.defaultTools.includes('align_chapter_timeline_preview'));
   assert.ok(builtinSkill.defaultTools.includes('validate_timeline_preview'));
   assert.ok(builtinSkill.defaultTools.includes('persist_timeline_events'));
+  assert.ok(builtinSkill.defaultTools.includes('generate_volume_outline_preview'));
+  assert.ok(builtinSkill.defaultTools.includes('generate_chapter_outline_preview'));
+  assert.ok(builtinSkill.defaultTools.includes('merge_chapter_outline_previews'));
+  assert.ok(builtinSkill.defaultTools.includes('validate_outline'));
+  assert.ok(builtinSkill.defaultTools.includes('persist_outline'));
+  assert.ok(builtinSkill.defaultTools.includes('persist_volume_character_candidates'));
   const briefManifest = manifests.find((item) => item.name === 'build_import_brief');
   assert.ok(briefManifest);
   assert.match(briefManifest.whenToUse.join('；'), /分目标导入预览/);
@@ -11905,6 +11917,11 @@ test('AppModule compiles with phase4 CRUD and phase5 quality modules registered'
   assert.equal(volumeCharacterPersistManifest.requiresApproval, true);
   assert.equal(volumeCharacterPersistManifest.riskLevel, 'high');
   assert.match(volumeCharacterPersistManifest.description, /official Character/);
+  const volumeOutlineManifest = manifests.find((item) => item.name === 'generate_volume_outline_preview');
+  assert.ok(volumeOutlineManifest);
+  assert.equal(volumeOutlineManifest.requiresApproval, false);
+  assert.deepEqual(volumeOutlineManifest.sideEffects, []);
+  assert.match(volumeOutlineManifest.whenToUse.join(' | '), /卷大纲|storyUnits|Volume\.narrativePlan/);
   const targetedImportTools = [
     ['generate_import_project_profile_preview', /项目资料|作品资料|书名/],
     ['generate_import_outline_preview', /剧情大纲|卷章结构|章节规划/],
