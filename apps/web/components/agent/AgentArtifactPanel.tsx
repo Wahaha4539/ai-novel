@@ -18,6 +18,7 @@ import {
   type ProjectImportAssetType,
   type ProjectImportTargetSource,
 } from './AgentSharedWidgets';
+import { TimelineUpdatePreview } from './TimelineUpdatePreview';
 
 // ────────────────────────────────────────────
 // 产物去重与过滤
@@ -1087,7 +1088,7 @@ function TimelineValidationSummary({ content }: { content: unknown }) {
           <Metric label="发现新增" value={numberValue(summary.createDiscoveredCount)} tone={numberValue(summary.createDiscoveredCount) ? 'warn' : undefined} />
         </div>
       )}
-      <TimelineWritePreviewList entries={asArray(writePreview?.entries)} />
+      <TimelineUpdatePreview entries={asArray(writePreview?.entries)} />
       <div className="space-y-1">
         {issues.slice(0, 6).map((item, index) => {
           const issue = asRecord(item);
@@ -1095,36 +1096,6 @@ function TimelineValidationSummary({ content }: { content: unknown }) {
         })}
         {!issues.length && <div className="text-xs" style={{ color: 'var(--text-muted)' }}>暂无阻断问题。</div>}
       </div>
-    </div>
-  );
-}
-
-function TimelineWritePreviewList({ entries }: { entries: unknown[] }) {
-  if (!entries.length) return <div className="text-xs" style={{ color: 'var(--text-muted)' }}>暂无写入前 diff。</div>;
-  return (
-    <div className="space-y-2">
-      {entries.slice(0, 8).map((item, index) => {
-        const entry = asRecord(item);
-        const after = asRecord(entry?.after);
-        const sourceTrace = asRecord(entry?.sourceTrace ?? asRecord(after?.metadata)?.sourceTrace);
-        const reason = textValue(entry?.reason, '');
-        const diffFields = Object.entries(asRecord(entry?.fieldDiff) ?? {})
-          .filter(([, changed]) => changed === true)
-          .map(([field]) => field);
-        const rejected = entry?.action === 'reject' || !after;
-        return (
-          <div key={textValue(entry?.candidateId, `timeline-diff-${index}`)} className="rounded-lg border p-3" style={{ borderColor: rejected ? 'rgba(251,113,133,0.35)' : 'var(--border-dim)', background: rejected ? 'rgba(251,113,133,0.08)' : 'rgba(15,23,42,0.18)' }}>
-            <div className="text-xs leading-5" style={{ color: rejected ? '#fb7185' : 'var(--text-muted)' }}>
-              <b style={{ color: 'var(--text-main)' }}>{textValue(entry?.label, textValue(after?.title, '未命名事件'))}</b>
-              {' '}· {textValue(entry?.action, 'unknown')}{entry?.chapterNo ? ` · 第${numberValue(entry.chapterNo)}章` : ''}
-            </div>
-            {diffFields.length > 0 && <div className="mt-1 text-xs" style={{ color: '#fbbf24' }}>Diff 字段：{diffFields.slice(0, 8).join('、')}</div>}
-            {reason && <div className="mt-1 text-xs leading-5" style={{ color: 'var(--text-muted)' }}>原因：{reason}</div>}
-            <TimelineSourceTrace trace={sourceTrace} />
-          </div>
-        );
-      })}
-      {entries.length > 8 && <div className="text-xs" style={{ color: 'var(--text-dim)' }}>还有 {entries.length - 8} 条 diff，完整内容见原始 JSON。</div>}
     </div>
   );
 }
