@@ -290,7 +290,7 @@ export function useGuidedSession(projectId: string, options?: UseGuidedSessionOp
     }
   }, [projectId, currentStepKey, chatMessages]);
 
-  // Finalize current step: ask AI for structured JSON, then persist to database
+  // Finalize current step: ask AI for structured JSON, then keep it as a guided draft.
   const finalizeCurrentStep = useCallback(async (): Promise<boolean> => {
     if (!projectId || chatMessages.length < 2) return false;
 
@@ -347,24 +347,16 @@ export function useGuidedSession(projectId: string, options?: UseGuidedSessionOp
 
       const structuredData = JSON.parse(jsonMatch[0]) as Record<string, unknown>;
 
-      // Send to finalize-step endpoint to persist
-      const result = await apiFetch<{ written: string[] }>(
-        `/projects/${projectId}/guided-session/finalize-step`,
-        {
-          method: 'POST',
-          body: JSON.stringify({
-            currentStep: currentStepKey,
-            structuredData,
-          }),
-        },
-      );
+      await saveStepProgress({
+        [`${currentStepKey}_draft`]: structuredData,
+      });
 
       // Show success in chat
       setChatMessages((prev) => [
         ...prev,
         {
           role: 'ai',
-          content: `✅ **${stepLabel}** 已保存！\n\n已写入：${result.written.join('、')}`,
+          content: `**${stepLabel}** 结构化草稿已生成。正式写入必须点击确认保存，并通过 Agent 校验与审批。`,
           timestamp: Date.now(),
         },
       ]);
@@ -378,18 +370,15 @@ export function useGuidedSession(projectId: string, options?: UseGuidedSessionOp
     } finally {
       setLoading(false);
     }
-  }, [projectId, currentStepIndex, currentStepKey, chatMessages]);
+  }, [projectId, currentStepIndex, currentStepKey, chatMessages, saveStepProgress]);
 
   // Navigate to next step — finalize current step first, then ask AI for new step opening
   const goToNextStep = useCallback(async () => {
     if (currentStepIndex >= GUIDED_STEPS.length - 1) return;
 
-    // Finalize current step: extract structured data and persist
+    // Finalize current step: extract structured data into a draft only.
     const finalized = await finalizeCurrentStep();
     if (!finalized) return; // Don't advance if finalization failed
-
-    // Save chat history
-    await saveStepProgress({});
 
     const nextIndex = currentStepIndex + 1;
     const nextStep = GUIDED_STEPS[nextIndex];
@@ -489,7 +478,7 @@ export function useGuidedSession(projectId: string, options?: UseGuidedSessionOp
     }
   }, [currentStepIndex, session]);
 
-  // Detect [STEP_COMPLETE] marker and auto-finalize
+  // Detect [STEP_COMPLETE] marker and keep the structured result as a draft.
   const handleStepComplete = useCallback(async (aiReply: string): Promise<string> => {
     const marker = '[STEP_COMPLETE]';
     const markerIndex = aiReply.indexOf(marker);
@@ -507,33 +496,18 @@ export function useGuidedSession(projectId: string, options?: UseGuidedSessionOp
       const structuredData = JSON.parse(jsonMatch[0]) as Record<string, unknown>;
       const stepLabel = GUIDED_STEPS[currentStepIndex]?.label ?? '';
 
-      // Persist to database
-      const result = await apiFetch<{ written: string[] }>(
-        `/projects/${projectId}/guided-session/finalize-step`,
-        {
-          method: 'POST',
-          body: JSON.stringify({
-            currentStep: currentStepKey,
-            structuredData,
-          }),
-        },
-      );
+      await saveStepProgress({
+        [`${currentStepKey}_draft`]: structuredData,
+      });
 
-      // Append success message to display text
-      const successMsg = `${displayText}\n\n✅ **${stepLabel}** 已自动保存！已写入：${result.written.join('、')}`;
-
-      // Auto-advance to next step after a brief delay
-      if (currentStepIndex < GUIDED_STEPS.length - 1) {
-        setTimeout(() => {
-          autoAdvanceToNextStep();
-        }, 1500);
-      }
+      // Append draft notice to display text. Formal writes must use Agent approval.
+      const successMsg = `${displayText}\n\n**${stepLabel}** 结构化草稿已生成。正式写入必须点击确认保存，并通过 Agent 校验与审批。`;
 
       return successMsg;
     } catch {
       return displayText || aiReply;
     }
-  }, [projectId, currentStepIndex, currentStepKey]);
+  }, [currentStepIndex, currentStepKey, saveStepProgress]);
 
   // Auto-advance without re-finalizing (used after [STEP_COMPLETE] detection or one-shot confirm)
   const autoAdvanceToNextStep = useCallback(async () => {

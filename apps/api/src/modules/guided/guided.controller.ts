@@ -1,4 +1,4 @@
-import { Body, Controller, Get, Param, Patch, Post } from '@nestjs/common';
+import { BadRequestException, Body, Controller, Get, Param, Patch, Post } from '@nestjs/common';
 import { CreateGuidedSessionDto } from './dto/create-guided-session.dto';
 import { UpdateGuidedStepDto } from './dto/update-guided-step.dto';
 import { GuidedChatDto } from './dto/guided-chat.dto';
@@ -60,12 +60,7 @@ export class GuidedController {
     @Param('projectId') projectId: string,
     @Body() dto: FinalizeStepDto,
   ) {
-    console.log(`[Guided][compat][deprecated-write] POST finalize pid=${projectId} step=${dto.currentStep} keys=[${Object.keys(dto.structuredData ?? {}).join(',')}] volumeNo=${dto.volumeNo ?? 'all'} newEntry=persist_guided_step_result`);
-    return this.guidedService.finalizeStep(
-      projectId,
-      dto.currentStep,
-      dto.structuredData ?? {},
-      dto.volumeNo,
-    );
+    console.warn(`[Guided][blocked-deprecated-write] POST finalize pid=${projectId} step=${dto.currentStep} keys=[${Object.keys(dto.structuredData ?? {}).join(',')}] volumeNo=${dto.volumeNo ?? 'all'} requiredEntry=persist_guided_step_result`);
+    throw new BadRequestException('旧 guided-session/finalize-step 直写入口已停用。请通过 Agent 的 guided_step_finalize 流程，在 validate_guided_step_preview 校验通过并获得用户审批后调用 persist_guided_step_result。');
   }
 }

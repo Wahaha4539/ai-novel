@@ -1,7 +1,7 @@
 import assert from 'node:assert/strict';
 import { createServer } from 'node:http';
 import type { AddressInfo } from 'node:net';
-import { NotFoundException } from '@nestjs/common';
+import { BadRequestException, NotFoundException } from '@nestjs/common';
 import { plainToInstance } from 'class-transformer';
 import { validate } from 'class-validator';
 import { Test } from '@nestjs/testing';
@@ -84,6 +84,7 @@ import { AutoRepairChapterTool } from '../agent-tools/tools/auto-repair-chapter.
 import { AiQualityReviewTool } from '../agent-tools/tools/ai-quality-review.tool';
 import { RetrievalService } from '../memory/retrieval.service';
 import { GuidedService } from '../guided/guided.service';
+import { GuidedController } from '../guided/guided.controller';
 import { LorebookService } from '../lorebook/lorebook.service';
 import { ProjectsService } from '../projects/projects.service';
 import { ValidationService } from '../validation/validation.service';
@@ -3516,6 +3517,25 @@ test('VCC guided_volume requires explicit volumeNo and chapterCount', async () =
     /chapterCount/,
   );
   assert.equal(transactionCalled, false);
+});
+
+test('VCC legacy guided finalize-step endpoint rejects direct writes', () => {
+  let serviceCalled = false;
+  const controller = new GuidedController({
+    finalizeStep() {
+      serviceCalled = true;
+      throw new Error('legacy finalize-step must not call GuidedService.finalizeStep');
+    },
+  } as never);
+
+  assert.throws(
+    () => controller.finalizeStep('p1', {
+      currentStep: 'guided_volume',
+      structuredData: { volumes: [createVccGuidedVolume()] },
+    }),
+    (error) => error instanceof BadRequestException && /guided_step_finalize|persist_guided_step_result/.test(error.message),
+  );
+  assert.equal(serviceCalled, false);
 });
 
 test('VCC guided finalize rejects empty volume and chapter results without saving session data', async () => {
