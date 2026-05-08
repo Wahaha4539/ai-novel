@@ -254,7 +254,7 @@
 
 ### ASP-P3-003 将 route 注入 DomainPlanner prompt
 
-- 状态：`[ ]`
+- 状态：`[x]`
 - 模块：API
 - 文件：
   - `apps/api/src/modules/agent-runs/agent-planner.service.ts`
@@ -364,6 +364,14 @@
   - Eval 能分别展示 legacy 和 graph planner 结果。
 - 验证：
   - `pnpm --dir apps/api run eval:agent:live`
+- 完成记录（2026-05-09）：
+  - 扩展 Agent Eval 报告指标，新增 `routeAccuracy`、`bundleAccuracy`、`bundleToolLeakRate`、`promptReductionRate`，并支持不适用于 legacy 的指标显示为 n/a。
+  - `eval:agent:live` 现在分别输出 legacy planner 与 graph planner 子集结果；graph 子集通过 RootSupervisor、ToolBundleRegistry 和 `createPlanWithTools` 评估 route/bundle/prompt 隔离。
+  - 为 8 个 eval case 标注 route/bundle 期望，并新增 `outline_volume_cn_024` legacy eval case，为后续 prompt size gate 保留中文卷大纲样本。
+  - 修改文件：`scripts/dev/eval_agent_planner.ts`、`apps/api/test/fixtures/agent-eval-cases.json`、`docs/architecture/agent-supervisor-planner-development-plan.md`。
+  - 测试：`node -e "JSON.parse(require('fs').readFileSync('apps/api/test/fixtures/agent-eval-cases.json','utf8')); console.log('json ok')"`，通过。
+  - 测试：`pnpm --dir apps/api exec tsc --noEmit --pretty false --project tsconfig.json`，通过。
+  - 测试：`pnpm --dir apps/api run eval:agent:live`，通过（legacy 24/24，graph 8/8）。
 
 ### ASP-P5-002 加入 prompt size 回归保护
 

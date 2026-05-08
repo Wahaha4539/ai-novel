@@ -14,6 +14,10 @@ import { LlmChatMessage } from '../../apps/api/src/modules/llm/dto/llm-chat.dto'
 import { LlmProvidersService } from '../../apps/api/src/modules/llm-providers/llm-providers.service';
 import { AgentContextV2 } from '../../apps/api/src/modules/agent-runs/agent-context-builder.service';
 import { AgentPlannerService } from '../../apps/api/src/modules/agent-runs/agent-planner.service';
+import { PlanValidatorService } from '../../apps/api/src/modules/agent-runs/planner-graph/plan-validator.service';
+import type { RouteDecision, SelectedToolBundle } from '../../apps/api/src/modules/agent-runs/planner-graph/planner-graph.state';
+import { RootSupervisor } from '../../apps/api/src/modules/agent-runs/planner-graph/supervisors/root-supervisor';
+import { ToolBundleRegistry } from '../../apps/api/src/modules/agent-runs/planner-graph/tool-bundles';
 import { CollectTaskContextTool } from '../../apps/api/src/modules/agent-tools/tools/collect-task-context.tool';
 import { CharacterConsistencyCheckTool } from '../../apps/api/src/modules/agent-tools/tools/character-consistency-check.tool';
 import { PlotConsistencyCheckTool } from '../../apps/api/src/modules/agent-tools/tools/plot-consistency-check.tool';
@@ -45,6 +49,13 @@ type StepArgExpectation = {
   mustNotHaveKeys?: string[];
 };
 
+type PlannerEvalMode = 'legacy' | 'graph';
+
+type RouteExpectation = {
+  domain: string;
+  intent?: string;
+};
+
 type EvalCase = {
   id: string;
   message: string;
@@ -58,6 +69,8 @@ type EvalCase = {
     mustMatchStepArgs?: StepArgExpectation[];
     mustRequireApproval?: boolean;
     forbidInventedIds?: boolean;
+    route?: RouteExpectation;
+    bundle?: string;
     retrieval?: RetrievalExpectation;
   };
 };
@@ -68,6 +81,7 @@ type AgentPlanLike = {
   riskReview?: { requiresApproval?: boolean; riskLevel?: string; reasons?: string[]; approvalMessage?: string };
   missingInfo?: Array<{ field?: string; reason?: string; canResolveByTool?: boolean; resolverTool?: string }>;
   userVisiblePlan?: { summary?: string; bullets?: string[]; hiddenTechnicalSteps?: boolean };
+  plannerDiagnostics?: Record<string, unknown>;
 };
 
 type RetrievalEvalOutput = {
@@ -82,7 +96,7 @@ type RetrievalEvalOutput = {
   worldbuildingPersistResult?: unknown;
 };
 
-type LivePlanResult = { case: EvalCase; plan: AgentPlanLike; error?: string };
+type LivePlanResult = { case: EvalCase; plan: AgentPlanLike; error?: string; plannerMode: PlannerEvalMode };
 
 type EvalMetricKey =
   | 'intentAccuracy'
@@ -93,12 +107,19 @@ type EvalMetricKey =
   | 'approvalSafety'
   | 'firstPlanSuccessRate'
   | 'userVisibleClarity'
-  | 'retrievalDimensionCoverage';
+  | 'retrievalDimensionCoverage'
+  | 'routeAccuracy'
+  | 'bundleAccuracy'
+  | 'bundleToolLeakRate'
+  | 'promptReductionRate';
+
+type EvalMetric = { passed: number; total: number; rate: number };
 
 type CaseEvaluation = {
   id: string;
   passed: boolean;
-  checks: Record<EvalMetricKey, boolean>;
+  checks: Record<EvalMetricKey, boolean | undefined>;
+  observations?: Partial<Record<EvalMetricKey, number>>;
   failures: string[];
 };
 
@@ -107,10 +128,12 @@ type EvalReport = {
   casesPath: string;
   plansDir: string;
   sourceMode: 'offline_plans' | 'live_planner_mock_llm' | 'live_planner_real_llm' | 'retrieval_tool';
+  plannerMode?: PlannerEvalMode;
   totalCases: number;
   passedCases: number;
-  metrics: Record<EvalMetricKey, { passed: number; total: number; rate: number }>;
+  metrics: Record<EvalMetricKey, EvalMetric>;
   failures: Array<{ id: string; failures: string[] }>;
+  comparedReports?: EvalReport[];
 };
 
 type PromptBaselineReport = {
@@ -198,16 +221,16 @@ async function main() {
   }
 
   if (realLlmSample) {
-    const liveResults = await runLivePlannerEval({ realLlm: true, sampleSize: Number(readArg('--sample-size') ?? 3) });
+    const liveResults = await runLivePlannerEval({ realLlm: true, sampleSize: Number(readArg('--sample-size') ?? 3), plannerMode: 'legacy' });
     const results = liveResults.map(({ case: item, plan, error }) => {
-      const evaluated = evaluateCase(item, plan);
+      const evaluated = evaluateCase(item, plan, { plannerMode: 'legacy' });
       if (error) {
         evaluated.failures.push(`真实 LLM Planner 调用失败：${error}`);
         evaluated.passed = false;
       }
       return evaluated;
     });
-    const report = buildReport(results, 'live-planner-real-llm-sample', 'live_planner_real_llm');
+    const report = buildReport(results, 'live-planner-real-llm-sample', 'live_planner_real_llm', 'legacy');
     for (const result of results) {
       console.log(`${result.passed ? '✓' : '✗'} ${result.id}${result.failures.length ? `：${result.failures.join('；')}` : ''}`);
     }
@@ -219,23 +242,17 @@ async function main() {
   }
 
   if (livePlanner) {
-    const liveResults = await runLivePlannerEval();
-    const results = liveResults.map(({ case: item, plan, error }) => {
-      const evaluated = evaluateCase(item, plan);
-      if (error) {
-        evaluated.failures.push(`Planner 调用失败：${error}`);
-        evaluated.passed = false;
-      }
-      return evaluated;
-    });
-    const report = buildReport(results, 'live-planner', 'live_planner_mock_llm');
-    for (const result of results) {
-      console.log(`${result.passed ? '✓' : '✗'} ${result.id}${result.failures.length ? `：${result.failures.join('；')}` : ''}`);
-    }
-    printMetricSummary(report);
-    if (reportPath) writeJson(reportPath, report);
-    if (historyPath) appendHistory(historyPath, report, failOnRegression);
-    if (report.passedCases !== results.length) process.exitCode = 1;
+    const legacyResults = evaluateLivePlanResults(await runLivePlannerEval({ plannerMode: 'legacy' }), 'Planner 调用失败');
+    const legacyReport = buildReport(legacyResults, 'live-planner-legacy', 'live_planner_mock_llm', 'legacy');
+    const graphResults = evaluateLivePlanResults(await runLivePlannerEval({ plannerMode: 'graph' }), 'Graph Planner 调用失败');
+    const graphReport = buildReport(graphResults, 'live-planner-graph', 'live_planner_mock_llm', 'graph', [legacyReport]);
+    printCaseResults('legacy planner', legacyResults);
+    printMetricSummary(legacyReport);
+    printCaseResults('graph planner', graphResults);
+    printMetricSummary(graphReport);
+    if (reportPath) writeJson(reportPath, graphReport);
+    if (historyPath) appendHistory(historyPath, graphReport, failOnRegression);
+    if (legacyReport.passedCases !== legacyResults.length || graphReport.passedCases !== graphResults.length) process.exitCode = 1;
     return;
   }
 
@@ -339,21 +356,27 @@ function appendExperimentalHistory(filePath: string, report: ExperimentalEvidenc
   writeJson(filePath, [...previous, report]);
 }
 
-function evaluateCase(item: EvalCase, plan: AgentPlanLike): CaseEvaluation {
+function evaluateLivePlanResults(liveResults: LivePlanResult[], errorPrefix: string): CaseEvaluation[] {
+  return liveResults.map(({ case: item, plan, error, plannerMode }) => {
+    const evaluated = evaluateCase(item, plan, { plannerMode });
+    if (error) {
+      evaluated.failures.push(`${errorPrefix}：${error}`);
+      evaluated.passed = false;
+    }
+    return evaluated;
+  });
+}
+
+function evaluateCase(item: EvalCase, plan: AgentPlanLike, options: { plannerMode?: PlannerEvalMode } = {}): CaseEvaluation {
   const failures: string[] = [];
   const tools = (plan.steps ?? []).map((step) => step.tool).filter(Boolean) as string[];
   const planText = JSON.stringify(plan);
-  const checks: Record<EvalMetricKey, boolean> = {
-    intentAccuracy: plan.taskType === item.expected.taskType,
-    toolPlanAccuracy: true,
-    requiredParamCompletion: true,
-    idHallucinationRate: !(item.expected.forbidInventedIds && hasInventedId(plan)),
-    resolverUsageRate: true,
-    approvalSafety: true,
-    firstPlanSuccessRate: Boolean(plan.taskType && (plan.steps ?? []).length),
-    userVisibleClarity: hasUserVisiblePlan(plan),
-    retrievalDimensionCoverage: true,
-  };
+  const checks = createPassingChecks();
+  checks.intentAccuracy = plan.taskType === item.expected.taskType;
+  checks.idHallucinationRate = !(item.expected.forbidInventedIds && hasInventedId(plan));
+  checks.firstPlanSuccessRate = Boolean(plan.taskType && (plan.steps ?? []).length);
+  checks.userVisibleClarity = hasUserVisiblePlan(plan);
+  const observations: Partial<Record<EvalMetricKey, number>> = {};
 
   if (!checks.intentAccuracy) failures.push(`taskType 期望 ${item.expected.taskType}，实际 ${plan.taskType ?? '空'}`);
   for (const tool of item.expected.mustUseTools ?? []) {
@@ -408,7 +431,8 @@ function evaluateCase(item: EvalCase, plan: AgentPlanLike): CaseEvaluation {
   if (!checks.idHallucinationRate) failures.push('ID 幻觉：发现自然语言或伪造 ID 直接进入 *.Id 参数');
   checks.resolverUsageRate = expectedResolverTools(item).every((tool) => tools.includes(tool));
   if (!checks.resolverUsageRate) failures.push(`Resolver 使用不足：期望 ${expectedResolverTools(item).join(', ')}`);
-  return { id: item.id, passed: failures.length === 0, checks, failures };
+  evaluatePlannerGraphDiagnostics(item, plan, tools, checks, observations, failures, options);
+  return { id: item.id, passed: failures.length === 0, checks, observations, failures };
 }
 
 function evaluateRetrievalCase(item: EvalCase, output: RetrievalEvalOutput): CaseEvaluation {
@@ -416,7 +440,7 @@ function evaluateRetrievalCase(item: EvalCase, output: RetrievalEvalOutput): Cas
   const failures: string[] = [];
   const dimensions = output.diagnostics?.retrievalDimensions ?? [];
   const missingContextCount = output.diagnostics?.missingContext?.length ?? 0;
-  const checks = Object.fromEntries(metricKeys().map((key) => [key, true])) as Record<EvalMetricKey, boolean>;
+  const checks = createPassingChecks();
   if (!expected) return { id: item.id, passed: true, checks, failures };
 
   for (const dimension of expected.mustUseDimensions ?? []) {
@@ -461,6 +485,85 @@ function evaluateRetrievalCase(item: EvalCase, output: RetrievalEvalOutput): Cas
   return { id: item.id, passed: failures.length === 0, checks, failures };
 }
 
+function evaluatePlannerGraphDiagnostics(
+  item: EvalCase,
+  plan: AgentPlanLike,
+  tools: string[],
+  checks: Record<EvalMetricKey, boolean | undefined>,
+  observations: Partial<Record<EvalMetricKey, number>>,
+  failures: string[],
+  options: { plannerMode?: PlannerEvalMode },
+) {
+  const diagnostics = asRecord(plan.plannerDiagnostics);
+  const graphRequired = options.plannerMode === 'graph';
+  const expectedRoute = item.expected.route;
+  if (expectedRoute) {
+    const route = asRecord(diagnostics.route);
+    const routeAvailable = typeof route.domain === 'string';
+    if (!routeAvailable) {
+      checks.routeAccuracy = graphRequired ? false : undefined;
+      if (graphRequired) failures.push('缺少 graph route diagnostics');
+    } else {
+      checks.routeAccuracy = route.domain === expectedRoute.domain && (!expectedRoute.intent || route.intent === expectedRoute.intent);
+      if (!checks.routeAccuracy) failures.push(`route 期望 ${expectedRoute.domain}:${expectedRoute.intent ?? '*'}，实际 ${String(route.domain)}:${String(route.intent ?? '')}`);
+    }
+  }
+
+  if (item.expected.bundle) {
+    const toolBundle = asRecord(diagnostics.toolBundle);
+    const actualBundle = textOrUndefined(toolBundle.name);
+    if (!actualBundle) {
+      checks.bundleAccuracy = graphRequired ? false : undefined;
+      if (graphRequired) failures.push('缺少 graph toolBundle diagnostics');
+    } else {
+      checks.bundleAccuracy = actualBundle === item.expected.bundle;
+      if (!checks.bundleAccuracy) failures.push(`toolBundle 期望 ${item.expected.bundle}，实际 ${actualBundle}`);
+    }
+  }
+
+  const allowedToolNames = stringArray(diagnostics.allowedToolNames);
+  if (allowedToolNames.length) {
+    const allowed = new Set(allowedToolNames);
+    const leakedTools = tools.filter((tool) => !allowed.has(tool));
+    checks.bundleToolLeakRate = leakedTools.length === 0;
+    if (leakedTools.length) failures.push(`bundle 外工具泄漏：${[...new Set(leakedTools)].join(', ')}`);
+  } else if (graphRequired && item.expected.bundle) {
+    checks.bundleToolLeakRate = false;
+    failures.push('缺少 bundle allowedToolNames diagnostics');
+  }
+
+  const promptBudget = asRecord(diagnostics.promptBudget);
+  const allToolsChars = numberOrUndefined(promptBudget.allToolsChars);
+  const selectedToolsChars = numberOrUndefined(promptBudget.selectedToolsChars);
+  if (allToolsChars && selectedToolsChars !== undefined) {
+    const reduction = allToolsChars > 0 ? (allToolsChars - selectedToolsChars) / allToolsChars : 0;
+    observations.promptReductionRate = roundRate(reduction);
+    checks.promptReductionRate = reduction > 0;
+    if (!checks.promptReductionRate) failures.push(`selected tools prompt 未缩小：all=${allToolsChars} selected=${selectedToolsChars}`);
+  } else if (graphRequired && item.expected.bundle) {
+    checks.promptReductionRate = false;
+    failures.push('缺少 promptBudget diagnostics');
+  }
+}
+
+function createPassingChecks(): Record<EvalMetricKey, boolean | undefined> {
+  return {
+    intentAccuracy: true,
+    toolPlanAccuracy: true,
+    requiredParamCompletion: true,
+    idHallucinationRate: true,
+    resolverUsageRate: true,
+    approvalSafety: true,
+    firstPlanSuccessRate: true,
+    userVisibleClarity: true,
+    retrievalDimensionCoverage: true,
+    routeAccuracy: undefined,
+    bundleAccuracy: undefined,
+    bundleToolLeakRate: undefined,
+    promptReductionRate: undefined,
+  };
+}
+
 function hasInventedId(plan: AgentPlanLike): boolean {
   const values: unknown[] = [];
   for (const step of plan.steps ?? []) collectIdValues(step.args, values);
@@ -501,20 +604,54 @@ function normalizePlan(value: unknown): AgentPlanLike {
   return asRecord(artifact?.content) as AgentPlanLike;
 }
 
-function buildReport(results: CaseEvaluation[], sourcePlansDir: string, sourceMode: EvalReport['sourceMode']): EvalReport {
+function buildReport(
+  results: CaseEvaluation[],
+  sourcePlansDir: string,
+  sourceMode: EvalReport['sourceMode'],
+  plannerMode?: PlannerEvalMode,
+  comparedReports?: EvalReport[],
+): EvalReport {
   const metrics = Object.fromEntries(metricKeys().map((key) => {
-    const passed = results.filter((result) => result.checks[key]).length;
-    return [key, { passed, total: results.length, rate: results.length ? roundRate(passed / results.length) : 0 }];
+    return [key, buildMetric(key, results)];
   })) as EvalReport['metrics'];
   return {
     generatedAt: new Date().toISOString(),
     casesPath,
     plansDir: path.resolve(process.cwd(), sourcePlansDir),
     sourceMode,
+    plannerMode,
     totalCases: results.length,
     passedCases: results.filter((item) => item.passed).length,
     metrics,
     failures: results.filter((item) => item.failures.length).map((item) => ({ id: item.id, failures: item.failures })),
+    ...(comparedReports?.length ? { comparedReports } : {}),
+  };
+}
+
+function buildMetric(key: EvalMetricKey, results: CaseEvaluation[]): EvalMetric {
+  if (key === 'promptReductionRate') {
+    const applicable = results.filter((result) => result.checks.promptReductionRate !== undefined || result.observations?.promptReductionRate !== undefined);
+    const values = applicable.map((result) => result.observations?.promptReductionRate ?? 0);
+    return {
+      passed: applicable.filter((result) => result.checks.promptReductionRate).length,
+      total: applicable.length,
+      rate: values.length ? roundRate(values.reduce((total, value) => total + value, 0) / values.length) : 0,
+    };
+  }
+
+  const applicable = results.filter((result) => result.checks[key] !== undefined);
+  const passed = applicable.filter((result) => result.checks[key]).length;
+  if (key === 'bundleToolLeakRate') {
+    return {
+      passed,
+      total: applicable.length,
+      rate: applicable.length ? roundRate((applicable.length - passed) / applicable.length) : 0,
+    };
+  }
+  return {
+    passed,
+    total: applicable.length,
+    rate: applicable.length ? roundRate(passed / applicable.length) : 0,
   };
 }
 
@@ -522,7 +659,8 @@ function buildReport(results: CaseEvaluation[], sourcePlansDir: string, sourceMo
  * Live Planner Eval：通过 Nest TestingModule 构造真实 AgentPlannerService，
  * 同时用可控 LLM 和工具注册表隔离网络、数据库和副作用，专门验证 Planner 规范化、质量管线和 Eval 指标链路。
  */
-async function runLivePlannerEval(options: { realLlm?: boolean; sampleSize?: number } = {}): Promise<LivePlanResult[]> {
+async function runLivePlannerEval(options: { realLlm?: boolean; sampleSize?: number; plannerMode?: PlannerEvalMode } = {}): Promise<LivePlanResult[]> {
+  const plannerMode = options.plannerMode ?? 'legacy';
   const toolRegistry = new EvalToolRegistry();
   const moduleRef = await Test.createTestingModule({
     imports: options.realLlm ? [PrismaModule] : [],
@@ -530,6 +668,7 @@ async function runLivePlannerEval(options: { realLlm?: boolean; sampleSize?: num
       AgentPlannerService,
       SkillRegistryService,
       RuleEngineService,
+      PlanValidatorService,
       { provide: ToolRegistryService, useValue: toolRegistry },
       { provide: LlmGatewayService, useClass: options.realLlm ? LlmGatewayService : EvalLlmGatewayMock },
       ...(options.realLlm ? [LlmProvidersService] : []),
@@ -542,21 +681,90 @@ async function runLivePlannerEval(options: { realLlm?: boolean; sampleSize?: num
     await moduleRef.get(LlmProvidersService).onModuleInit();
   }
   const planner = moduleRef.get(AgentPlannerService);
+  const supervisor = new RootSupervisor();
+  const bundleRegistry = new ToolBundleRegistry(toolRegistry as unknown as ToolRegistryService);
   const results: LivePlanResult[] = [];
-  const selectedCases = options.realLlm ? cases.slice(0, Math.max(1, Math.min(options.sampleSize ?? 3, cases.length))) : cases;
+  const selectedCases = options.realLlm
+    ? cases.slice(0, Math.max(1, Math.min(options.sampleSize ?? 3, cases.length)))
+    : plannerMode === 'graph'
+      ? cases.filter(hasGraphPlannerExpectation)
+      : cases;
 
   for (const item of selectedCases) {
     try {
-      const plan = await planner.createPlan(item.message, buildEvalContext(item, toolRegistry));
-      results.push({ case: item, plan: normalizePlan(plan) });
+      const context = buildEvalContext(item, toolRegistry);
+      if (plannerMode === 'graph') {
+        const route = supervisor.classify({ goal: item.message, context });
+        const selectedBundle = context.session.guided?.currentStep
+          ? bundleRegistry.resolveBundle('guided.step')
+          : bundleRegistry.resolveForRoute(route);
+        const selectedTools = bundleRegistry.listManifestsForBundle(selectedBundle);
+        const allTools = toolRegistry.listManifestsForPlanner();
+        const plan = await planner.createPlanWithTools({
+          goal: item.message,
+          context,
+          route,
+          selectedBundle,
+          selectedTools,
+        });
+        results.push({
+          case: item,
+          plan: withGraphEvalDiagnostics(normalizePlan(plan), route, selectedBundle, selectedTools, allTools),
+          plannerMode,
+        });
+      } else {
+        const plan = await planner.createPlan(item.message, context);
+        results.push({ case: item, plan: normalizePlan(plan), plannerMode });
+      }
     } catch (error) {
-      results.push({ case: item, plan: {}, error: error instanceof Error ? error.message : String(error) });
+      results.push({ case: item, plan: {}, error: error instanceof Error ? error.message : String(error), plannerMode });
     }
   }
 
   if (prisma) await prisma.$disconnect();
   await moduleRef.close();
   return results;
+}
+
+function hasGraphPlannerExpectation(item: EvalCase): boolean {
+  return Boolean(item.expected.route || item.expected.bundle);
+}
+
+function withGraphEvalDiagnostics(
+  plan: AgentPlanLike,
+  route: RouteDecision,
+  selectedBundle: SelectedToolBundle,
+  selectedTools: ToolManifestForPlanner[],
+  allTools: ToolManifestForPlanner[],
+): AgentPlanLike {
+  const selectedToolsChars = JSON.stringify(selectedTools).length;
+  const allToolsChars = JSON.stringify(allTools).length;
+  const diagnostics = asRecord(plan.plannerDiagnostics);
+  return {
+    ...plan,
+    plannerDiagnostics: {
+      ...diagnostics,
+      route: {
+        ...asRecord(diagnostics.route),
+        domain: route.domain,
+        intent: route.intent,
+        confidence: route.confidence,
+      },
+      toolBundle: {
+        ...asRecord(diagnostics.toolBundle),
+        name: selectedBundle.bundleName,
+        selectedToolCount: selectedTools.length,
+        allToolCount: allTools.length,
+      },
+      selectedToolNames: selectedTools.map((tool) => tool.name),
+      allowedToolNames: [...new Set([...selectedBundle.strictToolNames, ...selectedBundle.optionalToolNames])],
+      promptBudget: {
+        selectedToolsChars,
+        allToolsChars,
+        promptReductionRate: allToolsChars ? roundRate((allToolsChars - selectedToolsChars) / allToolsChars) : 0,
+      },
+    },
+  };
 }
 
 async function createPlannerPromptBaselineReport(caseId?: string): Promise<PromptBaselineReport> {
@@ -810,8 +1018,15 @@ class EvalToolRegistry {
   }
 
   /** 返回与生产 ToolRegistry 同结构的压缩 Manifest，保证 Planner Prompt 入口一致。 */
-  listManifestsForPlanner(): ToolManifestForPlanner[] {
-    return this.list().map((tool) => ({
+  listManifestsForPlanner(toolNames?: string[]): ToolManifestForPlanner[] {
+    const tools = toolNames?.length
+      ? [...new Set(toolNames)].map((name) => {
+          const tool = this.get(name);
+          if (!tool) throw new Error(`EvalToolRegistry missing requested tool: ${name}`);
+          return tool;
+        })
+      : this.list();
+    return tools.map((tool) => ({
       name: tool.name,
       displayName: tool.name,
       description: tool.description,
@@ -836,8 +1051,10 @@ const EVAL_TOOL_DEFINITIONS: EvalToolDefinition[] = [
   { name: 'collect_chapter_context', description: '收集章节写作或修改上下文。' },
   { name: 'collect_task_context', description: '收集检查类、世界观类任务上下文。' },
   { name: 'inspect_project_context', description: '巡检项目、大纲和资产现状。' },
+  { name: 'read_source_document', description: '读取导入源文档。' },
   { name: 'character_consistency_check', description: '只读检查角色一致性。' },
   { name: 'plot_consistency_check', description: '只读检查大纲矛盾、事件顺序、伏笔回收和角色动机断裂。' },
+  { name: 'ai_quality_review', description: '只读审稿并输出质量问题清单。' },
   { name: 'generate_worldbuilding_preview', description: '生成世界观扩展预览。' },
   { name: 'validate_worldbuilding', description: '校验世界观候选和写入前 diff。' },
   { name: 'persist_worldbuilding', description: '审批后追加写入世界观。', requiresApproval: true, riskLevel: 'medium', sideEffects: ['create_lorebook_entry'] },
@@ -861,6 +1078,14 @@ const EVAL_TOOL_DEFINITIONS: EvalToolDefinition[] = [
   { name: 'validate_outline', description: '校验大纲预览。' },
   { name: 'persist_outline', description: '审批后持久化大纲。', requiresApproval: true, riskLevel: 'medium', sideEffects: ['create_outline'] },
   { name: 'persist_volume_outline', description: '审批后持久化卷级大纲。', requiresApproval: true, riskLevel: 'medium', sideEffects: ['upsert_volume_outline'] },
+  { name: 'generate_chapter_craft_brief_preview', description: '生成 Chapter.craftBrief 推进卡预览。' },
+  { name: 'validate_chapter_craft_brief', description: '校验 Chapter.craftBrief 推进卡预览。' },
+  { name: 'persist_chapter_craft_brief', description: '审批后持久化 Chapter.craftBrief。', requiresApproval: true, riskLevel: 'medium', sideEffects: ['update_chapter_craft_brief'] },
+  { name: 'list_scene_cards', description: '列出当前章节或项目的场景卡。' },
+  { name: 'generate_scene_cards_preview', description: '生成场景卡预览。' },
+  { name: 'validate_scene_cards', description: '校验场景卡预览。' },
+  { name: 'persist_scene_cards', description: '审批后持久化新场景卡。', requiresApproval: true, riskLevel: 'medium', sideEffects: ['create_scene_cards'] },
+  { name: 'update_scene_card', description: '审批后更新指定场景卡。', requiresApproval: true, riskLevel: 'medium', sideEffects: ['update_scene_card'] },
   { name: 'analyze_source_text', description: '分析导入文案。' },
   { name: 'build_import_preview', description: '构建导入预览。' },
   { name: 'build_import_brief', description: 'Build a shared import brief before targeted import preview tools.' },
@@ -874,7 +1099,10 @@ const EVAL_TOOL_DEFINITIONS: EvalToolDefinition[] = [
   { name: 'validate_imported_assets', description: '校验导入资产。' },
   { name: 'persist_project_assets', description: '审批后持久化项目资产。', requiresApproval: true, riskLevel: 'medium', sideEffects: ['create_project_assets'] },
   { name: 'write_chapter', description: '审批后生成章节草稿。', requiresApproval: true, riskLevel: 'medium', sideEffects: ['create_chapter_draft'] },
+  { name: 'write_chapter_series', description: '审批后连续生成多章章节草稿。', requiresApproval: true, riskLevel: 'medium', sideEffects: ['create_chapter_drafts'] },
   { name: 'polish_chapter', description: '审批后润色或修改章节草稿。', requiresApproval: true, riskLevel: 'medium', sideEffects: ['create_chapter_draft_version'] },
+  { name: 'rewrite_chapter', description: '审批后重写章节草稿。', requiresApproval: true, riskLevel: 'medium', sideEffects: ['create_chapter_rewrite_draft'] },
+  { name: 'postprocess_chapter', description: '对章节草稿做后处理和格式检查。' },
   { name: 'fact_validation', description: '校验章节事实一致性。' },
   { name: 'auto_repair_chapter', description: '按事实校验结果有界修复章节。', requiresApproval: true, riskLevel: 'medium', sideEffects: ['create_repair_draft'] },
   { name: 'extract_chapter_facts', description: '抽取章节事实。', requiresApproval: true, riskLevel: 'high', sideEffects: ['replace_auto_story_events'] },
@@ -1054,6 +1282,13 @@ function createMockPlannerOutput(goal: string, agentContext: Record<string, unkn
       step(3, 'persist_volume_outline', { preview: '{{steps.generate_volume_outline_preview.output}}' }),
     ]);
   }
+  if ((goal.includes('第一卷') || goal.includes('第1卷')) && goal.includes('大纲') && !goal.includes('章')) {
+    return plan('outline_design', goal, true, [
+      step(1, 'inspect_project_context', { projectId: '{{context.session.currentProjectId}}', focus: ['outline', 'volumes'] }),
+      step(2, 'generate_volume_outline_preview', { context: '{{steps.inspect_project_context.output}}', instruction: goal, volumeNo: 1 }),
+      step(3, 'persist_volume_outline', { preview: '{{steps.generate_volume_outline_preview.output}}' }),
+    ]);
+  }
   if (goal.includes('第一卷') && goal.includes('30')) {
     const chapterSteps = Array.from({ length: 30 }, (_item, index) => {
       const chapterNo = index + 1;
@@ -1128,16 +1363,36 @@ function step(stepNo: number, tool: string, args: Record<string, unknown>): NonN
   return { id: tool, stepNo, name: `执行 ${tool}`, tool, mode: 'act', requiresApproval: false, args };
 }
 
+function printCaseResults(label: string, results: CaseEvaluation[]) {
+  console.log(`\n[${label}]`);
+  for (const result of results) {
+    console.log(`${result.passed ? '✓' : '✗'} ${result.id}${result.failures.length ? `：${result.failures.join('；')}` : ''}`);
+  }
+}
+
 function printMetricSummary(report: EvalReport) {
-  console.log(`Agent Planner Eval：${report.passedCases}/${report.totalCases} 通过`);
+  const mode = report.plannerMode ? ` (${report.plannerMode})` : '';
+  console.log(`Agent Planner Eval${mode}：${report.passedCases}/${report.totalCases} 通过`);
   for (const [key, metric] of Object.entries(report.metrics)) {
+    if (!metric.total) {
+      console.log(`- ${key}: n/a (0/0)`);
+      continue;
+    }
+    if (key === 'bundleToolLeakRate') {
+      console.log(`- ${key}: ${(metric.rate * 100).toFixed(1)}% leak (${metric.total - metric.passed}/${metric.total})`);
+      continue;
+    }
+    if (key === 'promptReductionRate') {
+      console.log(`- ${key}: ${(metric.rate * 100).toFixed(1)}% avg reduction (${metric.passed}/${metric.total} reduced)`);
+      continue;
+    }
     const suffix = key === 'idHallucinationRate' ? '（通过率，目标为 100% 无幻觉）' : '';
     console.log(`- ${key}: ${(metric.rate * 100).toFixed(1)}% (${metric.passed}/${metric.total})${suffix}`);
   }
 }
 
 function metricKeys(): EvalMetricKey[] {
-  return ['intentAccuracy', 'toolPlanAccuracy', 'requiredParamCompletion', 'idHallucinationRate', 'resolverUsageRate', 'approvalSafety', 'firstPlanSuccessRate', 'userVisibleClarity', 'retrievalDimensionCoverage'];
+  return ['intentAccuracy', 'toolPlanAccuracy', 'requiredParamCompletion', 'idHallucinationRate', 'resolverUsageRate', 'approvalSafety', 'firstPlanSuccessRate', 'userVisibleClarity', 'retrievalDimensionCoverage', 'routeAccuracy', 'bundleAccuracy', 'bundleToolLeakRate', 'promptReductionRate'];
 }
 
 function appendHistory(filePath: string, report: EvalReport, shouldFailOnRegression: boolean) {
@@ -1146,12 +1401,18 @@ function appendHistory(filePath: string, report: EvalReport, shouldFailOnRegress
   const last = previous.at(-1);
   writeJson(filePath, [...previous, report]);
   if (shouldFailOnRegression && last) {
-    const regressed = Object.entries(report.metrics).filter(([key, metric]) => metric.rate < (last.metrics[key as EvalMetricKey]?.rate ?? 0));
+    const regressed = Object.entries(report.metrics).filter(([key, metric]) => metricRegressed(key as EvalMetricKey, metric, last.metrics[key as EvalMetricKey]));
     if (regressed.length) {
       console.error(`发现 Eval 指标回退：${regressed.map(([key]) => key).join(', ')}`);
       process.exitCode = 1;
     }
   }
+}
+
+function metricRegressed(key: EvalMetricKey, current: EvalMetric, previous?: EvalMetric): boolean {
+  if (!previous || !current.total || !previous.total) return false;
+  if (key === 'bundleToolLeakRate') return current.rate > previous.rate;
+  return current.rate < previous.rate;
 }
 
 function writeJson(filePath: string, value: unknown) {
@@ -1225,6 +1486,14 @@ function asRecord(value: unknown): Record<string, unknown> {
 
 function textOrUndefined(value: unknown): string | undefined {
   return typeof value === 'string' && value.trim() ? value.trim() : undefined;
+}
+
+function numberOrUndefined(value: unknown): number | undefined {
+  return typeof value === 'number' && Number.isFinite(value) ? value : undefined;
+}
+
+function stringArray(value: unknown): string[] {
+  return Array.isArray(value) ? value.filter((item): item is string => typeof item === 'string' && item.trim().length > 0) : [];
 }
 
 function importAssetTypesValue(value: unknown): NonNullable<AgentContextV2['session']['requestedAssetTypes']> {

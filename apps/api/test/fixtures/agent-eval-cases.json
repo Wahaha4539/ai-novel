@@ -27,7 +27,7 @@
     "id": "character_consistency_005",
     "message": "男主这里是不是人设崩了？",
     "context": { "session": { "currentProjectId": "project_1", "currentChapterId": "chapter_8" } },
-    "expected": { "taskType": "character_consistency_check", "mustUseTools": ["resolve_character"], "mustContainInstruction": ["男主", "人设"], "mustRequireApproval": false, "forbidInventedIds": true, "retrieval": { "mustUseDimensions": ["characters", "plot_events", "relationship_graph", "memory_chunks"], "minPlotEvents": 1, "minRelationshipEdges": 1, "minConflictRelationshipEdges": 1, "requiredRelationshipEdgeFields": ["relationType", "weight", "evidenceSources", "timeRange", "conflict"], "minLockedWorldFacts": 1, "minMemoryChunks": 1, "maxMissingContext": 0, "requireCharacterEvidenceKeywords": ["关系证据", "剧情事件", "锁定事实边界"] } }
+    "expected": { "taskType": "character_consistency_check", "mustUseTools": ["resolve_character"], "mustContainInstruction": ["男主", "人设"], "mustRequireApproval": false, "forbidInventedIds": true, "route": { "domain": "quality", "intent": "character_consistency_check" }, "bundle": "quality.check", "retrieval": { "mustUseDimensions": ["characters", "plot_events", "relationship_graph", "memory_chunks"], "minPlotEvents": 1, "minRelationshipEdges": 1, "minConflictRelationshipEdges": 1, "requiredRelationshipEdgeFields": ["relationType", "weight", "evidenceSources", "timeRange", "conflict"], "minLockedWorldFacts": 1, "minMemoryChunks": 1, "maxMissingContext": 0, "requireCharacterEvidenceKeywords": ["关系证据", "剧情事件", "锁定事实边界"] } }
   },
   {
     "id": "plot_consistency_006",
@@ -39,19 +39,19 @@
     "id": "worldbuilding_expand_007",
     "message": "补充宗门体系，但不要影响已有剧情。",
     "context": { "session": { "currentProjectId": "project_1" } },
-    "expected": { "taskType": "worldbuilding_expand", "mustUseTools": ["inspect_project_context"], "mustContainInstruction": ["宗门体系", "不要影响已有剧情"], "mustRequireApproval": true, "forbidInventedIds": true, "retrieval": { "mustUseDimensions": ["world_facts", "plot_events", "memory_chunks"], "minWorldFacts": 6, "minWorldEntityTypes": ["faction", "rule", "location", "item", "history_event", "relationship"], "minLockedWorldFacts": 1, "minPlotEvents": 1, "minMemoryChunks": 1, "maxMissingContext": 0, "requireWorldbuildingValidationComparison": true, "requireWorldbuildingPersistAudit": true } }
+    "expected": { "taskType": "worldbuilding_expand", "mustUseTools": ["inspect_project_context"], "mustContainInstruction": ["宗门体系", "不要影响已有剧情"], "mustRequireApproval": true, "forbidInventedIds": true, "route": { "domain": "worldbuilding", "intent": "worldbuilding_expand" }, "bundle": "worldbuilding.expand", "retrieval": { "mustUseDimensions": ["world_facts", "plot_events", "memory_chunks"], "minWorldFacts": 6, "minWorldEntityTypes": ["faction", "rule", "location", "item", "history_event", "relationship"], "minLockedWorldFacts": 1, "minPlotEvents": 1, "minMemoryChunks": 1, "maxMissingContext": 0, "requireWorldbuildingValidationComparison": true, "requireWorldbuildingPersistAudit": true } }
   },
   {
     "id": "outline_split_008",
     "message": "把第一卷拆成 30 章。",
     "context": { "session": { "currentProjectId": "project_1" } },
-    "expected": { "taskType": "outline_design", "mustUseTools": ["generate_volume_outline_preview", "generate_chapter_outline_preview", "merge_chapter_outline_previews", "validate_outline"], "mustContainInstruction": ["第一卷", "30"], "mustRequireApproval": true, "forbidInventedIds": true }
+    "expected": { "taskType": "outline_design", "mustUseTools": ["generate_volume_outline_preview", "generate_chapter_outline_preview", "merge_chapter_outline_previews", "validate_outline"], "mustContainInstruction": ["第一卷", "30"], "mustRequireApproval": true, "forbidInventedIds": true, "route": { "domain": "outline", "intent": "split_volume_to_chapters" }, "bundle": "outline.chapter" }
   },
   {
     "id": "project_import_009",
     "message": "把这段文案拆成角色、世界观和三卷大纲。",
     "context": { "session": { "selectedText": "这里放置待导入的小说卖点文案。" } },
-    "expected": { "taskType": "project_import_preview", "mustUseTools": ["analyze_source_text", "build_import_preview", "validate_imported_assets"], "mustRequireApproval": true, "forbidInventedIds": true }
+    "expected": { "taskType": "project_import_preview", "mustUseTools": ["analyze_source_text", "build_import_preview", "validate_imported_assets"], "mustRequireApproval": true, "forbidInventedIds": true, "route": { "domain": "import", "intent": "project_import_preview" }, "bundle": "import.project_assets" }
   },
   {
     "id": "fuzzy_chapter_ref_010",
@@ -123,7 +123,9 @@
         { "tool": "merge_import_previews", "args": { "requestedAssetTypes": ["outline"] }, "mustHaveKeys": ["outlinePreview"], "mustNotHaveKeys": ["projectProfilePreview", "charactersPreview", "worldbuildingPreview", "writingRulesPreview"] }
       ],
       "mustRequireApproval": true,
-      "forbidInventedIds": true
+      "forbidInventedIds": true,
+      "route": { "domain": "import", "intent": "project_import_preview" },
+      "bundle": "import.project_assets"
     }
   },
   {
@@ -188,7 +190,9 @@
         { "tool": "validate_timeline_preview", "args": { "preview": "{{steps.generate_timeline_preview.output}}", "taskContext": "{{steps.collect_task_context.output}}" } }
       ],
       "mustRequireApproval": false,
-      "forbidInventedIds": true
+      "forbidInventedIds": true,
+      "route": { "domain": "timeline", "intent": "timeline_plan" },
+      "bundle": "timeline.plan"
     }
   },
   {
@@ -207,7 +211,9 @@
         { "tool": "persist_timeline_events", "args": { "preview": "{{steps.align_chapter_timeline_preview.output}}", "validation": "{{steps.validate_timeline_preview.output}}" } }
       ],
       "mustRequireApproval": true,
-      "forbidInventedIds": true
+      "forbidInventedIds": true,
+      "route": { "domain": "timeline", "intent": "timeline_plan" },
+      "bundle": "timeline.plan"
     }
   },
   {
@@ -233,6 +239,21 @@
       "mustNotUseTools": ["write_chapter", "write_chapter_series", "persist_outline"],
       "mustContainInstruction": ["active guided step"],
       "mustRequireApproval": false,
+      "forbidInventedIds": true,
+      "route": { "domain": "guided", "intent": "guided_step_consultation" },
+      "bundle": "guided.step"
+    }
+  },
+  {
+    "id": "outline_volume_cn_024",
+    "message": "帮我重写第一卷大纲，只要卷级大纲。",
+    "context": { "session": { "currentProjectId": "project_1" } },
+    "expected": {
+      "taskType": "outline_design",
+      "mustUseTools": ["generate_volume_outline_preview", "persist_volume_outline"],
+      "mustNotUseTools": ["generate_chapter_outline_preview", "merge_chapter_outline_previews", "persist_outline"],
+      "mustContainInstruction": ["第一卷大纲", "卷级大纲"],
+      "mustRequireApproval": true,
       "forbidInventedIds": true
     }
   }
