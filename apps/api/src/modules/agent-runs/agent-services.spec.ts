@@ -63,6 +63,7 @@ import { ValidateStoryBibleTool } from '../agent-tools/tools/validate-story-bibl
 import { PersistStoryBibleTool } from '../agent-tools/tools/persist-story-bible.tool';
 import { GenerateContinuityPreviewTool, PersistContinuityChangesTool, ValidateContinuityChangesTool } from '../agent-tools/tools/continuity-changes.tool';
 import { GenerateTimelinePreviewTool } from '../agent-tools/tools/generate-timeline-preview.tool';
+import { ValidateTimelinePreviewTool } from '../agent-tools/tools/validate-timeline-preview.tool';
 import { assertNoTimelineDuplicateConflicts, normalizeTimelineCandidate, normalizeTimelineCandidates, normalizeTimelinePreviewFromLlmCall, validateTimelineCandidateChapterRefs } from '../agent-tools/tools/timeline-preview.support';
 import { GenerateChapterCraftBriefPreviewTool, PersistChapterCraftBriefTool, ValidateChapterCraftBriefTool } from '../agent-tools/tools/chapter-craft-brief-tools.tool';
 import { GenerateSceneCardsPreviewTool, ListSceneCardsTool, PersistSceneCardsTool, UpdateSceneCardTool, ValidateSceneCardsTool } from '../agent-tools/tools/scene-card-tools.tool';
@@ -6798,6 +6799,116 @@ test('generate_timeline_preview tool returns planned read-only candidates and re
   await assert.rejects(
     () => invalidTool.run({ instruction: '非法非计划输出', minCandidates: 1, maxCandidates: 1 }, context as never),
     /eventStatus must be planned/,
+  );
+  assert.deepEqual(writes, []);
+});
+
+test('validate_timeline_preview returns accepted rejected writePreview and stays read-only', async () => {
+  const writes: string[] = [];
+  const reads: string[] = [];
+  const writeGuard = (name: string) => async () => {
+    writes.push(name);
+    throw new Error(`should not write ${name}`);
+  };
+  const baseTrace = makeTimelineCandidateRaw().sourceTrace as Record<string, unknown>;
+  const acceptedRaw = makeTimelineCandidateRaw({
+    chapterId: 'chapter-7',
+    sourceTrace: {
+      ...baseTrace,
+      agentRunId: 'run-timeline',
+      toolName: 'generate_timeline_preview',
+      chapterId: 'chapter-7',
+    },
+  });
+  const rejectedRaw = makeTimelineCandidateRaw({
+    candidateId: 'tlc_update_8',
+    action: 'update_event',
+    chapterId: 'chapter-8',
+    chapterNo: 8,
+    title: '第八章计划修正旧档案线',
+    eventTime: '第八日清晨',
+    sourceTrace: {
+      ...baseTrace,
+      candidateId: 'tlc_update_8',
+      candidateAction: 'update_event',
+      agentRunId: 'run-timeline',
+      toolName: 'generate_timeline_preview',
+      chapterId: 'chapter-8',
+      chapterNo: 8,
+      contextSources: [{ sourceType: 'chapter_outline', sourceId: 'outline-8', title: '第八章细纲', chapterNo: 8 }],
+    },
+  });
+  const preview = await normalizeTimelinePreviewFromLlmCall(
+    async () => ({ data: { candidates: [acceptedRaw, rejectedRaw], assumptions: [], risks: [] } }),
+    {
+      expectedProjectId: 'p1',
+      expectedSourceKind: 'planned_timeline_event',
+      expectedOriginTool: 'generate_timeline_preview',
+      sourceKind: 'planned_timeline_event',
+      minCandidates: 1,
+    },
+  );
+  const prisma = {
+    chapter: {
+      async findMany() {
+        reads.push('chapter.findMany');
+        return [
+          { id: 'chapter-7', projectId: 'p1', chapterNo: 7 },
+          { id: 'chapter-8', projectId: 'p1', chapterNo: 8 },
+        ];
+      },
+      create: writeGuard('chapter.create'),
+      update: writeGuard('chapter.update'),
+      delete: writeGuard('chapter.delete'),
+      upsert: writeGuard('chapter.upsert'),
+      updateMany: writeGuard('chapter.updateMany'),
+      deleteMany: writeGuard('chapter.deleteMany'),
+    },
+    timelineEvent: {
+      async findMany() {
+        reads.push('timelineEvent.findMany');
+        return [];
+      },
+      create: writeGuard('timelineEvent.create'),
+      update: writeGuard('timelineEvent.update'),
+      delete: writeGuard('timelineEvent.delete'),
+      upsert: writeGuard('timelineEvent.upsert'),
+      updateMany: writeGuard('timelineEvent.updateMany'),
+      deleteMany: writeGuard('timelineEvent.deleteMany'),
+    },
+  };
+  const context = {
+    agentRunId: 'run-timeline',
+    projectId: 'p1',
+    mode: 'plan' as const,
+    approved: false,
+    outputs: {},
+    policy: {},
+  };
+  const tool = new ValidateTimelinePreviewTool(prisma as never);
+
+  const result = await tool.run({ preview }, context as never);
+
+  assert.equal(result.valid, false);
+  assert.equal(result.accepted.length, 1);
+  assert.equal(result.rejected.length, 1);
+  assert.equal(result.rejected[0].candidateId, 'tlc_update_8');
+  assert.match(result.rejected[0].reason, /requires existingTimelineEventId/);
+  assert.equal(result.writePreview.summary.createPlannedCount, 1);
+  assert.equal(result.writePreview.summary.updateCount, 1);
+  assert.equal(result.writePreview.summary.rejectCount, 1);
+  assert.equal(result.writePreview.entries[0].after?.title, acceptedRaw.title);
+  assert.equal(result.writePreview.entries[1].action, 'reject');
+  assert.deepEqual(reads, ['chapter.findMany', 'timelineEvent.findMany']);
+  assert.deepEqual(writes, []);
+
+  const forgedPreview = JSON.parse(JSON.stringify(preview));
+  forgedPreview.candidates[0].sourceTrace.agentRunId = 'foreign-run';
+  forgedPreview.candidates[0].metadata.sourceTrace.agentRunId = 'foreign-run';
+  forgedPreview.candidates[0].proposedFields.metadata.sourceTrace.agentRunId = 'foreign-run';
+  await assert.rejects(
+    () => tool.run({ preview: forgedPreview }, context as never),
+    /sourceTrace\.agentRunId must match current agent run/,
   );
   assert.deepEqual(writes, []);
 });
