@@ -172,5 +172,42 @@
       "mustRequireApproval": true,
       "forbidInventedIds": true
     }
+  },
+  {
+    "id": "planned_timeline_preview_020",
+    "message": "基于当前大纲和 Chapter.craftBrief 生成第十二章计划时间线候选；只预览和校验，不要写入。",
+    "context": { "session": { "currentProjectId": "project_1", "currentChapterId": "chapter_12" } },
+    "expected": {
+      "taskType": "timeline_plan",
+      "mustUseTools": ["collect_task_context", "generate_timeline_preview", "validate_timeline_preview"],
+      "mustNotUseTools": ["generate_continuity_preview", "validate_continuity_changes", "persist_continuity_changes", "align_chapter_timeline_preview", "persist_timeline_events"],
+      "mustContainInstruction": ["Chapter.craftBrief", "计划时间线候选", "不要写入"],
+      "mustMatchStepArgs": [
+        { "tool": "collect_task_context", "args": { "taskType": "timeline_plan", "chapterId": "{{context.session.currentChapterId}}" } },
+        { "tool": "generate_timeline_preview", "args": { "context": "{{steps.collect_task_context.output}}", "chapterId": "{{context.session.currentChapterId}}", "sourceType": "craft_brief" } },
+        { "tool": "validate_timeline_preview", "args": { "preview": "{{steps.generate_timeline_preview.output}}", "taskContext": "{{steps.collect_task_context.output}}" } }
+      ],
+      "mustRequireApproval": false,
+      "forbidInventedIds": true
+    }
+  },
+  {
+    "id": "chapter_timeline_confirmation_021",
+    "message": "第十二章正文已经生成，基于本章 StoryEvent 确认计划时间线；先预览和校验，确认后再写入。",
+    "context": { "session": { "currentProjectId": "project_1", "currentChapterId": "chapter_12", "currentDraftId": "draft_12" } },
+    "expected": {
+      "taskType": "timeline_plan",
+      "mustUseTools": ["collect_task_context", "align_chapter_timeline_preview", "validate_timeline_preview", "persist_timeline_events"],
+      "mustNotUseTools": ["generate_continuity_preview", "validate_continuity_changes", "persist_continuity_changes", "generate_timeline_preview"],
+      "mustContainInstruction": ["StoryEvent", "确认计划时间线", "确认后再写入"],
+      "mustMatchStepArgs": [
+        { "tool": "collect_task_context", "args": { "taskType": "timeline_plan", "chapterId": "{{context.session.currentChapterId}}", "draftId": "{{context.session.currentDraftId}}" } },
+        { "tool": "align_chapter_timeline_preview", "args": { "chapterId": "{{context.session.currentChapterId}}", "draftId": "{{context.session.currentDraftId}}", "taskContext": "{{steps.collect_task_context.output}}" } },
+        { "tool": "validate_timeline_preview", "args": { "preview": "{{steps.align_chapter_timeline_preview.output}}", "taskContext": "{{steps.collect_task_context.output}}" } },
+        { "tool": "persist_timeline_events", "args": { "preview": "{{steps.align_chapter_timeline_preview.output}}", "validation": "{{steps.validate_timeline_preview.output}}" } }
+      ],
+      "mustRequireApproval": true,
+      "forbidInventedIds": true
+    }
   }
 ]

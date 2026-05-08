@@ -759,6 +759,10 @@ const EVAL_TOOL_DEFINITIONS: EvalToolDefinition[] = [
   { name: 'generate_continuity_preview', description: '生成关系线和时间线连续性变更预览。' },
   { name: 'validate_continuity_changes', description: '校验关系线和时间线候选变更。' },
   { name: 'persist_continuity_changes', description: '审批后写入关系线和时间线连续性变更。', requiresApproval: true, riskLevel: 'medium', sideEffects: ['create_relationship_edge', 'update_relationship_edge', 'delete_relationship_edge', 'create_timeline_event', 'update_timeline_event', 'delete_timeline_event', 'fact_layer_continuity_write'] },
+  { name: 'generate_timeline_preview', description: '从大纲、细纲或 Chapter.craftBrief 生成只读计划时间线候选。' },
+  { name: 'align_chapter_timeline_preview', description: '从章节 StoryEvent 证据对齐计划时间线并生成只读确认候选。' },
+  { name: 'validate_timeline_preview', description: '校验时间线候选字段、章节引用、sourceTrace 和写入前 diff。' },
+  { name: 'persist_timeline_events', description: '审批后写入已校验的时间线候选。', requiresApproval: true, riskLevel: 'high', sideEffects: ['create_timeline_event', 'update_timeline_event', 'delete_timeline_event'] },
   { name: 'generate_outline_preview', description: '生成大纲拆分预览。' },
   { name: 'validate_outline', description: '校验大纲预览。' },
   { name: 'persist_outline', description: '审批后持久化大纲。', requiresApproval: true, riskLevel: 'medium', sideEffects: ['create_outline'] },
@@ -846,6 +850,21 @@ function createMockPlannerOutput(goal: string, agentContext: Record<string, unkn
   if (goal.includes('Targeted import eval') && requestedAssetTypes.length) {
     return plan('project_import_preview', goal, true, [
       step(1, 'analyze_source_text', { sourceText: '{{context.session.selectedText}}' }),
+    ]);
+  }
+  if (goal.includes('计划时间线候选') && goal.includes('不要写入')) {
+    return plan('timeline_plan', goal, false, [
+      step(1, 'collect_task_context', { taskType: 'timeline_plan', chapterId: currentChapterId, focus: ['outline', 'craftBrief', 'planned_timeline'] }),
+      step(2, 'generate_timeline_preview', { context: '{{steps.collect_task_context.output}}', chapterId: currentChapterId, instruction: goal, sourceType: 'craft_brief' }),
+      step(3, 'validate_timeline_preview', { preview: '{{steps.generate_timeline_preview.output}}', taskContext: '{{steps.collect_task_context.output}}' }),
+    ]);
+  }
+  if (goal.includes('正文已经生成') && goal.includes('确认计划时间线')) {
+    return plan('timeline_plan', goal, true, [
+      step(1, 'collect_task_context', { taskType: 'timeline_plan', chapterId: currentChapterId, draftId: currentDraftId, focus: ['story_events', 'timeline_events', 'chapter_timeline_alignment'] }),
+      step(2, 'align_chapter_timeline_preview', { chapterId: currentChapterId, draftId: currentDraftId, taskContext: '{{steps.collect_task_context.output}}', instruction: goal }),
+      step(3, 'validate_timeline_preview', { preview: '{{steps.align_chapter_timeline_preview.output}}', taskContext: '{{steps.collect_task_context.output}}' }),
+      step(4, 'persist_timeline_events', { preview: '{{steps.align_chapter_timeline_preview.output}}', validation: '{{steps.validate_timeline_preview.output}}' }),
     ]);
   }
   if (goal.includes('第十二章')) {

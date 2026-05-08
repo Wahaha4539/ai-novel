@@ -90,6 +90,7 @@ const GENERATE_VOLUME_OUTLINE_PREVIEW_TOOL = 'generate_volume_outline_preview';
 const GENERATE_CHAPTER_OUTLINE_PREVIEW_TOOL = 'generate_chapter_outline_preview';
 const MERGE_CHAPTER_OUTLINE_PREVIEWS_TOOL = 'merge_chapter_outline_previews';
 const GENERATE_TIMELINE_PREVIEW_TOOL = 'generate_timeline_preview';
+const ALIGN_CHAPTER_TIMELINE_PREVIEW_TOOL = 'align_chapter_timeline_preview';
 const VALIDATE_TIMELINE_PREVIEW_TOOL = 'validate_timeline_preview';
 const GENERATE_CHAPTER_CRAFT_BRIEF_PREVIEW_TOOL = 'generate_chapter_craft_brief_preview';
 const VALIDATE_CHAPTER_CRAFT_BRIEF_TOOL = 'validate_chapter_craft_brief';
@@ -694,7 +695,7 @@ export class AgentPlannerService {
     if (!registeredTools.has(GENERATE_TIMELINE_PREVIEW_TOOL) || !registeredTools.has(VALIDATE_TIMELINE_PREVIEW_TOOL)) return steps;
 
     let normalized = this.renumberSteps(steps);
-    const existingPreview = this.latestStepByTools(normalized, [GENERATE_TIMELINE_PREVIEW_TOOL]);
+    const existingPreview = this.latestStepByTools(normalized, [GENERATE_TIMELINE_PREVIEW_TOOL, ALIGN_CHAPTER_TIMELINE_PREVIEW_TOOL]);
     if (existingPreview) {
       return this.ensureTimelineValidationStep(normalized, existingPreview, requiresApproval);
     }
@@ -776,7 +777,7 @@ export class AgentPlannerService {
             args: this.removeUndefinedArgs({
               ...step.args,
               preview: step.args.preview ?? previewRef,
-              taskContext: step.args.taskContext ?? previewStep.args.context,
+              taskContext: step.args.taskContext ?? previewStep.args.context ?? previewStep.args.taskContext,
             }),
           }
         : step);
@@ -787,7 +788,7 @@ export class AgentPlannerService {
       this.createPlannedStep(
         '校验计划时间线候选',
         VALIDATE_TIMELINE_PREVIEW_TOOL,
-        this.removeUndefinedArgs({ preview: previewRef, taskContext: previewStep.args.context }),
+        this.removeUndefinedArgs({ preview: previewRef, taskContext: previewStep.args.context ?? previewStep.args.taskContext }),
         requiresApproval,
       ),
     );
