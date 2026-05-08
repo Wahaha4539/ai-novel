@@ -937,7 +937,7 @@ export class GuidedService {
       this.prisma.guidedSession.findUnique({ where: { projectId } }),
       this.prisma.volume.findMany({
         where: { projectId },
-        select: { volumeNo: true, chapterCount: true, narrativePlan: true },
+        select: { volumeNo: true, title: true, synopsis: true, objective: true, chapterCount: true, narrativePlan: true },
       }),
     ]);
     const plansByNo = new Map<number, VolumeCharacterPlan>();

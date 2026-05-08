@@ -3679,6 +3679,58 @@ test('VCC guided_chapter requires characterExecution', async () => {
   assert.equal(chapterWriteCalled, false);
 });
 
+test('VCC guided_chapter resolves persisted volume narrativePlan without session draft', async () => {
+  const persistedVolume = { id: 'v1', ...createVccGuidedVolume() };
+  const existingName = (persistedVolume.narrativePlan.characterPlan as ReturnType<typeof createVccCharacterPlan>).existingCharacterArcs[0].characterName;
+  const volumeSelects: Array<Record<string, unknown>> = [];
+  const createdChapters: Array<Record<string, unknown>> = [];
+  let transactionCalled = false;
+  const pickSelected = (source: Record<string, unknown>, select: Record<string, unknown>) => Object.fromEntries(
+    Object.entries(source).filter(([key]) => select[key] === true),
+  );
+  const prisma = {
+    character: { async findMany() { return [{ name: existingName, alias: [] }, { name: '沈栖', alias: [] }]; } },
+    guidedSession: {
+      async findUnique() { return { stepData: {} }; },
+      async update() { return {}; },
+    },
+    volume: {
+      async findMany(args: { select?: Record<string, unknown> }) {
+        const select = args.select ?? {};
+        volumeSelects.push(select);
+        if (select.id) return [pickSelected({ id: 'v1', volumeNo: persistedVolume.volumeNo }, select)];
+        return [pickSelected(persistedVolume as Record<string, unknown>, select)];
+      },
+    },
+    chapter: {
+      async findMany() { return []; },
+      async aggregate() { return { _max: { chapterNo: 0 } }; },
+      create(args: { data: Record<string, unknown> }) {
+        createdChapters.push(args.data);
+        return Promise.resolve({ id: 'c1', ...args.data });
+      },
+    },
+    async $transaction(operations: Array<Promise<unknown>>) {
+      transactionCalled = true;
+      return Promise.all(operations);
+    },
+  };
+  const persistedVolumeCache = { async deleteProjectRecallResults() {} };
+  const service = new GuidedService(prisma as never, {} as never, persistedVolumeCache as never);
+
+  const result = await service.finalizeStep(
+    'p1',
+    'guided_chapter',
+    { chapters: [createVccGuidedChapter({ chapterNo: 1, volumeNo: 1 })], saveMode: 'single_chapter' },
+    1,
+  );
+
+  assert.deepEqual(result.written, ['Chapter × 1']);
+  assert.equal(transactionCalled, true);
+  assert.equal(createdChapters[0].volumeId, 'v1');
+  assert.deepEqual(volumeSelects[0], { volumeNo: true, title: true, synopsis: true, objective: true, chapterCount: true, narrativePlan: true });
+});
+
 test('VCC guided_chapter rejects mismatched chapter number', async () => {
   const llm = {
     async chat() {
