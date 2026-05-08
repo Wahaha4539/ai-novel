@@ -416,7 +416,7 @@
 
 ### ASP-P6-001 新增 OutlineSupervisor
 
-- 状态：`[ ]`
+- 状态：`[x]`
 - 模块：API
 - 文件：
   - `apps/api/src/modules/agent-runs/planner-graph/supervisors/outline-supervisor.ts`
@@ -429,6 +429,12 @@
   - 不直接调用工具。
 - 验证：
   - `pnpm --dir apps/api run test:agent`
+- 完成记录（2026-05-09）：
+  - 新增 `OutlineSupervisor`，将 outline 子意图分类为 `volume_outline`、`chapter_outline`、`craft_brief`、`scene_card`，输出仍保留 bundle 兼容的 `RouteDecision.intent`。
+  - 新增 `outline.subgraph`，只调用 OutlineSupervisor 并写入节点 diagnostics，不选择工具、不生成 plan、不执行工具。
+  - 新增 `ASP-P6-001` targeted 测试覆盖四类 outline 子意图和 subgraph diagnostics 边界。
+  - 修改文件：`apps/api/src/modules/agent-runs/planner-graph/supervisors/outline-supervisor.ts`、`apps/api/src/modules/agent-runs/planner-graph/subgraphs/outline.subgraph.ts`、`apps/api/src/modules/agent-runs/agent-services.spec.ts`、`docs/architecture/agent-supervisor-planner-development-plan.md`。
+  - 测试：`AGENT_TEST_FILTER="ASP-P6-001" pnpm --dir apps/api run test:agent`，通过（2/348 targeted）。
 
 ### ASP-P6-002 将 outline tool bundles 迁移到 outline subgraph
 

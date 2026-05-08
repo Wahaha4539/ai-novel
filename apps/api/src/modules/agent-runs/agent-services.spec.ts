@@ -25,6 +25,8 @@ import { AgentPlannerGraphService } from './planner-graph/agent-planner-graph.se
 import { PlanValidatorService } from './planner-graph/plan-validator.service';
 import { createDomainPlannerNode, createSelectToolBundleNode } from './planner-graph/nodes';
 import { TOOL_BUNDLE_DEFINITIONS, ToolBundleRegistry } from './planner-graph/tool-bundles';
+import { invokeOutlineSubgraph } from './planner-graph/subgraphs/outline.subgraph';
+import { OutlineSupervisor } from './planner-graph/supervisors/outline-supervisor';
 import { RootSupervisor, validateRouteDecision } from './planner-graph/supervisors/root-supervisor';
 import { AgentPolicyService, AgentSecondConfirmationRequiredError } from './agent-policy.service';
 import { AgentTraceService } from './agent-trace.service';
@@ -9048,6 +9050,36 @@ test('RootSupervisor classifies planner domains without tool manifests', () => {
   assert.equal(unclear.intent, 'clarify');
   assert.equal(unclear.ambiguity?.needsClarification, true);
   assert.ok(unclear.confidence < 0.5);
+});
+
+test('ASP-P6-001 OutlineSupervisor classifies outline sub-intents without tools', () => {
+  const supervisor = new OutlineSupervisor();
+  const cases: Array<{ goal: string; outlineIntent: string; intent: string }> = [
+    { goal: '帮我重写第一卷大纲。', outlineIntent: 'volume_outline', intent: 'generate_volume_outline' },
+    { goal: '把第一卷拆成 30 章。', outlineIntent: 'chapter_outline', intent: 'split_volume_to_chapters' },
+    { goal: '给第十二章补一张 Chapter.craftBrief 推进卡。', outlineIntent: 'craft_brief', intent: 'chapter_craft_brief' },
+    { goal: '把第十二章拆成场景卡。', outlineIntent: 'scene_card', intent: 'scene_card_planning' },
+  ];
+
+  for (const item of cases) {
+    const route = supervisor.classify({ goal: item.goal });
+    assert.equal(route.domain, 'outline');
+    assert.equal(route.outlineIntent, item.outlineIntent);
+    assert.equal(route.intent, item.intent);
+    assert.ok(route.confidence >= 0.86);
+    assert.doesNotThrow(() => validateRouteDecision(route));
+  }
+});
+
+test('ASP-P6-001 outline subgraph returns RouteDecision diagnostics only', async () => {
+  const result = await invokeOutlineSubgraph({ goal: '给第十二章拆成场景卡。' });
+
+  assert.equal(result.route?.domain, 'outline');
+  assert.equal(result.route?.intent, 'scene_card_planning');
+  assert.deepEqual(result.diagnostics.nodes.map((node) => node.name), ['outlineSupervisor']);
+  const resultRecord = result as unknown as Record<string, unknown>;
+  assert.equal(resultRecord.selectedTools, undefined);
+  assert.equal(resultRecord.plan, undefined);
 });
 
 test('Planner prompt compacts tool manifests without losing callable input schema', async () => {
