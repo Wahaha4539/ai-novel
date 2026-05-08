@@ -3,7 +3,7 @@ import { Prisma } from '@prisma/client';
 import { PrismaService } from '../../prisma/prisma.service';
 import { GenerationProfileSnapshot } from '../generation-profile/generation-profile.defaults';
 import { RetrievalHit } from '../memory/retrieval.service';
-import { ChapterContextPack } from './context-pack.types';
+import { ChapterContextPack, PlannedTimelineEvent } from './context-pack.types';
 
 export interface ChapterPromptContext {
   project: { id: string; title: string; genre: string | null; tone: string | null; synopsis: string | null; outline: string | null };
@@ -55,6 +55,7 @@ export class PromptBuilderService {
       this.buildChapterSection(context),
       this.buildCraftBriefSection(context),
       this.buildSceneExecutionSection(context),
+      this.buildPlannedTimelineSection(context),
       this.buildContextLayerNotice(),
       this.buildGenerationProfileSection(context),
       this.buildForeshadowSection(context),
@@ -251,6 +252,19 @@ export class PromptBuilderService {
     ].join('\n');
   }
 
+  private buildPlannedTimelineSection(data: ChapterPromptContext): string {
+    const events = data.contextPack.planningContext?.plannedTimelineEvents ?? [];
+    if (!events.length) {
+      return '【本章计划时间线】\n- 无本章 planned TimelineEvent；请按章节执行卡和场景计划推进，不要自行补造时间线事实。';
+    }
+    return [
+      '【本章计划时间线】',
+      '说明：以下 TimelineEvent 是 current_chapter_planned_timeline，只是本章执行目标，不是已发生事实；不得当作 verified fact、前情事实或已公开知识。',
+      ...events.slice(0, 8).map((event) => this.formatPlannedTimelineEvent(event)),
+      ...(events.length > 8 ? [`- Planned timeline prompt truncated: showing first 8 of ${events.length}; full list remains in retrievalPayload/sourceTrace.`] : []),
+    ].join('\n');
+  }
+
   private buildContextLayerNotice(): string {
     return [
       '【上下文分层说明】',
@@ -353,6 +367,31 @@ export class PromptBuilderService {
       `状态：${scene.status}`,
     ].filter(Boolean);
     return [`- [${traceParts}] ${scene.sceneNo ?? '?'}｜${scene.title}`, ...fields.map((field) => `  ${field}`)].join('\n');
+  }
+
+  private formatPlannedTimelineEvent(event: PlannedTimelineEvent): string {
+    const trace = event.sourceTrace;
+    const traceParts = [
+      `sourceType=${trace.sourceType}`,
+      `sourceId=${trace.sourceId}`,
+      `projectId=${trace.projectId}`,
+      trace.chapterNo !== undefined && trace.chapterNo !== null ? `chapterNo=${trace.chapterNo}` : '',
+      `eventStatus=${trace.eventStatus}`,
+      trace.sourceKind ? `sourceKind=${trace.sourceKind}` : '',
+    ].filter(Boolean).join('｜');
+    const fields = [
+      event.eventTime ? `时间：${event.eventTime}` : '',
+      event.locationName ? `地点：${event.locationName}` : '',
+      event.participants.length ? `参与者：${event.participants.join('、')}` : '',
+      event.cause ? `原因：${event.cause}` : '',
+      event.result ? `结果：${event.result}` : '',
+      event.impactScope ? `影响范围：${event.impactScope}` : '',
+      `是否公开：${event.isPublic ? '是' : '否'}`,
+      event.knownBy.length ? `知情者：${event.knownBy.join('、')}` : '',
+      event.unknownBy.length ? `未知者：${event.unknownBy.join('、')}` : '',
+      `sourceType：${event.sourceType}`,
+    ].filter(Boolean);
+    return [`- [${traceParts}] ${event.title}`, ...fields.map((field) => `  ${field}`)].join('\n');
   }
 
   private structuredHitsByType(data: ChapterPromptContext, sourceType: RetrievalHit['sourceType']): RetrievalHit[] {

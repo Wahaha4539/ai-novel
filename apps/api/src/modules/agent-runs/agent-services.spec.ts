@@ -8174,6 +8174,30 @@ test('PromptBuilderService renders dedicated relationship timeline and writing r
           },
         ],
       },
+      planningContext: {
+        sceneCards: [],
+        plannedTimelineEvents: [
+          {
+            id: 'planned-time-1',
+            title: 'Planned archive breach',
+            chapterId: 'c3',
+            chapterNo: 3,
+            eventTime: '第三章夜',
+            locationName: 'Archive',
+            participants: ['Lin Che'],
+            cause: 'Lin Che follows the false key.',
+            result: 'The archive gate opens.',
+            impactScope: 'archive',
+            isPublic: false,
+            knownBy: ['Lin Che'],
+            unknownBy: ['Shen Yan'],
+            eventStatus: 'planned',
+            sourceType: 'agent_timeline_plan',
+            metadata: {},
+            sourceTrace: { sourceType: 'timeline_event' as const, sourceId: 'planned-time-1', projectId: 'p1', chapterId: 'c3', chapterNo: 3, eventStatus: 'planned', sourceKind: 'planned_timeline_event' },
+          },
+        ],
+      },
       userIntent: {},
       retrievalDiagnostics: {
         includeLorebook: true,
@@ -8192,6 +8216,10 @@ test('PromptBuilderService renders dedicated relationship timeline and writing r
   assert.match(result.user, /sourceId=rel-1/);
   assert.match(result.user, /sourceType=timeline_event/);
   assert.match(result.user, /sourceId=time-1/);
+  assert.match(result.user, /current_chapter_planned_timeline/);
+  assert.match(result.user, /verified fact/);
+  assert.match(result.user, /sourceId=planned-time-1/);
+  assert.match(result.user, /eventStatus=planned/);
   assert.match(result.user, /sourceType=writing_rule/);
   assert.match(result.user, /sourceId=rule-1/);
 });
