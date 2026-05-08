@@ -179,7 +179,7 @@ export class AgentPlannerService {
               chapter_write: '写某一章正文、章节内容、目标字数、续写正文；若明确要求重写旧章节，应使用 rewrite_chapter。',
               multi_chapter_write: '连续生成多章正文，例如接下来三章、第 1-5 章、多个指定章节；应优先使用 write_chapter_series，不要展开多个 write_chapter。默认设置 qualityPipeline=full，除非用户明确要求只要草稿。',
               chapter_polish: '润色、局部修改、改稿、优化文风、去 AI 味；不用于从头重写章节。',
-              outline_design: '设计大纲、卷细纲、章节细纲、60章细纲、等长细纲、拆卷、把某卷拆成多章、章节规划；应使用 generate_outline_preview 生成卷/章节细纲与执行卡预览，大章节数会自动分批；不要误判为写正文。',
+              outline_design: '设计大纲、卷细纲、章节细纲、60章细纲、等长细纲、拆卷、把某卷拆成多章、章节规划；应使用 generate_outline_preview 生成卷/章节细纲与执行卡预览，章节细纲会逐章请求 LLM 并用接力卡保持连贯性；不要误判为写正文。',
               project_import_preview: '拆解导入文案，并按用户指定目标产物生成预览。只要大纲时不要生成角色/世界观/写作规则；要求全套时才生成项目资料、剧情大纲、角色、世界观和写作规则。',
               chapter_revision: '修改当前章或已有章节草稿、增强节奏/压迫感、保留结局等禁改约束；若用户要求重写或不沿用旧稿，使用 rewrite_chapter。',
               character_consistency_check: '检查人设是否崩、角色动机/对话是否符合设定。',

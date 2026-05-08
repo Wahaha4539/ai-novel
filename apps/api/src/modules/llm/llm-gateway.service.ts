@@ -3,6 +3,7 @@ import { StructuredLogger } from '../../common/logging/structured-logger';
 import { LlmProvidersService, ResolvedLlmConfig } from '../llm-providers/llm-providers.service';
 import { LlmChatMessage, LlmChatOptions, LlmChatResult } from './dto/llm-chat.dto';
 import { buildProviderChatParams } from './llm-chat-params';
+import { postJson } from './llm-http-client';
 import { DEFAULT_LLM_TIMEOUT_MS } from './llm-timeout.constants';
 
 export class LlmTimeoutError extends Error {
@@ -86,15 +87,60 @@ export class LlmGatewayService {
 
   private extractJsonCandidate(text: string): string {
     const trimmed = text.trim();
-    if (trimmed.startsWith('{') || trimmed.startsWith('[')) return trimmed;
+    const start = this.findJsonStartIndex(trimmed);
+    if (start < 0) return trimmed;
+    const end = this.findJsonEndIndex(trimmed, start);
+    return end >= 0 ? trimmed.slice(start, end + 1) : trimmed.slice(start);
+  }
 
-    // 部分 OpenAI-compatible 服务会在 JSON 前后附加说明；只截取最外层 JSON，交给 schema 校验继续兜底。
-    const objectStart = trimmed.indexOf('{');
-    const arrayStart = trimmed.indexOf('[');
-    const starts = [objectStart, arrayStart].filter((index) => index >= 0);
-    const start = starts.length ? Math.min(...starts) : -1;
-    const end = Math.max(trimmed.lastIndexOf('}'), trimmed.lastIndexOf(']'));
-    return start >= 0 && end > start ? trimmed.slice(start, end + 1) : trimmed;
+  private findJsonStartIndex(text: string): number {
+    for (let index = 0; index < text.length; index += 1) {
+      const char = text[index];
+      if (char === '{') return index;
+      if (char === '[' && this.isPlausibleArrayStart(text, index)) return index;
+    }
+    return -1;
+  }
+
+  private isPlausibleArrayStart(text: string, index: number): boolean {
+    let next = index + 1;
+    while (next < text.length && /\s/.test(text[next])) next += 1;
+    if (next >= text.length) return true;
+    return '{}["]-0123456789tfn'.includes(text[next]);
+  }
+
+  private findJsonEndIndex(text: string, start: number): number {
+    const stack = [text[start] === '{' ? '}' : ']'];
+    let inString = false;
+    let escaped = false;
+
+    for (let index = start + 1; index < text.length; index += 1) {
+      const char = text[index];
+      if (inString) {
+        if (escaped) {
+          escaped = false;
+        } else if (char === '\\') {
+          escaped = true;
+        } else if (char === '"') {
+          inString = false;
+        }
+        continue;
+      }
+
+      if (char === '"') {
+        inString = true;
+      } else if (char === '{') {
+        stack.push('}');
+      } else if (char === '[') {
+        stack.push(']');
+      } else if (char === '}' || char === ']') {
+        const expected = stack.pop();
+        if (char !== expected) return -1;
+        if (stack.length === 0) return index;
+      }
+    }
+
+    return -1;
   }
 
   private resolveConfig(appStep?: string): ResolvedLlmConfig {
@@ -113,21 +159,22 @@ export class LlmGatewayService {
     const startedAt = Date.now();
     const timeoutMs = options.timeoutMs ?? DEFAULT_LLM_TIMEOUT_MS;
     const logContext = this.buildRequestLogContext(config, messages, options, timeoutMs, startedAt);
-    let response: Response;
+    let response: { status: number; bodyText: string };
     try {
-      response = await fetch(`${config.baseUrl.replace(/\/+$/, '')}/chat/completions`, {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${config.apiKey}` },
-        body: JSON.stringify({
+      response = await postJson(
+        `${config.baseUrl.replace(/\/+$/, '')}/chat/completions`,
+        { 'Content-Type': 'application/json', Authorization: `Bearer ${config.apiKey}` },
+        {
           model: config.model,
           messages,
           ...buildProviderChatParams(config.params),
           temperature: options.temperature ?? (config.params.temperature as number | undefined) ?? 0.2,
           max_tokens: options.maxTokens ?? 2000,
           ...(options.tools ? { tools: options.tools } : {}),
-        }),
-        signal: AbortSignal.timeout(timeoutMs),
-      });
+          ...(options.jsonMode ? { response_format: { type: 'json_object' } } : {}),
+        },
+        timeoutMs,
+      );
     } catch (error) {
       const normalized = this.normalizeLlmError(error, { ...options, timeoutMs });
       this.logger.error('llm.gateway.chat.failed', normalized, {
@@ -138,8 +185,8 @@ export class LlmGatewayService {
       throw normalized;
     }
 
-    if (!response.ok) {
-      const detail = await response.text();
+    if (response.status < 200 || response.status >= 300) {
+      const detail = response.bodyText;
       const message = `${response.status} ${detail.slice(0, 500)}`;
       if (response.status === 408 || response.status === 504 || /timeout|timed out|deadline exceeded/i.test(detail)) {
         const error = new LlmTimeoutError(`LLM 请求超时：${message}`, options.appStep, timeoutMs);
@@ -161,7 +208,7 @@ export class LlmGatewayService {
       throw error;
     }
 
-    const payload = (await response.json()) as Record<string, unknown>;
+    const payload = this.parseProviderJson(response.bodyText, options.appStep);
     const text = this.extractText(payload);
     if (!text) {
       const error = new LlmProviderError(`LLM 返回内容为空：${JSON.stringify(payload).slice(0, 500)}`, options.appStep);
@@ -217,10 +264,28 @@ export class LlmGatewayService {
     const record = error && typeof error === 'object' ? error as Record<string, unknown> : {};
     const name = typeof record.name === 'string' ? record.name : '';
     const message = error instanceof Error ? error.message : String(error);
-    if (name === 'TimeoutError' || name === 'AbortError' || /timeout|timed out|aborted/i.test(message)) {
+    const timeoutCode = this.findErrorCode(error, ['UND_ERR_HEADERS_TIMEOUT', 'UND_ERR_BODY_TIMEOUT']);
+    if (name === 'TimeoutError' || name === 'AbortError' || timeoutCode || /timeout|timed out|aborted/i.test(message)) {
       return new LlmTimeoutError(`LLM 在 ${Math.round(timeoutMs / 1000)}s 内未返回`, options.appStep, timeoutMs, error);
     }
     return new LlmProviderError(message, options.appStep, error);
+  }
+
+  private parseProviderJson(text: string, appStep?: string): Record<string, unknown> {
+    try {
+      const payload = JSON.parse(text) as unknown;
+      return payload && typeof payload === 'object' && !Array.isArray(payload) ? payload as Record<string, unknown> : {};
+    } catch (error) {
+      throw new LlmProviderError(`LLM 返回非 JSON 响应：${error instanceof Error ? error.message : String(error)}`, appStep, error);
+    }
+  }
+
+  private findErrorCode(error: unknown, codes: string[], depth = 0): string | undefined {
+    if (!error || typeof error !== 'object' || depth > 4) return undefined;
+    const record = error as Record<string, unknown>;
+    const code = typeof record.code === 'string' ? record.code : undefined;
+    if (code && codes.includes(code)) return code;
+    return this.findErrorCode(record.cause, codes, depth + 1);
   }
 
   private extractText(payload: Record<string, unknown>): string {

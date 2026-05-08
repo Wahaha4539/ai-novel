@@ -10,6 +10,7 @@ export interface LlmChatOptions {
   timeoutMs?: number;
   retries?: number;
   tools?: unknown[];
+  jsonMode?: boolean;
 }
 
 export interface LlmChatResult {

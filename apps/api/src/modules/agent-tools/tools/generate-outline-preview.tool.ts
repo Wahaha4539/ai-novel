@@ -1,4 +1,5 @@
 import { Injectable } from '@nestjs/common';
+import { StructuredLogger } from '../../../common/logging/structured-logger';
 import { LlmGatewayService } from '../../llm/llm-gateway.service';
 import { DEFAULT_LLM_TIMEOUT_MS } from '../../llm/llm-timeout.constants';
 import { BaseTool, ToolContext } from '../base-tool';
@@ -6,8 +7,8 @@ import type { ToolManifestV2 } from '../tool-manifest.types';
 import { recordToolLlmUsage } from './import-preview-llm-usage';
 
 const OUTLINE_PREVIEW_LLM_TIMEOUT_MS = DEFAULT_LLM_TIMEOUT_MS;
-const OUTLINE_PREVIEW_BATCH_THRESHOLD = 15;
-const OUTLINE_PREVIEW_BATCH_SIZE = 8;
+const OUTLINE_PREVIEW_BATCH_SIZE = 1;
+const OUTLINE_PREVIEW_BATCH_THRESHOLD = OUTLINE_PREVIEW_BATCH_SIZE;
 
 interface GenerateOutlinePreviewInput {
   context?: Record<string, unknown>;
@@ -101,6 +102,7 @@ export interface OutlinePreviewOutput {
  */
 @Injectable()
 export class GenerateOutlinePreviewTool implements BaseTool<GenerateOutlinePreviewInput, OutlinePreviewOutput> {
+  private readonly logger = new StructuredLogger(GenerateOutlinePreviewTool.name);
   name = 'generate_outline_preview';
   description = '根据项目上下文和用户目标生成卷/章节细纲与执行卡预览，不写入正式业务表。';
   inputSchema = { type: 'object' as const, properties: { context: { type: 'object' as const }, instruction: { type: 'string' as const }, volumeNo: { type: 'number' as const }, chapterCount: { type: 'number' as const } } };
@@ -113,7 +115,7 @@ export class GenerateOutlinePreviewTool implements BaseTool<GenerateOutlinePrevi
   manifest: ToolManifestV2 = {
     name: this.name,
     displayName: '生成卷/章节细纲与执行卡预览',
-    description: '生成 outline_preview：包含卷信息、章节细纲、单元故事 storyUnit、每章 Chapter.craftBrief 执行卡和风险；当章节数超过 15 时自动按批次调用 LLM 并合并。',
+    description: '生成 outline_preview：包含卷信息、章节细纲、单元故事 storyUnit、每章 Chapter.craftBrief 执行卡和风险；章节细纲每章单独调用一次 LLM，并按上一章接力卡保持连贯性。',
     whenToUse: [
       '用户要求生成卷细纲、章节细纲、章节规划、等长细纲或 60 章细纲',
       '用户要求把某一卷拆成多章，但还不是写正文',
@@ -130,7 +132,7 @@ export class GenerateOutlinePreviewTool implements BaseTool<GenerateOutlinePrevi
       context: { source: 'previous_step', description: '通常来自 inspect_project_context.output，包含项目、目标卷、已有章节、角色和设定摘要。' },
       instruction: { source: 'user_message', description: '保留用户对卷号、章节数、节奏、风格和结构的要求。' },
       volumeNo: { source: 'user_message', description: '用户指定“第 N 卷”时填入；未指定时默认第 1 卷。' },
-      chapterCount: { source: 'user_message', description: '用户指定“60 章”等目标数量时填入；超过 15 章会自动分批，任一批 timeout 会直接失败。' },
+      chapterCount: { source: 'user_message', description: '用户指定“60 章”等目标数量时填入；章节细纲每章单独调用一次 LLM，任一章 timeout 会直接失败。' },
     },
     examples: [
       {
@@ -144,7 +146,7 @@ export class GenerateOutlinePreviewTool implements BaseTool<GenerateOutlinePrevi
       },
     ],
     failureHints: [
-      { code: 'LLM_TIMEOUT', meaning: '单批 LLM 未在内部 timeoutMs 内稳定返回', suggestedRepair: '重新执行或缩小章节范围；工具不会生成 fallback 章节。' },
+      { code: 'LLM_TIMEOUT', meaning: '单章 LLM 未在内部 timeoutMs 内稳定返回', suggestedRepair: '重新执行或缩小章节范围；工具不会生成 fallback 章节。' },
       { code: 'INCOMPLETE_OUTLINE_PREVIEW', meaning: 'LLM 返回章节数、编号或 craftBrief 不完整', suggestedRepair: '重新生成完整细纲，或先补足提示上下文后再运行。' },
     ],
     allowedModes: this.allowedModes,
@@ -169,7 +171,7 @@ export class GenerateOutlinePreviewTool implements BaseTool<GenerateOutlinePrevi
       phaseMessage: '正在生成卷章节预览',
       timeoutMs: OUTLINE_PREVIEW_LLM_TIMEOUT_MS,
     });
-    const response = await this.callOutlineLlm(args, volumeNo, chapterCount);
+    const response = await this.callOutlineLlm(args, context, volumeNo, chapterCount);
     recordToolLlmUsage(context, 'planner', response.result);
     await context.updateProgress?.({ phase: 'validating', phaseMessage: '正在校验章节预览', progressCurrent: chapterCount, progressTotal: chapterCount });
     return this.normalize(response.data, volumeNo, chapterCount);
@@ -183,7 +185,7 @@ export class GenerateOutlinePreviewTool implements BaseTool<GenerateOutlinePrevi
     batches: OutlinePreviewBatch[],
   ): Promise<OutlinePreviewOutput> {
     const chapters: OutlinePreviewOutput['chapters'] = [];
-    const risks: string[] = [`已按 ${OUTLINE_PREVIEW_BATCH_SIZE} 章以内自动分批生成，共 ${batches.length} 批，避免单次 LLM 请求承载 ${chapterCount} 章。`];
+    const risks: string[] = [`已按每章一次 LLM 请求生成，共 ${batches.length} 次，避免单次 LLM 请求承载 ${chapterCount} 章。`];
     let volume: OutlinePreviewOutput['volume'] | undefined;
     for (const batch of batches) {
       await context.updateProgress?.({
@@ -193,7 +195,7 @@ export class GenerateOutlinePreviewTool implements BaseTool<GenerateOutlinePrevi
         progressTotal: batch.batchCount,
         timeoutMs: OUTLINE_PREVIEW_LLM_TIMEOUT_MS,
       });
-      const response = await this.callOutlineLlm(args, volumeNo, chapterCount, batch, chapters);
+      const response = await this.callOutlineLlm(args, context, volumeNo, chapterCount, batch, chapters);
       recordToolLlmUsage(context, 'planner', response.result);
       const normalized = this.normalize(response.data, volumeNo, batch.chapterCount, {
         chapterStart: batch.startChapterNo,
@@ -209,29 +211,80 @@ export class GenerateOutlinePreviewTool implements BaseTool<GenerateOutlinePrevi
         progressTotal: batch.batchCount,
       });
     }
-    await context.updateProgress?.({ phase: 'validating', phaseMessage: '正在校验批次合并后的章节预览', progressCurrent: chapterCount, progressTotal: chapterCount });
+    await context.updateProgress?.({ phase: 'validating', phaseMessage: '正在校验逐章合并后的章节预览', progressCurrent: chapterCount, progressTotal: chapterCount });
     return this.finalizeBatchedPreview(volume, chapters, risks, volumeNo, chapterCount);
   }
 
   private prefixBatchRisk(batch: OutlinePreviewBatch, risk: string): string {
     const rangeLabel = `第 ${batch.startChapterNo}-${batch.endChapterNo} 章`;
-    return risk.includes(rangeLabel) ? risk : `${rangeLabel}批次：${risk}`;
+    return risk.includes(rangeLabel) ? risk : `${rangeLabel}请求：${risk}`;
   }
 
   private async callOutlineLlm(
     args: GenerateOutlinePreviewInput,
+    context: ToolContext,
     volumeNo: number,
     chapterCount: number,
     batch?: OutlinePreviewBatch,
     previousChapters: OutlinePreviewOutput['chapters'] = [],
   ) {
-    return this.llm.chatJson<OutlinePreviewOutput>(
-      [
-        { role: 'system', content: this.buildSystemPrompt() },
-        { role: 'user', content: this.buildUserPrompt(args, volumeNo, chapterCount, batch, previousChapters) },
-      ],
-      { appStep: 'planner', maxTokens: this.estimateMaxTokens(batch?.chapterCount ?? chapterCount), timeoutMs: OUTLINE_PREVIEW_LLM_TIMEOUT_MS, retries: 0 },
-    );
+    const messages = [
+      { role: 'system' as const, content: this.buildSystemPrompt() },
+      { role: 'user' as const, content: this.buildUserPrompt(args, volumeNo, chapterCount, batch, previousChapters) },
+    ];
+    const maxTokens = this.estimateMaxTokens(batch?.chapterCount ?? chapterCount);
+    const logContext = this.buildLlmRequestLogContext(context, messages, volumeNo, chapterCount, batch, previousChapters, maxTokens);
+    const startedAt = Date.now();
+    this.logger.log('outline_preview.llm_request.started', logContext);
+    try {
+      const response = await this.llm.chatJson<OutlinePreviewOutput>(
+        messages,
+        { appStep: 'planner', maxTokens, timeoutMs: OUTLINE_PREVIEW_LLM_TIMEOUT_MS, retries: 0, jsonMode: true },
+      );
+      this.logger.log('outline_preview.llm_request.completed', {
+        ...logContext,
+        elapsedMs: Date.now() - startedAt,
+        model: response.result.model,
+        tokenUsage: response.result.usage,
+      });
+      return response;
+    } catch (error) {
+      this.logger.error('outline_preview.llm_request.failed', error, {
+        ...logContext,
+        elapsedMs: Date.now() - startedAt,
+      });
+      throw error;
+    }
+  }
+
+  private buildLlmRequestLogContext(
+    context: ToolContext,
+    messages: Array<{ role: string; content: string }>,
+    volumeNo: number,
+    chapterCount: number,
+    batch: OutlinePreviewBatch | undefined,
+    previousChapters: OutlinePreviewOutput['chapters'],
+    maxTokens: number,
+  ): Record<string, unknown> {
+    const previousChapter = previousChapters.at(-1);
+    return {
+      agentRunId: context.agentRunId,
+      projectId: context.projectId,
+      mode: context.mode,
+      volumeNo,
+      totalChapterCount: chapterCount,
+      requestChapterStart: batch?.startChapterNo ?? 1,
+      requestChapterEnd: batch?.endChapterNo ?? chapterCount,
+      requestChapterCount: batch?.chapterCount ?? chapterCount,
+      requestIndex: batch?.batchIndex ?? 1,
+      requestCount: batch?.batchCount ?? 1,
+      previousChapterNo: previousChapter?.chapterNo ?? null,
+      previousChaptersCount: previousChapters.length,
+      timeoutMs: OUTLINE_PREVIEW_LLM_TIMEOUT_MS,
+      maxTokens,
+      messageCount: messages.length,
+      totalMessageChars: messages.reduce((sum, message) => sum + message.content.length, 0),
+    };
   }
 
   private normalize(
@@ -327,20 +380,20 @@ export class GenerateOutlinePreviewTool implements BaseTool<GenerateOutlinePrevi
 
   private assertMergedChapters(chapters: OutlinePreviewOutput['chapters'], volumeNo: number, chapterCount: number): void {
     if (chapters.length !== chapterCount) {
-      throw new Error(`generate_outline_preview 批次合并章节数为 ${chapters.length}/${chapterCount}，未生成完整细纲。`);
+      throw new Error(`generate_outline_preview 逐章合并章节数为 ${chapters.length}/${chapterCount}，未生成完整细纲。`);
     }
     const chapterNos = chapters.map((chapter) => Number(chapter.chapterNo)).filter((chapterNo) => Number.isFinite(chapterNo));
     if (new Set(chapterNos).size !== chapterNos.length) {
-      throw new Error('generate_outline_preview 批次合并发现重复章节编号，未生成完整细纲。');
+      throw new Error('generate_outline_preview 逐章合并发现重复章节编号，未生成完整细纲。');
     }
     if (chapterNos.length !== chapterCount || chapterNos.some((chapterNo, index) => chapterNo !== index + 1)) {
-      throw new Error('generate_outline_preview 批次合并发现章节编号不连续，未生成完整细纲。');
+      throw new Error('generate_outline_preview 逐章合并发现章节编号不连续，未生成完整细纲。');
     }
     if (chapters.some((chapter) => Number(chapter.volumeNo) !== volumeNo)) {
-      throw new Error(`generate_outline_preview 批次合并发现 volumeNo 与目标卷 ${volumeNo} 不一致，未生成完整细纲。`);
+      throw new Error(`generate_outline_preview 逐章合并发现 volumeNo 与目标卷 ${volumeNo} 不一致，未生成完整细纲。`);
     }
     if (chapters.some((chapter) => !chapter.craftBrief || !chapter.craftBrief.visibleGoal || !chapter.craftBrief.coreConflict || !chapter.craftBrief.storyUnit?.unitId)) {
-      throw new Error('generate_outline_preview 批次合并发现部分章节 craftBrief 不完整，未生成完整细纲。');
+      throw new Error('generate_outline_preview 逐章合并发现部分章节 craftBrief 不完整，未生成完整细纲。');
     }
   }
 
@@ -562,6 +615,29 @@ export class GenerateOutlinePreviewTool implements BaseTool<GenerateOutlinePrevi
     const existingChapters = !isReplanning && Array.isArray(record.existingChapters) ? record.existingChapters.slice(0, 160) : [];
     const characters = Array.isArray(record.characters) ? record.characters.slice(0, 30) : [];
     const lorebookEntries = Array.isArray(record.lorebookEntries) ? record.lorebookEntries.slice(0, 30) : [];
+    const lastGeneratedChapter = previousChapters.length ? previousChapters[previousChapters.length - 1] : undefined;
+    const batchContinuity = lastGeneratedChapter
+      ? {
+        previousRequestLastChapterNo: lastGeneratedChapter.chapterNo,
+        previousRequestLastTitle: lastGeneratedChapter.title,
+        hook: lastGeneratedChapter.hook,
+        exitState: lastGeneratedChapter.craftBrief?.exitState,
+        handoffToNextChapter: lastGeneratedChapter.craftBrief?.handoffToNextChapter,
+        openLoops: lastGeneratedChapter.craftBrief?.openLoops,
+        activeThreats: lastGeneratedChapter.craftBrief?.continuityState?.activeThreats,
+        ownedClues: lastGeneratedChapter.craftBrief?.continuityState?.ownedClues,
+        relationshipChanges: lastGeneratedChapter.craftBrief?.continuityState?.relationshipChanges,
+        nextImmediatePressure: lastGeneratedChapter.craftBrief?.continuityState?.nextImmediatePressure,
+        activeSceneArcs: lastGeneratedChapter.craftBrief?.sceneBeats
+          ?.filter((beat) => beat.continuesToChapterNo !== null && beat.continuesToChapterNo !== undefined)
+          .map((beat) => ({
+            sceneArcId: beat.sceneArcId,
+            scenePart: beat.scenePart,
+            continuesToChapterNo: beat.continuesToChapterNo,
+            partResult: beat.partResult,
+          })),
+      }
+      : { previousRequestLastChapterNo: null, note: '这是首章请求；从项目与目标卷上下文开篇，不需要承接前序章节请求。' };
     const generatedSummary = previousChapters.slice(-8).reverse().map((chapter) => ({
       chapterNo: chapter.chapterNo,
       title: chapter.title,
@@ -635,7 +711,9 @@ export class GenerateOutlinePreviewTool implements BaseTool<GenerateOutlinePrevi
       '',
       '本次运行已生成章节短表（最近章节在前，保持连续性，避免重复）：',
       this.safeJson(generatedSummary, 4000),
-      '连续性硬要求：本批第一章必须接住上方最后一章的 exitState、openLoops、handoffToNextChapter 和 continuityState；同一个跨章场景必须沿用 sceneArcId，并递增 scenePart。',
+      '章节接力卡（本章请求必须优先承接）：',
+      this.safeJson(batchContinuity, 2500),
+      '连续性硬要求：本章必须接住接力卡上一章的 exitState、openLoops、handoffToNextChapter、activeThreats、ownedClues、relationshipChanges 和 nextImmediatePressure；这些压力不能凭空消失，必须进入本章 craftBrief.entryState、continuityState、openLoops，或在 closedLoops 中写清关闭原因。同一个跨章场景必须沿用 sceneArcId，并递增 scenePart。',
       ...(isReplanning ? ['重规划硬要求：不要沿用旧标题、旧目标、旧章节 outline 或旧 craftBrief；输出必须是新的完整高密度卷/章节细纲。'] : []),
       '',
       '角色摘要：',

@@ -1,4 +1,6 @@
 import assert from 'node:assert/strict';
+import { createServer } from 'node:http';
+import type { AddressInfo } from 'node:net';
 import { NotFoundException } from '@nestjs/common';
 import { plainToInstance } from 'class-transformer';
 import { validate } from 'class-validator';
@@ -11,7 +13,7 @@ import { ToolRegistryService } from '../agent-tools/tool-registry.service';
 import { RuleEngineService } from '../agent-rules/rule-engine.service';
 import { SkillRegistryService } from '../agent-skills/skill-registry.service';
 import { EmbeddingGatewayService } from '../llm/embedding-gateway.service';
-import { LlmGatewayService, LlmTimeoutError } from '../llm/llm-gateway.service';
+import { LlmGatewayService, LlmJsonInvalidError, LlmTimeoutError } from '../llm/llm-gateway.service';
 import { DEFAULT_LLM_TIMEOUT_MS } from '../llm/llm-timeout.constants';
 import { AgentExecutorService, AgentWaitingReviewError } from './agent-executor.service';
 import { AgentExecutionObservationError } from './agent-observation.types';
@@ -4297,7 +4299,7 @@ test('PersistOutlineTool 兼容旧 outline_preview 缺 craftBrief，不覆盖 pl
   assert.equal(Object.prototype.hasOwnProperty.call(updatedChapters[0], 'craftBrief'), false);
 });
 
-test('GenerateOutlinePreviewTool keeps 500s outer timeout but bounds LLM call', async () => {
+test('GenerateOutlinePreviewTool keeps long outer timeout but bounds each LLM call', async () => {
   let receivedOptions: Record<string, unknown> | undefined;
   let receivedMessages: Array<{ role: string; content: string }> | undefined;
   const llmUsages: Array<{ model?: string }> = [];
@@ -4332,10 +4334,11 @@ test('GenerateOutlinePreviewTool keeps 500s outer timeout but bounds LLM call', 
     { agentRunId: 'run1', projectId: 'p1', mode: 'plan', approved: false, outputs: {}, policy: {}, recordLlmUsage: (usage) => llmUsages.push(usage) },
   );
 
-  assert.equal(tool.executionTimeoutMs, DEFAULT_LLM_TIMEOUT_MS * 10 + 60_000);
+  assert.equal(tool.executionTimeoutMs, DEFAULT_LLM_TIMEOUT_MS * 80 + 60_000);
   assert.equal(receivedOptions?.timeoutMs, DEFAULT_LLM_TIMEOUT_MS);
   assert.equal(receivedOptions?.retries, 0);
   assert.equal(receivedOptions?.maxTokens, 5000);
+  assert.equal(receivedOptions?.jsonMode, true);
   assert.match(receivedMessages?.[0]?.content ?? '', /actionBeats 至少 3 个节点/);
   assert.match(receivedMessages?.[0]?.content ?? '', /concreteClues 至少 1 个/);
   assert.match(receivedMessages?.[0]?.content ?? '', /sceneBeats/);
@@ -4373,7 +4376,7 @@ test('generate_outline_preview 重新规划时不把原有卷纲、章节细纲�
       const prompt = messages[1]?.content ?? '';
       prompts.push(prompt);
       const match = prompt.match(/章节范围：第 (\d+)-(\d+) 章/);
-      assert.ok(match, '批次 prompt 应包含本批章节范围');
+      assert.ok(match, '逐章 prompt 应包含本次章节范围');
       const start = Number(match[1]);
       const end = Number(match[2]);
       return {
@@ -5673,7 +5676,7 @@ test('Planner prompt 将长章节细纲引导到 outline_design 而非正文写�
   let capturedOptions: { timeoutMs?: number } | undefined;
   const toolList = [
     createTool({ name: 'inspect_project_context', requiresApproval: false, riskLevel: 'low', sideEffects: [] }),
-    createTool({ name: 'generate_outline_preview', description: '生成卷/章节细纲与执行卡预览，超过 15 章自动分批。', requiresApproval: false, riskLevel: 'low', sideEffects: [] }),
+    createTool({ name: 'generate_outline_preview', description: '生成卷/章节细纲与执行卡预览，章节细纲每章一次 LLM。', requiresApproval: false, riskLevel: 'low', sideEffects: [] }),
     createTool({ name: 'validate_outline', requiresApproval: false, riskLevel: 'low', sideEffects: [] }),
     createTool({ name: 'persist_outline', requiresApproval: true, riskLevel: 'high', sideEffects: ['create_chapters', 'update_chapters'] }),
   ];
@@ -5725,7 +5728,7 @@ test('Planner prompt 将长章节细纲引导到 outline_design 而非正文写�
   assert.match(capturedMessages[0].content, /不要误判为 write_chapter/);
   assert.match(promptPayload.taskTypeGuidance.outline_design, /60章细纲/);
   assert.match(promptPayload.taskTypeGuidance.outline_design, /generate_outline_preview/);
-  assert.match(promptPayload.taskTypeGuidance.outline_design, /自动分批/);
+  assert.match(promptPayload.taskTypeGuidance.outline_design, /逐章请求 LLM/);
   assert.match(JSON.stringify(promptPayload.availableTools), /执行卡预览/);
 });
 
@@ -9289,14 +9292,18 @@ test('Executor 将 LLM timeout 分类为 LLM_TIMEOUT Observation', () => {
   assert.equal(executor.classifyObservationCode(error.message, error), 'LLM_TIMEOUT');
 });
 
-test('LlmGatewayService records provider context when fetch fails', async () => {
-  const originalFetch = globalThis.fetch;
+test('LlmGatewayService records provider context when HTTP transport fails', async () => {
+  const server = createServer((req) => {
+    req.socket.destroy(new Error('socket closed'));
+  });
+  await new Promise<void>((resolve) => server.listen(0, '127.0.0.1', resolve));
+  const address = server.address() as AddressInfo;
   const logged: Array<{ event: string; error: unknown; payload: Record<string, unknown> }> = [];
   const gateway = new LlmGatewayService({
     resolveForStep() {
       return {
         providerName: 'rxinai',
-        baseUrl: 'http://host.docker.internal:8317/v1',
+        baseUrl: `http://127.0.0.1:${address.port}/v1`,
         apiKey: 'test-key',
         model: 'gpt-5.5',
         params: {},
@@ -9312,19 +9319,13 @@ test('LlmGatewayService records provider context when fetch fails', async () => 
     },
   };
 
-  const socketError = Object.assign(new Error('socket closed'), { code: 'UND_ERR_SOCKET' });
-  const fetchError = Object.assign(new TypeError('fetch failed'), { cause: socketError });
-  (globalThis as unknown as { fetch: typeof fetch }).fetch = (async () => {
-    throw fetchError;
-  }) as typeof fetch;
-
   try {
     await assert.rejects(
       () => gateway.chat([{ role: 'user', content: 'hello' }], { appStep: 'planner', maxTokens: 123, timeoutMs: 1000, retries: 0 }),
-      /fetch failed/,
+      /socket|ECONNRESET|hang up/i,
     );
   } finally {
-    (globalThis as unknown as { fetch: typeof fetch }).fetch = originalFetch;
+    await new Promise<void>((resolve, reject) => server.close((error) => (error ? reject(error) : resolve())));
   }
 
   assert.equal(logged.length, 1);
@@ -9332,12 +9333,141 @@ test('LlmGatewayService records provider context when fetch fails', async () => 
   assert.equal(logged[0].payload.appStep, 'planner');
   assert.equal(logged[0].payload.providerName, 'rxinai');
   assert.equal(logged[0].payload.source, 'default_provider');
-  assert.equal(logged[0].payload.baseUrl, 'http://host.docker.internal:8317/v1');
+  assert.equal(logged[0].payload.baseUrl, `http://127.0.0.1:${address.port}/v1`);
   assert.equal(logged[0].payload.model, 'gpt-5.5');
   assert.equal(logged[0].payload.maxTokens, 123);
   assert.equal(logged[0].payload.timeoutMs, 1000);
-  assert.equal((logged[0].payload.cause as Record<string, unknown>).message, 'fetch failed');
-  assert.equal(((logged[0].payload.cause as Record<string, unknown>).cause as Record<string, unknown>).code, 'UND_ERR_SOCKET');
+  assert.match(String((logged[0].payload.cause as Record<string, unknown>).message), /socket|ECONNRESET|hang up/i);
+});
+
+test('LlmGatewayService uses long-timeout transport without global fetch header deadline', async () => {
+  let requestBody = '';
+  const server = createServer((req, res) => {
+    req.setEncoding('utf8');
+    req.on('data', (chunk) => {
+      requestBody += String(chunk);
+    });
+    req.on('end', () => {
+      res.writeHead(200, { 'Content-Type': 'application/json' });
+      res.end(JSON.stringify({ model: 'mock-chat-model', choices: [{ message: { content: 'OK' } }], usage: { completion_tokens: 1 } }));
+    });
+  });
+  await new Promise<void>((resolve) => server.listen(0, '127.0.0.1', resolve));
+  const address = server.address() as AddressInfo;
+  const originalFetch = globalThis.fetch;
+  const gateway = new LlmGatewayService({
+    resolveForStep() {
+      return {
+        providerName: 'rxinai',
+        baseUrl: `http://127.0.0.1:${address.port}/v1`,
+        apiKey: 'test-key',
+        model: 'gpt-5.5',
+        params: {},
+        source: 'default_provider',
+      };
+    },
+  } as never);
+
+  (globalThis as unknown as { fetch: typeof fetch }).fetch = (async () => {
+    throw new Error('global fetch should not be used');
+  }) as typeof fetch;
+
+  try {
+    const result = await gateway.chat([{ role: 'user', content: 'hello' }], { appStep: 'planner', timeoutMs: DEFAULT_LLM_TIMEOUT_MS, retries: 0 });
+    assert.equal(result.text, 'OK');
+    assert.equal(result.model, 'mock-chat-model');
+    assert.match(requestBody, /"model":"gpt-5\.5"/);
+  } finally {
+    (globalThis as unknown as { fetch: typeof fetch }).fetch = originalFetch;
+    await new Promise<void>((resolve, reject) => server.close((error) => (error ? reject(error) : resolve())));
+  }
+});
+
+test('LlmGatewayService sends OpenAI-compatible JSON mode when requested', async () => {
+  let requestBody = '';
+  const server = createServer((req, res) => {
+    req.setEncoding('utf8');
+    req.on('data', (chunk) => {
+      requestBody += String(chunk);
+    });
+    req.on('end', () => {
+      res.writeHead(200, { 'Content-Type': 'application/json' });
+      res.end(JSON.stringify({ model: 'mock-chat-model', choices: [{ message: { content: '{"ok":true}' } }] }));
+    });
+  });
+  await new Promise<void>((resolve) => server.listen(0, '127.0.0.1', resolve));
+  const address = server.address() as AddressInfo;
+  const gateway = new LlmGatewayService({
+    resolveForStep() {
+      return {
+        providerName: 'rxinai',
+        baseUrl: `http://127.0.0.1:${address.port}/v1`,
+        apiKey: 'test-key',
+        model: 'gpt-5.5',
+        params: {},
+        source: 'default_provider',
+      };
+    },
+  } as never);
+
+  try {
+    const result = await gateway.chatJson<{ ok: boolean }>([{ role: 'user', content: 'Return JSON.' }], { appStep: 'planner', timeoutMs: DEFAULT_LLM_TIMEOUT_MS, retries: 0, jsonMode: true });
+    assert.equal(result.data.ok, true);
+    assert.match(requestBody, /"response_format":\{"type":"json_object"\}/);
+  } finally {
+    await new Promise<void>((resolve, reject) => server.close((error) => (error ? reject(error) : resolve())));
+  }
+});
+
+test('LlmGatewayService treats Undici headers timeout as LLM_TIMEOUT', () => {
+  const gateway = new LlmGatewayService({} as never) as unknown as {
+    normalizeLlmError: (error: unknown, options: { appStep?: string; timeoutMs?: number }) => unknown;
+  };
+  const headersTimeout = Object.assign(new Error('Headers Timeout Error'), { name: 'HeadersTimeoutError', code: 'UND_ERR_HEADERS_TIMEOUT' });
+  const fetchError = Object.assign(new TypeError('fetch failed'), { cause: headersTimeout });
+  const normalized = gateway.normalizeLlmError(fetchError, { appStep: 'planner', timeoutMs: DEFAULT_LLM_TIMEOUT_MS });
+
+  assert.ok(normalized instanceof LlmTimeoutError);
+  assert.equal(normalized.code, 'LLM_TIMEOUT');
+  assert.equal(normalized.timeoutMs, DEFAULT_LLM_TIMEOUT_MS);
+});
+
+test('LlmGatewayService chatJson extracts one complete JSON value before trailing prose', async () => {
+  const gateway = new LlmGatewayService({} as never);
+  (gateway as unknown as { chat: LlmGatewayService['chat'] }).chat = async () => ({
+    text: [
+      '```json',
+      '{"outline":{"title":"Bridge aftermath","note":"string keeps } and [ literal chars"},"chapters":[{"chapterNo":4}]}',
+      '```',
+      'Extra prose after the fenced JSON should not poison the valid payload.',
+    ].join('\n'),
+    model: 'mock-json',
+    rawPayloadSummary: {},
+  });
+
+  const { data } = await gateway.chatJson<{ outline: { title: string; note: string }; chapters: Array<{ chapterNo: number }> }>([], { appStep: 'planner' });
+
+  assert.equal(data.outline.title, 'Bridge aftermath');
+  assert.equal(data.outline.note, 'string keeps } and [ literal chars');
+  assert.equal(data.chapters[0].chapterNo, 4);
+});
+
+test('LlmGatewayService chatJson keeps malformed JSON fail-fast', async () => {
+  const gateway = new LlmGatewayService({} as never);
+  (gateway as unknown as { chat: LlmGatewayService['chat'] }).chat = async () => ({
+    text: '{"outline":{"title":"bad shape"}]\nLater prose {"outline":{"title":"must not be parsed"}}',
+    model: 'mock-json',
+    rawPayloadSummary: {},
+  });
+
+  await assert.rejects(
+    () => gateway.chatJson([], { appStep: 'planner' }),
+    (error) => {
+      assert.ok(error instanceof LlmJsonInvalidError);
+      assert.match(error.rawText, /bad shape/);
+      return true;
+    },
+  );
 });
 
 test('generate_outline_preview LLM timeout 直接抛错且不生成 fallback', async () => {
@@ -9374,8 +9504,8 @@ test('generate_outline_preview LLM 返回章节数不足时直接报错', async 
     async chatJson() {
       return {
         data: {
-          volume: { volumeNo: 1, title: '第一卷', synopsis: '卷简介', objective: '完成卷主线', chapterCount: 2 },
-          chapters: [createOutlineChapter(1, 1)],
+          volume: { volumeNo: 1, title: '第一卷', synopsis: '卷简介', objective: '完成卷主线', chapterCount: 1 },
+          chapters: [],
           risks: [],
         },
         result: { model: 'mock-outline' },
@@ -9385,22 +9515,23 @@ test('generate_outline_preview LLM 返回章节数不足时直接报错', async 
   const tool = new GenerateOutlinePreviewTool(llm as never);
   await assert.rejects(
     () => tool.run(
-      { instruction: '卷 1 细纲，目标 2 章节', volumeNo: 1, chapterCount: 2 },
+      { instruction: '卷 1 细纲，目标 1 章节', volumeNo: 1, chapterCount: 1 },
       { agentRunId: 'run1', projectId: 'p1', mode: 'plan', approved: false, outputs: {}, policy: {} },
     ),
-    /返回章节数 1\/2/,
+    /返回章节数 0\/1/,
   );
 });
 
-test('generate_outline_preview 为 60 章自动拆分批次生成', async () => {
+test('generate_outline_preview 为 60 章逐章请求 LLM 并传递章节接力卡', async () => {
   const calls: Array<{ start: number; end: number; options: Record<string, unknown>; prompt: string }> = [];
   const progress: Array<Record<string, unknown>> = [];
   const llmUsages: Array<{ model?: string }> = [];
+  const logs: Array<{ event: string; payload: Record<string, unknown>; error?: unknown }> = [];
   const llm = {
     async chatJson(messages: Array<{ role: string; content: string }>, options: Record<string, unknown>) {
       const prompt = messages[1]?.content ?? '';
       const match = prompt.match(/章节范围：第 (\d+)-(\d+) 章/);
-      assert.ok(match, '批次 prompt 应包含本批章节范围');
+      assert.ok(match, '逐章 prompt 应包含本次章节范围');
       const start = Number(match[1]);
       const end = Number(match[2]);
       calls.push({ start, end, options, prompt });
@@ -9418,6 +9549,10 @@ test('generate_outline_preview 为 60 章自动拆分批次生成', async () => 
     },
   };
   const tool = new GenerateOutlinePreviewTool(llm as never);
+  (tool as unknown as { logger: { log: (event: string, payload: Record<string, unknown>) => void; error: (event: string, error: unknown, payload: Record<string, unknown>) => void } }).logger = {
+    log(event, payload) { logs.push({ event, payload }); },
+    error(event, error, payload) { logs.push({ event, payload, error }); },
+  };
   const result = await tool.run(
     { instruction: '为第 1 卷生成 60 章细纲', volumeNo: 1, chapterCount: 60 },
     {
@@ -9433,36 +9568,48 @@ test('generate_outline_preview 为 60 章自动拆分批次生成', async () => 
     },
   );
 
-  assert.equal(calls.length, 8);
-  assert.deepEqual(calls.map((call) => [call.start, call.end]), [[1, 8], [9, 16], [17, 24], [25, 32], [33, 40], [41, 48], [49, 56], [57, 60]]);
+  assert.equal(calls.length, 60);
+  assert.equal(calls.every((call, index) => call.start === index + 1 && call.end === index + 1), true);
   assert.equal(calls.every((call) => call.options.timeoutMs === DEFAULT_LLM_TIMEOUT_MS), true);
   assert.equal(calls.every((call) => call.options.retries === 0), true);
-  assert.deepEqual(calls.map((call) => call.options.maxTokens), [10040, 10040, 10040, 10040, 10040, 10040, 10040, 6120]);
+  assert.equal(calls.every((call) => call.options.jsonMode === true), true);
+  assert.equal(calls.every((call) => call.options.maxTokens === 5000), true);
   assert.match(calls[1].prompt, /本次运行已生成章节短表/);
-  assert.match(calls[1].prompt, /第 8 章钩子/);
-  assert.equal(llmUsages.length, 8);
+  assert.match(calls[1].prompt, /章节接力卡/);
+  assert.match(calls[1].prompt, /"previousRequestLastChapterNo": 1/);
+  assert.match(calls[1].prompt, /第 1 章钩子/);
+  assert.match(calls[2].prompt, /"previousRequestLastChapterNo": 2/);
+  assert.match(calls[2].prompt, /第 2 章钩子/);
+  assert.equal(llmUsages.length, 60);
   assert.equal(result.chapters.length, 60);
   assert.equal(result.volume.chapterCount, 60);
   assert.equal(result.chapters[0].chapterNo, 1);
   assert.equal(result.chapters[59].chapterNo, 60);
   assert.equal(result.chapters.every((chapter) => chapter.volumeNo === 1), true);
   assert.equal(result.chapters.every((chapter) => Boolean(chapter.craftBrief?.visibleGoal)), true);
-  assert.equal(progress.filter((item) => item.phase === 'calling_llm').length, 8);
+  assert.equal(progress.filter((item) => item.phase === 'calling_llm').length, 60);
   assert.equal(progress.some((item) => item.phase === 'merging_preview'), true);
+  assert.equal(logs.filter((item) => item.event === 'outline_preview.llm_request.started').length, 60);
+  assert.equal(logs.filter((item) => item.event === 'outline_preview.llm_request.completed').length, 60);
+  assert.equal(logs[0].payload.requestChapterStart, 1);
+  assert.equal(logs[0].payload.requestChapterEnd, 1);
+  assert.equal(logs[2].payload.requestChapterStart, 2);
+  assert.equal(logs[2].payload.previousChapterNo, 1);
+  assert.equal(logs.every((item) => item.payload.totalMessageChars !== undefined), true);
 });
 
-test('generate_outline_preview 单批 timeout 直接抛错并停止后续批次', async () => {
+test('generate_outline_preview 单章 timeout 直接抛错并停止后续章节请求', async () => {
   const calls: Array<[number, number]> = [];
   const progress: Array<Record<string, unknown>> = [];
   const llm = {
     async chatJson(messages: Array<{ role: string; content: string }>) {
       const prompt = messages[1]?.content ?? '';
       const match = prompt.match(/章节范围：第 (\d+)-(\d+) 章/);
-      assert.ok(match, '批次 prompt 应包含本批章节范围');
+      assert.ok(match, '逐章 prompt 应包含本次章节范围');
       const start = Number(match[1]);
       const end = Number(match[2]);
       calls.push([start, end]);
-      if (start === 9) throw new LlmTimeoutError('第二批超时', 'planner', DEFAULT_LLM_TIMEOUT_MS);
+      if (start === 2) throw new LlmTimeoutError('第二章超时', 'planner', DEFAULT_LLM_TIMEOUT_MS);
       return {
         data: {
           volume: { volumeNo: 1, title: '第一卷', synopsis: '卷简介', objective: '完成卷主线', chapterCount: 60 },
@@ -9498,78 +9645,87 @@ test('generate_outline_preview 单批 timeout 直接抛错并停止后续批次'
         async heartbeat(patch) { if (patch) progress.push(patch as Record<string, unknown>); },
       },
     ),
-    /第二批超时/,
+    /第二章超时/,
   );
 
-  assert.deepEqual(calls, [[1, 8], [9, 16]]);
+  assert.deepEqual(calls, [[1, 1], [2, 2]]);
   assert.equal(progress.filter((item) => item.phase === 'calling_llm').length, 2);
   assert.equal(progress.some((item) => item.phase === 'fallback_generating'), false);
   assert.equal(progress.some((item) => item.phase === 'merging_preview'), true);
 });
 
-test('GenerateOutlinePreviewTool Manifest 声明执行卡预览和长细纲分批策略', () => {
+test('GenerateOutlinePreviewTool Manifest 声明执行卡预览和逐章 LLM 策略', () => {
   const tool = new GenerateOutlinePreviewTool({} as never);
 
   assert.match(tool.description, /卷\/章节细纲与执行卡预览/);
   assert.match(tool.manifest.description, /Chapter\.craftBrief/);
-  assert.match(tool.manifest.description, /超过 15/);
+  assert.match(tool.manifest.description, /每章单独调用一次 LLM/);
   assert.equal(tool.manifest.whenToUse.some((item) => /60 章细纲/.test(item)), true);
   assert.equal(tool.manifest.whenNotToUse.some((item) => /写正文/.test(item) && /write_chapter/.test(item)), true);
   assert.equal(tool.manifest.whenNotToUse.some((item) => /SceneCard/.test(item)), true);
-  assert.match(tool.manifest.parameterHints?.chapterCount.description ?? '', /自动分批/);
+  assert.match(tool.manifest.parameterHints?.chapterCount.description ?? '', /每章单独调用一次 LLM/);
 });
 
 test('generate_outline_preview 保留 LLM craftBrief', async () => {
+  const allChapters = [
+    {
+      chapterNo: 1,
+      volumeNo: 2,
+      title: '雨夜档案',
+      objective: '拿到失踪档案',
+      conflict: '馆长锁门并销毁调阅记录',
+      hook: '档案袋里掉出湿钥匙',
+      outline: '主角潜入档案室，逼问守夜人并拿到关键档案。',
+      expectedWordCount: 3200,
+      craftBrief: createOutlineCraftBrief({
+        visibleGoal: '拿到失踪档案',
+        hiddenEmotion: '害怕旧案牵连家人',
+        coreConflict: '馆长锁门并销毁调阅记录',
+        mainlineTask: '证明旧案没有结案',
+        subplotTasks: ['守夜人隐瞒线'],
+        actionBeats: ['主角从后窗潜入档案室', '馆长锁门并逼守夜人销毁调阅记录', '主角抢在记录烧毁前拿到湿钥匙'],
+        concreteClues: [{ name: '湿钥匙', sensoryDetail: '带铁锈味', laterUse: '打开旧库房' }],
+        dialogueSubtext: '守夜人用推脱掩盖恐惧。',
+        characterShift: '主角从怀疑转为主动越界。',
+        irreversibleConsequence: '主角拿走钥匙后被监控拍下。',
+        progressTypes: ['info'],
+      }),
+    },
+    {
+      chapterNo: 2,
+      volumeNo: 2,
+      title: '空白卷宗',
+      objective: '确认卷宗被替换',
+      conflict: '同伴担心越界调查会失去职位',
+      hook: '空白页浮出陌生签名',
+      outline: '主角比对卷宗纸张，发现空白页上有隐形签名。',
+      expectedWordCount: 2800,
+      craftBrief: createOutlineCraftBrief({
+        visibleGoal: '确认卷宗被替换',
+        hiddenEmotion: '担心调查会毁掉同伴职位',
+        coreConflict: '同伴担心越界调查会失去职位',
+        mainlineTask: '证明卷宗被替换',
+        subplotTasks: ['同伴职业风险线'],
+        actionBeats: ['比对纸张', '同伴阻拦', '签名浮现'],
+        concreteClues: [{ name: '陌生签名', sensoryDetail: '遇热浮现', laterUse: '指向旧案经手人' }],
+        irreversibleConsequence: '同伴为掩护主角提交假调阅记录。',
+      }),
+    },
+  ];
   const llm = {
-    async chatJson() {
+    async chatJson(messages: Array<{ role: string; content: string }>) {
+      const prompt = messages[1]?.content ?? '';
+      const match = prompt.match(/章节范围：第 (\d+)-(\d+) 章/);
+      assert.ok(match, '逐章 prompt 应包含本次章节范围');
+      const start = Number(match[1]);
+      const end = Number(match[2]);
+      assert.equal(end, start);
+      const chapter = allChapters.find((item) => item.chapterNo === start);
+      if (!chapter) throw new Error(`缺少第 ${start} 章 mock`);
       return {
         data: {
           volume: { volumeNo: 2, title: '第二卷', synopsis: '卷简介', objective: '破解旧案', chapterCount: 2, narrativePlan: { volumeMainline: '旧案升级' } },
-          chapters: [
-            {
-              chapterNo: 1,
-              volumeNo: 2,
-              title: '雨夜档案',
-              objective: '拿到失踪档案',
-              conflict: '馆长锁门并销毁调阅记录',
-              hook: '档案袋里掉出湿钥匙',
-              outline: '主角潜入档案室，逼问守夜人并拿到关键档案。',
-              expectedWordCount: 3200,
-              craftBrief: createOutlineCraftBrief({
-                visibleGoal: '拿到失踪档案',
-                hiddenEmotion: '害怕旧案牵连家人',
-                coreConflict: '馆长锁门并销毁调阅记录',
-                mainlineTask: '证明旧案没有结案',
-                subplotTasks: ['守夜人隐瞒线'],
-                actionBeats: ['主角从后窗潜入档案室', '馆长锁门并逼守夜人销毁调阅记录', '主角抢在记录烧毁前拿到湿钥匙'],
-                concreteClues: [{ name: '湿钥匙', sensoryDetail: '带铁锈味', laterUse: '打开旧库房' }],
-                dialogueSubtext: '守夜人用推脱掩盖恐惧。',
-                characterShift: '主角从怀疑转为主动越界。',
-                irreversibleConsequence: '主角拿走钥匙后被监控拍下。',
-                progressTypes: ['info'],
-              }),
-            },
-            {
-              chapterNo: 2,
-              volumeNo: 2,
-              title: '空白卷宗',
-              objective: '确认卷宗被替换',
-              conflict: '同伴担心越界调查会失去职位',
-              hook: '空白页浮出陌生签名',
-              outline: '主角比对卷宗纸张，发现空白页上有隐形签名。',
-              expectedWordCount: 2800,
-              craftBrief: createOutlineCraftBrief({
-                visibleGoal: '确认卷宗被替换',
-                hiddenEmotion: '担心调查会毁掉同伴职位',
-                coreConflict: '同伴担心越界调查会失去职位',
-                mainlineTask: '证明卷宗被替换',
-                subplotTasks: ['同伴职业风险线'],
-                actionBeats: ['比对纸张', '同伴阻拦', '签名浮现'],
-                concreteClues: [{ name: '陌生签名', sensoryDetail: '遇热浮现', laterUse: '指向旧案经手人' }],
-                irreversibleConsequence: '同伴为掩护主角提交假调阅记录。',
-              }),
-            },
-          ],
+          chapters: [chapter],
           risks: [],
         },
         result: { model: 'mock' },
@@ -9595,15 +9751,24 @@ test('generate_outline_preview 保留 LLM craftBrief', async () => {
 });
 
 test('generate_outline_preview 缺失 craftBrief 字段时直接报错', async () => {
+  const allChapters = [
+    createOutlineChapter(1, 2, { title: '雨夜档案' }),
+    createOutlineChapter(2, 2, { title: '空白卷宗', craftBrief: { visibleGoal: '确认卷宗被替换' } }),
+  ];
   const llm = {
-    async chatJson() {
+    async chatJson(messages: Array<{ role: string; content: string }>) {
+      const prompt = messages[1]?.content ?? '';
+      const match = prompt.match(/章节范围：第 (\d+)-(\d+) 章/);
+      assert.ok(match, '逐章 prompt 应包含本次章节范围');
+      const start = Number(match[1]);
+      const end = Number(match[2]);
+      assert.equal(end, start);
+      const chapter = allChapters.find((item) => item.chapterNo === start);
+      if (!chapter) throw new Error(`缺少第 ${start} 章 mock`);
       return {
         data: {
           volume: { volumeNo: 2, title: '第二卷', synopsis: '卷简介', objective: '破解旧案', chapterCount: 2 },
-          chapters: [
-            createOutlineChapter(1, 2, { title: '雨夜档案' }),
-            createOutlineChapter(2, 2, { title: '空白卷宗', craftBrief: { visibleGoal: '确认卷宗被替换' } }),
-          ],
+          chapters: [chapter],
           risks: [],
         },
         result: { model: 'mock' },
