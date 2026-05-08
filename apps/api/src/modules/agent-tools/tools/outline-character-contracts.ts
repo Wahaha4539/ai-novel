@@ -174,6 +174,11 @@ export function assertVolumeCharacterPlan(value: unknown, options: AssertVolumeC
     ...normalizeNameList(existingCharacterArcs.map((arc) => arc.characterName)),
     ...normalizeNameList(newCharacterCandidates.map((candidate) => candidate.name)),
   ]);
+  for (const [index, candidate] of newCharacterCandidates.entries()) {
+    const candidateLabel = `${label}.newCharacterCandidates[${index}]`;
+    assertKnownCharacterReferences(candidate.conflictWith, knownRelationshipNames, `${candidateLabel}.conflictWith`);
+    assertKnownCharacterReferences(candidate.relationshipAnchors, knownRelationshipNames, `${candidateLabel}.relationshipAnchors`);
+  }
   const relationshipArcs = requiredRecordArray(record.relationshipArcs, `${label}.relationshipArcs`).map((arc, index) => {
     const arcLabel = `${label}.relationshipArcs[${index}]`;
     const participants = requiredStringArray(arc.participants, `${arcLabel}.participants`);
@@ -200,16 +205,22 @@ export function assertVolumeCharacterPlan(value: unknown, options: AssertVolumeC
     throw new Error(`${label}.roleCoverage 缺失。`);
   }
 
+  const roleCoverage = {
+    mainlineDrivers: stringArray(roleCoverageRecord.mainlineDrivers),
+    antagonistPressure: stringArray(roleCoverageRecord.antagonistPressure),
+    emotionalCounterweights: stringArray(roleCoverageRecord.emotionalCounterweights),
+    expositionCarriers: stringArray(roleCoverageRecord.expositionCarriers),
+  };
+  assertKnownCharacterReferences(roleCoverage.mainlineDrivers, knownRelationshipNames, `${label}.roleCoverage.mainlineDrivers`);
+  assertKnownCharacterReferences(roleCoverage.antagonistPressure, knownRelationshipNames, `${label}.roleCoverage.antagonistPressure`);
+  assertKnownCharacterReferences(roleCoverage.emotionalCounterweights, knownRelationshipNames, `${label}.roleCoverage.emotionalCounterweights`);
+  assertKnownCharacterReferences(roleCoverage.expositionCarriers, knownRelationshipNames, `${label}.roleCoverage.expositionCarriers`);
+
   return {
     existingCharacterArcs,
     newCharacterCandidates,
     relationshipArcs,
-    roleCoverage: {
-      mainlineDrivers: stringArray(roleCoverageRecord.mainlineDrivers),
-      antagonistPressure: stringArray(roleCoverageRecord.antagonistPressure),
-      emotionalCounterweights: stringArray(roleCoverageRecord.emotionalCounterweights),
-      expositionCarriers: stringArray(roleCoverageRecord.expositionCarriers),
-    },
+    roleCoverage,
   };
 }
 
@@ -235,10 +246,17 @@ export function assertChapterCharacterExecution(value: unknown, options: AssertC
     if (approvalPolicy !== 'preview_only' && approvalPolicy !== 'needs_approval') {
       throw new Error(`${minorLabel}.approvalPolicy 非法。`);
     }
+    const nameOrLabel = requiredText(minor.nameOrLabel, `${minorLabel}.nameOrLabel`);
+    const narrativeFunction = requiredText(minor.narrativeFunction, `${minorLabel}.narrativeFunction`);
+    const interactionScope = requiredText(minor.interactionScope, `${minorLabel}.interactionScope`);
+    const importanceText = [nameOrLabel, narrativeFunction, interactionScope, approvalPolicy].join(' ');
+    if (approvalPolicy === 'needs_approval' || MINOR_IMPORTANCE_PATTERN.test(importanceText)) {
+      throw new Error(`${minorLabel} 临时角色承担了重要或长期角色功能，必须先进入卷级角色候选。`);
+    }
     return {
-      nameOrLabel: requiredText(minor.nameOrLabel, `${minorLabel}.nameOrLabel`),
-      narrativeFunction: requiredText(minor.narrativeFunction, `${minorLabel}.narrativeFunction`),
-      interactionScope: requiredText(minor.interactionScope, `${minorLabel}.interactionScope`),
+      nameOrLabel,
+      narrativeFunction,
+      interactionScope,
       firstAndOnlyUse,
       approvalPolicy: approvalPolicy as 'preview_only' | 'needs_approval',
     };
@@ -345,6 +363,14 @@ function assertParticipantsInCast(participants: string[], castNames: Set<string>
   for (const participant of participants) {
     if (!castNames.has(normalizeName(participant))) {
       throw new Error(`${label} 未被 characterExecution.cast 覆盖：${participant}`);
+    }
+  }
+}
+
+function assertKnownCharacterReferences(names: string[], knownNames: Set<string>, label: string): void {
+  for (const name of names) {
+    if (!knownNames.has(normalizeName(name))) {
+      throw new Error(`${label} 引用未知角色：${name}`);
     }
   }
 }

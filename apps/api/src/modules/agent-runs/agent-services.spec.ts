@@ -322,6 +322,17 @@ function createVccCharacterPlan(overrides: Record<string, unknown> = {}) {
         lastActiveChapter: 4,
         endState: '确认东闸名单与失踪案直接相关',
       },
+      {
+        characterName: '沈栖',
+        roleInVolume: '用制度内协助和职业风险平衡主角冲动',
+        entryState: '只愿在规则边界内提供有限帮助',
+        volumeGoal: '保护旧档案馆同僚并避免无辜者被封锁名单牵连',
+        pressure: '巡检处要求她交出所有调阅记录',
+        keyChoices: ['是否隐瞒半页账纸去向', '是否承认自己改过调阅时辰'],
+        firstActiveChapter: 1,
+        lastActiveChapter: 4,
+        endState: '愿意为林澈承担一次记录风险',
+      },
     ],
     newCharacterCandidates: [
       {
@@ -350,7 +361,7 @@ function createVccCharacterPlan(overrides: Record<string, unknown> = {}) {
     ],
     roleCoverage: {
       mainlineDrivers: ['林澈'],
-      antagonistPressure: ['巡检处'],
+      antagonistPressure: ['邵衡'],
       emotionalCounterweights: ['沈栖'],
       expositionCarriers: ['邵衡'],
     },
@@ -523,7 +534,7 @@ test('VCC character contract rejects missing volume candidate required field', (
     const plan = createVccCharacterPlan({ newCharacterCandidates: [candidate] });
 
     assert.throws(
-      () => assertVolumeCharacterPlan(plan, { chapterCount: 4, existingCharacterNames: ['林澈'] }),
+      () => assertVolumeCharacterPlan(plan, { chapterCount: 4, existingCharacterNames: ['林澈', '沈栖'] }),
       new RegExp(field),
     );
   }
@@ -540,8 +551,30 @@ test('VCC character contract rejects candidate first appearance outside volume r
   });
 
   assert.throws(
-    () => assertVolumeCharacterPlan(plan, { chapterCount: 4, existingCharacterNames: ['林澈'] }),
+    () => assertVolumeCharacterPlan(plan, { chapterCount: 4, existingCharacterNames: ['林澈', '沈栖'] }),
     /firstAppearChapter/,
+  );
+});
+
+test('VCC character contract rejects unknown volume character references', () => {
+  const badCandidate = {
+    ...createVccCharacterPlan().newCharacterCandidates[0],
+    conflictWith: ['不存在的人'],
+  };
+  const badCoverage = createVccCharacterPlan({
+    roleCoverage: {
+      ...createVccCharacterPlan().roleCoverage,
+      expositionCarriers: ['未建档角色'],
+    },
+  });
+
+  assert.throws(
+    () => assertVolumeCharacterPlan(createVccCharacterPlan({ newCharacterCandidates: [badCandidate] }), { chapterCount: 4, existingCharacterNames: ['林澈', '沈栖'] }),
+    /conflictWith.*未知角色/,
+  );
+  assert.throws(
+    () => assertVolumeCharacterPlan(badCoverage, { chapterCount: 4, existingCharacterNames: ['林澈', '沈栖'] }),
+    /roleCoverage\.expositionCarriers.*未知角色/,
   );
 });
 
@@ -570,6 +603,22 @@ test('VCC character contract rejects scene participants missing from cast', () =
       sceneBeats: [{ sceneArcId: 'archive_pressure', participants: ['林澈', '邵衡', '未列入角色'] }],
     }),
     /未被 characterExecution\.cast 覆盖/,
+  );
+});
+
+test('VCC character contract rejects important temporary character metadata', () => {
+  const execution = createVccCharacterExecution({
+    newMinorCharacters: [
+      {
+        ...createVccCharacterExecution().newMinorCharacters[0],
+        narrativeFunction: '承担本卷主线长期关键配角弧线',
+      },
+    ],
+  });
+
+  assert.throws(
+    () => assertChapterCharacterExecution(execution, { existingCharacterNames: ['林澈'], volumeCandidateNames: ['邵衡'] }),
+    /临时角色承担了重要或长期角色功能/,
   );
 });
 
