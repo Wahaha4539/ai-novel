@@ -3514,6 +3514,36 @@ test('VCC guided_volume requires explicit volumeNo and chapterCount', async () =
   assert.equal(transactionCalled, false);
 });
 
+test('VCC guided finalize rejects empty volume and chapter results without saving session data', async () => {
+  let sessionTouched = false;
+  let writeTouched = false;
+  const prisma = {
+    character: { async findMany() { throw new Error('empty guided result should fail before loading character catalog'); } },
+    guidedSession: {
+      async findUnique() { sessionTouched = true; return { stepData: {} }; },
+      async update() { sessionTouched = true; return {}; },
+    },
+    volume: {
+      deleteMany() { writeTouched = true; return Promise.resolve({ count: 0 }); },
+      createMany() { writeTouched = true; return Promise.resolve({ count: 0 }); },
+      findMany() { writeTouched = true; return Promise.resolve([]); },
+    },
+    chapter: {
+      findMany() { writeTouched = true; return Promise.resolve([]); },
+      aggregate() { writeTouched = true; return Promise.resolve({ _max: { chapterNo: 0 } }); },
+      create() { writeTouched = true; return Promise.resolve({}); },
+    },
+  };
+  const service = new GuidedService(prisma as never, {} as never, {} as never);
+
+  await assert.rejects(() => service.finalizeStep('p1', 'guided_volume', {}), /volumes/);
+  await assert.rejects(() => service.finalizeStep('p1', 'guided_volume', { volumes: [] }), /volumes/);
+  await assert.rejects(() => service.finalizeStep('p1', 'guided_chapter', {}), /chapters/);
+  await assert.rejects(() => service.finalizeStep('p1', 'guided_chapter', { chapters: [] }, 1), /chapters/);
+  assert.equal(sessionTouched, false);
+  assert.equal(writeTouched, false);
+});
+
 test('VCC guided_chapter requires characterExecution', async () => {
   let chapterWriteCalled = false;
   const validVolume = createVccGuidedVolume();

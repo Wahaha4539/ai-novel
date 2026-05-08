@@ -1483,6 +1483,9 @@ ${singleChapterContext.chapterPositionContext}`;
       case 'guided_volume': {
         // Replace all existing volumes for this project (delete-then-create)
         const volumes = structuredData.volumes as Array<Record<string, unknown>> | undefined;
+        if (!Array.isArray(volumes) || !volumes.length) {
+          throw new BadRequestException('guided_volume 写入失败：缺少非空 volumes。请重新生成完整卷纲后再审批写入。');
+        }
         if (volumes?.length) {
           await this.assertGuidedVolumesCharacterPlans(projectId, volumes);
           // 先删除再批量写入，并放在同一事务里，避免中途失败留下空卷纲。
@@ -1511,6 +1514,9 @@ ${singleChapterContext.chapterPositionContext}`;
         // chapterNo must be globally unique per project (@@unique([projectId, chapterNo])),
         // so per-volume saves update existing rows in place to avoid renumbering chapters.
         const chapters = structuredData.chapters as Array<Record<string, unknown>> | undefined;
+        if (!Array.isArray(chapters) || !chapters.length) {
+          throw new BadRequestException('guided_chapter 写入失败：缺少非空 chapters。请重新生成完整章节细纲后再审批写入。');
+        }
         if (chapters?.length) {
           await this.assertGuidedChaptersCharacterExecutions(projectId, chapters);
           // Pre-fetch all volumes for this project to map volumeNo → volumeId
