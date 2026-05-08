@@ -197,7 +197,7 @@ export interface RetrievalBenchmarkCase {
 @Injectable()
 export class RetrievalService {
   private readonly logger = new StructuredLogger(RetrievalService.name);
-  private static readonly CACHE_VERSION = 4;
+  private static readonly CACHE_VERSION = 5;
 
   constructor(private readonly prisma: PrismaService, private readonly embeddings: EmbeddingGatewayService, private readonly cacheService: NovelCacheService) {}
 
@@ -711,7 +711,7 @@ export class RetrievalService {
     });
 
     return rows
-      .filter((row) => this.isStructuredFactVisibleAtChapter(row, context))
+      .filter((row) => this.isVerifiedTimelineEventVisibleAtChapter(row, context))
       .map((row) => {
         const participants = this.readStringArray(row.participants);
         const knownBy = this.readStringArray(row.knownBy);
@@ -731,7 +731,7 @@ export class RetrievalService {
         const searchableText = `${row.title}\n${content}\n${JSON.stringify(customMetadata)}`;
         const keywordScore = this.scoreText(searchableText, keywords);
         const plannerScore = this.scorePlannedQueries(searchableText, queries);
-        const score = keywordScore + plannerScore + 0.08;
+        const score = keywordScore + plannerScore + 0.16;
         const searchMethod: RetrievalSearchMethod = 'structured_keyword';
         const matchedKeywords = this.matchKeywords(searchableText, keywords);
         const reason = this.buildHitReason(searchMethod, matchedKeywords, keywordScore, undefined, plannerScore);
@@ -992,6 +992,14 @@ export class RetrievalService {
   private isStructuredFactVisibleAtChapter(row: { chapterId?: string | null; chapterNo?: number | null }, context: RetrieveContext): boolean {
     if (context.excludeCurrentChapter && context.chapterId && row.chapterId === context.chapterId) return false;
     if (typeof context.chapterNo !== 'number' || typeof row.chapterNo !== 'number') return true;
+    return context.excludeCurrentChapter ? row.chapterNo < context.chapterNo : row.chapterNo <= context.chapterNo;
+  }
+
+  private isVerifiedTimelineEventVisibleAtChapter(row: { chapterId?: string | null; chapterNo?: number | null; eventStatus?: string | null }, context: RetrieveContext): boolean {
+    if (row.eventStatus !== 'active') return false;
+    if (typeof context.chapterNo !== 'number') return true;
+    if (typeof row.chapterNo !== 'number') return false;
+    if (context.excludeCurrentChapter && context.chapterId && row.chapterId === context.chapterId) return false;
     return context.excludeCurrentChapter ? row.chapterNo < context.chapterNo : row.chapterNo <= context.chapterNo;
   }
 

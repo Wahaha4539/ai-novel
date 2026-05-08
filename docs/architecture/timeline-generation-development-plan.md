@@ -184,6 +184,7 @@
 - TL-P2-04：注册 timeline-only 三个工具到 `AgentToolsModule`、`ToolRegistryService` 与默认内置技能，并测试 Planner Manifest 能看到 plan/act 边界、审批要求和 TimelineEvent 写入副作用；涉及文件：`apps/api/src/modules/agent-tools/agent-tools.module.ts`、`apps/api/src/modules/agent-tools/tool-registry.service.ts`、`apps/api/src/modules/agent-skills/builtin-skills.ts`、`apps/api/src/modules/agent-runs/agent-services.spec.ts`、`docs/architecture/timeline-generation-development-plan.md`；验证命令：`pnpm --filter api test:agent`、`pnpm --filter api build`、`git diff --check`。
 - TL-P2-05：新增 `timeline_plan` 任务类型，并让 Planner 在 outline/craftBrief 规划产物后自动接入只读 `generate_timeline_preview -> validate_timeline_preview`，从全书/卷/章节细纲和 craftBrief 生成 `eventStatus=planned` 候选且不插入时间线写库步骤；涉及文件：`apps/api/src/modules/agent-runs/agent-planner.service.ts`、`apps/api/src/modules/agent-skills/builtin-skills.ts`、`apps/api/src/modules/agent-runs/agent-services.spec.ts`、`docs/architecture/timeline-generation-development-plan.md`；验证命令：`pnpm --filter api test:agent`、`pnpm --filter api build`、`git diff --check`。
 - TL-P2-06：Agent Runtime 将 timeline preview/validate/persist 输出提升为 Artifact，Agent Artifact 面板展示计划时间线候选、校验 accepted/rejected、写入前 diff、sourceTrace 和写入结果；涉及文件：`apps/api/src/modules/agent-runs/agent-runtime.service.ts`、`apps/api/src/modules/agent-runs/agent-services.spec.ts`、`apps/web/components/agent/AgentArtifactPanel.tsx`、`apps/web/components/agent/AgentSharedWidgets.tsx`、`docs/architecture/timeline-generation-development-plan.md`；验证命令：`pnpm --filter api test:agent`、`pnpm --filter api build`、`pnpm --filter web build`、`git diff --check`。
+- TL-P3-01：扩展 `RetrievalService` 的时间线召回边界，仅将可证明位于当前章之前的 `active` TimelineEvent 放入生成用 verified context，并避免 planned/future/unscoped 事件混入；涉及文件：`apps/api/src/modules/memory/retrieval.service.ts`、`apps/api/src/modules/agent-runs/agent-services.spec.ts`、`docs/architecture/timeline-generation-development-plan.md`；验证命令：`pnpm --filter api test:agent`、`pnpm --filter api build`、`git diff --check`。
 
 ### Phase 1：时间线候选契约与校验核心
 
@@ -210,7 +211,7 @@
 
 | ID | 状态 | 任务 | 主要文件 | 验收标准 |
 |---|---|---|---|---|
-| TL-P3-01 | todo | 扩展召回：已确认时间线进入 verified context | `RetrievalService` | 当前章生成时只召回当前章之前的 `active` 事件为事实 |
+| TL-P3-01 | done | 扩展召回：已确认时间线进入 verified context | `RetrievalService` | 当前章生成时只召回当前章之前的 `active` 事件为事实 |
 | TL-P3-02 | todo | 扩展上下文包：本章 planned 时间线进入 planning context | `GenerateChapterService`、`context-pack.types.ts` | 当前章 `planned` 事件不会混入 verified facts |
 | TL-P3-03 | todo | PromptBuilder 新增【本章计划时间线】区块 | `PromptBuilderService` | 明确这是计划目标，不是已发生事实 |
 | TL-P3-04 | todo | Prompt debug 记录 timeline hit 计数和来源 | `PromptBuilderService` | generationContext 可追踪 active/planned 分层 |

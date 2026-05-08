@@ -7787,6 +7787,24 @@ test('RetrievalService returns phase2 structured hits and filters future chapter
       async findMany() {
         return [
           {
+            id: 'time-previous-active',
+            chapterId: 'c2',
+            chapterNo: 2,
+            title: 'Archive bell tolls',
+            eventTime: '2',
+            locationName: 'Archive',
+            participants: ['Archivist'],
+            cause: 'night watch',
+            result: 'the archive is sealed before the key is exposed',
+            impactScope: 'archive',
+            isPublic: true,
+            knownBy: ['Archivist'],
+            unknownBy: ['Lin Che'],
+            eventStatus: 'active',
+            sourceType: 'agent_timeline_plan',
+            metadata: {},
+          },
+          {
             id: 'time-visible',
             chapterId: 'c3',
             chapterNo: 3,
@@ -7802,6 +7820,60 @@ test('RetrievalService returns phase2 structured hits and filters future chapter
             unknownBy: ['Shen Yan'],
             eventStatus: 'active',
             sourceType: 'timeline_event',
+            metadata: {},
+          },
+          {
+            id: 'time-planned',
+            chapterId: 'c2',
+            chapterNo: 2,
+            title: 'Planned key rehearsal',
+            eventTime: '2',
+            locationName: 'Archive',
+            participants: ['Lin Che'],
+            cause: 'outline plan',
+            result: 'planned event is not verified',
+            impactScope: 'city',
+            isPublic: false,
+            knownBy: ['Lin Che'],
+            unknownBy: ['Shen Yan'],
+            eventStatus: 'planned',
+            sourceType: 'agent_timeline_plan',
+            metadata: {},
+          },
+          {
+            id: 'time-future-active',
+            chapterId: 'c5',
+            chapterNo: 5,
+            title: 'Future oath reveal',
+            eventTime: '5',
+            locationName: 'Archive',
+            participants: ['Lin Che', 'Shen Yan'],
+            cause: 'future scene',
+            result: 'true name revealed later',
+            impactScope: 'city',
+            isPublic: false,
+            knownBy: ['Lin Che'],
+            unknownBy: ['Shen Yan'],
+            eventStatus: 'active',
+            sourceType: 'agent_timeline_plan',
+            metadata: {},
+          },
+          {
+            id: 'time-unscoped-active',
+            chapterId: null,
+            chapterNo: null,
+            title: 'Unscoped active timeline note',
+            eventTime: 'unknown',
+            locationName: 'Archive',
+            participants: ['Lin Che'],
+            cause: 'manual note',
+            result: 'cannot prove chapter order',
+            impactScope: 'city',
+            isPublic: false,
+            knownBy: ['Lin Che'],
+            unknownBy: ['Shen Yan'],
+            eventStatus: 'active',
+            sourceType: 'manual',
             metadata: {},
           },
         ];
@@ -7848,12 +7920,18 @@ test('RetrievalService returns phase2 structured hits and filters future chapter
     { includeLorebook: false, includeMemory: false },
   );
 
-  assert.deepEqual(bundle.structuredHits.map((hit) => hit.sourceId).sort(), ['rel-visible', 'rule-visible', 'time-visible']);
-  assert.deepEqual(bundle.structuredHits.map((hit) => hit.sourceType).sort(), ['relationship_edge', 'timeline_event', 'writing_rule']);
+  assert.deepEqual(bundle.structuredHits.map((hit) => hit.sourceId).sort(), ['rel-visible', 'rule-visible', 'time-previous-active', 'time-visible']);
+  assert.deepEqual(bundle.structuredHits.map((hit) => hit.sourceType).sort(), ['relationship_edge', 'timeline_event', 'timeline_event', 'writing_rule']);
   assert.equal(bundle.structuredHits.some((hit) => hit.sourceId === 'rel-future'), false);
+  assert.equal(bundle.structuredHits.some((hit) => hit.sourceId === 'time-planned'), false);
+  assert.equal(bundle.structuredHits.some((hit) => hit.sourceId === 'time-future-active'), false);
+  assert.equal(bundle.structuredHits.some((hit) => hit.sourceId === 'time-unscoped-active'), false);
   const timelineHit = bundle.structuredHits.find((hit) => hit.sourceType === 'timeline_event');
-  assert.equal(timelineHit?.sourceTrace.chapterNo, 3);
-  assert.equal(timelineHit?.metadata.chapterNo, 3);
+  assert.ok(timelineHit);
+  assert.equal([2, 3].includes(timelineHit.sourceTrace.chapterNo ?? 0), true);
+  const previousTimelineHit = bundle.structuredHits.find((hit) => hit.sourceId === 'time-previous-active');
+  assert.equal(previousTimelineHit?.sourceTrace.chapterNo, 2);
+  assert.equal(previousTimelineHit?.metadata.eventStatus, 'active');
   assert.equal(bundle.diagnostics.qualityStatus, 'ok');
 
   const generationBundle = await service.retrieveBundleWithCacheMeta(
@@ -7873,8 +7951,11 @@ test('RetrievalService returns phase2 structured hits and filters future chapter
     { includeLorebook: false, includeMemory: false },
   );
 
-  assert.deepEqual(generationBundle.structuredHits.map((hit) => hit.sourceId).sort(), ['rel-visible', 'rule-visible']);
+  assert.deepEqual(generationBundle.structuredHits.map((hit) => hit.sourceId).sort(), ['rel-visible', 'rule-visible', 'time-previous-active']);
   assert.equal(generationBundle.structuredHits.some((hit) => hit.sourceId === 'time-visible'), false);
+  assert.equal(generationBundle.structuredHits.some((hit) => hit.sourceId === 'time-planned'), false);
+  assert.equal(generationBundle.structuredHits.some((hit) => hit.sourceId === 'time-future-active'), false);
+  assert.equal(generationBundle.structuredHits.some((hit) => hit.sourceId === 'time-unscoped-active'), false);
 });
 
 test('RetrievalPlannerService normalizes timeline and writing rule queries', async () => {
