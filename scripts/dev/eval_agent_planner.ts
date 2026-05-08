@@ -938,10 +938,25 @@ function createMockPlannerOutput(goal: string, agentContext: Record<string, unkn
     ]);
   }
   if (goal.includes('第一卷') && goal.includes('30')) {
+    const chapterSteps = Array.from({ length: 30 }, (_item, index) => {
+      const chapterNo = index + 1;
+      return step(3 + index, 'generate_chapter_outline_preview', {
+        context: '{{steps.inspect_project_context.output}}',
+        volumeOutline: '{{steps.generate_volume_outline_preview.output.volume}}',
+        volumeNo: 1,
+        chapterNo,
+        chapterCount: 30,
+        instruction: '把第一卷拆成 30 章。',
+        ...(chapterNo > 1 ? { previousChapter: `{{steps.${2 + index}.output.chapter}}` } : {}),
+      });
+    });
     return plan('outline_design', goal, true, [
-      step(1, 'generate_outline_preview', { projectId: '{{context.session.currentProjectId}}', instruction: '把第一卷拆成 30 章。' }),
-      step(2, 'validate_outline', { preview: '{{steps.generate_outline_preview.output}}' }),
-      step(3, 'persist_outline', { preview: '{{steps.generate_outline_preview.output}}', validation: '{{steps.validate_outline.output}}' }),
+      step(1, 'inspect_project_context', { projectId: '{{context.session.currentProjectId}}', focus: ['outline', 'volumes', 'chapters'] }),
+      step(2, 'generate_volume_outline_preview', { context: '{{steps.inspect_project_context.output}}', instruction: '把第一卷拆成 30 章。', volumeNo: 1, chapterCount: 30 }),
+      ...chapterSteps,
+      step(33, 'merge_chapter_outline_previews', { previews: chapterSteps.map((chapterStep) => `{{steps.${chapterStep.stepNo}.output}}`), volumeNo: 1, chapterCount: 30 }),
+      step(34, 'validate_outline', { preview: '{{steps.merge_chapter_outline_previews.output}}' }),
+      step(35, 'persist_outline', { preview: '{{steps.merge_chapter_outline_previews.output}}', validation: '{{steps.validate_outline.output}}' }),
     ]);
   }
   if (goal.includes('文案拆成角色')) {

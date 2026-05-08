@@ -35,6 +35,7 @@ import { RetrievalPlannerService } from '../generation/retrieval-planner.service
 import { ValidateOutlineTool } from '../agent-tools/tools/validate-outline.tool';
 import { ValidateImportedAssetsTool } from '../agent-tools/tools/validate-imported-assets.tool';
 import { PersistOutlineTool } from '../agent-tools/tools/persist-outline.tool';
+import { PersistVolumeOutlineTool } from '../agent-tools/tools/persist-volume-outline.tool';
 import { GenerateOutlinePreviewTool, OutlinePreviewOutput } from '../agent-tools/tools/generate-outline-preview.tool';
 import { GenerateVolumeOutlinePreviewTool } from '../agent-tools/tools/generate-volume-outline-preview.tool';
 import { assertChapterCharacterExecution, assertVolumeCharacterPlan } from '../agent-tools/tools/outline-character-contracts';
@@ -6185,6 +6186,63 @@ test('VCC persist_outline does not create Character', async () => {
   assert.equal(characterCreates.length, 0);
 });
 
+test('persist_volume_outline writes only Volume narrativePlan after approval', async () => {
+  const upserts: Array<Record<string, unknown>> = [];
+  const prisma = {
+    character: {
+      async findMany() { return [{ name: '林澈', alias: [] }, { name: '沈栖', alias: [] }]; },
+    },
+    volume: {
+      async upsert(args: Record<string, unknown>) {
+        upserts.push(args);
+        return { id: 'v1' };
+      },
+    },
+  };
+  const tool = new PersistVolumeOutlineTool(prisma as never);
+  const preview = {
+    volume: {
+      volumeNo: 1,
+      title: '罪桥初潮',
+      synopsis: '卷简介',
+      objective: '卷目标',
+      chapterCount: 4,
+      narrativePlan: createVccNarrativePlanForChapterCount(4),
+    },
+    risks: [],
+  };
+
+  const result = await tool.run(
+    { preview },
+    { agentRunId: 'run-persist-volume-outline', projectId: 'p1', mode: 'act', approved: true, outputs: {}, policy: {} },
+  );
+
+  assert.equal(result.volumeId, 'v1');
+  assert.equal(result.updatedVolumeOnly, true);
+  assert.equal(upserts.length, 1);
+  assert.deepEqual(upserts[0].where, { projectId_volumeNo: { projectId: 'p1', volumeNo: 1 } });
+  assert.equal((upserts[0].update as Record<string, unknown>).chapterCount, 4);
+});
+
+test('persist_volume_outline requires approval and blocks incomplete narrativePlan', async () => {
+  const tool = new PersistVolumeOutlineTool({} as never);
+
+  await assert.rejects(
+    () => tool.run(
+      { preview: { volume: { volumeNo: 1, title: '卷', synopsis: '简介', objective: '目标', chapterCount: 4, narrativePlan: createVccNarrativePlanForChapterCount(4) }, risks: [] } },
+      { agentRunId: 'run-persist-volume-outline-no-approval', projectId: 'p1', mode: 'plan', approved: true, outputs: {}, policy: {} },
+    ),
+    /act mode/,
+  );
+  await assert.rejects(
+    () => tool.run(
+      { preview: { volume: { volumeNo: 1, title: '卷', synopsis: '简介', objective: '目标', chapterCount: 4, narrativePlan: { globalMainlineStage: '阶段' } }, risks: [] } },
+      { agentRunId: 'run-persist-volume-outline-incomplete', projectId: 'p1', mode: 'act', approved: true, outputs: {}, policy: {} },
+    ),
+    /storyUnits|narrativePlan/,
+  );
+});
+
 test('VCC persist_volume_character_candidates requires approval', async () => {
   const tool = new PersistVolumeCharacterCandidatesTool({} as never, {} as never);
   assert.equal(tool.requiresApproval, true);
@@ -7908,6 +7966,45 @@ test('Planner prompt 将长章节细纲引导到 outline_design 而非正文写�
   assert.match(promptPayload.taskTypeGuidance.outline_design, /generate_chapter_outline_preview/);
   assert.match(promptPayload.taskTypeGuidance.outline_design, /merge_chapter_outline_previews/);
   assert.match(JSON.stringify(promptPayload.availableTools), /执行卡预览/);
+});
+
+test('Planner 将只重写卷大纲的旧聚合计划改写为卷纲专用链路', () => {
+  const toolList = [
+    createTool({ name: 'inspect_project_context', requiresApproval: false, riskLevel: 'low', sideEffects: [] }),
+    createTool({ name: 'generate_outline_preview', requiresApproval: false, riskLevel: 'low', sideEffects: [] }),
+    createTool({ name: 'generate_volume_outline_preview', requiresApproval: false, riskLevel: 'low', sideEffects: [] }),
+    createTool({ name: 'generate_chapter_outline_preview', requiresApproval: false, riskLevel: 'low', sideEffects: [] }),
+    createTool({ name: 'merge_chapter_outline_previews', requiresApproval: false, riskLevel: 'low', sideEffects: [] }),
+    createTool({ name: 'validate_outline', requiresApproval: false, riskLevel: 'low', sideEffects: [] }),
+    createTool({ name: 'persist_outline', requiresApproval: true, riskLevel: 'high', sideEffects: ['create_chapters', 'update_chapters'] }),
+    createTool({ name: 'persist_volume_outline', requiresApproval: true, riskLevel: 'high', sideEffects: ['upsert_volume'] }),
+  ];
+  const tools = { list: () => toolList } as unknown as ToolRegistryService;
+  const planner = new AgentPlannerService(new SkillRegistryService(), tools, new RuleEngineService(), {} as LlmGatewayService) as unknown as {
+    validateAndNormalizeLlmPlan: (data: unknown, baseline: { taskType: string; summary: string; assumptions: string[]; risks: string[] }) => { taskType: string; steps: Array<{ tool: string; args: Record<string, unknown>; requiresApproval: boolean }> };
+  };
+
+  const plan = planner.validateAndNormalizeLlmPlan(
+    {
+      taskType: 'outline_design',
+      summary: '重写卷 1 大纲',
+      assumptions: [],
+      risks: [],
+      steps: [
+        { stepNo: 1, name: '读取上下文', tool: 'inspect_project_context', mode: 'act', requiresApproval: false, args: { focus: ['outline', 'volumes'] } },
+        { stepNo: 2, name: '生成卷 1 新版大纲预览', tool: 'generate_outline_preview', mode: 'act', requiresApproval: false, args: { context: '{{steps.1.output}}', instruction: '{{context.userMessage}}', volumeNo: 1 } },
+        { stepNo: 3, name: '校验卷 1 大纲预览', tool: 'validate_outline', mode: 'act', requiresApproval: false, args: { preview: '{{steps.2.output}}' } },
+        { stepNo: 4, name: '审批后写入卷 1 大纲', tool: 'persist_outline', mode: 'act', requiresApproval: true, args: { preview: '{{steps.2.output}}' } },
+      ],
+    },
+    { taskType: 'general', summary: 'fallback', assumptions: [], risks: [] },
+  );
+
+  assert.deepEqual(plan.steps.map((step) => step.tool), ['inspect_project_context', 'generate_volume_outline_preview', 'persist_volume_outline']);
+  assert.equal(plan.steps[1].args.volumeNo, 1);
+  assert.equal(plan.steps[1].args.chapterCount, undefined);
+  assert.deepEqual(plan.steps[2].args, { preview: '{{steps.2.output}}' });
+  assert.equal(plan.steps[2].requiresApproval, true);
 });
 
 test('Planner 将残缺单章细纲计划展开为所有章节 Tool 调用', () => {
@@ -12744,6 +12841,7 @@ test('AppModule compiles with phase4 CRUD and phase5 quality modules registered'
   assert.ok(registry.get('merge_chapter_outline_previews'));
   assert.ok(registry.get('validate_outline'));
   assert.ok(registry.get('persist_outline'));
+  assert.ok(registry.get('persist_volume_outline'));
   assert.ok(registry.get('persist_volume_character_candidates'));
   const manifests = registry.listManifestsForPlanner();
   const timelineGenerateManifest = manifests.find((item) => item.name === 'generate_timeline_preview');
@@ -12781,6 +12879,7 @@ test('AppModule compiles with phase4 CRUD and phase5 quality modules registered'
   assert.ok(builtinSkill.defaultTools.includes('merge_chapter_outline_previews'));
   assert.ok(builtinSkill.defaultTools.includes('validate_outline'));
   assert.ok(builtinSkill.defaultTools.includes('persist_outline'));
+  assert.ok(builtinSkill.defaultTools.includes('persist_volume_outline'));
   assert.ok(builtinSkill.defaultTools.includes('persist_volume_character_candidates'));
   const briefManifest = manifests.find((item) => item.name === 'build_import_brief');
   assert.ok(briefManifest);
@@ -12816,6 +12915,11 @@ test('AppModule compiles with phase4 CRUD and phase5 quality modules registered'
   assert.equal(volumeOutlineManifest.requiresApproval, false);
   assert.deepEqual(volumeOutlineManifest.sideEffects, []);
   assert.match(volumeOutlineManifest.whenToUse.join(' | '), /卷大纲|storyUnits|Volume\.narrativePlan/);
+  const volumeOutlinePersistManifest = manifests.find((item) => item.name === 'persist_volume_outline');
+  assert.ok(volumeOutlinePersistManifest);
+  assert.equal(volumeOutlinePersistManifest.requiresApproval, true);
+  assert.equal(volumeOutlinePersistManifest.riskLevel, 'high');
+  assert.match(volumeOutlinePersistManifest.whenNotToUse.join(' | '), /章节细纲|persist_outline/);
   const targetedImportTools = [
     ['generate_import_project_profile_preview', /项目资料|作品资料|书名/],
     ['generate_import_outline_preview', /剧情大纲|卷章结构|章节规划/],
@@ -13317,6 +13421,25 @@ test('generate_outline_preview LLM 返回章节数不足时直接报错', async 
   );
 });
 
+test('generate_outline_preview 缺少 chapterCount 时不调用 LLM', async () => {
+  let calls = 0;
+  const tool = new GenerateOutlinePreviewTool({
+    async chatJson() {
+      calls += 1;
+      return { data: {}, result: { model: 'should-not-call' } };
+    },
+  } as never);
+
+  await assert.rejects(
+    () => tool.run(
+      { instruction: '帮我重新编写卷1的大纲。', volumeNo: 1 },
+      { agentRunId: 'run1', projectId: 'p1', mode: 'plan', approved: false, outputs: {}, policy: {} },
+    ),
+    /缺少有效 chapterCount/,
+  );
+  assert.equal(calls, 0);
+});
+
 test('generate_volume_outline_preview 生成卷大纲故事单元且不生成章节', async () => {
   let receivedMessages: Array<{ role: string; content: string }> = [];
   let receivedOptions: Record<string, unknown> | undefined;
@@ -13372,6 +13495,37 @@ test('generate_volume_outline_preview 生成卷大纲故事单元且不生成章
   assert.equal(receivedOptions?.jsonMode, true);
   assert.match(receivedMessages[0].content, /故事性要求/);
   assert.match(receivedMessages[0].content, /storyUnits 必须连续覆盖/);
+});
+
+test('generate_volume_outline_preview 未传 chapterCount 时沿用目标卷章节数', async () => {
+  let userPrompt = '';
+  const llm = {
+    async chatJson(messages: Array<{ role: string; content: string }>) {
+      userPrompt = messages[1].content;
+      return {
+        data: {
+          volume: {
+            volumeNo: 1,
+            title: '罪桥初潮',
+            synopsis: '## 全书主线阶段\n阶段\n## 本卷主线\n主线\n## 本卷戏剧问题\n问题\n## 卷内支线\n支线\n## 单元故事\n单元\n## 支线交叉点\n交叉\n## 卷末交接\n交接',
+            objective: '完成卷目标',
+            chapterCount: 6,
+            narrativePlan: createVccNarrativePlanForChapterCount(6),
+          },
+          risks: [],
+        },
+        result: { model: 'mock-volume-outline', usage: { total_tokens: 42 } },
+      };
+    },
+  };
+  const tool = new GenerateVolumeOutlinePreviewTool(llm as never);
+  const result = await tool.run(
+    { context: { project: { title: '逆潮脊梁' }, volumes: [{ volumeNo: 1, title: '罪桥初潮', chapterCount: 6 }], characters: [{ name: '林澈' }, { name: '沈栖' }] }, instruction: '帮我重新编写卷1的大纲。', volumeNo: 1 },
+    { agentRunId: 'run1', projectId: 'p1', mode: 'plan', approved: false, outputs: {}, policy: {} },
+  );
+
+  assert.equal(result.volume.chapterCount, 6);
+  assert.match(userPrompt, /全卷章节数：6/);
 });
 
 test('generate_volume_outline_preview LLM timeout 直接抛错且不生成 fallback', async () => {

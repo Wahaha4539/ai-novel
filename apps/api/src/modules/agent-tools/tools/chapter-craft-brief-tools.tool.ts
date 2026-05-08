@@ -254,7 +254,7 @@ export class GenerateChapterCraftBriefPreviewTool implements BaseTool<GenerateCh
     whenNotToUse: [
       'The user asks to write or continue chapter prose; use write_chapter or write_chapter_series.',
       'The user asks to split a chapter into scenes or SceneCards; use generate_scene_cards_preview.',
-      'The user asks for a whole-volume or 60-chapter outline; use generate_outline_preview.',
+      'The user asks for a whole-volume or 60-chapter outline; use generate_volume_outline_preview plus generate_chapter_outline_preview.',
     ],
     inputSchema: this.inputSchema,
     outputSchema: this.outputSchema,

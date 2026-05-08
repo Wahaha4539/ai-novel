@@ -162,10 +162,18 @@ export class GenerateOutlinePreviewTool implements BaseTool<GenerateOutlinePrevi
 
   async run(args: GenerateOutlinePreviewInput, context: ToolContext): Promise<OutlinePreviewOutput> {
     const volumeNo = args.volumeNo ?? 1;
-    const chapterCount = Math.min(80, Math.max(1, args.chapterCount ?? 10));
+    const chapterCount = this.requiredChapterCount(args.chapterCount);
     const batches = this.createBatches(chapterCount);
     if (batches.length > 1) return this.runBatched(args, context, volumeNo, chapterCount, batches);
     return this.runSingleBatch(args, context, volumeNo, chapterCount);
+  }
+
+  private requiredChapterCount(value: unknown): number {
+    const numeric = Number(value);
+    if (!Number.isInteger(numeric) || numeric < 1) {
+      throw new Error('generate_outline_preview 缺少有效 chapterCount，未生成章节细纲。');
+    }
+    return Math.min(80, numeric);
   }
 
   private async runSingleBatch(args: GenerateOutlinePreviewInput, context: ToolContext, volumeNo: number, chapterCount: number): Promise<OutlinePreviewOutput> {

@@ -356,6 +356,13 @@ function OutlinePreviewSummary({ content }: { content: unknown }) {
         </div>
       )}
       <div className="space-y-2">
+        {volume && chapters.length === 0 && (
+          <div className="text-xs leading-5" style={{ color: 'var(--text-muted)' }}>
+            <b style={{ color: 'var(--text-main)' }}>第 {numberValue(volume.volumeNo, 1)} 卷：{textValue(volume.title, '未命名卷')}</b>
+            <div>{textValue(volume.objective, '暂无目标')}</div>
+            <div>{textValue(volume.synopsis, '暂无简介')}</div>
+          </div>
+        )}
         {volumes.slice(0, 3).map((item, index) => {
           const itemVolume = asRecord(item);
           return <div key={`volume-${index}`} className="text-xs leading-5" style={{ color: 'var(--text-muted)' }}><b style={{ color: 'var(--text-main)' }}>第 {numberValue(itemVolume?.volumeNo, index + 1)} 卷：{textValue(itemVolume?.title, '未命名卷')}</b> — {textValue(itemVolume?.synopsis ?? itemVolume?.objective, '暂无简介')}</div>;

@@ -94,7 +94,10 @@ export class GenerateVolumeOutlinePreviewTool implements BaseTool<GenerateVolume
 
   async run(args: GenerateVolumeOutlinePreviewInput, context: ToolContext): Promise<VolumeOutlinePreviewOutput> {
     const volumeNo = this.positiveInt(args.volumeNo, 'volumeNo') ?? 1;
-    const chapterCount = this.positiveInt(args.chapterCount, 'chapterCount') ?? 10;
+    const chapterCount = this.positiveInt(args.chapterCount, 'chapterCount') ?? this.targetVolumeChapterCount(args.context, volumeNo);
+    if (!chapterCount) {
+      throw new Error('generate_volume_outline_preview 缺少目标章节数，未生成完整卷大纲。');
+    }
     await context.updateProgress?.({
       phase: 'calling_llm',
       phaseMessage: `正在生成第 ${volumeNo} 卷卷大纲`,
@@ -249,6 +252,14 @@ export class GenerateVolumeOutlinePreviewTool implements BaseTool<GenerateVolume
       throw new Error(`generate_volume_outline_preview ${label} 必须是正整数。`);
     }
     return numeric;
+  }
+
+  private targetVolumeChapterCount(contextValue: unknown, volumeNo: number): number | undefined {
+    const context = this.asRecord(contextValue);
+    const volumes = Array.isArray(context.volumes) ? context.volumes.map((item) => this.asRecord(item)) : [];
+    const targetVolume = volumes.find((item) => Number(item.volumeNo) === volumeNo);
+    if (!targetVolume) return undefined;
+    return this.positiveInt(targetVolume.chapterCount, 'context.volume.chapterCount');
   }
 
   private text(value: unknown): string {
