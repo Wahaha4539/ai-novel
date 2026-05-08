@@ -1014,7 +1014,7 @@ test('VCC chapter outline preview rejects character not in volume candidates', a
   await assert.rejects(
     () => tool.run(
       {
-        context: { project: { title: '旧档案' }, characters: [{ name: '林澈' }] },
+        context: { project: { title: '旧档案' }, characters: [{ name: '林澈' }, { name: '沈栖' }] },
         volumeOutline: {
           volumeNo: 1,
           title: '旧闸棚账册',
@@ -1058,7 +1058,7 @@ test('VCC chapter outline preview rejects important temporary character', async 
   await assert.rejects(
     () => tool.run(
       {
-        context: { project: { title: '旧档案' }, characters: [{ name: '林澈' }] },
+        context: { project: { title: '旧档案' }, characters: [{ name: '林澈' }, { name: '沈栖' }] },
         volumeOutline: {
           volumeNo: 1,
           title: '旧闸棚账册',
