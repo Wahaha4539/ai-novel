@@ -38,6 +38,7 @@ import { PersistOutlineTool } from '../agent-tools/tools/persist-outline.tool';
 import { GenerateOutlinePreviewTool, OutlinePreviewOutput } from '../agent-tools/tools/generate-outline-preview.tool';
 import { GenerateVolumeOutlinePreviewTool } from '../agent-tools/tools/generate-volume-outline-preview.tool';
 import { assertChapterCharacterExecution, assertVolumeCharacterPlan } from '../agent-tools/tools/outline-character-contracts';
+import { PersistVolumeCharacterCandidatesTool } from '../agent-tools/tools/persist-volume-character-candidates.tool';
 import { ResolveChapterTool } from '../agent-tools/tools/resolve-chapter.tool';
 import { CollectChapterContextTool } from '../agent-tools/tools/collect-chapter-context.tool';
 import { CollectTaskContextTool } from '../agent-tools/tools/collect-task-context.tool';
@@ -5196,6 +5197,131 @@ test('VCC persist_outline does not create Character', async () => {
   assert.equal(result.createdCount, 1);
   assert.equal(createdChapters.length, 1);
   assert.equal(characterCreates.length, 0);
+});
+
+test('VCC persist_volume_character_candidates requires approval', async () => {
+  const tool = new PersistVolumeCharacterCandidatesTool({} as never, {} as never);
+  assert.equal(tool.requiresApproval, true);
+  assert.equal(tool.riskLevel, 'high');
+  assert.equal(tool.sideEffects.includes('create_or_update_volume_characters'), true);
+  assert.match(tool.description, /不会覆盖手工角色/);
+
+  await assert.rejects(
+    () => tool.run(
+      { preview: createVccOutlinePreview(1) },
+      { agentRunId: 'run-vcc-character-approval', projectId: 'p1', mode: 'plan', approved: true, outputs: {}, policy: {} },
+    ),
+    /act mode/,
+  );
+  await assert.rejects(
+    () => tool.run(
+      { preview: createVccOutlinePreview(1) },
+      { agentRunId: 'run-vcc-character-approval', projectId: 'p1', mode: 'act', approved: false, outputs: {}, policy: {} },
+    ),
+    /explicit user approval/,
+  );
+});
+
+test('VCC persist_volume_character_candidates creates updates skips and writes relationships', async () => {
+  const baseCandidate = createVccCharacterPlanForChapterCount(4).newCharacterCandidates[0] as Record<string, unknown>;
+  const candidateManualConflict = { ...baseCandidate, candidateId: 'cand_manual', name: '邵衡', firstAppearChapter: 1 };
+  const candidateNew = { ...baseCandidate, candidateId: 'cand_gulin', name: '顾临', firstAppearChapter: 2, expectedArc: '从旁观证人转为公开递交证词的人' };
+  const candidateAgentExisting = { ...baseCandidate, candidateId: 'cand_fangchi', name: '方迟', firstAppearChapter: 3, expectedArc: '更新旧的 agent_outline 候选弧线' };
+  const characterPlan = createVccCharacterPlanForChapterCount(4, {
+    newCharacterCandidates: [candidateManualConflict, candidateNew, candidateAgentExisting],
+    relationshipArcs: [{ participants: ['林澈', '顾临'], startState: '互相试探', turnChapterNos: [2], endState: '形成证词合作' }],
+  });
+  const preview = createVccOutlinePreview(4, {
+    volume: { narrativePlan: createVccNarrativePlanForChapterCount(4, { characterPlan }) },
+  });
+  const createdCharacters: Array<Record<string, unknown>> = [];
+  const updatedCharacters: Array<Record<string, unknown>> = [];
+  const createdRelationships: Array<Record<string, unknown>> = [];
+  const invalidatedProjectIds: string[] = [];
+  const existingCharacters = [
+    { id: 'char-lin', name: '林澈', alias: [], source: 'manual', metadata: {} },
+    { id: 'char-manual-shao', name: '邵衡', alias: ['旧名邵衡'], source: 'manual', metadata: { userEdited: true } },
+    { id: 'char-agent-fang', name: '方迟', alias: [], source: 'agent_outline', metadata: { old: true } },
+  ];
+  const prisma = {
+    async $transaction(callback: (tx: Record<string, unknown>) => Promise<unknown>) {
+      const tx = {
+        character: {
+          async findMany() { return existingCharacters; },
+          async create(args: { data: Record<string, unknown> }) {
+            createdCharacters.push(args.data);
+            return { id: 'char-gulin', alias: [], ...args.data };
+          },
+          async update(args: { where: { id: string }; data: Record<string, unknown> }) {
+            updatedCharacters.push({ id: args.where.id, ...args.data });
+            return { id: args.where.id, name: '方迟', alias: [], source: 'agent_outline', metadata: args.data.metadata };
+          },
+        },
+        relationshipEdge: {
+          async findMany() { return []; },
+          async create(args: { data: Record<string, unknown> }) {
+            createdRelationships.push(args.data);
+            return { id: 'rel-gulin' };
+          },
+        },
+      };
+      return callback(tx);
+    },
+  };
+  const cache = { async deleteProjectRecallResults(projectId: string) { invalidatedProjectIds.push(projectId); } };
+  const tool = new PersistVolumeCharacterCandidatesTool(prisma as never, cache as never);
+
+  const result = await tool.run(
+    { preview, includeRelationshipArcs: true },
+    { agentRunId: 'run-vcc-character-write', projectId: 'p1', mode: 'act', approved: true, outputs: {}, policy: {} },
+  );
+
+  assert.equal(result.createdCount, 1);
+  assert.equal(result.updatedCount, 1);
+  assert.equal(result.skippedCount, 1);
+  assert.equal(result.relationshipCreatedCount, 1);
+  assert.equal(createdCharacters[0].name, '顾临');
+  assert.equal(createdCharacters[0].source, 'agent_outline');
+  assert.equal(createdCharacters[0].scope, 'volume');
+  assert.equal(createdCharacters[0].activeFromChapter, 2);
+  assert.equal((createdCharacters[0].metadata as Record<string, unknown>).candidateId, 'cand_gulin');
+  assert.equal(updatedCharacters[0].id, 'char-agent-fang');
+  assert.equal(updatedCharacters.some((item) => item.id === 'char-manual-shao'), false);
+  assert.equal(result.characterResults.find((item) => item.name === '邵衡')?.action, 'skipped');
+  assert.equal(createdRelationships[0].characterAId, 'char-lin');
+  assert.equal(createdRelationships[0].characterBId, 'char-gulin');
+  assert.equal(createdRelationships[0].sourceType, 'agent_outline');
+  assert.match(result.approvalMessage, /minor_temporary characters are not written/);
+  assert.deepEqual(invalidatedProjectIds, ['p1']);
+});
+
+test('VCC persist_volume_character_candidates rejects incomplete candidate', async () => {
+  const incompletePlan = createVccCharacterPlanForChapterCount(1, {
+    newCharacterCandidates: [
+      { ...createVccCharacterPlanForChapterCount(1).newCharacterCandidates[0], motivation: '' },
+    ],
+    relationshipArcs: [],
+  });
+  const preview = createVccOutlinePreview(1, {
+    volume: { narrativePlan: createVccNarrativePlanForChapterCount(1, { characterPlan: incompletePlan }) },
+  });
+  const prisma = {
+    async $transaction(callback: (tx: Record<string, unknown>) => Promise<unknown>) {
+      return callback({
+        character: { async findMany() { return [{ id: 'char-lin', name: '林澈', alias: [], source: 'manual', metadata: {} }]; } },
+        relationshipEdge: { async findMany() { return []; } },
+      });
+    },
+  };
+  const tool = new PersistVolumeCharacterCandidatesTool(prisma as never, {} as never);
+
+  await assert.rejects(
+    () => tool.run(
+      { preview },
+      { agentRunId: 'run-vcc-character-incomplete', projectId: 'p1', mode: 'act', approved: true, outputs: {}, policy: {} },
+    ),
+    /motivation/,
+  );
 });
 
 test('PersistOutlineTool 写入新建和 planned 章节 craftBrief 并跳过 drafted', async () => {
@@ -11565,6 +11691,7 @@ test('AppModule compiles with phase4 CRUD and phase5 quality modules registered'
   assert.ok(registry.get('build_import_brief'));
   assert.ok(registry.get('merge_import_previews'));
   assert.ok(registry.get('cross_target_consistency_check'));
+  assert.ok(registry.get('persist_volume_character_candidates'));
   const manifests = registry.listManifestsForPlanner();
   const timelineGenerateManifest = manifests.find((item) => item.name === 'generate_timeline_preview');
   assert.ok(timelineGenerateManifest);
@@ -11620,6 +11747,11 @@ test('AppModule compiles with phase4 CRUD and phase5 quality modules registered'
   assert.ok(scenePersistManifest);
   assert.equal(scenePersistManifest.requiresApproval, true);
   assert.equal(scenePersistManifest.riskLevel, 'medium');
+  const volumeCharacterPersistManifest = manifests.find((item) => item.name === 'persist_volume_character_candidates');
+  assert.ok(volumeCharacterPersistManifest);
+  assert.equal(volumeCharacterPersistManifest.requiresApproval, true);
+  assert.equal(volumeCharacterPersistManifest.riskLevel, 'high');
+  assert.match(volumeCharacterPersistManifest.description, /official Character/);
   const targetedImportTools = [
     ['generate_import_project_profile_preview', /项目资料|作品资料|书名/],
     ['generate_import_outline_preview', /剧情大纲|卷章结构|章节规划/],

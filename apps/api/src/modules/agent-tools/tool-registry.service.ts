@@ -31,6 +31,7 @@ import { InspectProjectContextTool } from './tools/inspect-project-context.tool'
 import { MergeImportPreviewsTool } from './tools/merge-import-previews.tool';
 import { PersistGuidedStepResultTool } from './tools/persist-guided-step-result.tool';
 import { PersistOutlineTool } from './tools/persist-outline.tool';
+import { PersistVolumeCharacterCandidatesTool } from './tools/persist-volume-character-candidates.tool';
 import { PersistProjectAssetsTool } from './tools/persist-project-assets.tool';
 import { PersistStoryBibleTool } from './tools/persist-story-bible.tool';
 import { PersistTimelineEventsTool } from './tools/persist-timeline-events.tool';
@@ -104,6 +105,7 @@ export class ToolRegistryService implements OnModuleInit {
     private readonly persistWorldbuildingTool: PersistWorldbuildingTool,
     private readonly persistStoryBibleTool: PersistStoryBibleTool,
     private readonly persistOutlineTool: PersistOutlineTool,
+    private readonly persistVolumeCharacterCandidatesTool: PersistVolumeCharacterCandidatesTool,
     private readonly generateChapterCraftBriefPreviewTool: GenerateChapterCraftBriefPreviewTool,
     private readonly validateChapterCraftBriefTool: ValidateChapterCraftBriefTool,
     private readonly persistChapterCraftBriefTool: PersistChapterCraftBriefTool,
@@ -168,6 +170,7 @@ export class ToolRegistryService implements OnModuleInit {
     this.register(this.persistWorldbuildingTool);
     this.register(this.persistStoryBibleTool);
     this.register(this.persistOutlineTool);
+    this.register(this.persistVolumeCharacterCandidatesTool);
     this.register(this.generateChapterCraftBriefPreviewTool);
     this.register(this.validateChapterCraftBriefTool);
     this.register(this.persistChapterCraftBriefTool);
