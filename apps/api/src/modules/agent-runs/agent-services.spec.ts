@@ -7841,6 +7841,17 @@ test('persist_timeline_events requires approved act validation and writes only c
     () => persistTool.run({ preview, validation }, { ...actContext, approved: false } as never),
     /requires explicit user approval/,
   );
+  const clonedPreview = JSON.parse(JSON.stringify(preview));
+  await assert.rejects(
+    () => persistTool.run({ preview: clonedPreview, validation }, actContext as never),
+    /preview must reference previous generate_timeline_preview output/,
+  );
+  const clonedValidation = JSON.parse(JSON.stringify(validation));
+  await assert.rejects(
+    () => persistTool.run({ preview, validation: clonedValidation }, actContext as never),
+    /validation must reference previous validate_timeline_preview output/,
+  );
+  assert.equal(createdData.length, 0);
   await assert.rejects(
     () => persistTool.run(
       { preview, validation, dryRun: true },
