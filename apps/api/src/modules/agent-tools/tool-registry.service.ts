@@ -14,6 +14,7 @@ import { GenerateContinuityPreviewTool, PersistContinuityChangesTool, ValidateCo
 import { EchoReportTool } from './tools/echo-report.tool';
 import { ExtractChapterFactsTool } from './tools/extract-chapter-facts.tool';
 import { FactValidationTool } from './tools/fact-validation.tool';
+import { GenerateTimelinePreviewTool } from './tools/generate-timeline-preview.tool';
 import { GenerateGuidedStepPreviewTool } from './tools/generate-guided-step-preview.tool';
 import { GenerateChapterCraftBriefPreviewTool, PersistChapterCraftBriefTool, ValidateChapterCraftBriefTool } from './tools/chapter-craft-brief-tools.tool';
 import { GenerateChapterOutlinePreviewTool, MergeChapterOutlinePreviewsTool } from './tools/chapter-outline-preview-tools.tool';
@@ -31,6 +32,7 @@ import { PersistGuidedStepResultTool } from './tools/persist-guided-step-result.
 import { PersistOutlineTool } from './tools/persist-outline.tool';
 import { PersistProjectAssetsTool } from './tools/persist-project-assets.tool';
 import { PersistStoryBibleTool } from './tools/persist-story-bible.tool';
+import { PersistTimelineEventsTool } from './tools/persist-timeline-events.tool';
 import { PersistWorldbuildingTool } from './tools/persist-worldbuilding.tool';
 import { PlotConsistencyCheckTool } from './tools/plot-consistency-check.tool';
 import { PolishChapterTool } from './tools/polish-chapter.tool';
@@ -47,6 +49,7 @@ import { ValidateGuidedStepPreviewTool } from './tools/validate-guided-step-prev
 import { ValidateImportedAssetsTool } from './tools/validate-imported-assets.tool';
 import { ValidateOutlineTool } from './tools/validate-outline.tool';
 import { ValidateStoryBibleTool } from './tools/validate-story-bible.tool';
+import { ValidateTimelinePreviewTool } from './tools/validate-timeline-preview.tool';
 import { ValidateWorldbuildingTool } from './tools/validate-worldbuilding.tool';
 import { WriteChapterTool } from './tools/write-chapter.tool';
 import { WriteChapterSeriesTool } from './tools/write-chapter-series.tool';
@@ -70,6 +73,9 @@ export class ToolRegistryService implements OnModuleInit {
     private readonly generateContinuityPreviewTool: GenerateContinuityPreviewTool,
     private readonly validateContinuityChangesTool: ValidateContinuityChangesTool,
     private readonly persistContinuityChangesTool: PersistContinuityChangesTool,
+    private readonly generateTimelinePreviewTool: GenerateTimelinePreviewTool,
+    private readonly validateTimelinePreviewTool: ValidateTimelinePreviewTool,
+    private readonly persistTimelineEventsTool: PersistTimelineEventsTool,
     private readonly writeChapterTool: WriteChapterTool,
     private readonly rewriteChapterTool: RewriteChapterTool,
     private readonly writeChapterSeriesTool: WriteChapterSeriesTool,
@@ -130,6 +136,9 @@ export class ToolRegistryService implements OnModuleInit {
     this.register(this.generateContinuityPreviewTool);
     this.register(this.validateContinuityChangesTool);
     this.register(this.persistContinuityChangesTool);
+    this.register(this.generateTimelinePreviewTool);
+    this.register(this.validateTimelinePreviewTool);
+    this.register(this.persistTimelineEventsTool);
     this.register(this.writeChapterTool);
     this.register(this.rewriteChapterTool);
     this.register(this.writeChapterSeriesTool);
