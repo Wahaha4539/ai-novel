@@ -8643,6 +8643,181 @@ test('PlanValidatorService blocks invalid scoped planner output without fallback
   assert.equal(calls, 2);
 });
 
+function createOutlinePlannerHarness(llm: unknown) {
+  const toolNames = [
+    'inspect_project_context',
+    'generate_volume_outline_preview',
+    'generate_chapter_outline_preview',
+    'merge_chapter_outline_previews',
+    'validate_outline',
+    'persist_outline',
+    'persist_volume_outline',
+    'write_chapter',
+    'write_chapter_series',
+  ];
+  const toolList = toolNames.map((name) => createTool({
+    name,
+    requiresApproval: name.startsWith('persist_') || name.startsWith('write_'),
+    riskLevel: name.startsWith('persist_') || name.startsWith('write_') ? 'high' : 'low',
+    sideEffects: name.startsWith('persist_') || name.startsWith('write_') ? ['write'] : [],
+  }));
+  const tools = {
+    list: () => toolList,
+    listManifestsForPlanner: (toolNames?: string[]) => (toolNames?.length ? [...new Set(toolNames)] : toolList.map((tool) => tool.name)).map((name) => {
+      const tool = toolList.find((item) => item.name === name);
+      if (!tool) throw new Error(`missing ${name}`);
+      return {
+        name: tool.name,
+        displayName: tool.name,
+        description: tool.description,
+        whenToUse: [],
+        whenNotToUse: [],
+        allowedModes: tool.allowedModes,
+        riskLevel: tool.riskLevel,
+        requiresApproval: tool.requiresApproval,
+        sideEffects: tool.sideEffects,
+      };
+    }),
+  } as unknown as ToolRegistryService;
+  return {
+    tools,
+    planner: new AgentPlannerService(new SkillRegistryService(), tools, new RuleEngineService(), llm as never, undefined, new PlanValidatorService()),
+  };
+}
+
+test('ASP-P4-002 volume outline scoped plan forbids chapter outline tools', async () => {
+  const llm = {
+    async chatJson() {
+      return {
+        data: {
+          taskType: 'outline_design',
+          summary: 'Generate first volume outline.',
+          assumptions: [],
+          risks: [],
+          steps: [
+            { stepNo: 1, name: 'Inspect', tool: 'inspect_project_context', mode: 'act', requiresApproval: false, args: { focus: ['outline', 'volumes'] } },
+            { stepNo: 2, name: 'Volume outline', tool: 'generate_volume_outline_preview', mode: 'act', requiresApproval: false, args: { context: '{{steps.1.output}}', instruction: '{{context.userMessage}}', volumeNo: 1 } },
+            { stepNo: 3, name: 'Persist volume outline', tool: 'persist_volume_outline', mode: 'act', requiresApproval: true, args: { preview: '{{steps.2.output}}' } },
+          ],
+        },
+        result: { model: 'planner-mock' },
+      };
+    },
+  };
+  const { planner, tools } = createOutlinePlannerHarness(llm);
+  const selectedBundle = {
+    bundleName: 'outline.volume',
+    strictToolNames: ['inspect_project_context', 'generate_volume_outline_preview', 'persist_volume_outline'],
+    optionalToolNames: [],
+    deniedToolNames: ['generate_chapter_outline_preview', 'merge_chapter_outline_previews', 'persist_outline', 'write_chapter', 'write_chapter_series'],
+    selectionReason: 'test',
+  };
+  const plan = await planner.createPlanWithTools({
+    goal: '生成第一卷大纲',
+    route: { domain: 'outline', intent: 'generate_volume_outline', confidence: 0.9, reasons: ['test'], volumeNo: 1, needsApproval: true, needsPersistence: true },
+    selectedBundle,
+    selectedTools: tools.listManifestsForPlanner(selectedBundle.strictToolNames),
+  });
+
+  assert.deepEqual(plan.steps.map((step) => step.tool), ['inspect_project_context', 'generate_volume_outline_preview', 'persist_volume_outline']);
+  assert.ok(!plan.steps.some((step) => step.tool === 'generate_chapter_outline_preview'));
+});
+
+test('ASP-P4-002 chapter split scoped plan keeps chapter outline chain', async () => {
+  const llm = {
+    async chatJson() {
+      return {
+        data: {
+          taskType: 'outline_design',
+          summary: 'Split volume one into thirty chapters.',
+          assumptions: [],
+          risks: [],
+          steps: [
+            { stepNo: 1, name: 'Inspect', tool: 'inspect_project_context', mode: 'act', requiresApproval: false, args: { focus: ['outline', 'volumes', 'chapters'] } },
+            { stepNo: 2, name: 'First chapter outline', tool: 'generate_chapter_outline_preview', mode: 'act', requiresApproval: false, args: { context: '{{steps.1.output}}', instruction: '{{context.userMessage}}', volumeNo: 1, chapterNo: 1, chapterCount: 30 } },
+          ],
+        },
+        result: { model: 'planner-mock' },
+      };
+    },
+  };
+  const { planner, tools } = createOutlinePlannerHarness(llm);
+  const selectedBundle = {
+    bundleName: 'outline.chapter',
+    strictToolNames: ['inspect_project_context', 'generate_volume_outline_preview', 'generate_chapter_outline_preview', 'merge_chapter_outline_previews', 'validate_outline', 'persist_outline'],
+    optionalToolNames: [],
+    deniedToolNames: ['write_chapter', 'write_chapter_series', 'persist_volume_outline'],
+    selectionReason: 'test',
+  };
+  const plan = await planner.createPlanWithTools({
+    goal: '把第一卷拆成 30 章',
+    route: { domain: 'outline', intent: 'split_volume_to_chapters', confidence: 0.9, reasons: ['test'], volumeNo: 1, needsApproval: true, needsPersistence: true },
+    selectedBundle,
+    selectedTools: tools.listManifestsForPlanner(selectedBundle.strictToolNames),
+  });
+
+  assert.equal(plan.steps.filter((step) => step.tool === 'generate_chapter_outline_preview').length, 30);
+  assert.equal(plan.steps[1].tool, 'generate_volume_outline_preview');
+  assert.equal(plan.steps[2].args.chapterNo, 1);
+  assert.equal(plan.steps[31].args.chapterNo, 30);
+  assert.deepEqual(plan.steps.slice(-3).map((step) => step.tool), ['merge_chapter_outline_previews', 'validate_outline', 'persist_outline']);
+});
+
+test('ASP-P4-002 volume outline repair cannot switch to chapter outline', async () => {
+  let calls = 0;
+  const llm = {
+    async chatJson() {
+      calls += 1;
+      if (calls === 1) {
+        return {
+          data: {
+            taskType: 'not_allowed',
+            summary: 'Invalid first plan.',
+            assumptions: [],
+            risks: [],
+            steps: [
+              { stepNo: 1, name: 'Volume outline', tool: 'generate_volume_outline_preview', mode: 'act', requiresApproval: false, args: { volumeNo: 1 } },
+            ],
+          },
+          result: { model: 'planner-mock' },
+        };
+      }
+      return {
+        data: {
+          taskType: 'outline_design',
+          summary: 'Wrong repaired chapter outline.',
+          assumptions: [],
+          risks: [],
+          steps: [
+            { stepNo: 1, name: 'Inspect', tool: 'inspect_project_context', mode: 'act', requiresApproval: false, args: { focus: ['outline'] } },
+            { stepNo: 2, name: 'Chapter outline', tool: 'generate_chapter_outline_preview', mode: 'act', requiresApproval: false, args: { context: '{{steps.1.output}}', instruction: '{{context.userMessage}}', volumeNo: 1, chapterNo: 1, chapterCount: 30 } },
+          ],
+        },
+        result: { model: 'planner-mock' },
+      };
+    },
+  };
+  const { planner, tools } = createOutlinePlannerHarness(llm);
+  const selectedBundle = {
+    bundleName: 'outline.volume',
+    strictToolNames: ['inspect_project_context', 'generate_volume_outline_preview', 'persist_volume_outline'],
+    optionalToolNames: [],
+    deniedToolNames: ['generate_chapter_outline_preview', 'merge_chapter_outline_previews', 'persist_outline', 'write_chapter', 'write_chapter_series'],
+    selectionReason: 'test',
+  };
+
+  await assert.rejects(
+    () => planner.createPlanWithTools({
+      goal: '生成卷大纲',
+      route: { domain: 'outline', intent: 'generate_volume_outline', confidence: 0.9, reasons: ['test'], volumeNo: 1, needsApproval: true, needsPersistence: true },
+      selectedBundle,
+      selectedTools: tools.listManifestsForPlanner(selectedBundle.strictToolNames),
+    }),
+    /Agent Planner .*bundle-outside tools.*generate_chapter_outline_preview/,
+  );
+  assert.equal(calls, 2);
+});
+
 test('Tool manifest filtering preserves requested order and fails on unknown tools', () => {
   const registry = Object.create(ToolRegistryService.prototype) as ToolRegistryService;
   (registry as unknown as { tools: Map<string, BaseTool> }).tools = new Map<string, BaseTool>();

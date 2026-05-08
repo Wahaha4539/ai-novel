@@ -302,7 +302,7 @@
 
 ### ASP-P4-002 增加大纲领域硬约束测试
 
-- 状态：`[ ]`
+- 状态：`[x]`
 - 模块：API
 - 文件：
   - `apps/api/src/modules/agent-runs/agent-services.spec.ts`
@@ -316,6 +316,12 @@
 - 验证：
   - `pnpm --dir apps/api run test:agent`
   - `pnpm --dir apps/api run eval:agent:live`
+- 完成记录（2026-05-09）：
+  - 新增 `ASP-P4-002` scoped Planner 测试：卷大纲 route 不出现章节细纲工具、30 章拆分保留章节细纲链路、卷大纲 repair 不能改成章节细纲。
+  - 新增 `outline_volume_only_022` live eval case，并补充 eval mock 的 volume-only outline 分支，覆盖“只生成第一卷大纲”不得走章节细纲。
+  - 修改文件：`apps/api/src/modules/agent-runs/agent-services.spec.ts`、`apps/api/test/fixtures/agent-eval-cases.json`、`scripts/dev/eval_agent_planner.ts`、`docs/architecture/agent-supervisor-planner-development-plan.md`。
+  - 测试：`AGENT_TEST_FILTER="ASP-P4-002" pnpm --dir apps/api run test:agent`，通过（3/343 targeted）。
+  - 测试：`pnpm --dir apps/api run eval:agent:live`，通过（22/22）。
 
 ### ASP-P4-003 增加导入、guided、timeline 边界测试
 

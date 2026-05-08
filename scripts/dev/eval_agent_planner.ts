@@ -1029,6 +1029,13 @@ function createMockPlannerOutput(goal: string, agentContext: Record<string, unkn
       step(4, 'persist_continuity_changes', { preview: '{{steps.generate_continuity_preview.output}}', validation: '{{steps.validate_continuity_changes.output}}' }),
     ]);
   }
+  if (goal.includes('first volume outline')) {
+    return plan('outline_design', goal, true, [
+      step(1, 'inspect_project_context', { projectId: '{{context.session.currentProjectId}}', focus: ['outline', 'volumes'] }),
+      step(2, 'generate_volume_outline_preview', { context: '{{steps.inspect_project_context.output}}', instruction: 'Generate only the first volume outline.', volumeNo: 1 }),
+      step(3, 'persist_volume_outline', { preview: '{{steps.generate_volume_outline_preview.output}}' }),
+    ]);
+  }
   if (goal.includes('第一卷') && goal.includes('30')) {
     const chapterSteps = Array.from({ length: 30 }, (_item, index) => {
       const chapterNo = index + 1;

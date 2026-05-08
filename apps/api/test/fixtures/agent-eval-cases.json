@@ -209,5 +209,18 @@
       "mustRequireApproval": true,
       "forbidInventedIds": true
     }
+  },
+  {
+    "id": "outline_volume_only_022",
+    "message": "Generate only the first volume outline.",
+    "context": { "session": { "currentProjectId": "project_1" } },
+    "expected": {
+      "taskType": "outline_design",
+      "mustUseTools": ["generate_volume_outline_preview", "persist_volume_outline"],
+      "mustNotUseTools": ["generate_chapter_outline_preview", "merge_chapter_outline_previews", "persist_outline"],
+      "mustContainInstruction": ["first volume outline"],
+      "mustRequireApproval": true,
+      "forbidInventedIds": true
+    }
   }
 ]
