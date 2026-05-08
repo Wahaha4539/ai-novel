@@ -22,6 +22,7 @@ interface GenerateChapterOutlinePreviewInput {
 
 interface MergeChapterOutlinePreviewsInput {
   previews?: unknown[];
+  context?: Record<string, unknown>;
   volumeNo?: number;
   chapterCount?: number;
   instruction?: string;
@@ -534,6 +535,7 @@ export class MergeChapterOutlinePreviewsTool implements BaseTool<MergeChapterOut
     required: ['previews', 'chapterCount'],
     properties: {
       previews: { type: 'array' as const, items: { type: 'object' as const }, minItems: 1 },
+      context: { type: 'object' as const },
       volumeNo: { type: 'number' as const },
       chapterCount: { type: 'number' as const },
       instruction: { type: 'string' as const },
@@ -558,6 +560,7 @@ export class MergeChapterOutlinePreviewsTool implements BaseTool<MergeChapterOut
     outputSchema: this.outputSchema,
     parameterHints: {
       previews: { source: 'previous_step', description: '所有单章预览输出数组，例如 ["{{steps.2.output}}","{{steps.3.output}}"]。' },
+      context: { source: 'previous_step', description: 'inspect_project_context 输出的真实角色目录；用于校验 existing 角色引用，不能用本次卷纲自证。' },
       chapterCount: { source: 'user_message', description: '目标全卷总章节数；合并后必须严格等于该数量。' },
     },
     allowedModes: this.allowedModes,
@@ -578,7 +581,7 @@ export class MergeChapterOutlinePreviewsTool implements BaseTool<MergeChapterOut
     if (!volumeNo) throw new Error('merge_chapter_outline_previews 缺少有效 volumeNo，未合并完整细纲。');
     const chapters = normalized.map((item) => item.chapter).sort((a, b) => a.chapterNo - b.chapterNo);
     const baseVolume = normalized[0].volume;
-    this.assertMergedChapters(chapters, volumeNo, chapterCount, baseVolume);
+    this.assertMergedChapters(chapters, volumeNo, chapterCount, baseVolume, this.extractCharacterCatalog(args.context));
     if (normalized.some((item) => item.volume.volumeNo !== volumeNo || item.volume.chapterCount !== chapterCount)) {
       throw new Error('merge_chapter_outline_previews 发现卷号或章节总数不一致，未合并完整细纲。');
     }
@@ -616,7 +619,7 @@ export class MergeChapterOutlinePreviewsTool implements BaseTool<MergeChapterOut
     };
   }
 
-  private assertMergedChapters(chapters: OutlinePreviewOutput['chapters'], volumeNo: number, chapterCount: number, volume: OutlinePreviewOutput['volume']): void {
+  private assertMergedChapters(chapters: OutlinePreviewOutput['chapters'], volumeNo: number, chapterCount: number, volume: OutlinePreviewOutput['volume'], characterCatalog: CharacterReferenceCatalog): void {
     const chapterNos = chapters.map((chapter) => Number(chapter.chapterNo));
     if (chapterNos.length !== chapterCount) throw new Error(`merge_chapter_outline_previews 章节数为 ${chapterNos.length}/${chapterCount}，未合并完整细纲。`);
     if (new Set(chapterNos).size !== chapterNos.length) throw new Error('merge_chapter_outline_previews 发现重复章节编号，未合并完整细纲。');
@@ -632,13 +635,15 @@ export class MergeChapterOutlinePreviewsTool implements BaseTool<MergeChapterOut
     const narrativePlan = this.asRecord(volume.narrativePlan);
     const characterPlan = assertVolumeCharacterPlan(narrativePlan.characterPlan, {
       chapterCount,
+      existingCharacterNames: characterCatalog.existingCharacterNames,
+      existingCharacterAliases: characterCatalog.existingCharacterAliases,
       label: 'volume.narrativePlan.characterPlan',
     });
-    const existingCharacterNames = characterPlan.existingCharacterArcs.map((arc) => arc.characterName);
     const volumeCandidateNames = characterPlan.newCharacterCandidates.map((candidate) => candidate.name);
     for (const chapter of chapters) {
       assertChapterCharacterExecution(chapter.craftBrief?.characterExecution, {
-        existingCharacterNames,
+        existingCharacterNames: characterCatalog.existingCharacterNames,
+        existingCharacterAliases: characterCatalog.existingCharacterAliases,
         volumeCandidateNames,
         actionBeatCount: chapter.craftBrief?.actionBeats?.length,
         sceneBeats: chapter.craftBrief?.sceneBeats,
@@ -663,5 +668,21 @@ export class MergeChapterOutlinePreviewsTool implements BaseTool<MergeChapterOut
 
   private asRecordArray(value: unknown): Array<Record<string, unknown>> {
     return Array.isArray(value) ? value.map((item) => this.asRecord(item)).filter((item) => Object.keys(item).length > 0) : [];
+  }
+
+  private extractCharacterCatalog(contextValue: unknown): CharacterReferenceCatalog {
+    const context = this.asRecord(contextValue);
+    const characters = Array.isArray(context.characters) ? context.characters : [];
+    const existingCharacterNames: string[] = [];
+    const existingCharacterAliases: Record<string, string[]> = {};
+    for (const item of characters) {
+      const record = this.asRecord(item);
+      const name = typeof record.name === 'string' ? record.name.trim() : '';
+      if (!name) continue;
+      existingCharacterNames.push(name);
+      const aliases = this.stringArray(record.aliases, []).length ? this.stringArray(record.aliases, []) : this.stringArray(record.alias, []);
+      if (aliases.length) existingCharacterAliases[name] = aliases;
+    }
+    return { existingCharacterNames, existingCharacterAliases };
   }
 }

@@ -103,6 +103,7 @@ const MINOR_IMPORTANCE_PATTERN = /主线|核心|反派|长期|长线|人物弧|�
 
 export function assertVolumeCharacterPlan(value: unknown, options: AssertVolumeCharacterPlanOptions): VolumeCharacterPlan {
   const label = options.label ?? 'characterPlan';
+  const shouldValidateExistingCharacters = options.existingCharacterNames !== undefined || options.existingCharacterAliases !== undefined;
   if (!Number.isInteger(options.chapterCount) || options.chapterCount < 1) {
     throw new Error(`${label} 校验需要有效 chapterCount。`);
   }
@@ -122,7 +123,7 @@ export function assertVolumeCharacterPlan(value: unknown, options: AssertVolumeC
       throw new Error(`${arcLabel}.lastActiveChapter 超出本卷章节范围。`);
     }
     const characterName = requiredText(arc.characterName, `${arcLabel}.characterName`);
-    if (options.existingCharacterNames?.length && !resolveExistingCharacterName(characterName, options)) {
+    if (shouldValidateExistingCharacters && !resolveExistingCharacterName(characterName, options)) {
       throw new Error(`${arcLabel}.characterName 引用未知既有角色：${characterName}`);
     }
     return {
@@ -171,7 +172,6 @@ export function assertVolumeCharacterPlan(value: unknown, options: AssertVolumeC
   const knownRelationshipNames = new Set([
     ...normalizeNameList(options.existingCharacterNames ?? []),
     ...normalizeNameList(Object.values(options.existingCharacterAliases ?? {}).flat()),
-    ...normalizeNameList(existingCharacterArcs.map((arc) => arc.characterName)),
     ...normalizeNameList(newCharacterCandidates.map((candidate) => candidate.name)),
   ]);
   for (const [index, candidate] of newCharacterCandidates.entries()) {

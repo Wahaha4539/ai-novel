@@ -578,6 +578,13 @@ test('VCC character contract rejects unknown volume character references', () =>
   );
 });
 
+test('VCC character contract rejects self-declared existing characters without catalog', () => {
+  assert.throws(
+    () => assertVolumeCharacterPlan(createVccCharacterPlan(), { chapterCount: 4, existingCharacterNames: [] }),
+    /existingCharacterArcs\[0\]\.characterName.*未知既有角色/,
+  );
+});
+
 test('VCC character contract rejects unknown chapter character references', () => {
   const execution = createVccCharacterExecution({
     cast: [
@@ -2498,7 +2505,7 @@ test('VCC validate_outline rejects missing characterExecution', async () => {
   const prisma = {
     volume: { async findUnique() { return null; } },
     chapter: { async findMany() { return []; } },
-    character: { async findMany() { return []; } },
+    character: { async findMany() { return [{ name: '林澈', alias: [] }, { name: '沈栖', alias: [] }]; } },
   };
   const craftBrief = { ...createOutlineCraftBrief(), characterExecution: undefined };
   const preview = createVccOutlinePreview(1, { chapters: [createOutlineChapter(1, 1, { craftBrief })] });
@@ -2514,11 +2521,29 @@ test('VCC validate_outline rejects missing characterExecution', async () => {
   assert.equal(result.issues.some((issue) => /craftBrief\.characterExecution/.test(issue.message)), true);
 });
 
-test('VCC validate_outline reports character planning stats', async () => {
+test('VCC validate_outline rejects self-declared existing characters without catalog', async () => {
   const prisma = {
     volume: { async findUnique() { return null; } },
     chapter: { async findMany() { return []; } },
     character: { async findMany() { return []; } },
+  };
+  const tool = new ValidateOutlineTool(prisma as never);
+
+  const result = await tool.run(
+    { preview: createVccOutlinePreview(1) },
+    { agentRunId: 'run-vcc-validate-self-existing', projectId: 'p1', mode: 'plan', approved: false, outputs: {}, policy: {} },
+  );
+
+  assert.equal(result.valid, false);
+  assert.equal(result.stats.characterRiskCount > 0, true);
+  assert.equal(result.issues.some((issue) => /existingCharacterArcs|未知既有角色/.test(issue.message)), true);
+});
+
+test('VCC validate_outline reports character planning stats', async () => {
+  const prisma = {
+    volume: { async findUnique() { return null; } },
+    chapter: { async findMany() { return []; } },
+    character: { async findMany() { return [{ name: '林澈', alias: [] }, { name: '沈栖', alias: [] }]; } },
   };
   const tool = new ValidateOutlineTool(prisma as never);
 
@@ -2539,7 +2564,7 @@ test('VCC validate_outline rejects scene participants outside cast', async () =>
   const prisma = {
     volume: { async findUnique() { return null; } },
     chapter: { async findMany() { return []; } },
-    character: { async findMany() { return []; } },
+    character: { async findMany() { return [{ name: '林澈', alias: [] }, { name: '沈栖', alias: [] }]; } },
   };
   const baseCraftBrief = createOutlineCraftBrief();
   const craftBrief = {
@@ -5645,7 +5670,7 @@ test('VCC persist_outline rejects invalid character planning validation', async 
 
 test('VCC persist_outline rejects missing characterExecution without validation', async () => {
   const prisma = {
-    character: { async findMany() { return []; } },
+    character: { async findMany() { return [{ name: '林澈', alias: [] }, { name: '沈栖', alias: [] }]; } },
   };
   const craftBrief = { ...createOutlineCraftBrief(), characterExecution: undefined };
   const tool = new PersistOutlineTool(prisma as never);
@@ -5659,12 +5684,27 @@ test('VCC persist_outline rejects missing characterExecution without validation'
   );
 });
 
+test('VCC persist_outline rejects self-declared existing characters without catalog', async () => {
+  const prisma = {
+    character: { async findMany() { return []; } },
+  };
+  const tool = new PersistOutlineTool(prisma as never);
+
+  await assert.rejects(
+    () => tool.run(
+      { preview: createVccOutlinePreview(1), validation: { valid: true } },
+      { agentRunId: 'run-vcc-persist-self-existing', projectId: 'p1', mode: 'act', approved: true, outputs: {}, policy: {} },
+    ),
+    /未知既有角色|existingCharacterArcs/,
+  );
+});
+
 test('VCC persist_outline does not create Character', async () => {
   const createdChapters: Array<Record<string, unknown>> = [];
   const characterCreates: Array<Record<string, unknown>> = [];
   const prisma = {
     character: {
-      async findMany() { return []; },
+      async findMany() { return [{ name: '林澈', alias: [] }, { name: '沈栖', alias: [] }]; },
       async create(args: Record<string, unknown>) {
         characterCreates.push(args);
         throw new Error('persist_outline must not create Character');
@@ -13055,7 +13095,12 @@ test('merge_chapter_outline_previews 合并单章输出并拦截缺章', async (
     risks: chapterNo === 2 ? ['中段风险'] : [],
   }));
 
-  const result = await tool.run({ previews, volumeNo: 1, chapterCount: 3 }, { agentRunId: 'run1', projectId: 'p1', mode: 'plan', approved: false, outputs: {}, policy: {} });
+  await assert.rejects(
+    () => tool.run({ previews, volumeNo: 1, chapterCount: 3 }, { agentRunId: 'run1', projectId: 'p1', mode: 'plan', approved: false, outputs: {}, policy: {} }),
+    /未知既有角色|existingCharacterArcs/,
+  );
+
+  const result = await tool.run({ previews, context: { characters: [{ name: '林澈' }, { name: '沈栖' }] }, volumeNo: 1, chapterCount: 3 }, { agentRunId: 'run1', projectId: 'p1', mode: 'plan', approved: false, outputs: {}, policy: {} });
 
   assert.equal(result.volume.chapterCount, 3);
   assert.deepEqual(result.chapters.map((chapter) => chapter.chapterNo), [1, 2, 3]);

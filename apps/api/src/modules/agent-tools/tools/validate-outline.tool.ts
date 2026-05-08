@@ -246,12 +246,8 @@ export class ValidateOutlineTool implements BaseTool<ValidateOutlineInput, Valid
     if (!characterPlan) return;
 
     try {
-      const existingCharacterNames = [
-        ...characterCatalog.existingCharacterNames,
-        ...characterPlan.existingCharacterArcs.map((arc) => arc.characterName),
-      ];
       const execution = assertChapterCharacterExecution(characterExecution, {
-        existingCharacterNames,
+        existingCharacterNames: characterCatalog.existingCharacterNames,
         existingCharacterAliases: characterCatalog.existingCharacterAliases,
         volumeCandidateNames: characterPlan.newCharacterCandidates.map((candidate) => candidate.name),
         sceneBeats: this.asRecordArray(craftBrief.sceneBeats).map((sceneBeat) => ({

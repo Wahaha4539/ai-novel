@@ -124,15 +124,11 @@ export class PersistOutlineTool implements BaseTool<PersistOutlineInput, Record<
   }
 
   private assertChapterCharacterExecutions(preview: OutlinePreviewOutput, characterPlan: VolumeCharacterPlan, characterCatalog: CharacterCatalog): void {
-    const existingCharacterNames = [
-      ...characterCatalog.existingCharacterNames,
-      ...characterPlan.existingCharacterArcs.map((arc) => arc.characterName),
-    ];
     const volumeCandidateNames = characterPlan.newCharacterCandidates.map((candidate) => candidate.name);
     for (const chapter of preview.chapters) {
       const craftBrief = this.asRecord(chapter.craftBrief);
       assertChapterCharacterExecution(craftBrief.characterExecution, {
-        existingCharacterNames,
+        existingCharacterNames: characterCatalog.existingCharacterNames,
         existingCharacterAliases: characterCatalog.existingCharacterAliases,
         volumeCandidateNames,
         sceneBeats: this.asRecordArray(craftBrief.sceneBeats).map((sceneBeat) => ({
