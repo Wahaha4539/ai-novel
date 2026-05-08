@@ -2227,6 +2227,47 @@ test('AgentRuntime maps continuity preview and validation artifacts in plan mode
   assert.deepEqual(artifacts.map((item) => item.content), [preview, validation]);
 });
 
+test('AgentRuntime maps timeline preview and validation artifacts in plan mode', () => {
+  const runtime = new AgentRuntimeService({} as never, {} as never, {} as never, {} as never, {} as never, {} as never) as unknown as {
+    buildPreviewArtifacts: (taskType: string, outputs: Record<number, unknown>, steps: Array<{ stepNo: number; tool: string }>) => Array<{ artifactType: string; title: string; content: unknown }>;
+  };
+  const preview = { candidates: [{ candidateId: 'tl_1', title: '失踪的页码', action: 'create_planned' }] };
+  const validation = { valid: true, accepted: [{ candidateId: 'tl_1', action: 'create_planned' }], rejected: [] };
+  const artifacts = runtime.buildPreviewArtifacts(
+    'timeline_plan',
+    { 1: { context: true }, 2: preview, 3: validation },
+    [
+      { stepNo: 1, tool: 'inspect_project_context' },
+      { stepNo: 2, tool: 'generate_timeline_preview' },
+      { stepNo: 3, tool: 'validate_timeline_preview' },
+    ],
+  );
+
+  assert.deepEqual(artifacts.map((item) => item.artifactType), ['timeline_preview', 'timeline_validation_report']);
+  assert.deepEqual(artifacts.map((item) => item.content), [preview, validation]);
+});
+
+test('AgentRuntime maps timeline persist artifact in act mode', () => {
+  const runtime = new AgentRuntimeService({} as never, {} as never, {} as never, {} as never, {} as never, {} as never) as unknown as {
+    buildExecutionArtifacts: (taskType: string, outputs: Record<number, unknown>, steps: Array<{ stepNo: number; tool: string }>) => Array<{ artifactType: string; title: string; content: unknown }>;
+  };
+  const preview = { candidates: [{ candidateId: 'tl_1', title: '失踪的页码', action: 'create_planned' }] };
+  const validation = { valid: true, accepted: [{ candidateId: 'tl_1', action: 'create_planned' }], rejected: [] };
+  const persist = { createdCount: 1, updatedCount: 0, archivedCount: 0, events: [{ candidateId: 'tl_1', timelineEventId: 'event1' }] };
+  const artifacts = runtime.buildExecutionArtifacts(
+    'timeline_plan',
+    { 2: preview, 3: validation, 4: persist },
+    [
+      { stepNo: 2, tool: 'generate_timeline_preview' },
+      { stepNo: 3, tool: 'validate_timeline_preview' },
+      { stepNo: 4, tool: 'persist_timeline_events' },
+    ],
+  );
+
+  assert.deepEqual(artifacts.map((item) => item.artifactType), ['timeline_preview', 'timeline_validation_report', 'timeline_persist_result']);
+  assert.deepEqual(artifacts.map((item) => item.content), [preview, validation, persist]);
+});
+
 test('GenerateGuidedStepPreviewTool 生成全部 guided 步骤预览且保持只读', async () => {
   const calls: Array<{ messages: Array<{ role: string; content: string }>; options: Record<string, unknown> }> = [];
   const progress: Array<Record<string, unknown>> = [];

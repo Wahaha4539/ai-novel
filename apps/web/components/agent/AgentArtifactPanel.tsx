@@ -284,6 +284,9 @@ function TypedArtifactPreview({
   if (artifactType === 'chapter_craft_brief_preview') return <ChapterCraftBriefPreviewSummary content={content} />;
   if (artifactType === 'chapter_craft_brief_validation_report') return <ChapterCraftBriefValidationSummary content={content} />;
   if (artifactType === 'chapter_craft_brief_persist_result') return <ChapterCraftBriefPersistSummary content={content} />;
+  if (artifactType === 'timeline_preview') return <TimelinePreviewSummary content={content} />;
+  if (artifactType === 'timeline_validation_report') return <TimelineValidationSummary content={content} />;
+  if (artifactType === 'timeline_persist_result') return <TimelinePersistSummary content={content} />;
   if (artifactType === 'continuity_preview') return <ContinuityPreviewSummary content={content} />;
   if (artifactType === 'continuity_validation_report') return <ContinuityValidationSummary content={content} />;
   if (artifactType === 'continuity_persist_result') return <ContinuityPersistSummary content={content} />;
@@ -986,6 +989,167 @@ function StoryBiblePersistSummary({ content }: { content: unknown }) {
           return <div key={index} className="text-xs leading-5" style={{ color }}><b style={{ color: 'var(--text-main)' }}>{textValue(row?.title, '未命名设定')}</b> · {action} · {textValue(row?.reason, '暂无说明')}</div>;
         })}
         {!audit.length && <div className="text-xs" style={{ color: 'var(--text-muted)' }}>暂无写入审计明细。</div>}
+      </div>
+    </div>
+  );
+}
+
+function TimelinePreviewSummary({ content }: { content: unknown }) {
+  const data = asRecord(content);
+  const candidates = asArray(data?.candidates);
+  const risks = asArray(data?.risks).map((item) => textValue(item)).filter(Boolean);
+  const assumptions = asArray(data?.assumptions).map((item) => textValue(item)).filter(Boolean);
+  const writePlan = asRecord(data?.writePlan);
+  return (
+    <div className="space-y-3">
+      <div className="grid gap-2 md:grid-cols-4">
+        <Metric label="计划候选" value={candidates.length} tone={candidates.length ? 'ok' : 'warn'} />
+        <Metric label="写入目标" value={textValue(writePlan?.target, 'TimelineEvent')} />
+        <Metric label="来源类型" value={textValue(writePlan?.sourceKind, 'planned_timeline_event')} />
+        <Metric label="审批前置" value={writePlan?.requiresApprovalBeforePersist === false ? '否' : '是'} tone={writePlan?.requiresApprovalBeforePersist === false ? 'danger' : 'warn'} />
+      </div>
+      <TimelineCandidateList items={candidates} />
+      {assumptions.length > 0 && (
+        <div className="space-y-1">
+          {assumptions.slice(0, 3).map((item, index) => <div key={index} className="text-xs leading-5" style={{ color: 'var(--text-muted)' }}>假设：{item}</div>)}
+        </div>
+      )}
+      <div className="space-y-1">{risks.slice(0, 4).map((item, index) => <div key={index} className="text-xs leading-5" style={{ color: '#fbbf24' }}>风险：{item}</div>)}</div>
+    </div>
+  );
+}
+
+function TimelineCandidateList({ items }: { items: unknown[] }) {
+  if (!items.length) return <div className="text-xs" style={{ color: 'var(--text-muted)' }}>暂无计划时间线候选。</div>;
+  return (
+    <div className="space-y-2">
+      {items.slice(0, 8).map((item, index) => {
+        const candidate = asRecord(item);
+        return (
+          <div key={textValue(candidate?.candidateId, `timeline-${index}`)} className="rounded-lg border p-3" style={{ borderColor: 'var(--border-dim)', background: 'rgba(15,23,42,0.18)' }}>
+            <div className="text-xs leading-5" style={{ color: 'var(--text-muted)' }}>
+              <b style={{ color: 'var(--text-main)' }}>{candidate?.chapterNo ? `第${numberValue(candidate.chapterNo)}章 · ` : ''}{textValue(candidate?.title, '未命名事件')}</b>
+              {' '}· {textValue(candidate?.action, 'create_planned')} · {textValue(candidate?.eventTime, '未标注时间')}
+            </div>
+            <div className="mt-1 text-xs leading-5" style={{ color: 'var(--text-muted)' }}>{textValue(candidate?.impactAnalysis ?? candidate?.result, '暂无影响说明')}</div>
+            <TimelineSourceTrace trace={asRecord(candidate?.sourceTrace)} />
+          </div>
+        );
+      })}
+      {items.length > 8 && <div className="text-xs" style={{ color: 'var(--text-dim)' }}>还有 {items.length - 8} 条候选，完整内容见原始 JSON。</div>}
+    </div>
+  );
+}
+
+function TimelineSourceTrace({ trace }: { trace: Record<string, unknown> | undefined }) {
+  const sources = asArray(trace?.contextSources).map((item) => asRecord(item)).filter(Boolean);
+  if (!trace && !sources.length) return null;
+  const evidence = textValue(trace?.evidence, '');
+  return (
+    <div className="mt-2 space-y-1">
+      <div className="flex flex-wrap gap-2">
+        <span className="px-2 py-1 text-[11px]" style={{ borderRadius: 999, border: '1px solid rgba(20,184,166,0.28)', color: '#5eead4', background: 'rgba(20,184,166,0.08)' }}>
+          {textValue(trace?.sourceKind, 'planned_timeline_event')} · {textValue(trace?.toolName ?? trace?.originTool, 'generate_timeline_preview')}
+        </span>
+        {sources.slice(0, 3).map((source, index) => (
+          <span key={index} className="px-2 py-1 text-[11px]" style={{ borderRadius: 999, border: '1px solid var(--border-dim)', color: 'var(--text-muted)' }}>
+            {textValue(source?.sourceType, 'source')}{source?.chapterNo ? `@第${numberValue(source.chapterNo)}章` : ''}{source?.title ? ` · ${textValue(source.title)}` : source?.sourceId ? ` · ${textValue(source.sourceId)}` : ''}
+          </span>
+        ))}
+      </div>
+      {evidence && <div className="text-xs leading-5" style={{ color: 'var(--text-dim)' }}>来源证据：{evidence}</div>}
+    </div>
+  );
+}
+
+function TimelineValidationSummary({ content }: { content: unknown }) {
+  const data = asRecord(content);
+  const accepted = asArray(data?.accepted);
+  const rejected = asArray(data?.rejected);
+  const issues = asArray(data?.issues);
+  const writePreview = asRecord(data?.writePreview);
+  const summary = asRecord(writePreview?.summary);
+  const hasError = issues.some((item) => asRecord(item)?.severity === 'error');
+  return (
+    <div className="space-y-3">
+      <div className="grid gap-2 md:grid-cols-4">
+        <Metric label="状态" value={data?.valid === true ? '可写入' : '需复核'} tone={data?.valid === true ? 'ok' : 'danger'} />
+        <Metric label="通过" value={accepted.length} tone="ok" />
+        <Metric label="拒绝" value={rejected.length} tone={rejected.length ? 'danger' : 'ok'} />
+        <Metric label="问题" value={numberValue(data?.issueCount, issues.length)} tone={hasError ? 'danger' : issues.length ? 'warn' : 'ok'} />
+      </div>
+      {summary && (
+        <div className="grid gap-2 md:grid-cols-5">
+          <Metric label="计划新增" value={numberValue(summary.createPlannedCount)} tone={numberValue(summary.createPlannedCount) ? 'ok' : undefined} />
+          <Metric label="确认计划" value={numberValue(summary.confirmPlannedCount)} tone={numberValue(summary.confirmPlannedCount) ? 'ok' : undefined} />
+          <Metric label="更新" value={numberValue(summary.updateCount)} tone={numberValue(summary.updateCount) ? 'warn' : undefined} />
+          <Metric label="归档" value={numberValue(summary.archiveCount)} tone={numberValue(summary.archiveCount) ? 'danger' : undefined} />
+          <Metric label="发现新增" value={numberValue(summary.createDiscoveredCount)} tone={numberValue(summary.createDiscoveredCount) ? 'warn' : undefined} />
+        </div>
+      )}
+      <TimelineWritePreviewList entries={asArray(writePreview?.entries)} />
+      <div className="space-y-1">
+        {issues.slice(0, 6).map((item, index) => {
+          const issue = asRecord(item);
+          return <div key={index} className="text-xs leading-5" style={{ color: issue?.severity === 'error' ? '#fb7185' : '#fbbf24' }}>[{textValue(issue?.severity)}] {textValue(issue?.message)}</div>;
+        })}
+        {!issues.length && <div className="text-xs" style={{ color: 'var(--text-muted)' }}>暂无阻断问题。</div>}
+      </div>
+    </div>
+  );
+}
+
+function TimelineWritePreviewList({ entries }: { entries: unknown[] }) {
+  if (!entries.length) return <div className="text-xs" style={{ color: 'var(--text-muted)' }}>暂无写入前 diff。</div>;
+  return (
+    <div className="space-y-2">
+      {entries.slice(0, 8).map((item, index) => {
+        const entry = asRecord(item);
+        const after = asRecord(entry?.after);
+        const sourceTrace = asRecord(entry?.sourceTrace ?? asRecord(after?.metadata)?.sourceTrace);
+        const reason = textValue(entry?.reason, '');
+        const diffFields = Object.entries(asRecord(entry?.fieldDiff) ?? {})
+          .filter(([, changed]) => changed === true)
+          .map(([field]) => field);
+        const rejected = entry?.action === 'reject' || !after;
+        return (
+          <div key={textValue(entry?.candidateId, `timeline-diff-${index}`)} className="rounded-lg border p-3" style={{ borderColor: rejected ? 'rgba(251,113,133,0.35)' : 'var(--border-dim)', background: rejected ? 'rgba(251,113,133,0.08)' : 'rgba(15,23,42,0.18)' }}>
+            <div className="text-xs leading-5" style={{ color: rejected ? '#fb7185' : 'var(--text-muted)' }}>
+              <b style={{ color: 'var(--text-main)' }}>{textValue(entry?.label, textValue(after?.title, '未命名事件'))}</b>
+              {' '}· {textValue(entry?.action, 'unknown')}{entry?.chapterNo ? ` · 第${numberValue(entry.chapterNo)}章` : ''}
+            </div>
+            {diffFields.length > 0 && <div className="mt-1 text-xs" style={{ color: '#fbbf24' }}>Diff 字段：{diffFields.slice(0, 8).join('、')}</div>}
+            {reason && <div className="mt-1 text-xs leading-5" style={{ color: 'var(--text-muted)' }}>原因：{reason}</div>}
+            <TimelineSourceTrace trace={sourceTrace} />
+          </div>
+        );
+      })}
+      {entries.length > 8 && <div className="text-xs" style={{ color: 'var(--text-dim)' }}>还有 {entries.length - 8} 条 diff，完整内容见原始 JSON。</div>}
+    </div>
+  );
+}
+
+function TimelinePersistSummary({ content }: { content: unknown }) {
+  const data = asRecord(content);
+  const events = asArray(data?.events);
+  const writtenCount = numberValue(data?.createdCount) + numberValue(data?.confirmedCount) + numberValue(data?.updatedCount) + numberValue(data?.archivedCount);
+  return (
+    <div className="space-y-3">
+      <div className="grid gap-2 md:grid-cols-5">
+        <Metric label="新增 planned" value={numberValue(data?.createdCount)} tone={numberValue(data?.createdCount) ? 'ok' : undefined} />
+        <Metric label="确认 active" value={numberValue(data?.confirmedCount)} tone={numberValue(data?.confirmedCount) ? 'ok' : undefined} />
+        <Metric label="更新" value={numberValue(data?.updatedCount)} tone={numberValue(data?.updatedCount) ? 'warn' : undefined} />
+        <Metric label="归档" value={numberValue(data?.archivedCount)} tone={numberValue(data?.archivedCount) ? 'danger' : undefined} />
+        <Metric label="未选跳过" value={numberValue(data?.skippedUnselectedCount)} tone={numberValue(data?.skippedUnselectedCount) ? 'warn' : undefined} />
+      </div>
+      <div className="rounded-lg border px-3 py-2 text-xs leading-5" style={{ borderColor: 'rgba(20,184,166,0.30)', background: 'rgba(20,184,166,0.07)', color: 'var(--text-muted)' }}>
+        已写入 {writtenCount} 条 TimelineEvent；所有写入仍以 approved Act 运行和后端 sourceTrace 校验为准。
+      </div>
+      <div className="space-y-1">
+        {events.slice(0, 6).map((item, index) => {
+          const event = asRecord(item);
+          return <div key={index} className="text-xs leading-5" style={{ color: 'var(--text-muted)' }}>{textValue(event?.candidateId, `candidate-${index + 1}`)} · {textValue(event?.action, 'create_planned')} · {textValue(event?.timelineEventId, '未返回 ID')} · {textValue(event?.eventStatus, 'planned')}</div>;
+        })}
       </div>
     </div>
   );

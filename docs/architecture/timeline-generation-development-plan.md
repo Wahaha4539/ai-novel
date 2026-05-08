@@ -183,6 +183,7 @@
 - TL-P2-03：新增 `persist_timeline_events` 写入工具，要求 Act + approved、previous-step preview/validation 引用、validation.valid 与 sourceTrace/writePreview 三方一致，事务内按当前 `projectId` 二次校验后写入 `TimelineEvent`；涉及文件：`apps/api/src/modules/agent-tools/tools/persist-timeline-events.tool.ts`、`apps/api/src/modules/agent-runs/agent-services.spec.ts`、`docs/architecture/timeline-generation-development-plan.md`；验证命令：`pnpm --filter api test:agent`、`pnpm --filter api build`、`git diff --check`。
 - TL-P2-04：注册 timeline-only 三个工具到 `AgentToolsModule`、`ToolRegistryService` 与默认内置技能，并测试 Planner Manifest 能看到 plan/act 边界、审批要求和 TimelineEvent 写入副作用；涉及文件：`apps/api/src/modules/agent-tools/agent-tools.module.ts`、`apps/api/src/modules/agent-tools/tool-registry.service.ts`、`apps/api/src/modules/agent-skills/builtin-skills.ts`、`apps/api/src/modules/agent-runs/agent-services.spec.ts`、`docs/architecture/timeline-generation-development-plan.md`；验证命令：`pnpm --filter api test:agent`、`pnpm --filter api build`、`git diff --check`。
 - TL-P2-05：新增 `timeline_plan` 任务类型，并让 Planner 在 outline/craftBrief 规划产物后自动接入只读 `generate_timeline_preview -> validate_timeline_preview`，从全书/卷/章节细纲和 craftBrief 生成 `eventStatus=planned` 候选且不插入时间线写库步骤；涉及文件：`apps/api/src/modules/agent-runs/agent-planner.service.ts`、`apps/api/src/modules/agent-skills/builtin-skills.ts`、`apps/api/src/modules/agent-runs/agent-services.spec.ts`、`docs/architecture/timeline-generation-development-plan.md`；验证命令：`pnpm --filter api test:agent`、`pnpm --filter api build`、`git diff --check`。
+- TL-P2-06：Agent Runtime 将 timeline preview/validate/persist 输出提升为 Artifact，Agent Artifact 面板展示计划时间线候选、校验 accepted/rejected、写入前 diff、sourceTrace 和写入结果；涉及文件：`apps/api/src/modules/agent-runs/agent-runtime.service.ts`、`apps/api/src/modules/agent-runs/agent-services.spec.ts`、`apps/web/components/agent/AgentArtifactPanel.tsx`、`apps/web/components/agent/AgentSharedWidgets.tsx`、`docs/architecture/timeline-generation-development-plan.md`；验证命令：`pnpm --filter api test:agent`、`pnpm --filter api build`、`pnpm --filter web build`、`git diff --check`。
 
 ### Phase 1：时间线候选契约与校验核心
 
@@ -203,7 +204,7 @@
 | TL-P2-03 | done | 新增 `persist_timeline_events` 工具 | `apps/api/src/modules/agent-tools/tools/persist-timeline-events.tool.ts` | Act + approved 才写入；只写当前 projectId |
 | TL-P2-04 | done | 注册工具与 Manifest | `AgentToolsModule`、`ToolRegistryService`、`builtin-skills.ts` | Planner 能看到使用边界、审批和副作用 |
 | TL-P2-05 | done | 接入全书大纲、卷大纲、章节细纲、craftBrief 产物 | outline/guided/agent 相关工具 | 可从规划内容生成 `eventStatus=planned` 的候选 |
-| TL-P2-06 | todo | Agent Artifact 展示计划时间线 diff | `AgentArtifactPanel.tsx` | 用户能看 accepted/rejected/diff 和来源 |
+| TL-P2-06 | done | Agent Artifact 展示计划时间线 diff | `AgentArtifactPanel.tsx` | 用户能看 accepted/rejected/diff 和来源 |
 
 ### Phase 3：章节生成前召回与 Prompt 分层
 

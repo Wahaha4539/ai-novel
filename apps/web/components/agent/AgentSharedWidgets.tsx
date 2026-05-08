@@ -151,6 +151,7 @@ const WRITE_TOOL_LABELS: Record<string, string> = {
   persist_worldbuilding: '世界设定',
   persist_story_bible: '故事圣经',
   persist_continuity_changes: '连续性资料',
+  persist_timeline_events: '计划时间线',
   persist_guided_step_result: '创作引导结果',
 };
 
@@ -260,6 +261,30 @@ const AGENT_TOOL_UI_EXPLANATIONS: Record<string, AgentToolUiExplanation> = {
     output: '大纲写入结果',
     frontendSurface: '剧情大纲 / 卷与章节列表',
     artifactTypes: ['outline_persist_result'],
+    usesLlm: false,
+  },
+  generate_timeline_preview: {
+    label: '生成计划时间线',
+    purpose: '从全书大纲、卷大纲、章节细纲或 Chapter.craftBrief 生成 planned 时间线候选，不写库。',
+    output: '计划时间线候选',
+    frontendSurface: 'Agent 产物预览 / 时间线面板待审批候选',
+    artifactTypes: ['timeline_preview'],
+    usesLlm: true,
+  },
+  validate_timeline_preview: {
+    label: '校验计划时间线',
+    purpose: '校验章节引用、重复事件、sourceTrace 和写入前 diff，保持只读。',
+    output: '计划时间线校验报告',
+    frontendSurface: 'Agent 产物预览 / 写入前 Diff',
+    artifactTypes: ['timeline_validation_report'],
+    usesLlm: false,
+  },
+  persist_timeline_events: {
+    label: '写入计划时间线',
+    purpose: '在 Act 且用户审批后，把已校验的 TimelineEvent 候选写入当前项目。',
+    output: '计划时间线写入结果',
+    frontendSurface: '时间线面板',
+    artifactTypes: ['timeline_persist_result'],
     usesLlm: false,
   },
   write_chapter: {
@@ -400,6 +425,7 @@ export function approvalRiskSummary(plan: AgentPlanPayload | undefined, approved
   } else if (requiredTools.includes('persist_outline')) {
     summaries.push('项目资产写入：确认后会新增或更新剧情大纲、卷和章节规划。');
   }
+  if (requiredTools.includes('persist_timeline_events')) summaries.push('时间线写入：确认后会把已校验的 planned/changed TimelineEvent 候选写入当前项目。');
   return summaries;
 }
 

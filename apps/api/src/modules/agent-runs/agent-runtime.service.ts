@@ -1017,7 +1017,12 @@ export class AgentRuntimeService {
       return [
         ...(preview ? [{ artifactType: 'outline_preview', title: '大纲预览', content: preview }] : []),
         ...(validation ? [{ artifactType: 'outline_validation_report', title: '大纲校验报告', content: validation }] : []),
+        ...this.buildTimelineArtifacts(outputs, steps),
       ];
+    }
+
+    if (taskType === 'timeline_plan') {
+      return this.buildTimelineArtifacts(outputs, steps);
     }
 
     if (taskType === 'project_import_preview') {
@@ -1057,6 +1062,7 @@ export class AgentRuntimeService {
       return [
         ...(preview ? [{ artifactType: 'chapter_craft_brief_preview', title: '章节推进卡预览', content: preview }] : []),
         ...(validation ? [{ artifactType: 'chapter_craft_brief_validation_report', title: '章节推进卡校验报告', content: validation }] : []),
+        ...this.buildTimelineArtifacts(outputs, steps),
       ];
     }
 
@@ -1072,6 +1078,17 @@ export class AgentRuntimeService {
     return [];
   }
 
+  private buildTimelineArtifacts(outputs: Record<number, unknown>, steps: Pick<AgentPlanSpec, 'steps'>['steps'] = [], includePersist = false): AgentArtifactDraft[] {
+    const preview = this.latestOutputByTools(outputs, steps, ['generate_timeline_preview']);
+    const validation = this.latestOutputByTools(outputs, steps, ['validate_timeline_preview']);
+    const persist = includePersist ? this.latestOutputByTools(outputs, steps, ['persist_timeline_events']) : undefined;
+    return [
+      ...(preview ? [{ artifactType: 'timeline_preview', title: '计划时间线候选预览', content: preview }] : []),
+      ...(validation ? [{ artifactType: 'timeline_validation_report', title: '计划时间线校验与写入前 Diff', content: validation }] : []),
+      ...(persist ? [{ artifactType: 'timeline_persist_result', title: '计划时间线写入结果', content: persist }] : []),
+    ];
+  }
+
   /**
    * 将关键 Tool 输出提升为 AgentArtifact，便于前端按业务类型预览，而不是只看原始 step JSON。
    * 这里不重新解释 LLM 内容，只按已审批执行结果做只读拆分，避免引入额外副作用。
@@ -1084,8 +1101,13 @@ export class AgentRuntimeService {
       return [
         ...(preview ? [{ artifactType: 'outline_preview', title: '大纲预览', content: preview }] : []),
         ...(validation ? [{ artifactType: 'outline_validation_report', title: '大纲校验报告', content: validation }] : []),
+        ...this.buildTimelineArtifacts(outputs, steps, true),
         ...(persist ? [{ artifactType: 'outline_persist_result', title: '大纲写入结果', content: persist }] : []),
       ];
+    }
+
+    if (taskType === 'timeline_plan') {
+      return this.buildTimelineArtifacts(outputs, steps, true);
     }
 
     if (taskType === 'project_import_preview') {
@@ -1134,6 +1156,7 @@ export class AgentRuntimeService {
       return [
         ...(preview ? [{ artifactType: 'chapter_craft_brief_preview', title: '章节推进卡预览', content: preview }] : []),
         ...(validation ? [{ artifactType: 'chapter_craft_brief_validation_report', title: '章节推进卡校验报告', content: validation }] : []),
+        ...this.buildTimelineArtifacts(outputs, steps, true),
         ...(persist ? [{ artifactType: 'chapter_craft_brief_persist_result', title: '章节推进卡写入结果', content: persist }] : []),
       ];
     }
