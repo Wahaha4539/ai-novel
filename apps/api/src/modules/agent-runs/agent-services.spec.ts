@@ -14604,6 +14604,38 @@ test('VCC generate_outline_preview rejects batched chapters that reference batch
   assert.equal(calls, 2);
 });
 
+test('VCC validate_guided_step_preview marks guided_chapter supportingCharacters as session only', async () => {
+  const validVolume = createVccGuidedVolume();
+  const existingNames = (validVolume.narrativePlan.characterPlan as ReturnType<typeof createVccCharacterPlan>)
+    .existingCharacterArcs.map((arc) => arc.characterName);
+  const prisma = {
+    character: { async findMany() { return existingNames.map((name) => ({ name, alias: [] })); } },
+    guidedSession: { async findUnique() { return { stepData: { guided_volume_result: { volumes: [validVolume] } } }; } },
+    volume: { async findMany() { return [{ id: 'v1', volumeNo: 1, title: 'Volume 1' }]; } },
+    chapter: { async findMany() { return []; } },
+  };
+  const tool = new ValidateGuidedStepPreviewTool(prisma as never);
+
+  const result = await tool.run(
+    {
+      stepKey: 'guided_chapter',
+      volumeNo: 1,
+      structuredData: {
+        chapters: [createVccGuidedChapter({ chapterNo: 1, volumeNo: 1 })],
+        supportingCharacters: [{ name: 'SessionOnlyAlly' }],
+      },
+    },
+    { agentRunId: 'run-vcc-validate-guided-supporting-preview', projectId: 'p1', mode: 'plan', approved: false, outputs: {}, policy: {} },
+  );
+
+  const writePreview = result.writePreview as Record<string, unknown>;
+  const supporting = writePreview.supportingCharacters as Array<Record<string, unknown>>;
+  assert.equal(result.valid, true);
+  assert.equal(supporting[0].action, 'session_only');
+  assert.doesNotMatch(String(writePreview.approvalMessage), /重建|create/i);
+  assert.match(String(writePreview.approvalMessage), /不会创建正式角色|supportingCharacters/);
+});
+
 async function main() {
   const filter = process.env.AGENT_TEST_FILTER?.trim();
   const selectedTests = filter ? tests.filter((item) => item.name.includes(filter)) : tests;

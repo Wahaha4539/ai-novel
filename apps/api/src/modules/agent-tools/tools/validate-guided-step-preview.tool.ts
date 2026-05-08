@@ -583,10 +583,10 @@ export class ValidateGuidedStepPreviewTool implements BaseTool<ValidateGuidedSte
         supportingCharacterCount: supportingCharacters.length,
       },
       chapters: items,
-      supportingCharacters: supportingCharacters.map((character) => ({ name: this.text(character.name), action: this.text(character.name) ? 'create' : 'skip_invalid' })),
+      supportingCharacters: supportingCharacters.map((character) => ({ name: this.text(character.name), action: this.text(character.name) ? 'session_only' : 'skip_invalid' })),
       approvalMessage: volumeNo === undefined
-        ? '校验通过后仍需用户审批；后续写入会替换当前项目全部章节细纲。'
-        : '校验通过后仍需用户审批；后续写入会更新目标卷章节细纲，并重建该卷配角。',
+        ? '校验通过后仍需用户审批；后续写入会替换当前项目全部章节细纲；supportingCharacters 仅保留为本次引导预览信息，不会创建正式角色。'
+        : '校验通过后仍需用户审批；后续写入会更新目标卷章节细纲；supportingCharacters 仅保留为本次引导预览信息，不会创建正式角色。',
     };
   }
 
