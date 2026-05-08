@@ -282,6 +282,29 @@ function createVccCharacterPlan(overrides: Record<string, unknown> = {}) {
   };
 }
 
+function createVccNarrativePlan(overrides: Record<string, unknown> = {}) {
+  return {
+    globalMainlineStage: '从个人翻案进入工程求生',
+    volumeMainline: '验证旧闸棚账册与失踪案的真实关系',
+    dramaticQuestion: '林澈能否在巡检处封锁前拿到可公开的账册证据',
+    startState: '林澈只握有传闻和一枚铜扣',
+    endState: '林澈拿到半页账纸并确认巡检处改过记录',
+    mainlineMilestones: ['拿到铜扣', '遇见邵衡', '带走半页账纸', '确认东闸名单被改'],
+    subStoryLines: [
+      { name: '账册缺页线', type: 'mystery', function: '推动主线证据递进', startState: '只知道账册缺页', progress: '逐章找到铜扣和半页账纸', endState: '确认缺页与东闸名单有关', relatedCharacters: ['林澈', '邵衡'], chapterNodes: [1, 2, 4] },
+      { name: '同伴信任线', type: 'relationship', function: '把调查代价压到人物关系上', startState: '沈栖不愿越界', progress: '用藏证据和放行逐步改变立场', endState: '沈栖愿为林澈承担一次记录风险', relatedCharacters: ['林澈', '沈栖'], chapterNodes: [1, 3] },
+    ],
+    storyUnits: [
+      { unitId: 'v1_unit_01', title: '旧闸棚账册', chapterRange: { start: 1, end: 4 }, localGoal: '拿到账册被改的第一份证据', localConflict: '巡检处封锁账房并登记所有靠近者', serviceFunctions: ['mainline', 'relationship_shift', 'foreshadow'], payoff: '林澈带走半页账纸但名字进入临检记录', stateChangeAfterUnit: '调查从传闻变成可追查证据' },
+    ],
+    characterPlan: createVccCharacterPlan(),
+    foreshadowPlan: ['第 1 章铜扣，第 4 章回收到东闸名单'],
+    endingHook: '半页账纸背面出现沈栖父亲的旧签名',
+    handoffToNextVolume: '带着半页账纸追查东闸名单原件',
+    ...overrides,
+  };
+}
+
 function createVccCharacterExecution(overrides: Record<string, unknown> = {}) {
   return {
     povCharacter: '林澈',
@@ -424,6 +447,130 @@ test('VCC character contract rejects scene participants missing from cast', () =
     }),
     /未被 characterExecution\.cast 覆盖/,
   );
+});
+
+test('VCC volume outline preview preserves complete characterPlan', async () => {
+  let receivedMessages: Array<{ role: string; content: string }> = [];
+  const llm = {
+    async chatJson(messages: Array<{ role: string; content: string }>) {
+      receivedMessages = messages;
+      return {
+        data: {
+          volume: {
+            volumeNo: 1,
+            title: '旧闸棚账册',
+            synopsis: '## 全书主线阶段\n从传闻进入证据\n## 本卷主线\n找到账册缺页证据\n## 本卷戏剧问题\n林澈能否在封锁前拿到证据\n## 卷内支线\n账册缺页线\n## 单元故事\n旧闸棚账册\n## 支线交叉点\n铜扣\n## 卷末交接\n东闸名单压力',
+            objective: '拿到账册被改的第一份证据',
+            chapterCount: 4,
+            narrativePlan: createVccNarrativePlan(),
+          },
+          risks: [],
+        },
+        result: { model: 'mock-volume-character-plan' },
+      };
+    },
+  };
+  const tool = new GenerateVolumeOutlinePreviewTool(llm as never);
+  const result = await tool.run(
+    {
+      context: { project: { title: '旧档案' }, characters: [{ name: '林澈' }, { name: '沈栖' }] },
+      instruction: '为第 1 卷生成角色规划和卷纲',
+      volumeNo: 1,
+      chapterCount: 4,
+    },
+    { agentRunId: 'run1', projectId: 'p1', mode: 'plan', approved: false, outputs: {}, policy: {} },
+  );
+
+  const characterPlan = result.volume.narrativePlan?.characterPlan as Record<string, unknown>;
+  assert.ok(characterPlan);
+  assert.equal((characterPlan.newCharacterCandidates as Array<Record<string, unknown>>)[0].name, '邵衡');
+  assert.match(receivedMessages[0].content, /characterPlan/);
+  assert.match(receivedMessages[0].content, /newCharacterCandidates/);
+  assert.match(receivedMessages[1].content, /已有角色摘要/);
+});
+
+test('VCC volume outline preview rejects missing candidate motivation', async () => {
+  const badPlan = createVccNarrativePlan({
+    characterPlan: createVccCharacterPlan({
+      newCharacterCandidates: [
+        {
+          candidateId: 'cand_shaoheng',
+          name: '邵衡',
+          roleType: 'supporting',
+          scope: 'volume',
+          narrativeFunction: '作为巡检处内线，把制度压力具象化为可对抗的人',
+          personalityCore: '谨慎、讲秩序',
+          firstAppearChapter: 2,
+          expectedArc: '从旁观内线转为主动递交关键登记簿',
+          approvalStatus: 'candidate',
+        },
+      ],
+    }),
+  });
+  const tool = new GenerateVolumeOutlinePreviewTool({
+    async chatJson() {
+      return {
+        data: {
+          volume: {
+            volumeNo: 1,
+            title: '旧闸棚账册',
+            synopsis: '卷简介',
+            objective: '拿到账册证据',
+            chapterCount: 4,
+            narrativePlan: badPlan,
+          },
+          risks: [],
+        },
+        result: { model: 'mock-volume-character-plan' },
+      };
+    },
+  } as never);
+
+  await assert.rejects(
+    () => tool.run(
+      { context: { characters: [{ name: '林澈' }] }, instruction: '生成卷纲', volumeNo: 1, chapterCount: 4 },
+      { agentRunId: 'run1', projectId: 'p1', mode: 'plan', approved: false, outputs: {}, policy: {} },
+    ),
+    /motivation/,
+  );
+});
+
+test('VCC outline preview requires volume characterPlan', async () => {
+  const llm = {
+    async chatJson(messages: Array<{ role: string; content: string }>) {
+      const prompt = messages[1]?.content ?? '';
+      const match = prompt.match(/章节范围：第 (\d+)-(\d+) 章/);
+      const chapterNo = match ? Number(match[1]) : 1;
+      return {
+        data: {
+          volume: {
+            volumeNo: 1,
+            title: '旧闸棚账册',
+            synopsis: '卷简介',
+            objective: '拿到账册证据',
+            chapterCount: 4,
+            narrativePlan: createVccNarrativePlan(),
+          },
+          chapters: [createOutlineChapter(chapterNo, 1)],
+          risks: [],
+        },
+        result: { model: 'mock-outline-character-plan' },
+      };
+    },
+  };
+  const tool = new GenerateOutlinePreviewTool(llm as never);
+  const result = await tool.run(
+    {
+      context: { project: { title: '旧档案' }, characters: [{ name: '林澈' }, { name: '沈栖' }] },
+      instruction: '为第 1 卷生成 4 章细纲并安排角色',
+      volumeNo: 1,
+      chapterCount: 4,
+    },
+    { agentRunId: 'run1', projectId: 'p1', mode: 'plan', approved: false, outputs: {}, policy: {} },
+  );
+
+  assert.equal(result.chapters.length, 4);
+  assert.equal(((result.volume.narrativePlan?.characterPlan as Record<string, unknown>).newCharacterCandidates as Array<Record<string, unknown>>)[0].name, '邵衡');
 });
 
 const TARGETED_IMPORT_PREVIEW_TOOL_NAMES = [
@@ -11527,6 +11674,7 @@ test('generate_volume_outline_preview 生成卷大纲故事单元且不生成章
               foreshadowPlan: ['第1-3章埋陆衡旧桥号，第6章回收为旧案入口'],
               endingHook: '盐风峡路权成为下一卷压力',
               handoffToNextVolume: '带着工队和旧案证据进入盐风峡争路权',
+              characterPlan: createVccCharacterPlan(),
             },
           },
           risks: [],

@@ -5,6 +5,7 @@ import { DEFAULT_LLM_TIMEOUT_MS } from '../../llm/llm-timeout.constants';
 import { BaseTool, ToolContext } from '../base-tool';
 import type { ToolManifestV2 } from '../tool-manifest.types';
 import { recordToolLlmUsage } from './import-preview-llm-usage';
+import { assertVolumeCharacterPlan } from './outline-character-contracts';
 
 const OUTLINE_PREVIEW_LLM_TIMEOUT_MS = DEFAULT_LLM_TIMEOUT_MS;
 const OUTLINE_PREVIEW_BATCH_SIZE = 1;
@@ -174,7 +175,9 @@ export class GenerateOutlinePreviewTool implements BaseTool<GenerateOutlinePrevi
     const response = await this.callOutlineLlm(args, context, volumeNo, chapterCount);
     recordToolLlmUsage(context, 'planner', response.result);
     await context.updateProgress?.({ phase: 'validating', phaseMessage: '正在校验章节预览', progressCurrent: chapterCount, progressTotal: chapterCount });
-    return this.normalize(response.data, volumeNo, chapterCount);
+    return this.normalize(response.data, volumeNo, chapterCount, {
+      existingCharacterNames: this.extractExistingCharacterNames(args.context),
+    });
   }
 
   private async runBatched(
@@ -200,6 +203,7 @@ export class GenerateOutlinePreviewTool implements BaseTool<GenerateOutlinePrevi
       const normalized = this.normalize(response.data, volumeNo, batch.chapterCount, {
         chapterStart: batch.startChapterNo,
         totalChapterCount: chapterCount,
+        existingCharacterNames: this.extractExistingCharacterNames(args.context),
       });
       volume ??= normalized.volume;
       chapters.push(...normalized.chapters);
@@ -290,7 +294,7 @@ export class GenerateOutlinePreviewTool implements BaseTool<GenerateOutlinePrevi
     data: OutlinePreviewOutput,
     volumeNo: number,
     chapterCount: number,
-    options: { chapterStart?: number; totalChapterCount?: number } = {},
+    options: { chapterStart?: number; totalChapterCount?: number; existingCharacterNames?: string[] } = {},
   ): OutlinePreviewOutput {
     const output = this.asRecord(data);
     const chapterStart = options.chapterStart ?? 1;
@@ -340,6 +344,14 @@ export class GenerateOutlinePreviewTool implements BaseTool<GenerateOutlinePrevi
     }
     const risks = this.stringArray(output.risks, []);
     const narrativePlan = this.asRecord(volumeRecord.narrativePlan);
+    if (!Object.keys(narrativePlan).length) {
+      throw new Error('generate_outline_preview 缺少 volume.narrativePlan，未生成完整细纲。');
+    }
+    narrativePlan.characterPlan = assertVolumeCharacterPlan(narrativePlan.characterPlan, {
+      chapterCount: totalChapterCount,
+      existingCharacterNames: options.existingCharacterNames ?? [],
+      label: 'volume.narrativePlan.characterPlan',
+    });
     return {
       volume: {
         volumeNo,
@@ -576,6 +588,10 @@ export class GenerateOutlinePreviewTool implements BaseTool<GenerateOutlinePrevi
       '- craftBrief 还必须包含 storyUnit、entryState、exitState、openLoops、closedLoops、handoffToNextChapter、continuityState、sceneBeats。',
       '- 每 3-5 章设计一个完整的 storyUnit 单元故事。单元故事有自己的局部目标、冲突、高潮/阶段结局，但必须服务全书主线和人物变化。',
       '- volume.narrativePlan 必须包含 storyUnits 数组；每个 storyUnit 写清 unitId、title、chapterRange、localGoal、localConflict、serviceFunctions、payoff、stateChangeAfterUnit。',
+      '- volume.narrativePlan 必须包含 characterPlan；卷级 characterPlan 负责既有角色本卷弧线、重要新增角色候选、关系弧和角色功能覆盖。',
+      '- 重要新增角色只能进入 volume.narrativePlan.characterPlan.newCharacterCandidates，章节细纲不得直接发明 protagonist/antagonist/supporting 等重要角色。',
+      '- characterPlan.newCharacterCandidates 可为空；若有候选，每个候选必须包含 candidateId、name、roleType、scope=volume、narrativeFunction、personalityCore、motivation、firstAppearChapter、expectedArc、approvalStatus=candidate。',
+      '- firstAppearChapter 必须在 1 到 volume.chapterCount 范围内；relationshipArcs.participants 只能引用既有角色名或 newCharacterCandidates.name。',
       '- craftBrief.storyUnit 必须标明本章所属单元故事，包含 unitId、title、chapterRange、chapterRole、localGoal、localConflict、serviceFunctions、mainlineContribution、characterContribution、relationshipContribution、worldOrThemeContribution、unitPayoff、stateChangeAfterUnit。',
       '- storyUnit.serviceFunctions 至少 3 项，只能从这些方向中选择或具体化：mainline、protagonist_arc、supporting_character、relationship_shift、worldbuilding、theme、antagonist_pressure、foreshadow、emotional_pacing、resource_cost。',
       '- craftBrief.sceneBeats 至少 3 个场景段；每段包含 sceneArcId、scenePart、location、participants、localGoal、visibleAction、obstacle、turningPoint、partResult、sensoryAnchor。跨章场景用相同 sceneArcId，并填写 continuesFromChapterNo / continuesToChapterNo。',
@@ -592,7 +608,7 @@ export class GenerateOutlinePreviewTool implements BaseTool<GenerateOutlinePrevi
       '- 如果使用这些词，必须同时绑定具体地点、人物、动作、物件和后果。',
       '',
       'JSON 输出示例骨架：',
-      '{"volume":{"volumeNo":1,"title":"卷名","synopsis":"卷概要","objective":"可检验卷目标","chapterCount":10,"narrativePlan":{"storyUnits":[{"unitId":"v1_unit_01","title":"单元故事名","chapterRange":{"start":1,"end":4},"localGoal":"单元局部目标","localConflict":"单元核心阻力","serviceFunctions":["mainline","relationship_shift","foreshadow"],"payoff":"单元阶段结局","stateChangeAfterUnit":"单元结束后的状态变化"}]}},"chapters":[{"chapterNo":1,"volumeNo":1,"title":"章节标题","objective":"本章可检验目标","conflict":"阻力来源与方式","hook":"章末交接钩子","outline":"1. 具体场景段...\\n2. 具体场景段...\\n3. 具体场景段...","expectedWordCount":2500,"craftBrief":{"visibleGoal":"表层目标","hiddenEmotion":"隐藏情绪","coreConflict":"核心冲突","mainlineTask":"本章主线任务","subplotTasks":["支线任务"],"storyUnit":{"unitId":"v1_unit_01","title":"单元故事名","chapterRange":{"start":1,"end":4},"chapterRole":"开局/升级/反转/收束","localGoal":"单元局部目标","localConflict":"单元核心阻力","serviceFunctions":["mainline","relationship_shift","foreshadow"],"mainlineContribution":"本章如何推进主线","characterContribution":"本章如何塑造人物","relationshipContribution":"本章如何改变关系","worldOrThemeContribution":"本章如何展开世界或主题","unitPayoff":"单元最终将如何阶段收束","stateChangeAfterUnit":"单元结束后的状态变化"},"actionBeats":["行动1","行动2","行动3"],"sceneBeats":[{"sceneArcId":"dock_escape","scenePart":"1/3","continuesFromChapterNo":null,"continuesToChapterNo":2,"location":"具体地点","participants":["角色名"],"localGoal":"本场局部目标","visibleAction":"角色做出的可见动作","obstacle":"阻力来源和方式","turningPoint":"反转或新信息","partResult":"本场结束后的变化","sensoryAnchor":"可写入正文的感官锚点"}],"concreteClues":[{"name":"线索","sensoryDetail":"感官细节","laterUse":"后续用途"}],"dialogueSubtext":"潜台词","characterShift":"人物变化","irreversibleConsequence":"不可逆后果","progressTypes":["info"],"entryState":"接住上一章压力","exitState":"本章结束状态","openLoops":["未解决问题"],"closedLoops":["阶段性解决问题"],"handoffToNextChapter":"下一章接续动作和压力","continuityState":{"characterPositions":["角色在何处"],"activeThreats":["仍在生效的威胁"],"ownedClues":["已持有线索"],"relationshipChanges":["关系变化"],"nextImmediatePressure":"下一章最紧迫压力"}}}],"risks":[]}',
+      '{"volume":{"volumeNo":1,"title":"卷名","synopsis":"卷概要","objective":"可检验卷目标","chapterCount":10,"narrativePlan":{"storyUnits":[{"unitId":"v1_unit_01","title":"单元故事名","chapterRange":{"start":1,"end":4},"localGoal":"单元局部目标","localConflict":"单元核心阻力","serviceFunctions":["mainline","relationship_shift","foreshadow"],"payoff":"单元阶段结局","stateChangeAfterUnit":"单元结束后的状态变化"}],"characterPlan":{"existingCharacterArcs":[{"characterName":"既有角色名","roleInVolume":"本卷角色功能","entryState":"入卷状态","volumeGoal":"本卷目标","pressure":"压力","keyChoices":["关键选择"],"firstActiveChapter":1,"endState":"出卷状态"}],"newCharacterCandidates":[],"relationshipArcs":[],"roleCoverage":{"mainlineDrivers":["既有角色名"],"antagonistPressure":[],"emotionalCounterweights":[],"expositionCarriers":[]}}}},"chapters":[{"chapterNo":1,"volumeNo":1,"title":"章节标题","objective":"本章可检验目标","conflict":"阻力来源与方式","hook":"章末交接钩子","outline":"1. 具体场景段...\\n2. 具体场景段...\\n3. 具体场景段...","expectedWordCount":2500,"craftBrief":{"visibleGoal":"表层目标","hiddenEmotion":"隐藏情绪","coreConflict":"核心冲突","mainlineTask":"本章主线任务","subplotTasks":["支线任务"],"storyUnit":{"unitId":"v1_unit_01","title":"单元故事名","chapterRange":{"start":1,"end":4},"chapterRole":"开局/升级/反转/收束","localGoal":"单元局部目标","localConflict":"单元核心阻力","serviceFunctions":["mainline","relationship_shift","foreshadow"],"mainlineContribution":"本章如何推进主线","characterContribution":"本章如何塑造人物","relationshipContribution":"本章如何改变关系","worldOrThemeContribution":"本章如何展开世界或主题","unitPayoff":"单元最终将如何阶段收束","stateChangeAfterUnit":"单元结束后的状态变化"},"actionBeats":["行动1","行动2","行动3"],"sceneBeats":[{"sceneArcId":"dock_escape","scenePart":"1/3","continuesFromChapterNo":null,"continuesToChapterNo":2,"location":"具体地点","participants":["角色名"],"localGoal":"本场局部目标","visibleAction":"角色做出的可见动作","obstacle":"阻力来源和方式","turningPoint":"反转或新信息","partResult":"本场结束后的变化","sensoryAnchor":"可写入正文的感官锚点"}],"concreteClues":[{"name":"线索","sensoryDetail":"感官细节","laterUse":"后续用途"}],"dialogueSubtext":"潜台词","characterShift":"人物变化","irreversibleConsequence":"不可逆后果","progressTypes":["info"],"entryState":"接住上一章压力","exitState":"本章结束状态","openLoops":["未解决问题"],"closedLoops":["阶段性解决问题"],"handoffToNextChapter":"下一章接续动作和压力","continuityState":{"characterPositions":["角色在何处"],"activeThreats":["仍在生效的威胁"],"ownedClues":["已持有线索"],"relationshipChanges":["关系变化"],"nextImmediatePressure":"下一章最紧迫压力"}}}],"risks":[]}',
     ].join('\n');
   }
 
@@ -717,6 +733,7 @@ export class GenerateOutlinePreviewTool implements BaseTool<GenerateOutlinePrevi
       '',
       '角色摘要：',
       this.safeJson(characters, 4000),
+      '角色规划硬要求：优先使用角色摘要中的既有角色；本卷需要的重要新角色必须先写入 volume.narrativePlan.characterPlan.newCharacterCandidates，不得只在章节里出现。',
       '',
       '设定摘要：',
       this.safeJson(lorebookEntries, 4000),
@@ -745,6 +762,14 @@ export class GenerateOutlinePreviewTool implements BaseTool<GenerateOutlinePrevi
   private safeJson(value: unknown, limit: number): string {
     const text = JSON.stringify(value ?? {}, null, 2);
     return text.length > limit ? `${text.slice(0, limit)}...` : text;
+  }
+
+  private extractExistingCharacterNames(contextValue: unknown): string[] {
+    const context = this.asRecord(contextValue);
+    const characters = Array.isArray(context.characters) ? context.characters : [];
+    return characters
+      .map((item) => this.text(this.asRecord(item).name, ''))
+      .filter(Boolean);
   }
 
   private asRecord(value: unknown): Record<string, unknown> {

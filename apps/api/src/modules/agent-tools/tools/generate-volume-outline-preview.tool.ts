@@ -6,6 +6,7 @@ import { BaseTool, ToolContext } from '../base-tool';
 import type { ToolManifestV2 } from '../tool-manifest.types';
 import { OutlinePreviewOutput } from './generate-outline-preview.tool';
 import { recordToolLlmUsage } from './import-preview-llm-usage';
+import { assertVolumeCharacterPlan } from './outline-character-contracts';
 
 const VOLUME_OUTLINE_PREVIEW_LLM_TIMEOUT_MS = DEFAULT_LLM_TIMEOUT_MS;
 
@@ -122,7 +123,7 @@ export class GenerateVolumeOutlinePreviewTool implements BaseTool<GenerateVolume
         { appStep: 'planner', timeoutMs: VOLUME_OUTLINE_PREVIEW_LLM_TIMEOUT_MS, retries: 0, jsonMode: true },
       );
       recordToolLlmUsage(context, 'planner', response.result);
-      const normalized = this.normalize(response.data, volumeNo, chapterCount);
+      const normalized = this.normalize(response.data, volumeNo, chapterCount, this.extractExistingCharacterNames(args.context));
       this.logger.log('volume_outline_preview.llm_request.completed', {
         ...logContext,
         elapsedMs: Date.now() - startedAt,
@@ -139,7 +140,7 @@ export class GenerateVolumeOutlinePreviewTool implements BaseTool<GenerateVolume
     }
   }
 
-  private normalize(data: unknown, volumeNo: number, chapterCount: number): VolumeOutlinePreviewOutput {
+  private normalize(data: unknown, volumeNo: number, chapterCount: number, existingCharacterNames: string[] = []): VolumeOutlinePreviewOutput {
     const output = this.asRecord(data);
     const volumeRecord = this.asRecord(output.volume);
     if (!Object.keys(volumeRecord).length) {
@@ -154,7 +155,7 @@ export class GenerateVolumeOutlinePreviewTool implements BaseTool<GenerateVolume
       throw new Error(`generate_volume_outline_preview volume.chapterCount 与目标章节数 ${chapterCount} 不匹配，未生成完整卷大纲。`);
     }
     const narrativePlan = this.asRecord(volumeRecord.narrativePlan);
-    this.assertNarrativePlan(narrativePlan, chapterCount);
+    this.assertNarrativePlan(narrativePlan, chapterCount, existingCharacterNames);
     return {
       volume: {
         volumeNo,
@@ -168,7 +169,7 @@ export class GenerateVolumeOutlinePreviewTool implements BaseTool<GenerateVolume
     };
   }
 
-  private assertNarrativePlan(narrativePlan: Record<string, unknown>, chapterCount: number): void {
+  private assertNarrativePlan(narrativePlan: Record<string, unknown>, chapterCount: number, existingCharacterNames: string[] = []): void {
     if (!Object.keys(narrativePlan).length) {
       throw new Error('generate_volume_outline_preview 缺少 volume.narrativePlan，未生成完整卷大纲。');
     }
@@ -233,6 +234,11 @@ export class GenerateVolumeOutlinePreviewTool implements BaseTool<GenerateVolume
     if (expectedStart !== chapterCount + 1) {
       throw new Error(`generate_volume_outline_preview narrativePlan.storyUnits 未覆盖到第 ${chapterCount} 章，未生成完整卷大纲。`);
     }
+    narrativePlan.characterPlan = assertVolumeCharacterPlan(narrativePlan.characterPlan, {
+      chapterCount,
+      existingCharacterNames,
+      label: 'narrativePlan.characterPlan',
+    });
   }
 
   private buildSystemPrompt(): string {
@@ -240,6 +246,9 @@ export class GenerateVolumeOutlinePreviewTool implements BaseTool<GenerateVolume
       '你是小说卷大纲设计 Agent。只输出严格 JSON，不要 Markdown、解释或代码块。',
       '本工具只生成 volume 卷大纲与 risks，不生成 chapters、chapter、正文或章节细纲。',
       '卷大纲必须先定盘整卷主线、卷内支线、单元故事 storyUnits、伏笔分配和卷末交接，供后续章节细纲承接。',
+      '卷大纲还必须生成本卷角色规划 characterPlan：既有角色本卷弧线、重要新增角色候选、关系弧和角色功能覆盖。',
+      '重要新增角色只能作为 narrativePlan.characterPlan.newCharacterCandidates 候选进入预览，不能在章节细纲里临时发明 supporting/protagonist/antagonist 等重要角色。',
+      '角色内容失败即失败：不要生成占位角色、未命名角色或模板角色；如果缺上下文，把风险写入 risks，但仍必须返回完整合法 characterPlan。',
       'synopsis 必须写成结构化 Markdown 卷纲，至少包含：## 全书主线阶段、## 本卷主线、## 本卷戏剧问题、## 卷内支线、## 单元故事、## 支线交叉点、## 卷末交接。',
       '故事性要求：每条主线/支线/单元故事都要有“欲望目标 -> 阻力升级 -> 选择代价 -> 阶段反转/回收 -> 状态变化”，不能只写功能标签。',
       '单元故事是卷级规划，不是章节内临时生成；storyUnits 必须连续覆盖第 1 章到目标 chapterCount，不能缺章、重叠或跳号。',
@@ -248,11 +257,14 @@ export class GenerateVolumeOutlinePreviewTool implements BaseTool<GenerateVolume
       'foreshadowPlan 必须分配具体伏笔、出现区间、回收区间和回收方式；endingHook 必须能把本卷胜利代价交接到下一卷压力。',
       '输出字段只包含 volume、risks。',
       'volume 必须包含 volumeNo、title、synopsis、objective、chapterCount、narrativePlan。',
-      'narrativePlan 必须包含 globalMainlineStage、volumeMainline、dramaticQuestion、startState、endState、mainlineMilestones、subStoryLines、storyUnits、foreshadowPlan、endingHook、handoffToNextVolume。',
+      'narrativePlan 必须包含 globalMainlineStage、volumeMainline、dramaticQuestion、startState、endState、mainlineMilestones、subStoryLines、storyUnits、foreshadowPlan、endingHook、handoffToNextVolume、characterPlan。',
       'storyUnits 必须按 3-5 章一组规划完整单元故事；每个 storyUnit 包含 unitId、title、chapterRange、localGoal、localConflict、serviceFunctions、payoff、stateChangeAfterUnit。',
       'subStoryLines 至少 2 条，写清 name、type、function、startState、progress、endState、relatedCharacters、chapterNodes。',
+      'characterPlan 必须包含 existingCharacterArcs、newCharacterCandidates、relationshipArcs、roleCoverage。',
+      'newCharacterCandidates 可为空；若有候选，每个候选必须包含 candidateId、name、roleType、scope=volume、narrativeFunction、personalityCore、motivation、firstAppearChapter、expectedArc、approvalStatus=candidate。',
+      'firstAppearChapter 必须在 1 到 chapterCount 范围内；relationshipArcs.participants 只能引用既有角色名或 newCharacterCandidates.name。',
       '禁止空泛词堆叠；每条支线和单元故事都必须绑定具体人物、行动、资源/线索/制度压力和阶段结果。',
-      'JSON 骨架：{"volume":{"volumeNo":1,"title":"卷名","synopsis":"Markdown结构卷纲","objective":"可检验卷目标","chapterCount":60,"narrativePlan":{"globalMainlineStage":"全书主线阶段","volumeMainline":"本卷主线","dramaticQuestion":"本卷戏剧问题","startState":"开局状态","endState":"结尾状态","mainlineMilestones":["里程碑"],"subStoryLines":[{"name":"支线名","type":"mystery","function":"叙事作用","startState":"起点","progress":"推进方式","endState":"阶段结果","relatedCharacters":["角色名"],"chapterNodes":[1]}],"storyUnits":[{"unitId":"v1_unit_01","title":"单元故事名","chapterRange":{"start":1,"end":4},"localGoal":"局部目标","localConflict":"局部阻力","serviceFunctions":["mainline","relationship_shift","foreshadow"],"payoff":"阶段结局","stateChangeAfterUnit":"单元后状态"}],"foreshadowPlan":["伏笔"],"endingHook":"卷末钩子","handoffToNextVolume":"下一卷交接"}},"risks":[]}',
+      'JSON 骨架：{"volume":{"volumeNo":1,"title":"卷名","synopsis":"Markdown结构卷纲","objective":"可检验卷目标","chapterCount":60,"narrativePlan":{"globalMainlineStage":"全书主线阶段","volumeMainline":"本卷主线","dramaticQuestion":"本卷戏剧问题","startState":"开局状态","endState":"结尾状态","mainlineMilestones":["里程碑"],"subStoryLines":[{"name":"支线名","type":"mystery","function":"叙事作用","startState":"起点","progress":"推进方式","endState":"阶段结果","relatedCharacters":["角色名"],"chapterNodes":[1]}],"storyUnits":[{"unitId":"v1_unit_01","title":"单元故事名","chapterRange":{"start":1,"end":4},"localGoal":"局部目标","localConflict":"局部阻力","serviceFunctions":["mainline","relationship_shift","foreshadow"],"payoff":"阶段结局","stateChangeAfterUnit":"单元后状态"}],"characterPlan":{"existingCharacterArcs":[{"characterName":"既有角色名","roleInVolume":"本卷角色功能","entryState":"入卷状态","volumeGoal":"本卷目标","pressure":"压力","keyChoices":["关键选择"],"firstActiveChapter":1,"endState":"出卷状态"}],"newCharacterCandidates":[{"candidateId":"v1_candidate_01","name":"候选角色名","roleType":"supporting","scope":"volume","narrativeFunction":"叙事功能","personalityCore":"性格核心","motivation":"动机","conflictWith":["既有角色名"],"relationshipAnchors":["既有角色名"],"firstAppearChapter":2,"expectedArc":"本卷弧线","approvalStatus":"candidate"}],"relationshipArcs":[{"participants":["既有角色名","候选角色名"],"startState":"关系起点","turnChapterNos":[2],"endState":"关系终点"}],"roleCoverage":{"mainlineDrivers":["角色名"],"antagonistPressure":["角色名"],"emotionalCounterweights":["角色名"],"expositionCarriers":["角色名"]}},"foreshadowPlan":["伏笔"],"endingHook":"卷末钩子","handoffToNextVolume":"下一卷交接"}},"risks":[]}',
     ].join('\n');
   }
 
@@ -274,7 +286,7 @@ export class GenerateVolumeOutlinePreviewTool implements BaseTool<GenerateVolume
       '现有目标卷信息（只作定位和承接；若用户要求重写，应重新生成完整卷纲）：',
       this.safeJson({ volumeNo, title: targetVolume.title, synopsis: targetVolume.synopsis, objective: targetVolume.objective, chapterCount: targetVolume.chapterCount, narrativePlan: targetVolume.narrativePlan }, 4000),
       '',
-      '角色摘要：',
+      '已有角色摘要（名称、别名、scope、状态和关系锚点；优先规划既有角色，不要重复造人）：',
       this.safeJson(characters, 4000),
       '',
       '设定摘要：',
@@ -337,5 +349,13 @@ export class GenerateVolumeOutlinePreviewTool implements BaseTool<GenerateVolume
   private safeJson(value: unknown, limit: number): string {
     const text = JSON.stringify(value ?? {}, null, 2);
     return text.length > limit ? `${text.slice(0, limit)}...` : text;
+  }
+
+  private extractExistingCharacterNames(contextValue: unknown): string[] {
+    const context = this.asRecord(contextValue);
+    const characters = Array.isArray(context.characters) ? context.characters : [];
+    return characters
+      .map((item) => this.text(this.asRecord(item).name))
+      .filter(Boolean);
   }
 }
