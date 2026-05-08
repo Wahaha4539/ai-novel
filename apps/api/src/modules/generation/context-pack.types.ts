@@ -26,6 +26,34 @@ export interface SceneExecutionPlan {
   };
 }
 
+export interface PlannedTimelineEvent {
+  id: string;
+  title: string;
+  chapterId?: string | null;
+  chapterNo?: number | null;
+  eventTime?: string | null;
+  locationName?: string | null;
+  participants: string[];
+  cause?: string | null;
+  result?: string | null;
+  impactScope?: string | null;
+  isPublic: boolean;
+  knownBy: string[];
+  unknownBy: string[];
+  eventStatus: string;
+  sourceType: string;
+  metadata: Record<string, unknown>;
+  sourceTrace: {
+    sourceType: 'timeline_event';
+    sourceId: string;
+    projectId: string;
+    chapterId?: string | null;
+    chapterNo?: number | null;
+    eventStatus: string;
+    sourceKind?: string;
+  };
+}
+
 /**
  * 写作 Prompt 的上下文包版本。
  * verifiedContext 只允许放入数据库真实命中的资料；userIntent 放入本章显式要求；retrievalDiagnostics 仅用于日志/排查，不直接进入正文事实区。
@@ -39,6 +67,7 @@ export interface ChapterContextPack {
   };
   planningContext?: {
     sceneCards: SceneExecutionPlan[];
+    plannedTimelineEvents?: PlannedTimelineEvent[];
   };
   userIntent: {
     instruction?: string;

@@ -645,6 +645,7 @@ test('GenerateChapterService sorts SceneCards predictably and preserves trace me
 
 test('GenerateChapterService run carries current chapter SceneCards through contextPack retrievalPayload and prompt trace', async () => {
   let sceneWhere: Record<string, unknown> | undefined;
+  let timelineWhere: Record<string, unknown> | undefined;
   let draftCreateData: Record<string, unknown> | undefined;
   let qualityReportData: Record<string, unknown> | undefined;
   const chapter = {
@@ -723,6 +724,93 @@ test('GenerateChapterService run carries current chapter SceneCards through cont
         }];
       },
     },
+    timelineEvent: {
+      async findMany(args: { where: Record<string, unknown> }) {
+        timelineWhere = args.where;
+        return [
+          {
+            id: 'timeline-plan-current',
+            projectId: 'p1',
+            chapterId: 'c1',
+            chapterNo: 4,
+            title: 'Planned archive gate breach',
+            eventTime: '第四章黄昏',
+            locationName: 'Old archive',
+            participants: ['Lin Che'],
+            cause: 'Lin Che follows the false key.',
+            result: 'The archive gate opens to a missing page.',
+            impactScope: 'archive',
+            isPublic: false,
+            knownBy: ['Lin Che'],
+            unknownBy: ['Shen Yan'],
+            eventStatus: 'planned',
+            sourceType: 'agent_timeline_plan',
+            metadata: { sourceTrace: { sourceKind: 'planned_timeline_event' } },
+            updatedAt: new Date('2026-05-04T00:00:00Z'),
+          },
+          {
+            id: 'timeline-active-current',
+            projectId: 'p1',
+            chapterId: 'c1',
+            chapterNo: 4,
+            title: 'Active should not be planning context',
+            eventTime: '第四章',
+            locationName: 'Old archive',
+            participants: ['Lin Che'],
+            cause: 'already happened',
+            result: 'active event belongs to verified retrieval only',
+            impactScope: 'archive',
+            isPublic: false,
+            knownBy: ['Lin Che'],
+            unknownBy: [],
+            eventStatus: 'active',
+            sourceType: 'manual',
+            metadata: {},
+            updatedAt: new Date('2026-05-04T00:00:00Z'),
+          },
+          {
+            id: 'timeline-plan-future',
+            projectId: 'p1',
+            chapterId: 'c5',
+            chapterNo: 5,
+            title: 'Future plan',
+            eventTime: '第五章',
+            locationName: 'Old archive',
+            participants: ['Lin Che'],
+            cause: 'future outline',
+            result: 'future planned event stays out',
+            impactScope: 'archive',
+            isPublic: false,
+            knownBy: ['Lin Che'],
+            unknownBy: [],
+            eventStatus: 'planned',
+            sourceType: 'agent_timeline_plan',
+            metadata: {},
+            updatedAt: new Date('2026-05-05T00:00:00Z'),
+          },
+          {
+            id: 'timeline-plan-cross-project',
+            projectId: 'p2',
+            chapterId: 'c1',
+            chapterNo: 4,
+            title: 'Cross project plan',
+            eventTime: '第四章',
+            locationName: 'Old archive',
+            participants: ['Lin Che'],
+            cause: 'wrong project',
+            result: 'must not enter context',
+            impactScope: 'archive',
+            isPublic: false,
+            knownBy: ['Lin Che'],
+            unknownBy: [],
+            eventStatus: 'planned',
+            sourceType: 'agent_timeline_plan',
+            metadata: {},
+            updatedAt: new Date('2026-05-06T00:00:00Z'),
+          },
+        ];
+      },
+    },
     promptTemplate: {
       async findFirst() {
         return { systemPrompt: 'system prompt', userTemplate: 'user template' };
@@ -778,16 +866,22 @@ test('GenerateChapterService run carries current chapter SceneCards through cont
   );
 
   const result = await service.run('p1', 'c1', { instruction: 'Write the planned scene.' });
-  const contextPack = result.retrievalPayload.contextPack as { planningContext: { sceneCards: Array<Record<string, unknown>> } };
+  const contextPack = result.retrievalPayload.contextPack as { verifiedContext: { structuredHits: Array<Record<string, unknown>> }; planningContext: { sceneCards: Array<Record<string, unknown>>; plannedTimelineEvents: Array<Record<string, unknown>> } };
   const promptTrace = result.promptDebug.sceneCardSourceTrace as Array<Record<string, unknown>>;
-  const generationContext = draftCreateData?.generationContext as { retrievalPayload: { contextPack: { planningContext: { sceneCards: Array<Record<string, unknown>> } } } };
+  const generationContext = draftCreateData?.generationContext as { retrievalPayload: { contextPack: { planningContext: { sceneCards: Array<Record<string, unknown>>; plannedTimelineEvents: Array<Record<string, unknown>> } } } };
 
   assert.deepEqual(sceneWhere, { projectId: 'p1', chapterId: 'c1', NOT: { status: 'archived' } });
+  assert.deepEqual(timelineWhere, { projectId: 'p1', eventStatus: 'planned', OR: [{ chapterId: 'c1' }, { chapterNo: 4 }] });
   assert.equal(contextPack.planningContext.sceneCards[0].id, 'scene-run');
   assert.deepEqual(contextPack.planningContext.sceneCards[0].relatedForeshadowIds, ['f-ledger']);
   assert.deepEqual(contextPack.planningContext.sceneCards[0].metadata, { beat: 'reveal' });
+  assert.deepEqual(contextPack.planningContext.plannedTimelineEvents.map((item) => item.id), ['timeline-plan-current']);
+  assert.deepEqual(contextPack.planningContext.plannedTimelineEvents[0].participants, ['Lin Che']);
+  assert.equal((contextPack.planningContext.plannedTimelineEvents[0].sourceTrace as Record<string, unknown>).sourceKind, 'planned_timeline_event');
+  assert.equal(contextPack.verifiedContext.structuredHits.some((hit) => hit.sourceType === 'timeline_event'), false);
   assert.deepEqual(promptTrace[0], { sourceType: 'scene_card', sourceId: 'scene-run', projectId: 'p1', volumeId: null, chapterId: 'c1', chapterNo: 4, sceneNo: 1 });
   assert.equal(generationContext.retrievalPayload.contextPack.planningContext.sceneCards[0].id, 'scene-run');
+  assert.equal(generationContext.retrievalPayload.contextPack.planningContext.plannedTimelineEvents[0].id, 'timeline-plan-current');
   assert.equal(((qualityReportData?.metadata as Record<string, unknown>).qualityGate as Record<string, unknown>).sceneCardCoverage !== undefined, true);
   assert.equal(result.qualityGate.sceneCardCoverage?.missing.length, 0);
 });

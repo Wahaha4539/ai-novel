@@ -10,7 +10,7 @@ import { RetrievalBundle, RetrievalBundleWithCacheMeta, RetrievalService } from 
 import { RetrievalPlan, RetrievalPlannerDiagnostics } from '../memory/retrieval-plan.types';
 import { ValidationService } from '../validation/validation.service';
 import { ChapterRewriteCleanupResult, ChapterRewriteCleanupService } from './chapter-rewrite-cleanup.service';
-import { ChapterContextPack, SceneExecutionPlan } from './context-pack.types';
+import { ChapterContextPack, PlannedTimelineEvent, SceneExecutionPlan } from './context-pack.types';
 import { PromptBuilderService } from './prompt-builder.service';
 import { RetrievalPlannerService } from './retrieval-planner.service';
 
@@ -171,6 +171,27 @@ export interface GenerateChapterResult {
   rewriteCleanup?: ChapterRewriteCleanupResult;
 }
 
+interface TimelinePlanningEventRow {
+  id: string;
+  projectId: string;
+  chapterId: string | null;
+  chapterNo: number | null;
+  title: string;
+  eventTime: string | null;
+  locationName: string | null;
+  participants: Prisma.JsonValue;
+  cause: string | null;
+  result: string | null;
+  impactScope: string | null;
+  isPublic: boolean;
+  knownBy: Prisma.JsonValue;
+  unknownBy: Prisma.JsonValue;
+  eventStatus: string;
+  sourceType: string;
+  metadata: Prisma.JsonValue;
+  updatedAt?: Date;
+}
+
 /**
  * API 内章节生成主链路，迁移 Worker GenerateChapterPipeline 的 PromptBuilder/Retrieval/LLM/草稿写入核心能力。
  * 输入章节和写作参数；输出草稿元数据；副作用是创建 ChapterDraft 并更新章节状态与字数。
@@ -211,7 +232,7 @@ export class GenerateChapterService {
     }
 
     await input.progress?.heartbeat?.({ phase: 'retrieving_context', phaseMessage: '正在召回章节写作上下文' });
-    const [styleProfile, characters, plannedForeshadows, sceneCards, previousChapters] = await Promise.all([
+    const [styleProfile, characters, plannedForeshadows, sceneCards, plannedTimelineEvents, previousChapters] = await Promise.all([
       this.loadStyleProfile(projectId, chapter.project.defaultStyleProfileId),
       this.prisma.character.findMany({ where: { projectId }, orderBy: { createdAt: 'asc' }, take: 20 }),
       this.prisma.foreshadowTrack.findMany({
@@ -220,6 +241,7 @@ export class GenerateChapterService {
         take: 12,
       }),
       this.loadSceneCardsForChapter(projectId, chapter.id, chapter.chapterNo),
+      this.loadPlannedTimelineEventsForChapter(projectId, chapter.id, chapter.chapterNo),
       this.loadPreviousChapters(projectId, chapter.chapterNo),
     ]);
 
@@ -290,6 +312,7 @@ export class GenerateChapterService {
       plannerDiagnostics: retrievalPlanResult.diagnostics,
       generationProfile,
       sceneCards: this.buildSceneExecutionPlans(sceneCards, chapter),
+      plannedTimelineEvents: this.buildPlannedTimelineEvents(plannedTimelineEvents, chapter),
     });
 
     const prompt = await this.promptBuilder.buildChapterPrompt({
@@ -396,6 +419,7 @@ export class GenerateChapterService {
     plannerDiagnostics: RetrievalPlannerDiagnostics;
     generationProfile: GenerationProfileSnapshot;
     sceneCards?: SceneExecutionPlan[];
+    plannedTimelineEvents?: PlannedTimelineEvent[];
   }): ChapterContextPack {
     return {
       schemaVersion: 1,
@@ -406,6 +430,7 @@ export class GenerateChapterService {
       },
       planningContext: {
         sceneCards: input.sceneCards ?? [],
+        plannedTimelineEvents: input.plannedTimelineEvents ?? [],
       },
       userIntent: {
         instruction: input.input.instruction?.trim() || undefined,
@@ -975,6 +1000,65 @@ export class GenerateChapterService {
       orderBy: [{ updatedAt: 'asc' }],
       take: 30,
     }).then((items) => items.map((item) => ({ ...item, chapterNo })));
+  }
+
+  private async loadPlannedTimelineEventsForChapter(projectId: string, chapterId: string, chapterNo: number): Promise<TimelinePlanningEventRow[]> {
+    const client = (this.prisma as unknown as { timelineEvent?: { findMany(args: unknown): Promise<TimelinePlanningEventRow[]> } }).timelineEvent;
+    if (!client) return [];
+    const rows = await client.findMany({
+      where: {
+        projectId,
+        eventStatus: 'planned',
+        OR: [{ chapterId }, { chapterNo }],
+      },
+      orderBy: [{ eventTime: 'asc' }, { updatedAt: 'asc' }],
+      take: 50,
+    });
+    return rows
+      .filter((row) => row.projectId === projectId && row.eventStatus === 'planned' && (row.chapterId === chapterId || row.chapterNo === chapterNo))
+      .slice(0, 30);
+  }
+
+  private buildPlannedTimelineEvents(events: TimelinePlanningEventRow[], chapter: { id: string; chapterNo: number }): PlannedTimelineEvent[] {
+    return [...events].sort((left, right) => this.comparePlannedTimelineEvents(left, right)).slice(0, 12).map((event) => {
+      const metadata = this.asRecord(event.metadata) ?? {};
+      const storedSourceTrace = this.asRecord(metadata.sourceTrace);
+      const sourceKind = this.text(storedSourceTrace?.sourceKind) ?? this.text(metadata.sourceKind);
+      return {
+        id: event.id,
+        title: event.title,
+        chapterId: event.chapterId ?? chapter.id,
+        chapterNo: event.chapterNo ?? chapter.chapterNo,
+        eventTime: event.eventTime,
+        locationName: event.locationName,
+        participants: this.stringArray(event.participants),
+        cause: event.cause,
+        result: event.result,
+        impactScope: event.impactScope,
+        isPublic: event.isPublic,
+        knownBy: this.stringArray(event.knownBy),
+        unknownBy: this.stringArray(event.unknownBy),
+        eventStatus: event.eventStatus,
+        sourceType: event.sourceType,
+        metadata,
+        sourceTrace: {
+          sourceType: 'timeline_event',
+          sourceId: event.id,
+          projectId: event.projectId,
+          chapterId: event.chapterId ?? chapter.id,
+          chapterNo: event.chapterNo ?? chapter.chapterNo,
+          eventStatus: event.eventStatus,
+          ...(sourceKind ? { sourceKind } : {}),
+        },
+      };
+    });
+  }
+
+  private comparePlannedTimelineEvents(left: TimelinePlanningEventRow, right: TimelinePlanningEventRow): number {
+    const timeDelta = (left.eventTime ?? '').localeCompare(right.eventTime ?? '');
+    if (timeDelta !== 0) return timeDelta;
+    const updatedDelta = (left.updatedAt?.getTime() ?? 0) - (right.updatedAt?.getTime() ?? 0);
+    return updatedDelta !== 0 ? updatedDelta : left.id.localeCompare(right.id);
   }
 
   private buildSceneExecutionPlans(
