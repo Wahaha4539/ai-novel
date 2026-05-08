@@ -8643,18 +8643,7 @@ test('PlanValidatorService blocks invalid scoped planner output without fallback
   assert.equal(calls, 2);
 });
 
-function createOutlinePlannerHarness(llm: unknown) {
-  const toolNames = [
-    'inspect_project_context',
-    'generate_volume_outline_preview',
-    'generate_chapter_outline_preview',
-    'merge_chapter_outline_previews',
-    'validate_outline',
-    'persist_outline',
-    'persist_volume_outline',
-    'write_chapter',
-    'write_chapter_series',
-  ];
+function createScopedPlannerHarness(toolNames: string[], llm: unknown) {
   const toolList = toolNames.map((name) => createTool({
     name,
     requiresApproval: name.startsWith('persist_') || name.startsWith('write_'),
@@ -8683,6 +8672,20 @@ function createOutlinePlannerHarness(llm: unknown) {
     tools,
     planner: new AgentPlannerService(new SkillRegistryService(), tools, new RuleEngineService(), llm as never, undefined, new PlanValidatorService()),
   };
+}
+
+function createOutlinePlannerHarness(llm: unknown) {
+  return createScopedPlannerHarness([
+    'inspect_project_context',
+    'generate_volume_outline_preview',
+    'generate_chapter_outline_preview',
+    'merge_chapter_outline_previews',
+    'validate_outline',
+    'persist_outline',
+    'persist_volume_outline',
+    'write_chapter',
+    'write_chapter_series',
+  ], llm);
 }
 
 test('ASP-P4-002 volume outline scoped plan forbids chapter outline tools', async () => {
@@ -8814,6 +8817,179 @@ test('ASP-P4-002 volume outline repair cannot switch to chapter outline', async 
       selectedTools: tools.listManifestsForPlanner(selectedBundle.strictToolNames),
     }),
     /Agent Planner .*bundle-outside tools.*generate_chapter_outline_preview/,
+  );
+  assert.equal(calls, 2);
+});
+
+test('ASP-P4-003 import scoped plan rejects expanded asset targets', async () => {
+  let calls = 0;
+  const llm = {
+    async chatJson() {
+      calls += 1;
+      return {
+        data: {
+          taskType: 'project_import_preview',
+          summary: 'Invalid expanded import plan.',
+          assumptions: [],
+          risks: [],
+          steps: [
+            { stepNo: 1, name: 'Analyze', tool: 'analyze_source_text', mode: 'act', requiresApproval: false, args: { sourceText: '{{context.session.selectedText}}' } },
+            { stepNo: 2, name: 'Brief', tool: 'build_import_brief', mode: 'act', requiresApproval: false, args: { analysis: '{{steps.1.output}}', requestedAssetTypes: ['outline', 'characters'] } },
+            { stepNo: 3, name: 'Outline', tool: 'generate_import_outline_preview', mode: 'act', requiresApproval: false, args: { analysis: '{{steps.1.output}}', importBrief: '{{steps.2.output}}' } },
+            { stepNo: 4, name: 'Characters', tool: 'generate_import_characters_preview', mode: 'act', requiresApproval: false, args: { analysis: '{{steps.1.output}}', importBrief: '{{steps.2.output}}' } },
+            { stepNo: 5, name: 'Merge', tool: 'merge_import_previews', mode: 'act', requiresApproval: false, args: { requestedAssetTypes: ['outline', 'characters'], outlinePreview: '{{steps.3.output}}', charactersPreview: '{{steps.4.output}}' } },
+            { stepNo: 6, name: 'Validate', tool: 'validate_imported_assets', mode: 'act', requiresApproval: false, args: { preview: '{{steps.5.output}}' } },
+            { stepNo: 7, name: 'Persist', tool: 'persist_project_assets', mode: 'act', requiresApproval: true, args: { preview: '{{steps.5.output}}', validation: '{{steps.6.output}}' } },
+          ],
+        },
+        result: { model: 'planner-mock' },
+      };
+    },
+  };
+  const importTools = [
+    'read_source_document',
+    'analyze_source_text',
+    'build_import_brief',
+    'build_import_preview',
+    'generate_import_project_profile_preview',
+    'generate_import_outline_preview',
+    'generate_import_characters_preview',
+    'generate_import_worldbuilding_preview',
+    'generate_import_writing_rules_preview',
+    'merge_import_previews',
+    'cross_target_consistency_check',
+    'validate_imported_assets',
+    'persist_project_assets',
+    'write_chapter',
+    'write_chapter_series',
+    'persist_outline',
+  ];
+  const { planner, tools } = createScopedPlannerHarness(importTools, llm);
+  const selectedBundle = {
+    bundleName: 'import.project_assets',
+    strictToolNames: importTools.filter((tool) => !['write_chapter', 'write_chapter_series', 'persist_outline'].includes(tool)),
+    optionalToolNames: [],
+    deniedToolNames: ['write_chapter', 'write_chapter_series', 'persist_outline'],
+    selectionReason: 'test',
+  };
+
+  await assert.rejects(
+    () => planner.createPlanWithTools({
+      goal: 'Targeted import eval: generate only the outline from this source.',
+      context: { session: { selectedText: 'source', requestedAssetTypes: ['outline'], importPreviewMode: 'deep' } } as AgentContextV2,
+      route: { domain: 'import', intent: 'project_import_preview', confidence: 0.9, reasons: ['test'], needsApproval: true, needsPersistence: true },
+      selectedBundle,
+      selectedTools: tools.listManifestsForPlanner(selectedBundle.strictToolNames),
+    }),
+    /Agent Planner .*import target expansion.*characters|Agent Planner .*requestedAssetTypes mismatch/,
+  );
+  assert.equal(calls, 2);
+});
+
+test('ASP-P4-003 guided scoped plan rejects chapter writing', async () => {
+  let calls = 0;
+  const llm = {
+    async chatJson() {
+      calls += 1;
+      return {
+        data: {
+          taskType: 'chapter_write',
+          summary: 'Wrong guided writing plan.',
+          assumptions: [],
+          risks: [],
+          steps: [
+            { stepNo: 1, name: 'Write', tool: 'write_chapter', mode: 'act', requiresApproval: true, args: { chapterId: '{{context.session.currentChapterId}}', instruction: '{{context.userMessage}}' } },
+          ],
+        },
+        result: { model: 'planner-mock' },
+      };
+    },
+  };
+  const guidedTools = [
+    'generate_guided_step_preview',
+    'validate_guided_step_preview',
+    'persist_guided_step_result',
+    'inspect_project_context',
+    'write_chapter',
+    'write_chapter_series',
+    'polish_chapter',
+    'fact_validation',
+    'auto_repair_chapter',
+    'extract_chapter_facts',
+    'rebuild_memory',
+    'review_memory',
+    'persist_outline',
+  ];
+  const { planner, tools } = createScopedPlannerHarness(guidedTools, llm);
+  const selectedBundle = {
+    bundleName: 'guided.step',
+    strictToolNames: ['generate_guided_step_preview', 'validate_guided_step_preview', 'persist_guided_step_result'],
+    optionalToolNames: ['inspect_project_context'],
+    deniedToolNames: ['write_chapter', 'write_chapter_series', 'persist_outline'],
+    selectionReason: 'test',
+  };
+
+  await assert.rejects(
+    () => planner.createPlanWithTools({
+      goal: '当前引导步骤怎么填？',
+      context: { session: { guided: { currentStep: 'guided_volume', currentStepLabel: 'Volume setup', currentStepData: {} } } } as AgentContextV2,
+      route: { domain: 'guided', intent: 'guided_step_consultation', confidence: 0.94, reasons: ['test'], needsApproval: false, needsPersistence: false },
+      selectedBundle,
+      selectedTools: tools.listManifestsForPlanner(selectedBundle.strictToolNames),
+    }),
+    /Agent Planner .*bundle-outside tools.*write_chapter/,
+  );
+  assert.equal(calls, 2);
+});
+
+test('ASP-P4-003 timeline preview scoped plan rejects implicit persistence', async () => {
+  let calls = 0;
+  const llm = {
+    async chatJson() {
+      calls += 1;
+      return {
+        data: {
+          taskType: 'timeline_plan',
+          summary: 'Invalid timeline persistence plan.',
+          assumptions: [],
+          risks: [],
+          steps: [
+            { stepNo: 1, name: 'Collect', tool: 'collect_task_context', mode: 'act', requiresApproval: false, args: { taskType: 'timeline_plan' } },
+            { stepNo: 2, name: 'Preview', tool: 'generate_timeline_preview', mode: 'act', requiresApproval: false, args: { context: '{{steps.1.output}}', sourceType: 'craft_brief' } },
+            { stepNo: 3, name: 'Validate', tool: 'validate_timeline_preview', mode: 'act', requiresApproval: false, args: { preview: '{{steps.2.output}}' } },
+            { stepNo: 4, name: 'Persist', tool: 'persist_timeline_events', mode: 'act', requiresApproval: true, args: { preview: '{{steps.2.output}}', validation: '{{steps.3.output}}' } },
+          ],
+        },
+        result: { model: 'planner-mock' },
+      };
+    },
+  };
+  const { planner, tools } = createScopedPlannerHarness([
+    'collect_task_context',
+    'generate_timeline_preview',
+    'align_chapter_timeline_preview',
+    'validate_timeline_preview',
+    'persist_timeline_events',
+    'write_chapter',
+    'write_chapter_series',
+    'persist_outline',
+  ], llm);
+  const selectedBundle = {
+    bundleName: 'timeline.plan',
+    strictToolNames: ['collect_task_context', 'generate_timeline_preview', 'align_chapter_timeline_preview', 'validate_timeline_preview'],
+    optionalToolNames: ['persist_timeline_events'],
+    deniedToolNames: ['write_chapter', 'write_chapter_series', 'persist_outline'],
+    selectionReason: 'test',
+  };
+
+  await assert.rejects(
+    () => planner.createPlanWithTools({
+      goal: '生成计划时间线候选，只预览不要写入',
+      route: { domain: 'timeline', intent: 'planned_timeline_preview', confidence: 0.88, reasons: ['test'], needsApproval: false, needsPersistence: false },
+      selectedBundle,
+      selectedTools: tools.listManifestsForPlanner(selectedBundle.strictToolNames),
+    }),
+    /Agent Planner .*timeline preview route tools: persist_timeline_events/,
   );
   assert.equal(calls, 2);
 });

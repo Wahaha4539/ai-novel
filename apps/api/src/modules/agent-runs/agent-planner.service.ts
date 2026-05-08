@@ -429,11 +429,10 @@ export class AgentPlannerService {
   }
 
   private validateAndNormalizeScopedPlan(data: unknown, defaults: PlannerOutputDefaults, context?: AgentContextV2, toolScope?: PlannerToolScope): AgentPlanSpec {
+    const validator = toolScope?.selectedBundle || toolScope?.route ? this.planValidator ?? new PlanValidatorService() : undefined;
+    validator?.validateRaw({ data, context, route: toolScope?.route, selectedBundle: toolScope?.selectedBundle });
     const plan = this.validateAndNormalizeLlmPlan(data, defaults, context);
-    if (toolScope?.selectedBundle || toolScope?.route) {
-      const validator = this.planValidator ?? new PlanValidatorService();
-      validator.validate({ plan, context, route: toolScope.route, selectedBundle: toolScope.selectedBundle });
-    }
+    validator?.validate({ plan, context, route: toolScope?.route, selectedBundle: toolScope?.selectedBundle });
     return plan;
   }
 

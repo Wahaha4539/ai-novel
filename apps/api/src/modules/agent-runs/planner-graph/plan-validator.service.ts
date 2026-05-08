@@ -11,6 +11,13 @@ export interface PlanValidatorInput {
   selectedBundle?: SelectedToolBundle;
 }
 
+export interface RawPlanValidatorInput {
+  data: unknown;
+  context?: AgentContextV2;
+  route?: RouteDecision;
+  selectedBundle?: SelectedToolBundle;
+}
+
 const IMPORT_TARGET_TOOL_BY_ASSET_TYPE: Record<ImportAssetType, string> = {
   projectProfile: 'generate_import_project_profile_preview',
   outline: 'generate_import_outline_preview',
@@ -36,6 +43,14 @@ const WRITE_TOOL_NAMES = new Set([
 
 @Injectable()
 export class PlanValidatorService {
+  validateRaw(input: RawPlanValidatorInput): void {
+    const plan = this.rawPlan(input.data);
+    if (!plan) return;
+    this.assertBundleTools(plan, input.selectedBundle);
+    this.assertRouteBoundaries(plan, input.route);
+    this.assertImportScope(plan, input.route, input.context);
+  }
+
   validate(input: PlanValidatorInput): void {
     this.assertBundleTools(input.plan, input.selectedBundle);
     this.assertWriteApproval(input.plan);
@@ -109,5 +124,34 @@ export class PlanValidatorService {
     if (!Array.isArray(value)) return [];
     const normalized = value.filter((item): item is ImportAssetType => typeof item === 'string' && IMPORT_ASSET_TYPES.includes(item as ImportAssetType));
     return [...new Set(normalized)];
+  }
+
+  private rawPlan(data: unknown): AgentPlanSpec | undefined {
+    const record = this.asRecord(data);
+    if (!Array.isArray(record.steps)) return undefined;
+    const steps = record.steps.map((item, index) => {
+      const step = this.asRecord(item);
+      return {
+        stepNo: index + 1,
+        name: typeof step.name === 'string' ? step.name : `raw step ${index + 1}`,
+        tool: typeof step.tool === 'string' ? step.tool : '',
+        mode: 'act' as const,
+        requiresApproval: Boolean(step.requiresApproval),
+        args: this.asRecord(step.args),
+      };
+    });
+    if (!steps.length) return undefined;
+    return {
+      taskType: typeof record.taskType === 'string' ? record.taskType : 'raw',
+      summary: typeof record.summary === 'string' ? record.summary : 'raw plan',
+      assumptions: [],
+      risks: [],
+      requiredApprovals: [],
+      steps,
+    };
+  }
+
+  private asRecord(value: unknown): Record<string, unknown> {
+    return value && typeof value === 'object' && !Array.isArray(value) ? value as Record<string, unknown> : {};
   }
 }

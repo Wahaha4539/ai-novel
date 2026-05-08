@@ -222,5 +222,18 @@
       "mustRequireApproval": true,
       "forbidInventedIds": true
     }
+  },
+  {
+    "id": "guided_step_consultation_023",
+    "message": "Guided step consultation eval: answer the active guided step without writing prose.",
+    "context": { "session": { "currentProjectId": "project_1", "guided": { "currentStep": "guided_volume", "currentStepLabel": "Volume setup", "currentStepData": { "draft": true } } } },
+    "expected": {
+      "taskType": "guided_step_consultation",
+      "mustUseTools": ["generate_guided_step_preview", "validate_guided_step_preview"],
+      "mustNotUseTools": ["write_chapter", "write_chapter_series", "persist_outline"],
+      "mustContainInstruction": ["active guided step"],
+      "mustRequireApproval": false,
+      "forbidInventedIds": true
+    }
   }
 ]

@@ -325,7 +325,7 @@
 
 ### ASP-P4-003 增加导入、guided、timeline 边界测试
 
-- 状态：`[ ]`
+- 状态：`[x]`
 - 模块：API
 - 文件：
   - `apps/api/src/modules/agent-runs/agent-services.spec.ts`
@@ -339,6 +339,14 @@
 - 验证：
   - `pnpm --dir apps/api run test:agent`
   - `pnpm --dir apps/api run eval:agent:live`
+- 完成记录（2026-05-09）：
+  - 新增 `ASP-P4-003` scoped Planner 测试：导入 outline-only 时 raw plan 扩大到 characters 会失败，guided 当前步骤不能走 `write_chapter`，timeline 只预览时不能带 `persist_timeline_events`。
+  - `PlanValidatorService` 增加 raw plan 边界校验，并在 scoped Planner normalize 前调用，避免导入范围扩大先被 normalize 静默收窄后进入审批链路。
+  - 新增 `guided_step_consultation_023` live eval case；eval mock 和 eval context 支持 guided session，并注册 guided 工具 manifest。
+  - 修改文件：`apps/api/src/modules/agent-runs/planner-graph/plan-validator.service.ts`、`apps/api/src/modules/agent-runs/agent-planner.service.ts`、`apps/api/src/modules/agent-runs/agent-services.spec.ts`、`apps/api/test/fixtures/agent-eval-cases.json`、`scripts/dev/eval_agent_planner.ts`、`docs/architecture/agent-supervisor-planner-development-plan.md`。
+  - 测试：`AGENT_TEST_FILTER="ASP-P4-003" pnpm --dir apps/api run test:agent`，通过（3/346 targeted）。
+  - 测试：`pnpm --dir apps/api run eval:agent:live`，通过（23/23）。
+  - 测试：`pnpm --filter api build`，通过。
 
 ## 7. P5 Eval 与 Prompt 体积门禁
 

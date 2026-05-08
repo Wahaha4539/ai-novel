@@ -744,6 +744,14 @@ function buildEvalContext(item: EvalCase, toolRegistry: EvalToolRegistry): Agent
   const currentChapterIndex = typeof session.currentChapterIndex === 'number' ? session.currentChapterIndex : undefined;
   const requestedAssetTypes = importAssetTypesValue(session.requestedAssetTypes);
   const importPreviewMode = importPreviewModeValue(session.importPreviewMode);
+  const guided = asRecord(session.guided);
+  const guidedContext = Object.keys(guided).length
+    ? {
+        currentStep: textOrUndefined(guided.currentStep),
+        currentStepLabel: textOrUndefined(guided.currentStepLabel),
+        currentStepData: asRecord(guided.currentStepData),
+      }
+    : undefined;
   return {
     schemaVersion: 2,
     userMessage: item.message,
@@ -756,6 +764,7 @@ function buildEvalContext(item: EvalCase, toolRegistry: EvalToolRegistry): Agent
       selectedText: textOrUndefined(session.selectedText),
       ...(requestedAssetTypes.length ? { requestedAssetTypes } : {}),
       ...(importPreviewMode ? { importPreviewMode } : {}),
+      ...(guidedContext ? { guided: guidedContext } : {}),
     },
     attachments: [],
     project: currentProjectId ? { id: currentProjectId, title: 'Eval 测试项目', defaultWordCount: 3000, status: 'active' } : undefined,
@@ -842,6 +851,9 @@ const EVAL_TOOL_DEFINITIONS: EvalToolDefinition[] = [
   { name: 'align_chapter_timeline_preview', description: '从章节 StoryEvent 证据对齐计划时间线并生成只读确认候选。' },
   { name: 'validate_timeline_preview', description: '校验时间线候选字段、章节引用、sourceTrace 和写入前 diff。' },
   { name: 'persist_timeline_events', description: '审批后写入已校验的时间线候选。', requiresApproval: true, riskLevel: 'high', sideEffects: ['create_timeline_event', 'update_timeline_event', 'delete_timeline_event'] },
+  { name: 'generate_guided_step_preview', description: '生成创作引导当前步骤的结构化预览或问答建议。' },
+  { name: 'validate_guided_step_preview', description: '校验创作引导当前步骤预览，不写入业务表。' },
+  { name: 'persist_guided_step_result', description: '审批后保存创作引导当前步骤结果。', requiresApproval: true, riskLevel: 'medium', sideEffects: ['update_guided_session'] },
   { name: 'generate_outline_preview', description: '生成大纲拆分预览。' },
   { name: 'generate_volume_outline_preview', description: '生成卷级大纲预览。' },
   { name: 'generate_chapter_outline_preview', description: '生成单章细纲预览。' },
@@ -939,6 +951,12 @@ function createMockPlannerOutput(goal: string, agentContext: Record<string, unkn
   const currentChapterId = session.currentChapterId ? '{{context.session.currentChapterId}}' : undefined;
   const currentDraftId = session.currentDraftId ? '{{context.session.currentDraftId}}' : '{{runtime.currentDraftId}}';
   const requestedAssetTypes = importAssetTypesValue(session.requestedAssetTypes);
+  if (session.guided && goal.includes('Guided step consultation eval')) {
+    return plan('guided_step_consultation', goal, false, [
+      step(1, 'generate_guided_step_preview', { stepKey: '{{context.session.guided.currentStep}}', mode: 'consultation', currentStepData: '{{context.session.guided.currentStepData}}', instruction: goal }),
+      step(2, 'validate_guided_step_preview', { stepKey: '{{context.session.guided.currentStep}}', structuredData: '{{steps.generate_guided_step_preview.output.structuredData}}' }),
+    ]);
+  }
   if (goal.includes('Targeted import eval') && requestedAssetTypes.length) {
     return plan('project_import_preview', goal, true, [
       step(1, 'analyze_source_text', { sourceText: '{{context.session.selectedText}}' }),
