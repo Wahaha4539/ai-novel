@@ -204,6 +204,7 @@
 - TL-P6-02：补充 `persist_timeline_events` 审批边界测试，覆盖 plan 模式、未审批以及 cloned preview/validation 伪造前序输出引用直接拒绝，且拒绝路径不写 `TimelineEvent`；涉及文件：`apps/api/src/modules/agent-runs/agent-services.spec.ts`、`docs/architecture/timeline-generation-development-plan.md`；验证命令：`pnpm --filter api test:agent`、`pnpm --filter api build`、`git diff --check`。
 - TL-P6-03：补充章节润色后的自动时间线更新测试，验证 `autoUpdateTimeline=false` 时跳过 timeline alignment，`true` 时在 polish 后运行只读 preview/validate 且默认不 persist；涉及文件：`apps/api/src/modules/agent-runs/agent-services.spec.ts`、`docs/architecture/timeline-generation-development-plan.md`；验证命令：`pnpm --filter api test:agent`、`pnpm --filter api build`、`git diff --check`。
 - TL-P6-04：Agent Eval 新增计划时间线只读预览与章节后时间线确认写入用例，注册 timeline-only eval 工具，并让 Planner 规范化识别 `align_chapter_timeline_preview`，避免章节确认流程混入计划生成预览；涉及文件：`apps/api/test/fixtures/agent-eval-cases.json`、`scripts/dev/eval_agent_planner.ts`、`apps/api/src/modules/agent-runs/agent-planner.service.ts`、`docs/architecture/timeline-generation-development-plan.md`；验证命令：`pnpm --filter api eval:agent`、`pnpm --filter api eval:agent:live`、`pnpm --filter api test:agent`、`pnpm --filter api build`、`git diff --check`。
+- TL-P6-05：执行时间线功能回归命令并确认 API、Web、Agent 测试与 diff 检查均通过；涉及文件：`docs/architecture/timeline-generation-development-plan.md`；验证命令：`pnpm --filter api build`、`pnpm --filter web build`、`pnpm --filter api test:agent`、`git diff --check`。
 
 ### Phase 1：时间线候选契约与校验核心
 
@@ -265,7 +266,7 @@
 | TL-P6-02 | done | 单元测试：persist 审批边界 | `agent-services.spec.ts` | plan 模式、未审批、伪造前序输出全部拒绝 |
 | TL-P6-03 | done | 单元测试：章节后自动更新 | `agent-services.spec.ts` | `autoUpdateTimeline` true/false 行为明确 |
 | TL-P6-04 | done | Agent Eval 增加计划时间线和章节确认用例 | `agent-eval-cases.json`、eval scripts | Planner 使用 timeline-only preview/validate/persist |
-| TL-P6-05 | todo | 回归命令 | 根目录 | `pnpm --filter api build`、`pnpm --filter web build`、`pnpm --filter api test:agent`、`git diff --check` 通过 |
+| TL-P6-05 | done | 回归命令 | 根目录 | `pnpm --filter api build`、`pnpm --filter web build`、`pnpm --filter api test:agent`、`git diff --check` 通过 |
 | TL-P6-06 | todo | Docker Compose 真实验证 | 根目录 | `docker compose up -d --build` 后核心 API/UI 可用 |
 
 ## 6. 失败处理要求
