@@ -895,10 +895,17 @@ export class GuidedService {
     }
   }
 
-  private async assertGuidedChaptersCharacterExecutions(projectId: string, chapters: Array<Record<string, unknown>>): Promise<void> {
+  private async assertGuidedChaptersCharacterExecutions(
+    projectId: string,
+    chapters: Array<Record<string, unknown>>,
+    options: { includeSessionDraftVolumePlans?: boolean } = {},
+  ): Promise<void> {
     if (!chapters.length) return;
     const catalog = await this.loadGuidedCharacterCatalog(projectId);
-    const volumePlansByNo = await this.loadGuidedVolumeCharacterPlans(projectId, catalog);
+    const includeSessionDraftVolumePlans = options.includeSessionDraftVolumePlans ?? true;
+    const volumePlansByNo = await this.loadGuidedVolumeCharacterPlans(projectId, catalog, {
+      includeSessionDraftVolumePlans,
+    });
 
     chapters.forEach((chapter, index) => {
       const label = `第 ${asNumber(chapter.chapterNo) ?? index + 1} 章`;
@@ -924,7 +931,10 @@ export class GuidedService {
           label: `${label}.craftBrief.characterExecution`,
         });
       } catch (error) {
-        throw new BadRequestException(`${label} 章节角色执行无效：${errorMessage(error)}。请重试章节细纲生成，确保 cast、sceneBeats 和卷级候选一致。`);
+        const nextAction = includeSessionDraftVolumePlans
+          ? '请重试章节细纲生成，确保 cast、sceneBeats 和卷级候选一致。'
+          : '请先审批写入当前 guided_volume，或重新生成与已持久化卷纲一致的章节细纲后再保存。';
+        throw new BadRequestException(`${label} 章节角色执行无效：${errorMessage(error)}。${nextAction}`);
       }
     });
   }
@@ -932,6 +942,7 @@ export class GuidedService {
   private async loadGuidedVolumeCharacterPlans(
     projectId: string,
     catalog: CharacterReferenceCatalogForGuided,
+    options: { includeSessionDraftVolumePlans?: boolean } = {},
   ): Promise<Map<number, VolumeCharacterPlan>> {
     const [session, persistedVolumes] = await Promise.all([
       this.prisma.guidedSession.findUnique({ where: { projectId } }),
@@ -950,10 +961,12 @@ export class GuidedService {
       if (!volumeNo) continue;
       plansByNo.set(volumeNo, this.assertGuidedVolumeCharacterPlan(volume, catalog, `第 ${volumeNo} 卷`));
     }
-    for (const volume of guidedVolumes) {
-      const volumeNo = asNumber(volume.volumeNo);
-      if (!volumeNo) continue;
-      plansByNo.set(volumeNo, this.assertGuidedVolumeCharacterPlan(volume, catalog, `第 ${volumeNo} 卷`));
+    if (options.includeSessionDraftVolumePlans ?? true) {
+      for (const volume of guidedVolumes) {
+        const volumeNo = asNumber(volume.volumeNo);
+        if (!volumeNo) continue;
+        plansByNo.set(volumeNo, this.assertGuidedVolumeCharacterPlan(volume, catalog, `第 ${volumeNo} 卷`));
+      }
     }
     return plansByNo;
   }
@@ -1523,7 +1536,9 @@ ${singleChapterContext.chapterPositionContext}`;
           throw new BadRequestException('guided_chapter 写入失败：缺少非空 chapters。请重新生成完整章节细纲后再审批写入。');
         }
         if (chapters?.length) {
-          await this.assertGuidedChaptersCharacterExecutions(projectId, chapters);
+          await this.assertGuidedChaptersCharacterExecutions(projectId, chapters, {
+            includeSessionDraftVolumePlans: false,
+          });
           // Pre-fetch all volumes for this project to map volumeNo → volumeId
           const existingVolumes = await this.prisma.volume.findMany({
             where: { projectId },

@@ -3731,6 +3731,118 @@ test('VCC guided_chapter resolves persisted volume narrativePlan without session
   assert.deepEqual(volumeSelects[0], { volumeNo: true, title: true, synopsis: true, objective: true, chapterCount: true, narrativePlan: true });
 });
 
+test('VCC guided_chapter rejects unpersisted session characterPlan when writing chapters', async () => {
+  const createVolumeWithCandidate = (candidateName: string) => {
+    const basePlan = createVccCharacterPlanForChapterCount(3);
+    const baseCandidateName = String((basePlan.newCharacterCandidates[0] as Record<string, unknown>).name);
+    const characterPlan = createVccCharacterPlanForChapterCount(3, {
+      newCharacterCandidates: [
+        {
+          ...(basePlan.newCharacterCandidates[0] as Record<string, unknown>),
+          candidateId: `cand_${candidateName.toLowerCase()}`,
+          name: candidateName,
+        },
+      ],
+      relationshipArcs: basePlan.relationshipArcs.map((arc) => ({
+        ...arc,
+        participants: (arc.participants as unknown[]).map((name) => name === baseCandidateName ? candidateName : name),
+      })),
+      roleCoverage: {
+        ...(basePlan.roleCoverage as Record<string, unknown>),
+        antagonistPressure: [candidateName],
+        expositionCarriers: [candidateName],
+      },
+    });
+    const narrativePlan = createVccNarrativePlanForChapterCount(3, { characterPlan });
+    return createVccGuidedVolume({
+      narrativePlan: {
+        ...narrativePlan,
+        subStoryLines: (narrativePlan.subStoryLines as Array<Record<string, unknown>>).map((line) => ({
+          ...line,
+          relatedCharacters: Array.isArray(line.relatedCharacters)
+            ? line.relatedCharacters.map((name) => name === baseCandidateName ? candidateName : name)
+            : line.relatedCharacters,
+        })),
+      },
+    });
+  };
+  const createChapterUsingCandidate = (candidateName: string) => {
+    const craftBrief = createOutlineCraftBrief();
+    const characterExecution = craftBrief.characterExecution as Record<string, unknown>;
+    const previousCandidateName = (characterExecution.cast as Array<Record<string, unknown>>)
+      .find((item) => item.source === 'volume_candidate')?.characterName;
+    return createVccGuidedChapter({
+      chapterNo: 1,
+      volumeNo: 1,
+      craftBrief: {
+        ...craftBrief,
+        characterExecution: {
+          ...characterExecution,
+          cast: (characterExecution.cast as Array<Record<string, unknown>>).map((item) => (
+            item.source === 'volume_candidate' ? { ...item, characterName: candidateName } : item
+          )),
+          relationshipBeats: (characterExecution.relationshipBeats as Array<Record<string, unknown>>).map((beat) => ({
+            ...beat,
+            participants: Array.isArray(beat.participants)
+              ? beat.participants.map((name) => name === previousCandidateName ? candidateName : name)
+              : beat.participants,
+          })),
+        },
+      },
+    });
+  };
+  const persistedVolume = { id: 'v1', ...createVolumeWithCandidate('PersistedCandidate') };
+  const sessionDraftVolume = createVolumeWithCandidate('SessionCandidate');
+  const persistedPlan = persistedVolume.narrativePlan.characterPlan as ReturnType<typeof createVccCharacterPlan>;
+  const existingNames = persistedPlan.existingCharacterArcs.map((arc) => arc.characterName);
+  let sessionUpdated = false;
+  let cacheCleared = false;
+  let chapterTouched = false;
+  let transactionCalled = false;
+  const pickSelected = (source: Record<string, unknown>, select: Record<string, unknown>) => Object.fromEntries(
+    Object.entries(source).filter(([key]) => select[key] === true),
+  );
+  const prisma = {
+    character: { async findMany() { return existingNames.map((name) => ({ name, alias: [] })); } },
+    guidedSession: {
+      async findUnique() { return { stepData: { guided_volume_result: { volumes: [sessionDraftVolume] } } }; },
+      async update() { sessionUpdated = true; return {}; },
+    },
+    volume: {
+      async findMany(args: { select?: Record<string, unknown> }) {
+        const select = args.select ?? {};
+        if (select.id) return [pickSelected({ id: 'v1', volumeNo: persistedVolume.volumeNo }, select)];
+        return [pickSelected(persistedVolume as Record<string, unknown>, select)];
+      },
+    },
+    chapter: {
+      async findMany() { chapterTouched = true; return []; },
+      async aggregate() { chapterTouched = true; return { _max: { chapterNo: 0 } }; },
+      create() { chapterTouched = true; return Promise.resolve({}); },
+    },
+    async $transaction() {
+      transactionCalled = true;
+      return [];
+    },
+  };
+  const cache = { async deleteProjectRecallResults() { cacheCleared = true; } };
+  const service = new GuidedService(prisma as never, {} as never, cache as never);
+
+  await assert.rejects(
+    () => service.finalizeStep(
+      'p1',
+      'guided_chapter',
+      { chapters: [createChapterUsingCandidate('SessionCandidate')], saveMode: 'single_chapter' },
+      1,
+    ),
+    /volume_candidate|guided_volume|章节角色执行/,
+  );
+  assert.equal(chapterTouched, false);
+  assert.equal(transactionCalled, false);
+  assert.equal(sessionUpdated, false);
+  assert.equal(cacheCleared, false);
+});
+
 test('VCC guided_chapter rejects per-volume write before volume is persisted', async () => {
   const validVolume = createVccGuidedVolume();
   const existingName = (validVolume.narrativePlan.characterPlan as ReturnType<typeof createVccCharacterPlan>).existingCharacterArcs[0].characterName;
