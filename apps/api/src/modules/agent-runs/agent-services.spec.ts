@@ -6669,6 +6669,7 @@ test('Executor 使用运行时最新草稿指针并跳过无问题的二次修�
 
 test('FactExtractorService 抽取事实后同步生成 pending_review 记忆且不写 TimelineEvent', async () => {
   const memoryInputs: Array<Record<string, unknown>> = [];
+  const createdStoryEvents: Array<Record<string, unknown>> = [];
   const createdCharacters: Array<Record<string, unknown>> = [];
   const createdLorebookEntries: Array<Record<string, unknown>> = [];
   const timelineEventWrites: string[] = [];
@@ -6693,7 +6694,13 @@ test('FactExtractorService 抽取事实后同步生成 pending_review 记忆且�
     timelineEvent: timelineEventWriteGuard,
     async $transaction(callback: (tx: unknown) => Promise<unknown>) {
       return callback({
-        storyEvent: { async deleteMany() { return { count: 0 }; }, async createMany(args: { data: unknown[] }) { return { count: args.data.length }; } },
+        storyEvent: {
+          async deleteMany() { return { count: 0 }; },
+          async createMany(args: { data: unknown[] }) {
+            createdStoryEvents.push(...(args.data as Array<Record<string, unknown>>));
+            return { count: args.data.length };
+          },
+        },
         characterStateSnapshot: { async deleteMany() { return { count: 0 }; }, async createMany(args: { data: unknown[] }) { return { count: args.data.length }; } },
         foreshadowTrack: { async deleteMany() { return { count: 0 }; }, async createMany(args: { data: unknown[] }) { return { count: args.data.length }; } },
         timelineEvent: timelineEventWriteGuard,
@@ -6765,6 +6772,25 @@ test('FactExtractorService 抽取事实后同步生成 pending_review 记忆且�
   assert.equal((memoryInputs[0].foreshadows as unknown[]).length, 1);
   assert.equal((memoryInputs[0].firstAppearances as unknown[]).length, 2);
   assert.equal(result.createdEvents, 2);
+  assert.equal(createdStoryEvents.length, 2);
+  for (const createdStoryEvent of createdStoryEvents) {
+    const metadata = createdStoryEvent.metadata as Record<string, unknown>;
+    const sourceTrace = metadata.sourceTrace as Record<string, unknown>;
+    const contextSources = sourceTrace.contextSources as Array<Record<string, unknown>>;
+    assert.equal(createdStoryEvent.sourceDraftId, 'draft1');
+    assert.equal(metadata.generatedBy, 'agent_fact_extractor');
+    assert.equal(metadata.draftId, 'draft1');
+    assert.equal(metadata.summary, result.summary);
+    assert.equal(sourceTrace.sourceKind, 'chapter_fact_extraction');
+    assert.equal(sourceTrace.projectId, 'p1');
+    assert.equal(sourceTrace.chapterId, 'c1');
+    assert.equal(sourceTrace.chapterNo, 12);
+    assert.equal(sourceTrace.draftId, 'draft1');
+    assert.equal(sourceTrace.toolName, 'extract_chapter_facts');
+    assert.equal(sourceTrace.generatedBy, 'agent_fact_extractor');
+    assert.equal(sourceTrace.summary, result.summary);
+    assert.deepEqual(contextSources[0], { sourceType: 'chapter_draft', sourceId: 'draft1', chapterId: 'c1', chapterNo: 12 });
+  }
   assert.equal(result.createdCharacterStates, 1);
   assert.equal(result.createdForeshadows, 1);
   assert.equal(result.createdCharacters, 1);

@@ -191,6 +191,7 @@
 - TL-P3-05：补充章节生成 prompt 集成测试，捕获实际发送给 LLM 的 user prompt，断言未来章 planned、跨项目 planned 与当前章 active 事件不泄露，当前章 planned 只进入 planning context；涉及文件：`apps/api/src/modules/agent-runs/agent-services.spec.ts`、`docs/architecture/timeline-generation-development-plan.md`；验证命令：`pnpm --filter api test:agent`、`pnpm --filter api build`、`git diff --check`。
 - TL-P4-01：新增只读 `align_chapter_timeline_preview` 工具，读取当前章 `StoryEvent` 与 planned/active `TimelineEvent` 后调用 LLM 生成 `chapter_timeline_alignment` 候选，并注册到 ToolRegistry 与默认技能；测试覆盖只读、LLM 失败、候选数量不足、关键字段缺失、跨项目 sourceTrace、章节号错误和缺少 StoryEvent 直接失败；涉及文件：`apps/api/src/modules/agent-tools/tools/align-chapter-timeline-preview.tool.ts`、`apps/api/src/modules/agent-tools/agent-tools.module.ts`、`apps/api/src/modules/agent-tools/tool-registry.service.ts`、`apps/api/src/modules/agent-skills/builtin-skills.ts`、`apps/api/src/modules/agent-runs/agent-services.spec.ts`、`docs/architecture/timeline-generation-development-plan.md`；验证命令：`pnpm --filter api test:agent`、`pnpm --filter api build`、`git diff --check`。
 - TL-P4-02：补齐时间线对齐动作校验，`validate_timeline_preview` 支持 `create_discovered` 作为无需 existingTimelineEventId 的新增正文发现事件，并补测试覆盖 confirm/update/create_discovered/archive 四类候选的 accepted 与 writePreview 状态转换；涉及文件：`apps/api/src/modules/agent-tools/tools/validate-timeline-preview.tool.ts`、`apps/api/src/modules/agent-runs/agent-services.spec.ts`、`docs/architecture/timeline-generation-development-plan.md`；验证命令：`pnpm --filter api test:agent`、`pnpm --filter api build`、`git diff --check`。
+- TL-P4-03：为 `FactExtractorService` 写入的 `StoryEvent.metadata` 增加 `draftId` 与 `sourceTrace`，保留 `generatedBy` 和章节摘要，便于章节后时间线对齐追溯正文证据来源；涉及文件：`apps/api/src/modules/facts/fact-extractor.service.ts`、`apps/api/src/modules/agent-runs/agent-services.spec.ts`、`docs/architecture/timeline-generation-development-plan.md`；验证命令：`pnpm --filter api test:agent`、`pnpm --filter api build`、`git diff --check`。
 
 ### Phase 1：时间线候选契约与校验核心
 
@@ -229,7 +230,7 @@
 |---|---|---|---|---|
 | TL-P4-01 | done | 新增 `align_chapter_timeline_preview` 工具 | `apps/api/src/modules/agent-tools/tools/align-chapter-timeline-preview.tool.ts` | 读取本章 `StoryEvent` 与本章 `TimelineEvent(planned/active)`，只产候选 |
 | TL-P4-02 | done | 对齐逻辑支持 confirm/update/create/archive | 工具 helper | 计划事件被正文证实时转 active；不一致时标 changed 或候选更新 |
-| TL-P4-03 | todo | `FactExtractorService` 输出足够 sourceTrace | `fact-extractor.service.ts` | `StoryEvent` metadata 能追踪 draftId、generatedBy、summary |
+| TL-P4-03 | done | `FactExtractorService` 输出足够 sourceTrace | `fact-extractor.service.ts` | `StoryEvent` metadata 能追踪 draftId、generatedBy、summary |
 | TL-P4-04 | todo | 普通章节生成后接入对齐预览 | `generation.service.ts`、`generate-chapter.service.ts` | `autoUpdateTimeline=false` 时不运行；true 时运行预览与校验 |
 | TL-P4-05 | todo | 明确普通生成的写入策略 | `GenerationProfile` 相关代码 | 第一版建议：校验全通过才可自动写；有 error 直接报错；有 warning 进入待审或失败 |
 | TL-P4-06 | todo | 写入后清理召回缓存 | persist 工具、service | 成功写 `TimelineEvent` 后调用 `NovelCacheService.deleteProjectRecallResults(projectId)` |

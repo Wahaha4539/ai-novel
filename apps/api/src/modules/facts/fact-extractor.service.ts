@@ -130,7 +130,13 @@ export class FactExtractorService {
               participants: event.participants as Prisma.InputJsonValue,
               timelineSeq: event.timelineSeq ?? chapter.timelineSeq ?? chapter.chapterNo,
               status: 'detected',
-              metadata: { generatedBy: 'agent_fact_extractor', summary } as Prisma.InputJsonValue,
+              metadata: this.buildStoryEventMetadata({
+                projectId,
+                chapterId: chapter.id,
+                chapterNo: chapter.chapterNo,
+                draftId: draft.id,
+                summary,
+              }),
             })),
           })
         : { count: 0 };
@@ -449,6 +455,39 @@ export class FactExtractorService {
 
   private dedupeEvents(events: ExtractedEvent[]): ExtractedEvent[] {
     return this.dedupeBy(events, (event) => `${event.title}:${event.description}`.toLowerCase()).slice(0, 12);
+  }
+
+  private buildStoryEventMetadata(input: {
+    projectId: string;
+    chapterId: string;
+    chapterNo: number;
+    draftId: string;
+    summary: string;
+  }): Prisma.InputJsonValue {
+    const generatedBy = 'agent_fact_extractor';
+    return {
+      generatedBy,
+      draftId: input.draftId,
+      summary: input.summary,
+      sourceTrace: {
+        sourceKind: 'chapter_fact_extraction',
+        projectId: input.projectId,
+        chapterId: input.chapterId,
+        chapterNo: input.chapterNo,
+        draftId: input.draftId,
+        toolName: 'extract_chapter_facts',
+        generatedBy,
+        summary: input.summary,
+        contextSources: [
+          {
+            sourceType: 'chapter_draft',
+            sourceId: input.draftId,
+            chapterId: input.chapterId,
+            chapterNo: input.chapterNo,
+          },
+        ],
+      },
+    } as Prisma.InputJsonValue;
   }
 
   private statusForFirstAppearance(entityType: FirstAppearanceEntityType, significance: ExtractedFirstAppearance['significance']): 'auto' | 'pending_review' {
