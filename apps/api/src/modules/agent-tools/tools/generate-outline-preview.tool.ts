@@ -5,7 +5,7 @@ import { DEFAULT_LLM_TIMEOUT_MS } from '../../llm/llm-timeout.constants';
 import { BaseTool, ToolContext } from '../base-tool';
 import type { ToolManifestV2 } from '../tool-manifest.types';
 import { recordToolLlmUsage } from './import-preview-llm-usage';
-import { assertChapterCharacterExecution, assertVolumeCharacterPlan, type ChapterCharacterExecution } from './outline-character-contracts';
+import { assertChapterCharacterExecution, assertVolumeCharacterPlan, type ChapterCharacterExecution, type CharacterReferenceCatalog } from './outline-character-contracts';
 
 const OUTLINE_PREVIEW_LLM_TIMEOUT_MS = DEFAULT_LLM_TIMEOUT_MS;
 const OUTLINE_PREVIEW_BATCH_SIZE = 1;
@@ -177,7 +177,7 @@ export class GenerateOutlinePreviewTool implements BaseTool<GenerateOutlinePrevi
     recordToolLlmUsage(context, 'planner', response.result);
     await context.updateProgress?.({ phase: 'validating', phaseMessage: '正在校验章节预览', progressCurrent: chapterCount, progressTotal: chapterCount });
     return this.normalize(response.data, volumeNo, chapterCount, {
-      existingCharacterNames: this.extractExistingCharacterNames(args.context),
+      characterCatalog: this.extractCharacterCatalog(args.context),
     });
   }
 
@@ -204,7 +204,7 @@ export class GenerateOutlinePreviewTool implements BaseTool<GenerateOutlinePrevi
       const normalized = this.normalize(response.data, volumeNo, batch.chapterCount, {
         chapterStart: batch.startChapterNo,
         totalChapterCount: chapterCount,
-        existingCharacterNames: this.extractExistingCharacterNames(args.context),
+        characterCatalog: this.extractCharacterCatalog(args.context),
       });
       volume ??= normalized.volume;
       chapters.push(...normalized.chapters);
@@ -295,7 +295,7 @@ export class GenerateOutlinePreviewTool implements BaseTool<GenerateOutlinePrevi
     data: OutlinePreviewOutput,
     volumeNo: number,
     chapterCount: number,
-    options: { chapterStart?: number; totalChapterCount?: number; existingCharacterNames?: string[] } = {},
+    options: { chapterStart?: number; totalChapterCount?: number; characterCatalog?: CharacterReferenceCatalog } = {},
   ): OutlinePreviewOutput {
     const output = this.asRecord(data);
     const chapterStart = options.chapterStart ?? 1;
@@ -323,7 +323,7 @@ export class GenerateOutlinePreviewTool implements BaseTool<GenerateOutlinePrevi
     }
     const characterPlan = assertVolumeCharacterPlan(narrativePlan.characterPlan, {
       chapterCount: totalChapterCount,
-      existingCharacterNames: options.existingCharacterNames ?? [],
+      ...(options.characterCatalog ?? {}),
       label: 'volume.narrativePlan.characterPlan',
     });
     narrativePlan.characterPlan = characterPlan;
@@ -356,7 +356,7 @@ export class GenerateOutlinePreviewTool implements BaseTool<GenerateOutlinePrevi
       return {
         ...chapter,
         craftBrief: this.normalizeCraftBrief(record.craftBrief, `第 ${chapterNo} 章`, {
-          existingCharacterNames: options.existingCharacterNames ?? [],
+          ...(options.characterCatalog ?? {}),
           volumeCandidateNames,
         }),
       };
@@ -436,7 +436,7 @@ export class GenerateOutlinePreviewTool implements BaseTool<GenerateOutlinePrevi
   private normalizeCraftBrief(
     value: unknown,
     label: string,
-    characterOptions: { existingCharacterNames: string[]; volumeCandidateNames: string[] },
+    characterOptions: CharacterReferenceCatalog & { volumeCandidateNames: string[] },
   ): ChapterCraftBrief {
     const record = this.asRecord(value);
     if (!Object.keys(record).length) {
@@ -653,6 +653,8 @@ export class GenerateOutlinePreviewTool implements BaseTool<GenerateOutlinePrevi
     const requestChapterCount = batch?.chapterCount ?? chapterCount;
     const existingChapters = !isReplanning && Array.isArray(record.existingChapters) ? record.existingChapters.slice(0, 160) : [];
     const characters = Array.isArray(record.characters) ? record.characters.slice(0, 30) : [];
+    const relationships = Array.isArray(record.relationships) ? record.relationships.slice(0, 60) : [];
+    const characterStates = Array.isArray(record.characterStates) ? record.characterStates.slice(0, 60) : [];
     const lorebookEntries = Array.isArray(record.lorebookEntries) ? record.lorebookEntries.slice(0, 30) : [];
     const lastGeneratedChapter = previousChapters.length ? previousChapters[previousChapters.length - 1] : undefined;
     const batchContinuity = lastGeneratedChapter
@@ -755,8 +757,14 @@ export class GenerateOutlinePreviewTool implements BaseTool<GenerateOutlinePrevi
       '连续性硬要求：本章必须接住接力卡上一章的 exitState、openLoops、handoffToNextChapter、activeThreats、ownedClues、relationshipChanges 和 nextImmediatePressure；这些压力不能凭空消失，必须进入本章 craftBrief.entryState、continuityState、openLoops，或在 closedLoops 中写清关闭原因。同一个跨章场景必须沿用 sceneArcId，并递增 scenePart。',
       ...(isReplanning ? ['重规划硬要求：不要沿用旧标题、旧目标、旧章节 outline 或旧 craftBrief；输出必须是新的完整高密度卷/章节细纲。'] : []),
       '',
-      '角色摘要：',
+      '已有角色摘要（名称、别名、scope、状态和关系锚点；优先使用既有角色，不要重复造人）：',
       this.safeJson(characters, 4000),
+      '',
+      '既有关系边摘要（章节 relationshipBeats 必须承接或推进这些关系；新增长期关系应先进入卷级 characterPlan.relationshipArcs）：',
+      this.safeJson(relationships, 4000),
+      '',
+      '近期角色状态摘要（本章 entryState、exitState、continuityState 和 characterExecution.entryState 必须承接，不要让状态凭空重置）：',
+      this.safeJson(characterStates, 4000),
       '角色规划硬要求：优先使用角色摘要中的既有角色；本卷需要的重要新角色必须先写入 volume.narrativePlan.characterPlan.newCharacterCandidates，不得只在章节里出现。',
       '',
       '设定摘要：',
@@ -788,12 +796,20 @@ export class GenerateOutlinePreviewTool implements BaseTool<GenerateOutlinePrevi
     return text.length > limit ? `${text.slice(0, limit)}...` : text;
   }
 
-  private extractExistingCharacterNames(contextValue: unknown): string[] {
+  private extractCharacterCatalog(contextValue: unknown): CharacterReferenceCatalog {
     const context = this.asRecord(contextValue);
     const characters = Array.isArray(context.characters) ? context.characters : [];
-    return characters
-      .map((item) => this.text(this.asRecord(item).name, ''))
-      .filter(Boolean);
+    const existingCharacterNames: string[] = [];
+    const existingCharacterAliases: Record<string, string[]> = {};
+    for (const item of characters) {
+      const record = this.asRecord(item);
+      const name = this.text(record.name, '');
+      if (!name) continue;
+      existingCharacterNames.push(name);
+      const aliases = this.stringArray(record.aliases, []).length ? this.stringArray(record.aliases, []) : this.stringArray(record.alias, []);
+      if (aliases.length) existingCharacterAliases[name] = aliases;
+    }
+    return { existingCharacterNames, existingCharacterAliases };
   }
 
   private asRecord(value: unknown): Record<string, unknown> {

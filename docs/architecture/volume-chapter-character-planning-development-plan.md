@@ -170,9 +170,9 @@ type ChapterCharacterExecution = {
 
 | ID | 状态 | 任务 | 影响文件 | 验收标准 |
 |---|---|---|---|---|
-| VCC-P0-01 | todo | 在开发文档和 Prompt 指南中记录“卷纲生成角色规划，章节细纲生成角色执行”的分层。 | `docs/prompt-template-guide.md`, 本文档 | 文档明确章节细纲不得自由生成重要角色。 |
+| VCC-P0-01 | done | 在开发文档和 Prompt 指南中记录“卷纲生成角色规划，章节细纲生成角色执行”的分层。 | `docs/prompt-template-guide.md`, 本文档 | 文档明确章节细纲不得自由生成重要角色。 |
 | VCC-P0-02 | done | 扩展本地 TS 类型：`VolumeCharacterPlan`、`ChapterCharacterExecution`。 | `apps/api/src/modules/agent-tools/tools/generate-outline-preview.tool.ts` 或新增共享类型文件 | 已新增共享契约与基础校验 helper；字段可被 `narrativePlan` 和 `craftBrief` 引用。 |
-| VCC-P0-03 | todo | 明确失败即失败策略，不允许角色 fallback。 | 相关 Tool 注释、测试用例 | LLM 超时、候选角色字段缺失、章节角色引用未知时均抛错。 |
+| VCC-P0-03 | done | 明确失败即失败策略，不允许角色 fallback。 | 相关 Tool 注释、测试用例 | LLM 超时、候选角色字段缺失、章节角色引用未知时均抛错。 |
 
 ### P1：卷纲角色规划生成
 
@@ -182,7 +182,7 @@ type ChapterCharacterExecution = {
 |---|---|---|---|---|
 | VCC-P1-01 | done | 更新 `generate_volume_outline_preview` system prompt，要求输出 `narrativePlan.characterPlan`。 | `apps/api/src/modules/agent-tools/tools/generate-volume-outline-preview.tool.ts` | LLM mock 返回完整 `characterPlan` 时 normalize 保留字段。 |
 | VCC-P1-02 | done | 更新 `generate_outline_preview` system prompt，在整卷细纲模式下也要求 `volume.narrativePlan.characterPlan`。 | `apps/api/src/modules/agent-tools/tools/generate-outline-preview.tool.ts` | outline preview 中卷级角色规划完整。 |
-| VCC-P1-03 | todo | `buildUserPrompt` 注入既有角色、关系边和角色状态摘要，避免重复造人。 | `generate-volume-outline-preview.tool.ts`, `generate-outline-preview.tool.ts`, `inspect_project_context` 相关工具 | Prompt 中包含既有角色名、别名、角色 scope、关系摘要。 |
+| VCC-P1-03 | done | `buildUserPrompt` 注入既有角色、关系边和角色状态摘要，避免重复造人。 | `generate-volume-outline-preview.tool.ts`, `generate-outline-preview.tool.ts`, `generate_chapter_outline_preview`, `inspect_project_context` 相关工具 | Prompt 中包含既有角色名、别名、角色 scope、关系摘要。 |
 | VCC-P1-04 | done | 增加卷级角色规划 normalize 校验。 | `generate-volume-outline-preview.tool.ts`, `generate-outline-preview.tool.ts` | 缺 `name/motivation/narrativeFunction/firstAppearChapter` 直接抛错。 |
 | VCC-P1-05 | done | 校验候选角色首次出场章号与本卷 chapterCount 一致。 | 同上 | `firstAppearChapter` 越界直接抛错。 |
 
@@ -361,3 +361,4 @@ docker compose up -d --build
 | 2026-05-08 | VCC-P5-01 | 将 `generate_volume_outline_preview` 接入生产 `ToolRegistryService`，并把卷纲/章节细纲 outline 工具组加入默认 skill tools；AppModule 测试断言 registry、planner manifest 与默认工具列表都包含新 outline 链路。 | `AGENT_TEST_FILTER='AppModule compiles' pnpm --filter api test:agent` 通过 1/297 项。 |
 | 2026-05-08 | VCC-P5-02/P5-03/P5-05 | Agent Artifact 的 `outline_preview` 增加角色候选、角色执行覆盖、临时角色与角色风险指标；章节摘要展示 POV、cast、角色目标、关系变化和临时角色；新增 `volume_character_candidates_persist_result` 专用展示，并补齐前端 tool 说明与 guided 类型。 | `pnpm --dir apps/web build` 通过。 |
 | 2026-05-08 | VCC-P5-04 | 卷管理章节展开行与章节详情顶部规划卡展示 `craftBrief.characterExecution` 摘要，包含 POV、cast 来源与目标/功能、关系变化以及临时角色数量和名称。 | `pnpm --dir apps/web build` 通过。 |
+| 2026-05-08 | VCC-P0-01/P0-03/P1-03 | `inspect_project_context` 读取并输出角色别名、scope、关系锚点、RelationshipEdge 摘要和近期 CharacterStateSnapshot；卷纲、整卷细纲和默认单章细纲 prompt 均注入角色/关系/状态摘要；角色契约校验接收既有角色别名，避免 prompt 允许别名但 normalize 判未知；Prompt 指南记录卷纲角色规划、章节角色执行与失败即失败边界。 | `AGENT_TEST_FILTER='VCC context injection' pnpm --filter api test:agent` 通过 2/300 项。 |

@@ -170,6 +170,7 @@ export function assertVolumeCharacterPlan(value: unknown, options: AssertVolumeC
 
   const knownRelationshipNames = new Set([
     ...normalizeNameList(options.existingCharacterNames ?? []),
+    ...normalizeNameList(Object.values(options.existingCharacterAliases ?? {}).flat()),
     ...normalizeNameList(existingCharacterArcs.map((arc) => arc.characterName)),
     ...normalizeNameList(newCharacterCandidates.map((candidate) => candidate.name)),
   ]);

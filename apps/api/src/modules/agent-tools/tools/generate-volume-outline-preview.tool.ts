@@ -6,7 +6,7 @@ import { BaseTool, ToolContext } from '../base-tool';
 import type { ToolManifestV2 } from '../tool-manifest.types';
 import { OutlinePreviewOutput } from './generate-outline-preview.tool';
 import { recordToolLlmUsage } from './import-preview-llm-usage';
-import { assertVolumeCharacterPlan } from './outline-character-contracts';
+import { assertVolumeCharacterPlan, type CharacterReferenceCatalog } from './outline-character-contracts';
 
 const VOLUME_OUTLINE_PREVIEW_LLM_TIMEOUT_MS = DEFAULT_LLM_TIMEOUT_MS;
 
@@ -123,7 +123,7 @@ export class GenerateVolumeOutlinePreviewTool implements BaseTool<GenerateVolume
         { appStep: 'planner', timeoutMs: VOLUME_OUTLINE_PREVIEW_LLM_TIMEOUT_MS, retries: 0, jsonMode: true },
       );
       recordToolLlmUsage(context, 'planner', response.result);
-      const normalized = this.normalize(response.data, volumeNo, chapterCount, this.extractExistingCharacterNames(args.context));
+      const normalized = this.normalize(response.data, volumeNo, chapterCount, this.extractCharacterCatalog(args.context));
       this.logger.log('volume_outline_preview.llm_request.completed', {
         ...logContext,
         elapsedMs: Date.now() - startedAt,
@@ -140,7 +140,7 @@ export class GenerateVolumeOutlinePreviewTool implements BaseTool<GenerateVolume
     }
   }
 
-  private normalize(data: unknown, volumeNo: number, chapterCount: number, existingCharacterNames: string[] = []): VolumeOutlinePreviewOutput {
+  private normalize(data: unknown, volumeNo: number, chapterCount: number, characterCatalog: CharacterReferenceCatalog = {}): VolumeOutlinePreviewOutput {
     const output = this.asRecord(data);
     const volumeRecord = this.asRecord(output.volume);
     if (!Object.keys(volumeRecord).length) {
@@ -155,7 +155,7 @@ export class GenerateVolumeOutlinePreviewTool implements BaseTool<GenerateVolume
       throw new Error(`generate_volume_outline_preview volume.chapterCount 与目标章节数 ${chapterCount} 不匹配，未生成完整卷大纲。`);
     }
     const narrativePlan = this.asRecord(volumeRecord.narrativePlan);
-    this.assertNarrativePlan(narrativePlan, chapterCount, existingCharacterNames);
+    this.assertNarrativePlan(narrativePlan, chapterCount, characterCatalog);
     return {
       volume: {
         volumeNo,
@@ -169,7 +169,7 @@ export class GenerateVolumeOutlinePreviewTool implements BaseTool<GenerateVolume
     };
   }
 
-  private assertNarrativePlan(narrativePlan: Record<string, unknown>, chapterCount: number, existingCharacterNames: string[] = []): void {
+  private assertNarrativePlan(narrativePlan: Record<string, unknown>, chapterCount: number, characterCatalog: CharacterReferenceCatalog = {}): void {
     if (!Object.keys(narrativePlan).length) {
       throw new Error('generate_volume_outline_preview 缺少 volume.narrativePlan，未生成完整卷大纲。');
     }
@@ -236,7 +236,7 @@ export class GenerateVolumeOutlinePreviewTool implements BaseTool<GenerateVolume
     }
     narrativePlan.characterPlan = assertVolumeCharacterPlan(narrativePlan.characterPlan, {
       chapterCount,
-      existingCharacterNames,
+      ...characterCatalog,
       label: 'narrativePlan.characterPlan',
     });
   }
@@ -274,6 +274,8 @@ export class GenerateVolumeOutlinePreviewTool implements BaseTool<GenerateVolume
     const volumes = Array.isArray(context.volumes) ? context.volumes.map((item) => this.asRecord(item)) : [];
     const targetVolume = volumes.find((item) => Number(item.volumeNo) === volumeNo) ?? {};
     const characters = Array.isArray(context.characters) ? context.characters.slice(0, 30) : [];
+    const relationships = Array.isArray(context.relationships) ? context.relationships.slice(0, 60) : [];
+    const characterStates = Array.isArray(context.characterStates) ? context.characterStates.slice(0, 60) : [];
     const lorebookEntries = Array.isArray(context.lorebookEntries) ? context.lorebookEntries.slice(0, 30) : [];
     return [
       `用户目标：${args.instruction ?? '生成卷大纲'}`,
@@ -288,6 +290,12 @@ export class GenerateVolumeOutlinePreviewTool implements BaseTool<GenerateVolume
       '',
       '已有角色摘要（名称、别名、scope、状态和关系锚点；优先规划既有角色，不要重复造人）：',
       this.safeJson(characters, 4000),
+      '',
+      '既有关系边摘要（只能承接或推进这些关系；新增长期关系应先进入卷级 characterPlan.relationshipArcs）：',
+      this.safeJson(relationships, 4000),
+      '',
+      '近期角色状态摘要（用于 entryState、volumeGoal 和关系弧起点；不要让状态凭空重置）：',
+      this.safeJson(characterStates, 4000),
       '',
       '设定摘要：',
       this.safeJson(lorebookEntries, 4000),
@@ -351,11 +359,19 @@ export class GenerateVolumeOutlinePreviewTool implements BaseTool<GenerateVolume
     return text.length > limit ? `${text.slice(0, limit)}...` : text;
   }
 
-  private extractExistingCharacterNames(contextValue: unknown): string[] {
+  private extractCharacterCatalog(contextValue: unknown): CharacterReferenceCatalog {
     const context = this.asRecord(contextValue);
     const characters = Array.isArray(context.characters) ? context.characters : [];
-    return characters
-      .map((item) => this.text(this.asRecord(item).name))
-      .filter(Boolean);
+    const existingCharacterNames: string[] = [];
+    const existingCharacterAliases: Record<string, string[]> = {};
+    for (const item of characters) {
+      const record = this.asRecord(item);
+      const name = this.text(record.name);
+      if (!name) continue;
+      existingCharacterNames.push(name);
+      const aliases = this.stringArray(record.aliases).length ? this.stringArray(record.aliases) : this.stringArray(record.alias);
+      if (aliases.length) existingCharacterAliases[name] = aliases;
+    }
+    return { existingCharacterNames, existingCharacterAliases };
   }
 }

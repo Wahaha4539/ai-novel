@@ -6,7 +6,7 @@ import { BaseTool, ToolContext } from '../base-tool';
 import type { ToolManifestV2 } from '../tool-manifest.types';
 import { ChapterContinuityState, ChapterCraftBrief, ChapterSceneBeat, ChapterStoryUnit, OutlinePreviewOutput } from './generate-outline-preview.tool';
 import { recordToolLlmUsage } from './import-preview-llm-usage';
-import { assertChapterCharacterExecution, assertVolumeCharacterPlan } from './outline-character-contracts';
+import { assertChapterCharacterExecution, assertVolumeCharacterPlan, type CharacterReferenceCatalog } from './outline-character-contracts';
 
 const CHAPTER_OUTLINE_PREVIEW_LLM_TIMEOUT_MS = DEFAULT_LLM_TIMEOUT_MS;
 
@@ -155,7 +155,7 @@ export class GenerateChapterOutlinePreviewTool implements BaseTool<GenerateChapt
         { appStep: 'planner', timeoutMs: CHAPTER_OUTLINE_PREVIEW_LLM_TIMEOUT_MS, retries: 0, jsonMode: true },
       );
       recordToolLlmUsage(context, 'planner', response.result);
-      const normalized = this.normalize(response.data, volumeNo, chapterNo, chapterCount, args.volumeOutline, this.extractExistingCharacterNames(args.context));
+      const normalized = this.normalize(response.data, volumeNo, chapterNo, chapterCount, args.volumeOutline, this.extractCharacterCatalog(args.context));
       this.logger.log('chapter_outline_preview.llm_request.completed', {
         ...logContext,
         elapsedMs: Date.now() - startedAt,
@@ -172,7 +172,7 @@ export class GenerateChapterOutlinePreviewTool implements BaseTool<GenerateChapt
     }
   }
 
-  private normalize(data: unknown, volumeNo: number, chapterNo: number, chapterCount: number, volumeOutline?: Record<string, unknown>, existingCharacterNames: string[] = []): ChapterOutlinePreviewOutput {
+  private normalize(data: unknown, volumeNo: number, chapterNo: number, chapterCount: number, volumeOutline?: Record<string, unknown>, characterCatalog: CharacterReferenceCatalog = {}): ChapterOutlinePreviewOutput {
     const output = this.asRecord(data);
     const topLevelChapter = this.asRecord(output.chapter);
     const rawChapters = Object.keys(topLevelChapter).length ? [topLevelChapter] : (Array.isArray(output.chapters) ? output.chapters : []);
@@ -205,7 +205,7 @@ export class GenerateChapterOutlinePreviewTool implements BaseTool<GenerateChapt
     const narrativePlan = this.asRecord(volumeRecord.narrativePlan);
     const characterPlan = assertVolumeCharacterPlan(narrativePlan.characterPlan, {
       chapterCount,
-      existingCharacterNames,
+      ...characterCatalog,
       label: 'volume.narrativePlan.characterPlan',
     });
     narrativePlan.characterPlan = characterPlan;
@@ -223,7 +223,7 @@ export class GenerateChapterOutlinePreviewTool implements BaseTool<GenerateChapt
       hook: this.requiredText(chapterRecord.hook, `第 ${chapterNo} 章 hook`),
       outline: this.requiredText(chapterRecord.outline, `第 ${chapterNo} 章 outline`),
       expectedWordCount,
-      craftBrief: this.normalizeCraftBrief(chapterRecord.craftBrief, `第 ${chapterNo} 章`, { existingCharacterNames, volumeCandidateNames }),
+      craftBrief: this.normalizeCraftBrief(chapterRecord.craftBrief, `第 ${chapterNo} 章`, { ...characterCatalog, volumeCandidateNames }),
     };
     if (requiredStoryUnit) {
       this.assertChapterUsesProvidedStoryUnit(chapter.craftBrief.storyUnit, requiredStoryUnit, chapterNo);
@@ -275,6 +275,8 @@ export class GenerateChapterOutlinePreviewTool implements BaseTool<GenerateChapt
     const contextVolume = volumes.find((item) => Number(item.volumeNo) === volumeNo) ?? {};
     const targetVolume = Object.keys(upstreamVolumeOutline).length ? upstreamVolumeOutline : contextVolume;
     const selectedStoryUnit = this.findStoryUnitForChapter(this.asRecord(targetVolume.narrativePlan), chapterNo);
+    const relationships = Array.isArray(context.relationships) ? context.relationships.slice(0, 60) : [];
+    const characterStates = Array.isArray(context.characterStates) ? context.characterStates.slice(0, 60) : [];
     return [
       `用户目标：${args.instruction ?? '生成单章章节细纲'}`,
       `目标卷：第 ${volumeNo} 卷`,
@@ -296,8 +298,14 @@ export class GenerateChapterOutlinePreviewTool implements BaseTool<GenerateChapt
       '上一章接力卡：',
       this.safeJson(args.previousChapter ?? { previousChapterNo: null, note: '这是本次计划的首章或未提供上一章；从项目和卷上下文开篇。' }, 3000),
       '',
-      '角色摘要：',
+      '已有角色摘要（名称、别名、scope、状态和关系锚点；优先使用既有角色，不要重复造人）：',
       this.safeJson(Array.isArray(context.characters) ? context.characters.slice(0, 30) : [], 4000),
+      '',
+      '既有关系边摘要（本章 relationshipBeats 必须承接或推进这些关系；新增长期关系应先进入卷级 characterPlan.relationshipArcs）：',
+      this.safeJson(relationships, 4000),
+      '',
+      '近期角色状态摘要（本章 entryState、exitState、continuityState 和 characterExecution.entryState 必须承接，不要让状态凭空重置）：',
+      this.safeJson(characterStates, 4000),
       '角色执行硬要求：本章 cast 只能引用角色摘要中的既有角色、上游卷纲 characterPlan.newCharacterCandidates 中的候选，或 newMinorCharacters 中的一次性 minor_temporary。',
       '',
       '设定摘要：',
@@ -339,7 +347,7 @@ export class GenerateChapterOutlinePreviewTool implements BaseTool<GenerateChapt
     });
   }
 
-  private normalizeCraftBrief(value: unknown, label: string, characterOptions: { existingCharacterNames: string[]; volumeCandidateNames: string[] }): ChapterCraftBrief {
+  private normalizeCraftBrief(value: unknown, label: string, characterOptions: CharacterReferenceCatalog & { volumeCandidateNames: string[] }): ChapterCraftBrief {
     const record = this.asRecord(value);
     if (!Object.keys(record).length) throw new Error(`generate_chapter_outline_preview ${label} 缺少 craftBrief，未生成完整单章细纲。`);
     const subplotTasks = this.requiredStringArray(record.subplotTasks, `${label}.craftBrief.subplotTasks`);
@@ -500,12 +508,20 @@ export class GenerateChapterOutlinePreviewTool implements BaseTool<GenerateChapt
     return text.length > limit ? `${text.slice(0, limit)}...` : text;
   }
 
-  private extractExistingCharacterNames(contextValue: unknown): string[] {
+  private extractCharacterCatalog(contextValue: unknown): CharacterReferenceCatalog {
     const context = this.asRecord(contextValue);
     const characters = Array.isArray(context.characters) ? context.characters : [];
-    return characters
-      .map((item) => this.text(this.asRecord(item).name, ''))
-      .filter(Boolean);
+    const existingCharacterNames: string[] = [];
+    const existingCharacterAliases: Record<string, string[]> = {};
+    for (const item of characters) {
+      const record = this.asRecord(item);
+      const name = this.text(record.name, '');
+      if (!name) continue;
+      existingCharacterNames.push(name);
+      const aliases = this.stringArray(record.aliases, []).length ? this.stringArray(record.aliases, []) : this.stringArray(record.alias, []);
+      if (aliases.length) existingCharacterAliases[name] = aliases;
+    }
+    return { existingCharacterNames, existingCharacterAliases };
   }
 }
 

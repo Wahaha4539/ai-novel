@@ -583,6 +583,209 @@ test('VCC character contract rejects scene participants missing from cast', () =
   );
 });
 
+test('VCC context injection exposes aliases relationships and character states', async () => {
+  const prisma = {
+    project: {
+      async findUnique() {
+        return { id: 'p1', title: '旧档案', genre: '悬疑', theme: '记忆', tone: '冷峻', synopsis: '档案缺页', outline: '追查旧案' };
+      },
+    },
+    volume: { async findMany() { return []; } },
+    chapter: { async findMany() { return []; } },
+    character: {
+      async findMany() {
+        return [
+          {
+            name: '林澈',
+            alias: ['阿澈', '旧闸棚学徒'],
+            roleType: 'protagonist',
+            motivation: '找到账册缺页真相',
+            personalityCore: '谨慎但会为证据冒险',
+            scope: 'global',
+            activeFromChapter: 1,
+            activeToChapter: null,
+            source: 'manual',
+          },
+        ];
+      },
+    },
+    relationshipEdge: {
+      async findMany() {
+        return [
+          {
+            characterAName: '林澈',
+            characterBName: '沈栖',
+            relationType: '同盟',
+            publicState: '互相信任但仍隐瞒账册来源',
+            hiddenState: '沈栖担心林澈过早公开证据',
+            conflictPoint: '是否立刻公布半页账纸',
+            emotionalArc: '从互相利用转向并肩',
+            turnChapterNos: [2, 4],
+            finalState: '愿意共同承担旧案风险',
+            status: 'active',
+          },
+        ];
+      },
+    },
+    characterStateSnapshot: {
+      async findMany() {
+        return [
+          { characterName: '林澈', chapterNo: 3, stateType: 'location', stateValue: '受伤后仍在东闸雨廊', summary: '带着半页账纸等待沈栖', status: 'auto' },
+        ];
+      },
+    },
+    lorebookEntry: { async findMany() { return []; } },
+  };
+  const tool = new InspectProjectContextTool(prisma as never);
+  const result = await tool.run({}, { agentRunId: 'run1', projectId: 'p1', mode: 'plan', approved: false, outputs: {}, policy: {} });
+
+  assert.deepEqual(result.characters[0].aliases, ['阿澈', '旧闸棚学徒']);
+  assert.equal(result.characters[0].scope, 'global');
+  assert.match(result.characters[0].relationshipAnchors[0], /沈栖｜同盟｜互相信任/);
+  assert.equal(result.relationships[0].conflictPoint, '是否立刻公布半页账纸');
+  assert.deepEqual(result.relationships[0].turnChapterNos, [2, 4]);
+  assert.equal(result.characterStates[0].stateValue, '受伤后仍在东闸雨廊');
+});
+
+test('VCC context injection prompts include character relationship and state summaries', async () => {
+  const aliasCharacterPlan = createVccCharacterPlan({
+    existingCharacterArcs: createVccCharacterPlan().existingCharacterArcs.map((arc) => ({ ...arc, characterName: '阿澈' })),
+    relationshipArcs: createVccCharacterPlan().relationshipArcs.map((arc) => ({ ...arc, participants: ['阿澈', '邵衡'] })),
+  });
+  const aliasNarrativePlan = createVccNarrativePlan({ characterPlan: aliasCharacterPlan });
+  const baseCraftBrief = createOutlineCraftBrief();
+  const aliasCraftBrief = {
+    ...baseCraftBrief,
+    storyUnit: {
+      ...baseCraftBrief.storyUnit,
+      chapterRange: { start: 1, end: 1 },
+    },
+    sceneBeats: baseCraftBrief.sceneBeats.map((beat) => ({
+      ...beat,
+      participants: beat.participants.map((participant) => (participant === '林澈' ? '阿澈' : participant)),
+    })),
+    characterExecution: {
+      ...baseCraftBrief.characterExecution,
+      povCharacter: '阿澈',
+      cast: baseCraftBrief.characterExecution.cast.map((member) => (
+        member.characterName === '林澈' ? { ...member, characterName: '阿澈' } : member
+      )),
+      relationshipBeats: baseCraftBrief.characterExecution.relationshipBeats.map((beat) => ({
+        ...beat,
+        participants: beat.participants.map((participant) => (participant === '林澈' ? '阿澈' : participant)),
+      })),
+    },
+  };
+  const aliasChapter = createOutlineChapter(1, 1, { craftBrief: aliasCraftBrief });
+  const aliasPreview = createVccOutlinePreview(1, {
+    volume: {
+      narrativePlan: createVccNarrativePlanForChapterCount(1, {
+        characterPlan: createVccCharacterPlanForChapterCount(1, {
+          existingCharacterArcs: createVccCharacterPlanForChapterCount(1).existingCharacterArcs.map((arc) => ({ ...arc, characterName: '阿澈' })),
+          relationshipArcs: createVccCharacterPlanForChapterCount(1).relationshipArcs.map((arc) => ({ ...arc, participants: ['阿澈', '邵衡'] })),
+        }),
+      }),
+    },
+    chapters: [aliasChapter],
+  });
+  const enrichedContext = {
+    project: { title: '旧档案', tone: '冷峻' },
+    characters: [
+      {
+        name: '林澈',
+        aliases: ['阿澈'],
+        roleType: 'protagonist',
+        motivation: '找到账册缺页真相',
+        scope: 'global',
+        activeFromChapter: 1,
+        relationshipAnchors: ['沈栖｜同盟｜互相信任但仍隐瞒账册来源'],
+      },
+      { name: '沈栖', aliases: [], roleType: 'supporting', motivation: '保护登记簿', scope: 'global', relationshipAnchors: ['林澈｜同盟'] },
+    ],
+    relationships: [
+      {
+        characterAName: '林澈',
+        characterBName: '沈栖',
+        relationType: '同盟',
+        publicState: '互相信任但仍隐瞒账册来源',
+        conflictPoint: '是否立刻公布半页账纸',
+        turnChapterNos: [2, 4],
+      },
+    ],
+    characterStates: [
+      { characterName: '林澈', chapterNo: 3, stateType: 'location', stateValue: '受伤后仍在东闸雨廊', summary: '带着半页账纸等待沈栖' },
+    ],
+  };
+  let volumePrompt = '';
+  const volumeTool = new GenerateVolumeOutlinePreviewTool({
+    async chatJson(messages: Array<{ role: string; content: string }>) {
+      volumePrompt = messages[1].content;
+      return {
+        data: {
+          volume: {
+            volumeNo: 1,
+            title: '旧闸棚账册',
+            synopsis: '## 全书主线阶段\n从传闻进入证据\n## 本卷主线\n找到账册缺页证据\n## 本卷戏剧问题\n林澈能否在封锁前拿到证据\n## 卷内支线\n账册缺页线\n## 单元故事\n旧闸棚账册\n## 支线交叉点\n铜扣\n## 卷末交接\n东闸名单压力',
+            objective: '拿到账册被改的第一份证据',
+            chapterCount: 4,
+            narrativePlan: aliasNarrativePlan,
+          },
+          risks: [],
+        },
+        result: { model: 'mock-volume-context' },
+      };
+    },
+  } as never);
+  await volumeTool.run(
+    { context: enrichedContext, instruction: '为第 1 卷生成角色规划和卷纲', volumeNo: 1, chapterCount: 4 },
+    { agentRunId: 'run1', projectId: 'p1', mode: 'plan', approved: false, outputs: {}, policy: {} },
+  );
+
+  let outlinePrompt = '';
+  const outlineTool = new GenerateOutlinePreviewTool({
+    async chatJson(messages: Array<{ role: string; content: string }>) {
+      outlinePrompt = messages[1].content;
+      return { data: aliasPreview, result: { model: 'mock-outline-context' } };
+    },
+  } as never);
+  await outlineTool.run(
+    { context: enrichedContext, instruction: '为第 1 卷生成 1 章细纲', volumeNo: 1, chapterCount: 1 },
+    { agentRunId: 'run1', projectId: 'p1', mode: 'plan', approved: false, outputs: {}, policy: {} },
+  );
+
+  let chapterPrompt = '';
+  const chapterTool = new GenerateChapterOutlinePreviewTool({
+    async chatJson(messages: Array<{ role: string; content: string }>) {
+      chapterPrompt = messages[1].content;
+      return {
+        data: { volume: aliasPreview.volume, chapter: aliasChapter, risks: [] },
+        result: { model: 'mock-chapter-context' },
+      };
+    },
+  } as never);
+  await chapterTool.run(
+    {
+      context: enrichedContext,
+      volumeOutline: aliasPreview.volume as unknown as Record<string, unknown>,
+      instruction: '生成第 1 章细纲',
+      volumeNo: 1,
+      chapterNo: 1,
+      chapterCount: 1,
+    },
+    { agentRunId: 'run1', projectId: 'p1', mode: 'plan', approved: false, outputs: {}, policy: {} },
+  );
+
+  assert.equal((aliasPreview.chapters[0].craftBrief?.characterExecution?.cast[0] as { characterName?: string }).characterName, '阿澈');
+  for (const prompt of [volumePrompt, outlinePrompt, chapterPrompt]) {
+    assert.match(prompt, /已有角色摘要/);
+    assert.match(prompt, /阿澈/);
+    assert.match(prompt, /既有关系边摘要/);
+    assert.match(prompt, /是否立刻公布半页账纸/);
+    assert.match(prompt, /近期角色状态摘要/);
+    assert.match(prompt, /受伤后仍在东闸雨廊/);
+  }
+});
+
 test('VCC volume outline preview preserves complete characterPlan', async () => {
   let receivedMessages: Array<{ role: string; content: string }> = [];
   const llm = {

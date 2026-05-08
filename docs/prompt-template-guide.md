@@ -180,10 +180,13 @@
 - `## 单元故事` 按 3-5 章一组规划完整小故事，每个单元故事写清局部目标、局部冲突、阶段结局，以及至少 3 项叙事功能
 - `## 卷末交接` 必须分别写清：已解决、已升级、移交下一卷
 - `narrativePlan` 必须包含：`globalMainlineStage`、`volumeMainline`、`dramaticQuestion`、`startState`、`endState`、`mainlineMilestones`、`subStoryLines`、`storyUnits`、`foreshadowPlan`、`endingHook`、`handoffToNextVolume`
+- `narrativePlan` 必须包含 `characterPlan`：`existingCharacterArcs` 规划既有角色本卷弧线，`newCharacterCandidates` 只存放本卷重要新增角色候选，`relationshipArcs` 规划可解析角色之间的关系弧，`roleCoverage` 检查主线/反派压力/情感配重/信息承载是否覆盖
+- 重要新增角色只能进入卷级 `characterPlan.newCharacterCandidates`，不得在章节细纲或正文链路中临时发明 protagonist / antagonist / supporting 等长期角色
+- 角色规划失败即失败：LLM 超时、JSON 缺字段、候选缺少 `candidateId/name/roleType/narrativeFunction/personalityCore/motivation/firstAppearChapter/expectedArc`、首次出场越界或关系参与者不可解析时，必须重试或缩小范围，不允许生成占位角色或模板角色
 - 禁止只写「推进主线」「主角成长」「遭遇困难」这类空泛表达
 
-完成时输出的 JSON 格式：
-`[STEP_COMPLETE]`{"volumes":[{"volumeNo":1,"title":"卷名","synopsis":"Markdown结构：含全书主线阶段/本卷主线/本卷戏剧问题/卷内支线/单元故事/支线交叉点/卷末交接","objective":"本卷核心目标(具体可检验)","narrativePlan":{"globalMainlineStage":"全书主线阶段","volumeMainline":"本卷主线","dramaticQuestion":"本卷戏剧问题","startState":"开局状态","endState":"结尾状态","mainlineMilestones":["关键节点"],"subStoryLines":[{"name":"支线名","type":"mystery","function":"叙事作用","startState":"起点","progress":"推进方式","endState":"阶段结果","relatedCharacters":["角色名"],"chapterNodes":[1]}],"storyUnits":[{"unitId":"v1_unit_01","title":"单元故事名","chapterRange":{"start":1,"end":4},"localGoal":"单元局部目标","localConflict":"单元核心阻力","serviceFunctions":["mainline","relationship_shift","foreshadow"],"payoff":"单元阶段结局","stateChangeAfterUnit":"单元结束后的状态变化"}],"foreshadowPlan":["伏笔分配"],"endingHook":"卷末钩子","handoffToNextVolume":"卷末交接"}}]}
+完成时输出的 JSON 格式（必须包含上述 `characterPlan`，下方为结构示意）：
+`[STEP_COMPLETE]`{"volumes":[{"volumeNo":1,"title":"卷名","synopsis":"Markdown结构：含全书主线阶段/本卷主线/本卷戏剧问题/卷内支线/单元故事/支线交叉点/卷末交接","objective":"本卷核心目标(具体可检验)","narrativePlan":{"globalMainlineStage":"全书主线阶段","volumeMainline":"本卷主线","dramaticQuestion":"本卷戏剧问题","startState":"开局状态","endState":"结尾状态","mainlineMilestones":["关键节点"],"subStoryLines":[{"name":"支线名","type":"mystery","function":"叙事作用","startState":"起点","progress":"推进方式","endState":"阶段结果","relatedCharacters":["角色名"],"chapterNodes":[1]}],"storyUnits":[{"unitId":"v1_unit_01","title":"单元故事名","chapterRange":{"start":1,"end":4},"localGoal":"单元局部目标","localConflict":"单元核心阻力","serviceFunctions":["mainline","relationship_shift","foreshadow"],"payoff":"单元阶段结局","stateChangeAfterUnit":"单元结束后的状态变化"}],"characterPlan":{"existingCharacterArcs":[],"newCharacterCandidates":[],"relationshipArcs":[],"roleCoverage":{"mainlineDrivers":[],"antagonistPressure":[],"emotionalCounterweights":[],"expositionCarriers":[]}},"foreshadowPlan":["伏笔分配"],"endingHook":"卷末钩子","handoffToNextVolume":"卷末交接"}}]}
 ```
 
 **User Template：**
@@ -230,11 +233,15 @@
 - 每章 `outline` 必须包含具体场景、关键行动和阶段结果
 - 每章必须输出结构化 `craftBrief`，后端会写入 `Chapter.craftBrief`
 - `craftBrief` 必须包含：`visibleGoal`、`hiddenEmotion`、`coreConflict`、`mainlineTask`、`subplotTasks`、`storyUnit`、`actionBeats`、`concreteClues`、`dialogueSubtext`、`characterShift`、`irreversibleConsequence`、`progressTypes`
+- `craftBrief` 必须包含 `characterExecution`：`povCharacter`、`cast`、`relationshipBeats`、`newMinorCharacters`
+- `characterExecution.cast` 只能引用既有角色、上游卷纲 `characterPlan.newCharacterCandidates` 中的候选，或一次性 `minor_temporary`；`sceneBeats.participants` 和 `relationshipBeats.participants` 必须被 cast 覆盖
+- 章节细纲不得直接新增重要长期角色；若需要 protagonist / antagonist / supporting 等角色，先回到卷纲生成或修订 `characterPlan.newCharacterCandidates`
+- 章节级 `minor_temporary` 只能服务一次性场景功能，不能承担本卷主线核心功能、反派主压力或长期人物弧；不得写入正式 `Character`
 - 每 3-4 章至少发生一次信息揭示、关系反转、资源得失、地位变化或规则升级
 - 卷末章节必须收束本卷主线，并留下清晰的下一卷交接
 
-完成时输出的 JSON 格式：
-`[STEP_COMPLETE]`{"chapters":[{"chapterNo":1,"volumeNo":1,"title":"章节标题","objective":"本章目标","conflict":"核心冲突","outline":"含主线任务/支线任务/单元故事/具体场景行动/阶段结果的章节大纲","craftBrief":{"visibleGoal":"表层目标","hiddenEmotion":"隐藏情绪","coreConflict":"核心冲突","mainlineTask":"本章主线任务","subplotTasks":["支线任务"],"storyUnit":{"unitId":"v1_unit_01","title":"单元故事名","chapterRange":{"start":1,"end":4},"chapterRole":"开局/升级/反转/收束","localGoal":"单元局部目标","localConflict":"单元核心阻力","serviceFunctions":["mainline","relationship_shift","foreshadow"],"mainlineContribution":"本章如何推进主线","characterContribution":"本章如何塑造人物","relationshipContribution":"本章如何改变关系","worldOrThemeContribution":"本章如何展开世界或主题","unitPayoff":"单元阶段结局","stateChangeAfterUnit":"单元结束后的状态变化"},"actionBeats":["行动链节点"],"concreteClues":[{"name":"物证或线索","sensoryDetail":"感官细节","laterUse":"后续用途"}],"dialogueSubtext":"对话潜台词","characterShift":"人物变化","irreversibleConsequence":"不可逆后果","progressTypes":["info"]}}]}
+完成时输出的 JSON 格式（必须包含上述 `craftBrief.characterExecution`，下方为结构示意）：
+`[STEP_COMPLETE]`{"chapters":[{"chapterNo":1,"volumeNo":1,"title":"章节标题","objective":"本章目标","conflict":"核心冲突","outline":"含主线任务/支线任务/单元故事/具体场景行动/阶段结果的章节大纲","craftBrief":{"visibleGoal":"表层目标","hiddenEmotion":"隐藏情绪","coreConflict":"核心冲突","mainlineTask":"本章主线任务","subplotTasks":["支线任务"],"storyUnit":{"unitId":"v1_unit_01","title":"单元故事名","chapterRange":{"start":1,"end":4},"chapterRole":"开局/升级/反转/收束","localGoal":"单元局部目标","localConflict":"单元核心阻力","serviceFunctions":["mainline","relationship_shift","foreshadow"],"mainlineContribution":"本章如何推进主线","characterContribution":"本章如何塑造人物","relationshipContribution":"本章如何改变关系","worldOrThemeContribution":"本章如何展开世界或主题","unitPayoff":"单元阶段结局","stateChangeAfterUnit":"单元结束后的状态变化"},"actionBeats":["行动链节点"],"characterExecution":{"povCharacter":"角色名","cast":[{"characterName":"角色名","source":"existing","functionInChapter":"本章功能","visibleGoal":"可见目标","pressure":"压力","actionBeatRefs":[1],"sceneBeatRefs":["scene_1"],"entryState":"入场状态","exitState":"离场状态"}],"relationshipBeats":[],"newMinorCharacters":[]},"concreteClues":[{"name":"物证或线索","sensoryDetail":"感官细节","laterUse":"后续用途"}],"dialogueSubtext":"对话潜台词","characterShift":"人物变化","irreversibleConsequence":"不可逆后果","progressTypes":["info"]}}]}
 ```
 
 **User Template：**
@@ -348,3 +355,8 @@
 4. **自定义模板的优先级**：
    - 项目级模板（`isDefault=true`）> 全局模板（`isDefault=true`）> 代码硬编码
    - 同一步骤可以有多个模板，但只有标记为「默认」的才会被自动使用
+
+5. **卷纲/章节细纲的角色分层**：
+   - 卷纲负责角色规划：既有角色本卷弧线、重要新增角色候选、关系弧和角色功能覆盖。
+   - 章节细纲负责角色执行：本章 POV、cast、目标、压力、关系变化、场景参与者和一次性临时角色。
+   - 进入审批、写入或后续生成链路的角色规划和角色执行必须失败即失败；不要在 normalize、merge、persist 或模板兜底阶段补齐占位角色、占位章节或占位 `craftBrief`。
