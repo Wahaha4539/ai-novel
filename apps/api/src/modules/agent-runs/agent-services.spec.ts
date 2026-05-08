@@ -13125,7 +13125,7 @@ test('generate_chapter_outline_preview 缺失 craftBrief 字段时直接报错',
   await assert.rejects(
     () => tool.run(
       {
-        context: { project: { title: '逆潮脊梁' }, volumes: [{ volumeNo: 1, title: '罪桥初潮', synopsis: '小归潮逃生', objective: '修成逃生桥' }] },
+        context: { project: { title: '逆潮脊梁' }, volumes: [{ volumeNo: 1, title: '罪桥初潮', synopsis: '小归潮逃生', objective: '修成逃生桥' }], characters: [{ name: '林澈' }, { name: '沈栖' }] },
         instruction: '为第 1 卷生成 60 章细纲',
         volumeNo: 1,
         chapterNo: 1,
