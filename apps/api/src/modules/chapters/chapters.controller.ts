@@ -1,5 +1,6 @@
-import { Body, Controller, Get, Param, Patch, Post } from '@nestjs/common';
+import { Body, Controller, Delete, Get, Param, Patch, Post } from '@nestjs/common';
 import { CreateChapterDto } from './dto/create-chapter.dto';
+import { DeleteChaptersDto } from './dto/delete-chapters.dto';
 import { ChaptersService } from './chapters.service';
 
 @Controller()
@@ -19,6 +20,16 @@ export class ChaptersController {
   @Get('chapters/:chapterId')
   getDetail(@Param('chapterId') chapterId: string) {
     return this.chaptersService.getById(chapterId);
+  }
+
+  @Delete('projects/:projectId/chapters')
+  removeMany(@Param('projectId') projectId: string, @Body() dto: DeleteChaptersDto) {
+    return this.chaptersService.removeMany(projectId, dto.chapterIds);
+  }
+
+  @Delete('projects/:projectId/chapters/:chapterId')
+  remove(@Param('projectId') projectId: string, @Param('chapterId') chapterId: string) {
+    return this.chaptersService.removeMany(projectId, [chapterId]);
   }
 
   /** Manually mark a chapter as completed without running AI generation. */

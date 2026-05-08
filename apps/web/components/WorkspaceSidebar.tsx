@@ -36,6 +36,7 @@ interface Props {
   onNavigateToAgent: () => void;
   onNavigateToLlmConfig: () => void;
   onSelectVolume: (id: string) => void;
+  onDeleteChapters: (chapterIds: string[]) => Promise<boolean>;
 }
 
 export function WorkspaceSidebar({
@@ -69,6 +70,7 @@ export function WorkspaceSidebar({
   onNavigateToAgent,
   onNavigateToLlmConfig,
   onSelectVolume,
+  onDeleteChapters,
 }: Props) {
   const selectedProject = projects.find((p) => p.id === selectedProjectId);
 
@@ -272,6 +274,7 @@ export function WorkspaceSidebar({
             selectedVolumeId={selectedVolumeId}
             onSelectChapter={setSelectedChapterId}
             onSelectVolume={onSelectVolume}
+            onDeleteChapters={onDeleteChapters}
           />
         </nav>
       )}

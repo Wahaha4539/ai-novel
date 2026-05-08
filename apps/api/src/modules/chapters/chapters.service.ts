@@ -1,4 +1,4 @@
-import { Injectable, NotFoundException } from '@nestjs/common';
+import { BadRequestException, Injectable, NotFoundException } from '@nestjs/common';
 import { NovelCacheService } from '../../common/cache/novel-cache.service';
 import { PrismaService } from '../../prisma/prisma.service';
 import { CreateChapterDto } from './dto/create-chapter.dto';
@@ -49,6 +49,70 @@ export class ChaptersService {
     }
 
     return chapter;
+  }
+
+  async removeMany(projectId: string, chapterIds: string[]) {
+    const uniqueChapterIds = Array.from(new Set(chapterIds.map((id) => id.trim()).filter(Boolean)));
+    if (!uniqueChapterIds.length) {
+      throw new BadRequestException('请选择要删除的章节');
+    }
+
+    const chapters = await this.prisma.chapter.findMany({
+      where: { projectId, id: { in: uniqueChapterIds } },
+      select: { id: true, chapterNo: true, title: true },
+      orderBy: { chapterNo: 'asc' },
+    });
+    if (chapters.length !== uniqueChapterIds.length) {
+      const foundIds = new Set(chapters.map((chapter) => chapter.id));
+      const missingIds = uniqueChapterIds.filter((id) => !foundIds.has(id));
+      throw new NotFoundException(`章节不存在或不属于当前项目：${missingIds.join('、')}`);
+    }
+
+    const result = await this.prisma.$transaction(async (tx) => {
+      const [
+        qualityReports,
+        validationIssues,
+        memoryChunks,
+        timelineEvents,
+        sceneCards,
+        pacingBeats,
+        generationJobs,
+        deletedChapters,
+      ] = await Promise.all([
+        tx.qualityReport.deleteMany({ where: { projectId, chapterId: { in: uniqueChapterIds } } }),
+        tx.validationIssue.deleteMany({ where: { projectId, chapterId: { in: uniqueChapterIds } } }),
+        tx.memoryChunk.deleteMany({ where: { projectId, sourceType: 'chapter', sourceId: { in: uniqueChapterIds } } }),
+        tx.timelineEvent.deleteMany({ where: { projectId, chapterId: { in: uniqueChapterIds } } }),
+        tx.sceneCard.deleteMany({ where: { projectId, chapterId: { in: uniqueChapterIds } } }),
+        tx.pacingBeat.deleteMany({ where: { projectId, chapterId: { in: uniqueChapterIds } } }),
+        tx.generationJob.deleteMany({ where: { projectId, chapterId: { in: uniqueChapterIds } } }),
+        tx.chapter.deleteMany({ where: { projectId, id: { in: uniqueChapterIds } } }),
+      ]);
+
+      return {
+        deletedCount: deletedChapters.count,
+        deletedQualityReports: qualityReports.count,
+        deletedValidationIssues: validationIssues.count,
+        deletedMemoryChunks: memoryChunks.count,
+        deletedTimelineEvents: timelineEvents.count,
+        deletedSceneCards: sceneCards.count,
+        deletedPacingBeats: pacingBeats.count,
+        deletedGenerationJobs: generationJobs.count,
+      };
+    }, { timeout: 30_000, maxWait: 10_000 });
+
+    await Promise.all([
+      ...uniqueChapterIds.map((chapterId) => this.cacheService.deleteChapterContext(projectId, chapterId)),
+      this.cacheService.deleteProjectRecallResults(projectId),
+    ]);
+
+    return {
+      deleted: true,
+      projectId,
+      chapterIds: uniqueChapterIds,
+      chapters,
+      ...result,
+    };
   }
 
   /**

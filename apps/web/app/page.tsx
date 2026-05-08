@@ -315,6 +315,7 @@ export default function HomePage() {
         onNavigateToAgent={handleNavigateToAgent}
         onNavigateToLlmConfig={handleNavigateToLlmConfig}
         onSelectVolume={handleSelectVolume}
+        onDeleteChapters={data.deleteChapters}
       />
 
       {/* 2. 主躯干：根据 activeView 切换面板 */}

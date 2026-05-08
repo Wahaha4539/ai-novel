@@ -42,7 +42,7 @@ export function VolumePanel({ selectedProject, selectedProjectId, chapters = [] 
     if (selectedProjectId) {
       loadVolumes();
     }
-  }, [selectedProjectId, loadVolumes]);
+  }, [selectedProjectId, loadVolumes, chapters.length]);
 
   const handleCreate = async (data: VolumeFormData) => {
     const ok = await createVolume(data);

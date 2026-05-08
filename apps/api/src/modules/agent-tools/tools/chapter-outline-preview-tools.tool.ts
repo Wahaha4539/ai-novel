@@ -11,6 +11,7 @@ const CHAPTER_OUTLINE_PREVIEW_LLM_TIMEOUT_MS = DEFAULT_LLM_TIMEOUT_MS;
 
 interface GenerateChapterOutlinePreviewInput {
   context?: Record<string, unknown>;
+  volumeOutline?: Record<string, unknown>;
   instruction?: string;
   volumeNo?: number;
   chapterNo?: number;
@@ -42,6 +43,7 @@ export class GenerateChapterOutlinePreviewTool implements BaseTool<GenerateChapt
     required: ['context', 'chapterNo', 'chapterCount'],
     properties: {
       context: { type: 'object' as const },
+      volumeOutline: { type: 'object' as const },
       instruction: { type: 'string' as const },
       volumeNo: { type: 'number' as const },
       chapterNo: { type: 'number' as const },
@@ -82,6 +84,7 @@ export class GenerateChapterOutlinePreviewTool implements BaseTool<GenerateChapt
     outputSchema: this.outputSchema,
     parameterHints: {
       context: { source: 'previous_step', description: '通常来自 inspect_project_context.output。' },
+      volumeOutline: { source: 'previous_step', description: '上游 generate_volume_outline_preview.output.volume；本章必须承接其中的 narrativePlan.storyUnits。' },
       chapterNo: { source: 'user_message', description: '本次生成的全卷绝对章号。' },
       chapterCount: { source: 'user_message', description: '目标全卷总章节数，用于 volume.chapterCount 和单元故事范围。' },
       previousChapter: { source: 'previous_step', description: '上一章 generate_chapter_outline_preview.output.chapter，用于接力连续性。' },
@@ -91,9 +94,10 @@ export class GenerateChapterOutlinePreviewTool implements BaseTool<GenerateChapt
         user: '为第一卷生成 60 章细纲。',
         plan: [
           { tool: 'inspect_project_context', args: { focus: ['outline', 'volumes', 'chapters', 'characters', 'lorebook'] } },
-          { tool: 'generate_chapter_outline_preview', args: { context: '{{steps.1.output}}', volumeNo: 1, chapterNo: 1, chapterCount: 60, instruction: '{{context.userMessage}}' } },
-          { tool: 'generate_chapter_outline_preview', args: { context: '{{steps.1.output}}', volumeNo: 1, chapterNo: 2, chapterCount: 60, previousChapter: '{{steps.2.output.chapter}}', instruction: '{{context.userMessage}}' } },
-          { tool: 'merge_chapter_outline_previews', args: { previews: ['{{steps.2.output}}', '{{steps.3.output}}'], volumeNo: 1, chapterCount: 60 } },
+          { tool: 'generate_volume_outline_preview', args: { context: '{{steps.1.output}}', volumeNo: 1, chapterCount: 60, instruction: '{{context.userMessage}}' } },
+          { tool: 'generate_chapter_outline_preview', args: { context: '{{steps.1.output}}', volumeOutline: '{{steps.2.output.volume}}', volumeNo: 1, chapterNo: 1, chapterCount: 60, instruction: '{{context.userMessage}}' } },
+          { tool: 'generate_chapter_outline_preview', args: { context: '{{steps.1.output}}', volumeOutline: '{{steps.2.output.volume}}', volumeNo: 1, chapterNo: 2, chapterCount: 60, previousChapter: '{{steps.3.output.chapter}}', instruction: '{{context.userMessage}}' } },
+          { tool: 'merge_chapter_outline_previews', args: { previews: ['{{steps.3.output}}', '{{steps.4.output}}'], volumeNo: 1, chapterCount: 60 } },
         ],
       },
     ],
@@ -150,7 +154,7 @@ export class GenerateChapterOutlinePreviewTool implements BaseTool<GenerateChapt
         { appStep: 'planner', timeoutMs: CHAPTER_OUTLINE_PREVIEW_LLM_TIMEOUT_MS, retries: 0, jsonMode: true },
       );
       recordToolLlmUsage(context, 'planner', response.result);
-      const normalized = this.normalize(response.data, volumeNo, chapterNo, chapterCount);
+      const normalized = this.normalize(response.data, volumeNo, chapterNo, chapterCount, args.volumeOutline);
       this.logger.log('chapter_outline_preview.llm_request.completed', {
         ...logContext,
         elapsedMs: Date.now() - startedAt,
@@ -167,7 +171,7 @@ export class GenerateChapterOutlinePreviewTool implements BaseTool<GenerateChapt
     }
   }
 
-  private normalize(data: unknown, volumeNo: number, chapterNo: number, chapterCount: number): ChapterOutlinePreviewOutput {
+  private normalize(data: unknown, volumeNo: number, chapterNo: number, chapterCount: number, volumeOutline?: Record<string, unknown>): ChapterOutlinePreviewOutput {
     const output = this.asRecord(data);
     const topLevelChapter = this.asRecord(output.chapter);
     const rawChapters = Object.keys(topLevelChapter).length ? [topLevelChapter] : (Array.isArray(output.chapters) ? output.chapters : []);
@@ -187,7 +191,9 @@ export class GenerateChapterOutlinePreviewTool implements BaseTool<GenerateChapt
     if (!Number.isFinite(expectedWordCount) || expectedWordCount <= 0) {
       throw new Error(`generate_chapter_outline_preview 第 ${chapterNo} 章 expectedWordCount 无效，未生成完整单章细纲。`);
     }
-    const volumeRecord = this.asRecord(output.volume);
+    const providedVolume = this.asRecord(volumeOutline);
+    const llmVolume = this.asRecord(output.volume);
+    const volumeRecord = Object.keys(providedVolume).length ? providedVolume : llmVolume;
     const returnedVolumeChapterCount = Number(volumeRecord.chapterCount);
     if (!Number.isInteger(Number(volumeRecord.volumeNo)) || Number(volumeRecord.volumeNo) !== volumeNo) {
       throw new Error(`generate_chapter_outline_preview volume.volumeNo 与目标卷 ${volumeNo} 不匹配，未生成完整单章细纲。`);
@@ -196,6 +202,10 @@ export class GenerateChapterOutlinePreviewTool implements BaseTool<GenerateChapt
       throw new Error(`generate_chapter_outline_preview volume.chapterCount 与目标章节数 ${chapterCount} 不匹配，未生成完整单章细纲。`);
     }
     const narrativePlan = this.asRecord(volumeRecord.narrativePlan);
+    const requiredStoryUnit = Object.keys(providedVolume).length ? this.findStoryUnitForChapter(narrativePlan, chapterNo) : undefined;
+    if (Object.keys(providedVolume).length) {
+      this.assertProvidedVolumeStoryUnit(requiredStoryUnit, chapterNo);
+    }
     const chapter = {
       chapterNo,
       volumeNo,
@@ -207,6 +217,9 @@ export class GenerateChapterOutlinePreviewTool implements BaseTool<GenerateChapt
       expectedWordCount,
       craftBrief: this.normalizeCraftBrief(chapterRecord.craftBrief, `第 ${chapterNo} 章`),
     };
+    if (requiredStoryUnit) {
+      this.assertChapterUsesProvidedStoryUnit(chapter.craftBrief.storyUnit, requiredStoryUnit, chapterNo);
+    }
     return {
       volume: {
         volumeNo,
@@ -227,6 +240,8 @@ export class GenerateChapterOutlinePreviewTool implements BaseTool<GenerateChapt
       '你是小说单章细纲设计 Agent。只输出严格 JSON，不要 Markdown、解释或代码块。',
       '本工具只生成一个指定 chapterNo 的章节细纲与 Chapter.craftBrief，不写正文。',
       'LLM 输出字段只包含 volume、chapter、risks；不要输出章节数组，工具会在解析通过后自动构造下游合并所需数组。',
+      '如果用户提示中提供上游卷大纲 volumeOutline，必须把它作为唯一卷级结构来源；不要重新发明卷大纲、卷内支线或 storyUnits。',
+      '有上游卷大纲时，craftBrief.storyUnit 必须从 volumeOutline.narrativePlan.storyUnits 中选择覆盖本章章号的单元故事，并沿用 unitId、title、chapterRange、localGoal、localConflict、serviceFunctions、unitPayoff/stateChangeAfterUnit，只补本章 chapterRole 和各类 contribution。',
       'chapterNo 必须使用用户指定的全卷绝对章号；volume.chapterCount 必须等于目标全卷章节数。',
       '每章必须包含 chapterNo、volumeNo、title、objective、conflict、hook、outline、expectedWordCount、craftBrief。',
       'outline 必须写成 3-5 个连续场景段，包含具体地点、人物、可见动作、阻力、转折和阶段结果。',
@@ -244,7 +259,10 @@ export class GenerateChapterOutlinePreviewTool implements BaseTool<GenerateChapt
     const context = this.asRecord(args.context);
     const project = this.asRecord(context.project);
     const volumes = Array.isArray(context.volumes) ? context.volumes.map((item) => this.asRecord(item)) : [];
-    const targetVolume = volumes.find((item) => Number(item.volumeNo) === volumeNo) ?? {};
+    const upstreamVolumeOutline = this.asRecord(args.volumeOutline);
+    const contextVolume = volumes.find((item) => Number(item.volumeNo) === volumeNo) ?? {};
+    const targetVolume = Object.keys(upstreamVolumeOutline).length ? upstreamVolumeOutline : contextVolume;
+    const selectedStoryUnit = this.findStoryUnitForChapter(this.asRecord(targetVolume.narrativePlan), chapterNo);
     return [
       `用户目标：${args.instruction ?? '生成单章章节细纲'}`,
       `目标卷：第 ${volumeNo} 卷`,
@@ -254,8 +272,11 @@ export class GenerateChapterOutlinePreviewTool implements BaseTool<GenerateChapt
       '项目概览：',
       this.safeJson({ title: project.title, genre: project.genre, tone: project.tone, synopsis: project.synopsis, outline: project.outline }, 3000),
       '',
-      '目标卷纲：',
+      '上游卷大纲（必须承接；不要重写这里的 storyUnits）：',
       this.safeJson({ volumeNo, title: targetVolume.title, synopsis: targetVolume.synopsis, objective: targetVolume.objective, narrativePlan: targetVolume.narrativePlan }, 4000),
+      '',
+      '本章应承接的单元故事：',
+      this.safeJson(selectedStoryUnit ?? { warning: '未找到覆盖本章的 storyUnit；如提供了 volumeOutline，应视为上游卷纲不完整并在 risks 中标记。' }, 2000),
       '',
       '已有章节摘要：',
       this.safeJson(Array.isArray(context.existingChapters) ? context.existingChapters.slice(0, 160) : [], 6000),
@@ -270,8 +291,39 @@ export class GenerateChapterOutlinePreviewTool implements BaseTool<GenerateChapt
       this.safeJson(Array.isArray(context.lorebookEntries) ? context.lorebookEntries.slice(0, 30) : [], 4000),
       '',
       `请严格只返回第 ${chapterNo} 章，不要输出章节数组；chapterNo 必须是 ${chapterNo}，volumeNo 必须是 ${volumeNo}，volume.chapterCount 必须是 ${chapterCount}。`,
+      '本章 craftBrief.storyUnit 必须使用上方“本章应承接的单元故事”的 unitId 和 chapterRange；不要在章节细纲里创造新的单元故事。',
       '若上下文不足，把风险写入 risks，但仍输出完整单章细纲和 craftBrief。',
     ].join('\n');
+  }
+
+  private assertProvidedVolumeStoryUnit(storyUnit: Record<string, unknown> | undefined, chapterNo: number): void {
+    if (!storyUnit) {
+      throw new Error(`generate_chapter_outline_preview 上游 volumeOutline.narrativePlan.storyUnits 未覆盖第 ${chapterNo} 章，未生成完整单章细纲。`);
+    }
+  }
+
+  private assertChapterUsesProvidedStoryUnit(chapterStoryUnit: ChapterStoryUnit | undefined, providedStoryUnit: Record<string, unknown>, chapterNo: number): void {
+    if (!chapterStoryUnit?.chapterRange) {
+      throw new Error(`generate_chapter_outline_preview 第 ${chapterNo} 章 craftBrief.storyUnit 未承接上游卷大纲，未生成完整单章细纲。`);
+    }
+    const expectedUnitId = this.text(providedStoryUnit.unitId, '');
+    if (chapterStoryUnit.unitId !== expectedUnitId) {
+      throw new Error(`generate_chapter_outline_preview 第 ${chapterNo} 章 craftBrief.storyUnit.unitId 未承接上游卷大纲，未生成完整单章细纲。`);
+    }
+    const range = this.asRecord(providedStoryUnit.chapterRange);
+    if (chapterStoryUnit.chapterRange.start !== Number(range.start) || chapterStoryUnit.chapterRange.end !== Number(range.end)) {
+      throw new Error(`generate_chapter_outline_preview 第 ${chapterNo} 章 craftBrief.storyUnit.chapterRange 未承接上游卷大纲，未生成完整单章细纲。`);
+    }
+  }
+
+  private findStoryUnitForChapter(narrativePlan: Record<string, unknown>, chapterNo: number): Record<string, unknown> | undefined {
+    const storyUnits = this.asRecordArray(narrativePlan.storyUnits);
+    return storyUnits.find((storyUnit) => {
+      const range = this.asRecord(storyUnit.chapterRange);
+      const start = Number(range.start);
+      const end = Number(range.end);
+      return Number.isInteger(start) && Number.isInteger(end) && start <= chapterNo && chapterNo <= end;
+    });
   }
 
   private normalizeCraftBrief(value: unknown, label: string): ChapterCraftBrief {

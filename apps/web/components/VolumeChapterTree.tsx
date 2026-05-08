@@ -19,6 +19,7 @@ interface Props {
   selectedVolumeId: string;
   onSelectChapter: (id: string) => void;
   onSelectVolume: (id: string) => void;
+  onDeleteChapters: (chapterIds: string[]) => Promise<boolean>;
 }
 
 /** Map of volume-specific accent colors for visual differentiation */
@@ -49,8 +50,11 @@ export function VolumeChapterTree({
   selectedVolumeId,
   onSelectChapter,
   onSelectVolume,
+  onDeleteChapters,
 }: Props) {
   const [collapsedVolumes, setCollapsedVolumes] = useState<Set<string>>(new Set());
+  const [checkedChapterIds, setCheckedChapterIds] = useState<Set<string>>(new Set());
+  const [isDeleting, setIsDeleting] = useState(false);
 
   /** Group chapters by volumeId for efficient lookup */
   const { volumeChapterMap, unassignedChapters } = useMemo(() => {
@@ -70,6 +74,17 @@ export function VolumeChapterTree({
     return { volumeChapterMap: map, unassignedChapters: unassigned };
   }, [chapters]);
 
+  const selectedCount = checkedChapterIds.size;
+  const allChecked = chapters.length > 0 && selectedCount === chapters.length;
+
+  useEffect(() => {
+    const validChapterIds = new Set(chapters.map((chapter) => chapter.id));
+    setCheckedChapterIds((prev) => {
+      const next = new Set([...prev].filter((id) => validChapterIds.has(id)));
+      return next.size === prev.size ? prev : next;
+    });
+  }, [chapters]);
+
   /** Toggle volume collapsed state */
   const toggleCollapse = (volumeId: string) => {
     setCollapsedVolumes((prev) => {
@@ -83,6 +98,48 @@ export function VolumeChapterTree({
     });
   };
 
+  const toggleChapterChecked = (chapterId: string) => {
+    setCheckedChapterIds((prev) => {
+      const next = new Set(prev);
+      if (next.has(chapterId)) {
+        next.delete(chapterId);
+      } else {
+        next.add(chapterId);
+      }
+      return next;
+    });
+  };
+
+  const toggleAllChecked = () => {
+    setCheckedChapterIds(allChecked ? new Set() : new Set(chapters.map((chapter) => chapter.id)));
+  };
+
+  const handleDeleteChapters = async (chapterIds: string[]) => {
+    const uniqueChapterIds = Array.from(new Set(chapterIds.filter(Boolean)));
+    if (!uniqueChapterIds.length || isDeleting) return;
+
+    const targetChapter = chapters.find((chapter) => chapter.id === uniqueChapterIds[0]);
+    const targetLabel = uniqueChapterIds.length === 1
+      ? formatChapterLabel(targetChapter)
+      : `${uniqueChapterIds.length} 个章节`;
+    const confirmed = window.confirm(`确认删除 ${targetLabel}？\n删除后无法恢复，相关草稿、事实、校验和场景资料会一并清理。`);
+    if (!confirmed) return;
+
+    setIsDeleting(true);
+    try {
+      const deleted = await onDeleteChapters(uniqueChapterIds);
+      if (deleted) {
+        setCheckedChapterIds((prev) => {
+          const next = new Set(prev);
+          uniqueChapterIds.forEach((id) => next.delete(id));
+          return next;
+        });
+      }
+    } finally {
+      setIsDeleting(false);
+    }
+  };
+
   return (
     <div>
       {/* Section Header */}
@@ -90,6 +147,34 @@ export function VolumeChapterTree({
         <span>作品目录</span>
         <span className="chapter-tree__count">{chapters.length}章</span>
       </div>
+
+      {chapters.length > 0 && (
+        <div className="chapter-tree__bulkbar">
+          <button
+            type="button"
+            className="chapter-tree__bulk-toggle"
+            onClick={toggleAllChecked}
+            disabled={isDeleting}
+          >
+            <span className={`chapter-tree__bulk-check ${allChecked ? 'chapter-tree__bulk-check--checked' : ''}`}>
+              {allChecked && (
+                <svg xmlns="http://www.w3.org/2000/svg" width="10" height="10" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={3}>
+                  <path strokeLinecap="round" strokeLinejoin="round" d="M5 13l4 4L19 7" />
+                </svg>
+              )}
+            </span>
+            {allChecked ? '取消全选' : '全选'}
+          </button>
+          <button
+            type="button"
+            className="chapter-tree__bulk-delete"
+            onClick={() => void handleDeleteChapters(Array.from(checkedChapterIds))}
+            disabled={selectedCount === 0 || isDeleting}
+          >
+            {isDeleting ? '删除中…' : `删除选中${selectedCount ? ` (${selectedCount})` : ''}`}
+          </button>
+        </div>
+      )}
 
       <ul className="chapter-tree__list">
         {/* All-scope button */}
@@ -131,8 +216,12 @@ export function VolumeChapterTree({
                       chapter={chapter}
                       accentColor={accentColor}
                       isActive={selectedChapterId === chapter.id}
+                      isChecked={checkedChapterIds.has(chapter.id)}
                       isLast={chIdx === volumeChapters.length - 1}
+                      disabled={isDeleting}
                       onClick={() => onSelectChapter(chapter.id)}
+                      onToggleChecked={() => toggleChapterChecked(chapter.id)}
+                      onDelete={() => void handleDeleteChapters([chapter.id])}
                     />
                   ))}
                 </ul>
@@ -157,8 +246,12 @@ export function VolumeChapterTree({
                   chapter={chapter}
                   accentColor="var(--text-dim)"
                   isActive={selectedChapterId === chapter.id}
+                  isChecked={checkedChapterIds.has(chapter.id)}
                   isLast={chIdx === unassignedChapters.length - 1}
+                  disabled={isDeleting}
                   onClick={() => onSelectChapter(chapter.id)}
+                  onToggleChecked={() => toggleChapterChecked(chapter.id)}
+                  onDelete={() => void handleDeleteChapters([chapter.id])}
                 />
               ))}
             </ul>
@@ -281,19 +374,27 @@ function ChapterItem({
   chapter,
   accentColor,
   isActive,
+  isChecked,
   isLast,
+  disabled,
   onClick,
+  onToggleChecked,
+  onDelete,
 }: {
   chapter: ChapterSummary;
   accentColor: string;
   isActive: boolean;
+  isChecked: boolean;
   isLast: boolean;
+  disabled: boolean;
   onClick: () => void;
+  onToggleChecked: () => void;
+  onDelete: () => void;
 }) {
   const isDrafted = chapter.status === 'drafted';
 
   return (
-    <li className="chapter-tree__chapter-item">
+    <li className={`chapter-tree__chapter-item ${isChecked ? 'chapter-tree__chapter-item--checked' : ''}`}>
       {/* Visual connector line from volume to chapter */}
       <span className="chapter-tree__connector">
         {/* Vertical line — extends full height except for last item */}
@@ -305,33 +406,62 @@ function ChapterItem({
         <span className="chapter-tree__connector-horiz" />
       </span>
 
-      <button
-        onClick={onClick}
-        className={`chapter-tree__chapter-btn ${isActive ? 'chapter-tree__chapter-btn--active' : ''}`}
-        style={{
-          '--ch-accent': isActive ? accentColor : 'var(--text-muted)',
-        } as React.CSSProperties}
-      >
-        {/* Status dot — green for drafted, dim for pending */}
-        <span
-          className="chapter-tree__status-dot"
+      <div className="chapter-tree__chapter-row">
+        <label className="chapter-tree__chapter-check" title={`勾选${formatChapterLabel(chapter)}`}>
+          <input
+            type="checkbox"
+            checked={isChecked}
+            disabled={disabled}
+            aria-label={`勾选${formatChapterLabel(chapter)}`}
+            onChange={onToggleChecked}
+            onClick={(event) => event.stopPropagation()}
+          />
+        </label>
+
+        <button
+          onClick={onClick}
+          className={`chapter-tree__chapter-btn ${isActive ? 'chapter-tree__chapter-btn--active' : ''}`}
           style={{
-            background: isDrafted ? '#10b981' : 'var(--border-light)',
-            boxShadow: isDrafted ? '0 0 6px rgba(16,185,129,0.5)' : 'none',
+            '--ch-accent': isActive ? accentColor : 'var(--text-muted)',
+          } as React.CSSProperties}
+        >
+          {/* Status dot — green for drafted, dim for pending */}
+          <span
+            className="chapter-tree__status-dot"
+            style={{
+              background: isDrafted ? '#10b981' : 'var(--border-light)',
+              boxShadow: isDrafted ? '0 0 6px rgba(16,185,129,0.5)' : 'none',
+            }}
+            title={isDrafted ? '已生成' : '未生成'}
+          />
+
+          {/* Chapter number badge */}
+          <span className="chapter-tree__ch-no">
+            {chapter.chapterNo}
+          </span>
+
+          {/* Chapter title */}
+          <span className="chapter-tree__ch-title truncate">
+            {chapter.title || '未命名章节'}
+          </span>
+        </button>
+
+        <button
+          type="button"
+          className="chapter-tree__chapter-delete"
+          title={`删除${formatChapterLabel(chapter)}`}
+          aria-label={`删除${formatChapterLabel(chapter)}`}
+          disabled={disabled}
+          onClick={(event) => {
+            event.stopPropagation();
+            onDelete();
           }}
-          title={isDrafted ? '已生成' : '未生成'}
-        />
-
-        {/* Chapter number badge */}
-        <span className="chapter-tree__ch-no">
-          {chapter.chapterNo}
-        </span>
-
-        {/* Chapter title */}
-        <span className="chapter-tree__ch-title truncate">
-          {chapter.title || '未命名章节'}
-        </span>
-      </button>
+        >
+          <svg xmlns="http://www.w3.org/2000/svg" width="13" height="13" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+            <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={1.8} d="M6 7h12m-9 0V5.8C9 4.8 9.8 4 10.8 4h2.4c1 0 1.8.8 1.8 1.8V7m-7.5 0 .6 11.1c.1 1 .9 1.9 2 1.9h3.8c1.1 0 1.9-.8 2-1.9L16.5 7" />
+          </svg>
+        </button>
+      </div>
     </li>
   );
 }
@@ -370,4 +500,9 @@ function AnimatedCollapse({
       <div ref={contentRef}>{children}</div>
     </div>
   );
+}
+
+function formatChapterLabel(chapter?: ChapterSummary) {
+  if (!chapter) return '该章节';
+  return `第${chapter.chapterNo}章「${chapter.title || '未命名章节'}」`;
 }

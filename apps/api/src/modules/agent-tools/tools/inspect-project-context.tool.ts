@@ -5,7 +5,7 @@ import type { ToolManifestV2 } from '../tool-manifest.types';
 
 interface InspectProjectContextOutput {
   project: { id: string; title: string; genre: string | null; theme: string | null; tone: string | null; synopsis: string | null; outline: string | null };
-  volumes: Array<{ id: string; volumeNo: number; title: string | null; synopsis: string | null; objective: string | null; chapterCount: number | null }>;
+  volumes: Array<{ id: string; volumeNo: number; title: string | null; synopsis: string | null; objective: string | null; chapterCount: number | null; narrativePlan: unknown }>;
   existingChapters: Array<{ chapterNo: number; title: string | null; objective: string | null; conflict: string | null; outline: string | null }>;
   characters: Array<{ name: string; roleType: string | null; motivation: string | null }>;
   lorebookEntries: Array<{ title: string; entryType: string; summary: string | null }>;
@@ -59,7 +59,7 @@ export class InspectProjectContextTool implements BaseTool<Record<string, never>
 
     return {
       project: { id: project.id, title: project.title, genre: project.genre, theme: project.theme, tone: project.tone, synopsis: project.synopsis, outline: project.outline },
-      volumes: volumes.map((item) => ({ id: item.id, volumeNo: item.volumeNo, title: item.title, synopsis: item.synopsis, objective: item.objective, chapterCount: item.chapterCount })),
+      volumes: volumes.map((item) => ({ id: item.id, volumeNo: item.volumeNo, title: item.title, synopsis: item.synopsis, objective: item.objective, chapterCount: item.chapterCount, narrativePlan: item.narrativePlan })),
       existingChapters: chapters.map((item) => ({ chapterNo: item.chapterNo, title: item.title, objective: item.objective, conflict: item.conflict, outline: item.outline })),
       characters: characters.map((item) => ({ name: item.name, roleType: item.roleType, motivation: item.motivation })),
       lorebookEntries: lorebookEntries.map((item) => ({ title: item.title, entryType: item.entryType, summary: item.summary })),

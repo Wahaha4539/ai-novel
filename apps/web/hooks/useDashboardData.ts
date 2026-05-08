@@ -43,6 +43,12 @@ type ChapterCompletionResult = {
   actualWordCount?: number | null;
 };
 
+type DeleteChaptersResult = {
+  deleted: boolean;
+  deletedCount: number;
+  chapterIds: string[];
+};
+
 function isPolishedDraft(draft?: ChapterDraft | null) {
   return draft?.source === 'agent_polish' || draft?.generationContext?.type === 'polish';
 }
@@ -353,6 +359,35 @@ export function useDashboardData() {
     }
   };
 
+  const deleteChapters = async (chapterIds: string[]) => {
+    if (!selectedProjectId) return false;
+    const uniqueChapterIds = Array.from(new Set(chapterIds.map((id) => id.trim()).filter(Boolean)));
+    if (!uniqueChapterIds.length) return false;
+
+    const nextSelectedChapterId = uniqueChapterIds.includes(selectedChapterId) ? 'all' : selectedChapterId;
+    setActionMessage(uniqueChapterIds.length === 1 ? '正在删除章节…' : `正在删除 ${uniqueChapterIds.length} 个章节…`);
+    try {
+      const result = await apiFetch<DeleteChaptersResult>(`/projects/${selectedProjectId}/chapters`, {
+        method: 'DELETE',
+        body: JSON.stringify({ chapterIds: uniqueChapterIds }),
+      });
+
+      if (nextSelectedChapterId !== selectedChapterId) {
+        setSelectedChapterId(nextSelectedChapterId);
+      }
+      await Promise.all([
+        loadProjects(),
+        loadProjectData(selectedProjectId, nextSelectedChapterId),
+      ]);
+      setDraftRefreshKey((value) => value + 1);
+      setActionMessage(result.deletedCount === 1 ? '章节已删除。' : `已删除 ${result.deletedCount} 个章节。`);
+      return true;
+    } catch (deleteError) {
+      setActionMessage(deleteError instanceof Error ? deleteError.message : '删除章节失败');
+      return false;
+    }
+  };
+
   /**
    * Run the unattended post-generation maintenance chain: polish newly generated drafts first,
    * then stabilize the chapter through rebuild/validation before reviewing memories. Pending memories
@@ -544,6 +579,7 @@ export function useDashboardData() {
     fixValidationIssues,
     runAiReviewQueue,
     markChapterComplete,
+    deleteChapters,
     runAutoMaintenance,
   };
 }

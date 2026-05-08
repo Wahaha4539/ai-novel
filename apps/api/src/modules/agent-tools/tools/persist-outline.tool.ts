@@ -41,10 +41,18 @@ export class PersistOutlineTool implements BaseTool<PersistOutlineInput, Record<
     this.assertSafePreview(preview);
 
     const result = await this.prisma.$transaction(async (tx) => {
+      const narrativePlan = this.asInputJsonObject(preview.volume.narrativePlan);
+      const volumeData = {
+        title: preview.volume.title,
+        synopsis: preview.volume.synopsis,
+        objective: preview.volume.objective,
+        chapterCount: preview.volume.chapterCount,
+        ...(narrativePlan ? { narrativePlan } : {}),
+      };
       const volume = await tx.volume.upsert({
         where: { projectId_volumeNo: { projectId: context.projectId, volumeNo: preview.volume.volumeNo } },
-        update: { title: preview.volume.title, synopsis: preview.volume.synopsis, objective: preview.volume.objective, chapterCount: preview.volume.chapterCount },
-        create: { projectId: context.projectId, volumeNo: preview.volume.volumeNo, title: preview.volume.title, synopsis: preview.volume.synopsis, objective: preview.volume.objective, chapterCount: preview.volume.chapterCount },
+        update: volumeData,
+        create: { projectId: context.projectId, volumeNo: preview.volume.volumeNo, ...volumeData },
       });
 
       let createdCount = 0;

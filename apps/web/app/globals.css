@@ -3789,6 +3789,77 @@ textarea.input, textarea.input-field {
   letter-spacing: 0.05em;
 }
 
+.chapter-tree__bulkbar {
+  display: flex;
+  align-items: center;
+  gap: 0.4rem;
+  padding: 0 0.75rem 0.45rem;
+}
+
+.chapter-tree__bulk-toggle,
+.chapter-tree__bulk-delete {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 0.3rem;
+  min-height: 1.55rem;
+  border-radius: 0.4rem;
+  font-size: 0.68rem;
+  font-weight: 600;
+  font-family: inherit;
+  cursor: pointer;
+  transition: all 0.2s ease;
+}
+
+.chapter-tree__bulk-toggle {
+  border: 1px solid var(--border-dim);
+  background: transparent;
+  color: var(--text-muted);
+  padding: 0.2rem 0.45rem;
+}
+
+.chapter-tree__bulk-toggle:hover:not(:disabled) {
+  border-color: var(--border-hover);
+  color: var(--text-main);
+  background: var(--bg-hover-subtle);
+}
+
+.chapter-tree__bulk-delete {
+  flex: 1;
+  border: 1px solid rgba(244, 63, 94, 0.28);
+  background: rgba(244, 63, 94, 0.06);
+  color: var(--status-err);
+  padding: 0.2rem 0.5rem;
+}
+
+.chapter-tree__bulk-delete:hover:not(:disabled) {
+  border-color: rgba(244, 63, 94, 0.48);
+  background: rgba(244, 63, 94, 0.12);
+}
+
+.chapter-tree__bulk-toggle:disabled,
+.chapter-tree__bulk-delete:disabled {
+  cursor: not-allowed;
+  opacity: 0.45;
+}
+
+.chapter-tree__bulk-check {
+  width: 0.8rem;
+  height: 0.8rem;
+  border: 1px solid var(--border-hover);
+  border-radius: 3px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  color: #fff;
+  flex-shrink: 0;
+}
+
+.chapter-tree__bulk-check--checked {
+  border-color: var(--accent-cyan);
+  background: var(--accent-cyan);
+}
+
 .chapter-tree__list {
   list-style: none;
   padding: 0;
@@ -3959,6 +4030,9 @@ textarea.input, textarea.input-field {
   min-height: 30px;
   position: relative;
 }
+.chapter-tree__chapter-item--checked .chapter-tree__chapter-btn {
+  background: rgba(6, 182, 212, 0.07);
+}
 
 /* Connector line container */
 .chapter-tree__connector {
@@ -3988,6 +4062,36 @@ textarea.input, textarea.input-field {
 }
 
 /* Chapter button */
+.chapter-tree__chapter-row {
+  flex: 1;
+  min-width: 0;
+  display: flex;
+  align-items: center;
+  gap: 0.25rem;
+}
+
+.chapter-tree__chapter-check {
+  width: 1rem;
+  height: 1rem;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  flex-shrink: 0;
+  cursor: pointer;
+}
+
+.chapter-tree__chapter-check input {
+  width: 0.82rem;
+  height: 0.82rem;
+  margin: 0;
+  cursor: pointer;
+  accent-color: var(--accent-cyan);
+}
+
+.chapter-tree__chapter-check input:disabled {
+  cursor: not-allowed;
+}
+
 .chapter-tree__chapter-btn {
   flex: 1;
   display: flex;
@@ -4015,6 +4119,35 @@ textarea.input, textarea.input-field {
   color: var(--accent-cyan);
   font-weight: 500;
   box-shadow: inset 3px 0 0 var(--ch-accent, var(--accent-cyan));
+}
+
+.chapter-tree__chapter-delete {
+  width: 1.55rem;
+  height: 1.55rem;
+  border-radius: 0.35rem;
+  border: 1px solid transparent;
+  background: transparent;
+  color: var(--text-dim);
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  flex-shrink: 0;
+  cursor: pointer;
+  opacity: 0.46;
+  transition: all 0.2s ease;
+}
+
+.chapter-tree__chapter-delete:hover:not(:disabled),
+.chapter-tree__chapter-delete:focus-visible {
+  opacity: 1;
+  color: var(--status-err);
+  border-color: rgba(244, 63, 94, 0.28);
+  background: rgba(244, 63, 94, 0.08);
+}
+
+.chapter-tree__chapter-delete:disabled {
+  cursor: not-allowed;
+  opacity: 0.25;
 }
 
 /* Chapter status dot — shows drafted vs pending */
