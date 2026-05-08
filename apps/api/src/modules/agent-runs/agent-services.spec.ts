@@ -14521,6 +14521,89 @@ test('ChapterRewriteCleanupService 删除章节正文派生产物并清理缓存
   assert.deepEqual(cacheCalls.sort(), ['chapter:p1:c1', 'recall:p1']);
 });
 
+test('VCC generate_outline_preview rejects batched chapters that reference batch-only candidates', async () => {
+  const basePlan = createVccCharacterPlanForChapterCount(2);
+  const existingNames = basePlan.existingCharacterArcs.map((arc) => arc.characterName);
+  const batchOnlyCandidate = {
+    ...(basePlan.newCharacterCandidates[0] as Record<string, unknown>),
+    candidateId: 'cand_batch_only',
+    name: 'BatchOnlyCandidate',
+    firstAppearChapter: 2,
+  };
+  const createSecondBatchNarrativePlan = () => createVccNarrativePlanForChapterCount(2, {
+    characterPlan: createVccCharacterPlanForChapterCount(2, {
+      newCharacterCandidates: [
+        ...(basePlan.newCharacterCandidates as Array<Record<string, unknown>>),
+        batchOnlyCandidate,
+      ],
+    }),
+  });
+  const createChapterUsingCandidate = (chapterNo: number, candidateName: string) => {
+    const craftBrief = createOutlineCraftBrief();
+    const characterExecution = craftBrief.characterExecution as Record<string, unknown>;
+    const previousCandidateName = (characterExecution.cast as Array<Record<string, unknown>>)
+      .find((item) => item.source === 'volume_candidate')?.characterName;
+    return createOutlineChapter(chapterNo, 1, {
+      craftBrief: {
+        ...craftBrief,
+        characterExecution: {
+          ...characterExecution,
+          cast: (characterExecution.cast as Array<Record<string, unknown>>).map((item) => (
+            item.source === 'volume_candidate' ? { ...item, characterName: candidateName } : item
+          )),
+          relationshipBeats: (characterExecution.relationshipBeats as Array<Record<string, unknown>>).map((beat) => ({
+            ...beat,
+            participants: Array.isArray(beat.participants)
+              ? beat.participants.map((name) => name === previousCandidateName ? candidateName : name)
+              : beat.participants,
+          })),
+        },
+      },
+    });
+  };
+  let calls = 0;
+  const llm = {
+    async chatJson() {
+      calls += 1;
+      const chapterNo = calls;
+      return {
+        data: {
+          volume: {
+            volumeNo: 1,
+            title: 'Batch volume',
+            synopsis: 'Batch synopsis',
+            objective: 'Batch objective',
+            chapterCount: 2,
+            narrativePlan: chapterNo === 1 ? createVccNarrativePlanForChapterCount(2) : createSecondBatchNarrativePlan(),
+          },
+          chapters: [
+            chapterNo === 1
+              ? createOutlineChapter(1, 1)
+              : createChapterUsingCandidate(2, 'BatchOnlyCandidate'),
+          ],
+          risks: [],
+        },
+        result: { model: `mock-outline-${chapterNo}` },
+      };
+    },
+  };
+  const tool = new GenerateOutlinePreviewTool(llm as never);
+
+  await assert.rejects(
+    () => tool.run(
+      {
+        instruction: 'generate two chapters',
+        volumeNo: 1,
+        chapterCount: 2,
+        context: { characters: existingNames.map((name) => ({ name })) },
+      },
+      { agentRunId: 'run1', projectId: 'p1', mode: 'plan', approved: false, outputs: {}, policy: {} },
+    ),
+    /逐章合并角色执行|BatchOnlyCandidate|volume_candidate|characterPlan/,
+  );
+  assert.equal(calls, 2);
+});
+
 async function main() {
   const filter = process.env.AGENT_TEST_FILTER?.trim();
   const selectedTests = filter ? tests.filter((item) => item.name.includes(filter)) : tests;

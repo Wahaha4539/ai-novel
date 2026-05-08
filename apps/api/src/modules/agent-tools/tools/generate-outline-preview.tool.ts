@@ -192,6 +192,7 @@ export class GenerateOutlinePreviewTool implements BaseTool<GenerateOutlinePrevi
     const chapters: OutlinePreviewOutput['chapters'] = [];
     const risks: string[] = [`已按每章一次 LLM 请求生成，共 ${batches.length} 次，避免单次 LLM 请求承载 ${chapterCount} 章。`];
     let volume: OutlinePreviewOutput['volume'] | undefined;
+    const characterCatalog = this.extractCharacterCatalog(args.context);
     for (const batch of batches) {
       await context.updateProgress?.({
         phase: 'calling_llm',
@@ -205,7 +206,7 @@ export class GenerateOutlinePreviewTool implements BaseTool<GenerateOutlinePrevi
       const normalized = this.normalize(response.data, volumeNo, batch.chapterCount, {
         chapterStart: batch.startChapterNo,
         totalChapterCount: chapterCount,
-        characterCatalog: this.extractCharacterCatalog(args.context),
+        characterCatalog,
       });
       volume ??= normalized.volume;
       chapters.push(...normalized.chapters);
@@ -218,7 +219,7 @@ export class GenerateOutlinePreviewTool implements BaseTool<GenerateOutlinePrevi
       });
     }
     await context.updateProgress?.({ phase: 'validating', phaseMessage: '正在校验逐章合并后的章节预览', progressCurrent: chapterCount, progressTotal: chapterCount });
-    return this.finalizeBatchedPreview(volume, chapters, risks, volumeNo, chapterCount);
+    return this.finalizeBatchedPreview(volume, chapters, risks, volumeNo, chapterCount, { characterCatalog });
   }
 
   private prefixBatchRisk(batch: OutlinePreviewBatch, risk: string): string {
@@ -378,9 +379,16 @@ export class GenerateOutlinePreviewTool implements BaseTool<GenerateOutlinePrevi
     risks: string[],
     volumeNo: number,
     chapterCount: number,
+    options: { characterCatalog?: CharacterReferenceCatalog } = {},
   ): OutlinePreviewOutput {
     if (!volume) throw new Error('generate_outline_preview 未返回卷信息，未生成完整细纲。');
+    const narrativePlan = assertVolumeNarrativePlan(volume.narrativePlan, {
+      chapterCount,
+      ...(options.characterCatalog ?? {}),
+      label: 'volume.narrativePlan',
+    });
     this.assertMergedChapters(chapters, volumeNo, chapterCount);
+    this.assertMergedChapterCharacterExecutions(chapters, narrativePlan.characterPlan as VolumeCharacterPlan, options.characterCatalog ?? {});
     return {
       volume: {
         volumeNo,
@@ -388,11 +396,33 @@ export class GenerateOutlinePreviewTool implements BaseTool<GenerateOutlinePrevi
         synopsis: volume.synopsis,
         objective: volume.objective,
         chapterCount,
-        ...(volume?.narrativePlan ? { narrativePlan: volume.narrativePlan } : {}),
+        narrativePlan,
       },
       chapters,
       risks,
     };
+  }
+
+  private assertMergedChapterCharacterExecutions(
+    chapters: OutlinePreviewOutput['chapters'],
+    characterPlan: VolumeCharacterPlan,
+    characterCatalog: CharacterReferenceCatalog,
+  ): void {
+    const volumeCandidateNames = characterPlan.newCharacterCandidates.map((candidate) => candidate.name);
+    chapters.forEach((chapter) => {
+      const label = `第 ${chapter.chapterNo} 章.craftBrief.characterExecution`;
+      try {
+        assertChapterCharacterExecution(chapter.craftBrief?.characterExecution, {
+          ...characterCatalog,
+          volumeCandidateNames,
+          actionBeatCount: chapter.craftBrief?.actionBeats?.length ?? 0,
+          sceneBeats: chapter.craftBrief?.sceneBeats ?? [],
+          label,
+        });
+      } catch (error) {
+        throw new Error(`generate_outline_preview 逐章合并角色执行与最终卷级 characterPlan 不一致：${this.errorMessage(error)}。请重试生成，或改用 generate_volume_outline_preview + generate_chapter_outline_preview 分步链路。`);
+      }
+    });
   }
 
   private assertMergedChapters(chapters: OutlinePreviewOutput['chapters'], volumeNo: number, chapterCount: number): void {
@@ -415,6 +445,10 @@ export class GenerateOutlinePreviewTool implements BaseTool<GenerateOutlinePrevi
   }
 
   /** 将 LLM 可能返回的非字符串字段收敛为字符串，避免后续 Tool 对 trim 等字符串方法崩溃。 */
+  private errorMessage(error: unknown): string {
+    return error instanceof Error ? error.message : String(error);
+  }
+
   private text(value: unknown, defaultValue: string): string {
     if (typeof value === 'string') return value.trim() || defaultValue;
     if (typeof value === 'number' || typeof value === 'boolean') return String(value);
