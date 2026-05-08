@@ -915,6 +915,9 @@ export class GuidedService {
       }
       const volumePlan = volumePlansByNo.get(volumeNo);
       if (!volumePlan) {
+        if (!includeSessionDraftVolumePlans) {
+          throw new BadRequestException(`${label} 章节角色执行校验失败：第 ${volumeNo} 卷尚未持久化或缺少有效 characterPlan。请先审批写入 guided_volume，再保存章节细纲。`);
+        }
         throw new BadRequestException(`${label} 章节角色执行校验失败：第 ${volumeNo} 卷缺少有效 characterPlan，章节级重要角色必须先进入卷级候选。请先重新生成或保存卷纲角色规划。`);
       }
       const craftBrief = asRecord(chapter.craftBrief);
