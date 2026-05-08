@@ -511,6 +511,7 @@ function ChapterOutlineSection({
 
 function ChapterOutlineRow({ chapter }: { chapter: ChapterSummary }) {
   const craftBrief = asCraftBriefRecord(chapter.craftBrief);
+  const characterExecutionSummary = buildCharacterExecutionSummary(craftBrief.characterExecution);
   const actionBeats = Array.isArray(craftBrief.actionBeats)
     ? craftBrief.actionBeats.filter((item): item is string => typeof item === 'string' && item.trim().length > 0)
     : [];
@@ -577,10 +578,47 @@ function ChapterOutlineRow({ chapter }: { chapter: ChapterSummary }) {
       {storyUnitFunctions.length > 0 && <ChapterField label="单元功能" value={storyUnitFunctions.slice(0, 5).join('、')} />}
       {textValue(storyUnit?.unitPayoff) && <ChapterField label="单元结局" value={textValue(storyUnit?.unitPayoff)} multiline />}
       {actionBeats.length > 0 && <ChapterField label="行动链" value={actionBeats.slice(0, 5).join('；')} multiline />}
+      <ChapterCharacterExecutionBrief summary={characterExecutionSummary} />
       {concreteClues.length > 0 && <ChapterField label="线索" value={concreteClues.slice(0, 4).join('；')} multiline />}
       {characterShift && <ChapterField label="人物变化" value={characterShift} multiline />}
       {consequence && <ChapterField label="后果" value={consequence} multiline />}
     </article>
+  );
+}
+
+interface CharacterExecutionSummary {
+  pov: string;
+  cast: string[];
+  relationshipChanges: string[];
+  temporaryCharacterCount: number;
+  temporaryCharacters: string[];
+}
+
+function ChapterCharacterExecutionBrief({ summary }: { summary: CharacterExecutionSummary | null }) {
+  if (!summary) return null;
+
+  return (
+    <div
+      className="mt-2 rounded-md border px-2 py-2 text-[0.68rem] leading-5"
+      style={{
+        borderColor: 'rgba(20,184,166,0.22)',
+        background: 'rgba(20,184,166,0.06)',
+        color: 'var(--text-muted)',
+      }}
+    >
+      <div className="flex flex-wrap gap-x-3 gap-y-1">
+        {summary.pov && <span><b style={{ color: 'var(--text-dim)' }}>POV</b>：{summary.pov}</span>}
+        {summary.cast.length > 0 && <span><b style={{ color: 'var(--text-dim)' }}>角色</b>：{summary.cast.slice(0, 3).join('；')}</span>}
+        {summary.relationshipChanges.length > 0 && <span><b style={{ color: 'var(--text-dim)' }}>关系</b>：{summary.relationshipChanges.slice(0, 2).join('；')}</span>}
+        {summary.temporaryCharacterCount > 0 && (
+          <span>
+            <b style={{ color: 'var(--text-dim)' }}>临时</b>：
+            {summary.temporaryCharacterCount}
+            {summary.temporaryCharacters.length > 0 ? ` ${summary.temporaryCharacters.slice(0, 2).join('；')}` : ''}
+          </span>
+        )}
+      </div>
+    </div>
   );
 }
 
@@ -620,6 +658,59 @@ function asObjectRecord(value: unknown): Record<string, unknown> | undefined {
   return value && typeof value === 'object' && !Array.isArray(value) ? value as Record<string, unknown> : undefined;
 }
 
+function recordList(value: unknown): Array<Record<string, unknown>> {
+  return Array.isArray(value)
+    ? value.map((item) => asObjectRecord(item)).filter((item): item is Record<string, unknown> => Boolean(item))
+    : [];
+}
+
+function stringList(value: unknown): string[] {
+  return Array.isArray(value)
+    ? value.map((item) => (typeof item === 'string' ? item.trim() : '')).filter(Boolean)
+    : [];
+}
+
 function textValue(value: unknown, fallback = '') {
   return typeof value === 'string' && value.trim() ? value.trim() : fallback;
+}
+
+function buildCharacterExecutionSummary(value: unknown): CharacterExecutionSummary | null {
+  const execution = asObjectRecord(value);
+  if (!execution) return null;
+
+  const cast = recordList(execution.cast).map(formatCastMember).filter(Boolean);
+  const relationshipChanges = recordList(execution.relationshipBeats).map(formatRelationshipBeat).filter(Boolean);
+  const temporaryCharacters = recordList(execution.newMinorCharacters).map(formatMinorCharacter).filter(Boolean);
+  const temporaryCharacterCount = recordList(execution.newMinorCharacters).length;
+  const pov = textValue(execution.povCharacter);
+
+  if (!pov && !cast.length && !relationshipChanges.length && temporaryCharacterCount === 0) return null;
+  return { pov, cast, relationshipChanges, temporaryCharacterCount, temporaryCharacters };
+}
+
+function formatCastMember(member: Record<string, unknown>) {
+  const name = textValue(member.characterName);
+  if (!name) return '';
+  const source = characterSourceLabel(member.source);
+  const goal = textValue(member.visibleGoal ?? member.functionInChapter);
+  return `${name}${source ? `/${source}` : ''}${goal ? `：${goal}` : ''}`;
+}
+
+function formatRelationshipBeat(beat: Record<string, unknown>) {
+  const participants = stringList(beat.participants).join('/');
+  const shift = textValue(beat.shift ?? beat.publicStateAfter ?? beat.trigger);
+  if (!participants && !shift) return '';
+  return [participants, shift].filter(Boolean).join('：');
+}
+
+function formatMinorCharacter(character: Record<string, unknown>) {
+  return textValue(character.nameOrLabel);
+}
+
+function characterSourceLabel(value: unknown) {
+  const source = textValue(value);
+  if (source === 'existing') return '既有';
+  if (source === 'volume_candidate') return '候选';
+  if (source === 'minor_temporary') return '临时';
+  return source;
 }
