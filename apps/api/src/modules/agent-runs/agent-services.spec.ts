@@ -37,6 +37,7 @@ import { ValidateImportedAssetsTool } from '../agent-tools/tools/validate-import
 import { PersistOutlineTool } from '../agent-tools/tools/persist-outline.tool';
 import { GenerateOutlinePreviewTool } from '../agent-tools/tools/generate-outline-preview.tool';
 import { GenerateVolumeOutlinePreviewTool } from '../agent-tools/tools/generate-volume-outline-preview.tool';
+import { assertChapterCharacterExecution, assertVolumeCharacterPlan } from '../agent-tools/tools/outline-character-contracts';
 import { ResolveChapterTool } from '../agent-tools/tools/resolve-chapter.tool';
 import { CollectChapterContextTool } from '../agent-tools/tools/collect-chapter-context.tool';
 import { CollectTaskContextTool } from '../agent-tools/tools/collect-task-context.tool';
@@ -230,6 +231,200 @@ function createOutlineChapter(chapterNo: number, volumeNo = 1, overrides: Record
     }),
   };
 }
+
+function createVccCharacterPlan(overrides: Record<string, unknown> = {}) {
+  return {
+    existingCharacterArcs: [
+      {
+        characterName: '林澈',
+        roleInVolume: '调查旧闸棚账册的人',
+        entryState: '仍相信失踪案只是档案造假',
+        volumeGoal: '查清东闸封锁背后的真实名单',
+        pressure: '巡检处持续封锁账册和通行证',
+        keyChoices: ['是否公开半页账纸', '是否信任沈栖的线索'],
+        firstActiveChapter: 1,
+        lastActiveChapter: 4,
+        endState: '确认东闸名单与失踪案直接相关',
+      },
+    ],
+    newCharacterCandidates: [
+      {
+        candidateId: 'cand_shaoheng',
+        name: '邵衡',
+        roleType: 'supporting',
+        scope: 'volume',
+        narrativeFunction: '作为巡检处内线，把制度压力具象化为可对抗的人',
+        personalityCore: '谨慎、讲秩序，但对旧案有亏欠感',
+        motivation: '想在不暴露自己的前提下纠正旧案记录',
+        backstorySeed: '三年前参与过东闸封锁登记',
+        conflictWith: ['林澈'],
+        relationshipAnchors: ['沈栖'],
+        firstAppearChapter: 2,
+        expectedArc: '从旁观内线转为主动递交关键登记簿',
+        approvalStatus: 'candidate',
+      },
+    ],
+    relationshipArcs: [
+      {
+        participants: ['林澈', '邵衡'],
+        startState: '互相试探，林澈怀疑邵衡是封锁帮凶',
+        turnChapterNos: [2, 4],
+        endState: '邵衡交出登记簿，但要求林澈保护他的家人',
+      },
+    ],
+    roleCoverage: {
+      mainlineDrivers: ['林澈'],
+      antagonistPressure: ['巡检处'],
+      emotionalCounterweights: ['沈栖'],
+      expositionCarriers: ['邵衡'],
+    },
+    ...overrides,
+  };
+}
+
+function createVccCharacterExecution(overrides: Record<string, unknown> = {}) {
+  return {
+    povCharacter: '林澈',
+    cast: [
+      {
+        characterName: '林澈',
+        source: 'existing',
+        functionInChapter: '追查半页账纸来源',
+        visibleGoal: '在旧闸棚封锁前带走账册证据',
+        pressure: '巡检员正在登记他的名字',
+        actionBeatRefs: [1, 2],
+        sceneBeatRefs: ['archive_pressure'],
+        entryState: '持有旧账册线索但缺少证据',
+        exitState: '带走半页账纸并失去通行牌',
+      },
+      {
+        characterName: '邵衡',
+        source: 'volume_candidate',
+        functionInChapter: '用一次迟疑暴露巡检处内部裂缝',
+        visibleGoal: '阻止林澈立刻公开账册',
+        hiddenGoal: '确认林澈是否值得托付登记簿',
+        pressure: '巡检处正在清查泄密者',
+        actionBeatRefs: [2],
+        sceneBeatRefs: ['archive_pressure'],
+        entryState: '以巡检处代表身份压制现场',
+        exitState: '暗中放过林澈离开旧闸棚',
+      },
+      {
+        characterName: '门卫',
+        source: 'minor_temporary',
+        functionInChapter: '阻拦门口搜查并制造一次时间压力',
+        visibleGoal: '完成门禁登记',
+        pressure: '上级要求立刻清空雨廊',
+        actionBeatRefs: [3],
+        sceneBeatRefs: ['archive_pressure'],
+        entryState: '守在旧闸棚门口',
+        exitState: '完成搜查后离场',
+      },
+    ],
+    relationshipBeats: [
+      {
+        participants: ['林澈', '邵衡'],
+        publicStateBefore: '互相怀疑',
+        trigger: '邵衡没有揭穿半页账纸',
+        shift: '林澈意识到他可能不是纯粹敌人',
+        publicStateAfter: '表面仍对立，私下出现合作余地',
+      },
+    ],
+    newMinorCharacters: [
+      {
+        nameOrLabel: '门卫',
+        narrativeFunction: '一次性门禁阻力',
+        interactionScope: '旧闸棚门口搜查',
+        firstAndOnlyUse: true,
+        approvalPolicy: 'preview_only',
+      },
+    ],
+    ...overrides,
+  };
+}
+
+test('VCC character contract accepts complete volume plan and chapter execution', () => {
+  const characterPlan = assertVolumeCharacterPlan(createVccCharacterPlan(), {
+    chapterCount: 4,
+    existingCharacterNames: ['林澈', '沈栖'],
+  });
+  const characterExecution = assertChapterCharacterExecution(createVccCharacterExecution(), {
+    existingCharacterNames: ['林澈', '沈栖'],
+    volumeCandidateNames: characterPlan.newCharacterCandidates.map((candidate) => candidate.name),
+    actionBeatCount: 3,
+    sceneBeats: [{ sceneArcId: 'archive_pressure', participants: ['林澈', '邵衡', '门卫'] }],
+  });
+
+  assert.equal(characterPlan.newCharacterCandidates[0].name, '邵衡');
+  assert.equal(characterExecution.cast.length, 3);
+});
+
+test('VCC character contract rejects missing volume candidate required field', () => {
+  const plan = createVccCharacterPlan({
+    newCharacterCandidates: [
+      {
+        candidateId: 'cand_shaoheng',
+        name: '邵衡',
+        roleType: 'supporting',
+        scope: 'volume',
+        narrativeFunction: '作为巡检处内线，把制度压力具象化为可对抗的人',
+        personalityCore: '谨慎、讲秩序',
+        firstAppearChapter: 2,
+        expectedArc: '从旁观内线转为主动递交关键登记簿',
+        approvalStatus: 'candidate',
+      },
+    ],
+  });
+
+  assert.throws(
+    () => assertVolumeCharacterPlan(plan, { chapterCount: 4, existingCharacterNames: ['林澈'] }),
+    /motivation/,
+  );
+});
+
+test('VCC character contract rejects candidate first appearance outside volume range', () => {
+  const plan = createVccCharacterPlan({
+    newCharacterCandidates: [
+      {
+        ...createVccCharacterPlan().newCharacterCandidates[0],
+        firstAppearChapter: 9,
+      },
+    ],
+  });
+
+  assert.throws(
+    () => assertVolumeCharacterPlan(plan, { chapterCount: 4, existingCharacterNames: ['林澈'] }),
+    /firstAppearChapter/,
+  );
+});
+
+test('VCC character contract rejects unknown chapter character references', () => {
+  const execution = createVccCharacterExecution({
+    cast: [
+      {
+        ...createVccCharacterExecution().cast[0],
+        characterName: '陌生人',
+        source: 'existing',
+      },
+    ],
+  });
+
+  assert.throws(
+    () => assertChapterCharacterExecution(execution, { existingCharacterNames: ['林澈'], volumeCandidateNames: ['邵衡'] }),
+    /未知既有角色/,
+  );
+});
+
+test('VCC character contract rejects scene participants missing from cast', () => {
+  assert.throws(
+    () => assertChapterCharacterExecution(createVccCharacterExecution(), {
+      existingCharacterNames: ['林澈'],
+      volumeCandidateNames: ['邵衡'],
+      sceneBeats: [{ sceneArcId: 'archive_pressure', participants: ['林澈', '邵衡', '未列入角色'] }],
+    }),
+    /未被 characterExecution\.cast 覆盖/,
+  );
+});
 
 const TARGETED_IMPORT_PREVIEW_TOOL_NAMES = [
   'generate_import_project_profile_preview',
@@ -12503,11 +12698,16 @@ test('ChapterRewriteCleanupService 删除章节正文派生产物并清理缓存
 });
 
 async function main() {
-  for (const item of tests) {
+  const filter = process.env.AGENT_TEST_FILTER?.trim();
+  const selectedTests = filter ? tests.filter((item) => item.name.includes(filter)) : tests;
+  if (filter && !selectedTests.length) {
+    throw new Error(`AGENT_TEST_FILTER did not match any tests: ${filter}`);
+  }
+  for (const item of selectedTests) {
     await item.run();
     console.log(`✓ ${item.name}`);
   }
-  console.log(`Agent 服务测试通过：${tests.length} 项`);
+  console.log(`Agent 服务测试通过：${selectedTests.length}/${tests.length} 项`);
 }
 
 void main().catch((error) => {

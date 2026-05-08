@@ -1,6 +1,6 @@
 # 卷纲与章节细纲角色规划开发计划
 
-> 状态：待实现开发计划  
+> 状态：实施中  
 > 范围：`generate_volume_outline_preview`、`generate_outline_preview`、`generate_chapter_outline_preview`、`validate_outline`、`persist_outline`、引导式 `guided_volume/guided_chapter`、Agent Artifact 展示与角色写入审批  
 > 目标：让卷纲负责“本卷角色规划与重要新增角色候选”，让章节细纲负责“本章角色执行、关系推进和人物弧线落点”，并确保所有会进入审批、写入或后续生成链路的角色内容都遵守失败即失败原则。
 
@@ -171,7 +171,7 @@ type ChapterCharacterExecution = {
 | ID | 状态 | 任务 | 影响文件 | 验收标准 |
 |---|---|---|---|---|
 | VCC-P0-01 | todo | 在开发文档和 Prompt 指南中记录“卷纲生成角色规划，章节细纲生成角色执行”的分层。 | `docs/prompt-template-guide.md`, 本文档 | 文档明确章节细纲不得自由生成重要角色。 |
-| VCC-P0-02 | todo | 扩展本地 TS 类型：`VolumeCharacterPlan`、`ChapterCharacterExecution`。 | `apps/api/src/modules/agent-tools/tools/generate-outline-preview.tool.ts` 或新增共享类型文件 | API build 通过；字段可被 `narrativePlan` 和 `craftBrief` 引用。 |
+| VCC-P0-02 | done | 扩展本地 TS 类型：`VolumeCharacterPlan`、`ChapterCharacterExecution`。 | `apps/api/src/modules/agent-tools/tools/generate-outline-preview.tool.ts` 或新增共享类型文件 | 已新增共享契约与基础校验 helper；字段可被 `narrativePlan` 和 `craftBrief` 引用。 |
 | VCC-P0-03 | todo | 明确失败即失败策略，不允许角色 fallback。 | 相关 Tool 注释、测试用例 | LLM 超时、候选角色字段缺失、章节角色引用未知时均抛错。 |
 
 ### P1：卷纲角色规划生成
@@ -347,3 +347,9 @@ docker compose up -d --build
 | `apps/web/components/agent/AgentArtifactPanel.tsx` | Agent Artifact 预览，需展示角色规划摘要。 |
 | `apps/web/components/VolumePanel.tsx` | 写入后的卷/章节规划展示入口。 |
 | `docs/prompt-template-guide.md` | Prompt 模板说明，需要更新角色规划规则。 |
+
+## 10. 实施记录
+
+| 日期 | 小任务 | 改动摘要 | 验证 |
+|---|---|---|---|
+| 2026-05-08 | VCC-P0-02 | 新增 `outline-character-contracts.ts`，定义 `VolumeCharacterPlan`、`ChapterCharacterExecution`、角色来源枚举和基础失败即失败校验 helper；新增 `AGENT_TEST_FILTER` 支持，便于小任务阶段只运行新增 agent 测试。 | `AGENT_TEST_FILTER='VCC character contract' pnpm --filter api test:agent` 通过 5/276 项。 |
