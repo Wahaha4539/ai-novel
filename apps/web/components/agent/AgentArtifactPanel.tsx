@@ -343,7 +343,7 @@ function OutlinePreviewSummary({ content }: { content: unknown }) {
         <Metric label="角色执行覆盖" value={`${chapterCharacterExecutionCount}/${chapters.length}`} tone={chapterCharacterExecutionCount === chapters.length ? 'ok' : chapterCharacterExecutionCount > 0 ? 'warn' : 'danger'} />
         <Metric label="临时角色" value={temporaryCharacterCount} tone={temporaryCharacterCount ? 'warn' : 'ok'} />
         <Metric label="角色引用风险" value={characterRiskCount} tone={characterRiskCount ? 'danger' : 'ok'} />
-        <Metric label="Fallback 章节" value={fallbackChapterCount} tone={fallbackChapterCount ? 'warn' : 'ok'} />
+        <Metric label="异常风险章节" value={fallbackChapterCount} tone={fallbackChapterCount ? 'danger' : 'ok'} />
         <Metric label="风险" value={riskTexts.length} tone={riskTexts.length ? 'warn' : 'ok'} />
         <Metric label="总目标字数" value={totalExpectedWordCount} />
       </div>
@@ -455,8 +455,8 @@ function characterSourceLabel(value: unknown) {
 
 function OutlineWriteNotice({ fallbackChapterCount, riskCount }: { fallbackChapterCount: number; riskCount: number }) {
   return (
-    <div className="rounded-lg border px-3 py-2 text-xs leading-5" style={{ borderColor: fallbackChapterCount ? 'rgba(251,191,36,0.35)' : 'rgba(20,184,166,0.30)', background: fallbackChapterCount ? 'rgba(251,191,36,0.08)' : 'rgba(20,184,166,0.07)', color: 'var(--text-muted)' }}>
-      审批写入会创建或更新 planned 章节的细纲与执行卡；已起草或非 planned 章节会跳过。{fallbackChapterCount ? ` ${fallbackChapterCount} 章来自 fallback，写入前建议人工复核。` : ''}{riskCount ? ` 当前有 ${riskCount} 条风险提示。` : ''}
+    <div className="rounded-lg border px-3 py-2 text-xs leading-5" style={{ borderColor: fallbackChapterCount ? 'rgba(248,113,113,0.35)' : 'rgba(20,184,166,0.30)', background: fallbackChapterCount ? 'rgba(248,113,113,0.08)' : 'rgba(20,184,166,0.07)', color: 'var(--text-muted)' }}>
+      审批写入会创建或更新 planned 章节的细纲与执行卡；已起草或非 planned 章节会跳过。{fallbackChapterCount ? ` 检测到 ${fallbackChapterCount} 章带有历史 fallback 或确定性骨架风险，当前写入链路应重新生成并通过校验。` : ''}{riskCount ? ` 当前有 ${riskCount} 条风险提示。` : ''}
     </div>
   );
 }
