@@ -86,6 +86,9 @@ function artifactSourceInfo(artifactType: string | undefined, targetSources: Pro
       scope: projectImportAssetLabels.length ? projectImportAssetLabels.join('、') : undefined,
     };
   }
+  if (artifactType === 'timeline_preview') return { label: '计划时间线', tool: 'generate_timeline_preview', verb: '生成', scope: 'TimelineEvent 候选' };
+  if (artifactType === 'timeline_validation_report') return { label: '时间线校验', tool: 'validate_timeline_preview', verb: '校验', scope: '写入前 diff' };
+  if (artifactType === 'timeline_persist_result') return { label: '时间线写入', tool: 'persist_timeline_events', verb: '写入', scope: 'TimelineEvent' };
   return undefined;
 }
 
@@ -1174,8 +1177,10 @@ function ContinuityValidationSummary({ content }: { content: unknown }) {
   const timelineRejected = asArray(rejected?.timelineCandidates);
   const issues = asArray(data?.issues);
   const writePreview = asRecord(data?.writePreview);
-  const relationshipSummary = asRecord(asRecord(writePreview?.relationshipCandidates)?.summary);
-  const timelineSummary = asRecord(asRecord(writePreview?.timelineCandidates)?.summary);
+  const relationshipWritePreview = asRecord(writePreview?.relationshipCandidates);
+  const timelineWritePreview = asRecord(writePreview?.timelineCandidates);
+  const relationshipSummary = asRecord(relationshipWritePreview?.summary);
+  const timelineSummary = asRecord(timelineWritePreview?.summary);
   const hasError = issues.some((item) => asRecord(item)?.severity === 'error');
   return (
     <div className="space-y-3">
@@ -1188,6 +1193,10 @@ function ContinuityValidationSummary({ content }: { content: unknown }) {
       <div className="grid gap-2 md:grid-cols-2">
         <ContinuityWriteSummary title="关系 Diff" summary={relationshipSummary} rejectedCount={relationshipRejected.length} />
         <ContinuityWriteSummary title="时间线 Diff" summary={timelineSummary} rejectedCount={timelineRejected.length} />
+      </div>
+      <div>
+        <div className="mb-2 text-xs font-semibold" style={{ color: 'var(--text-main)' }}>时间线写入前 Diff</div>
+        <TimelineUpdatePreview entries={asArray(timelineWritePreview?.entries)} maxItems={4} emptyText="暂无 continuity 时间线 diff。" />
       </div>
       <div className="space-y-1">
         {issues.slice(0, 6).map((item, index) => {

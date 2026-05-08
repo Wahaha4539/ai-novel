@@ -198,6 +198,7 @@
 - TL-P5-01：`TimelinePanel` 增加 planned/active/changed/archived 状态可读展示、来源标签、计划/正文确认差异提示，并在编辑区展示 sourceTrace、候选动作、上下文来源和校验摘要；涉及文件：`apps/web/components/TimelinePanel.tsx`、`docs/architecture/timeline-generation-development-plan.md`；验证命令：`pnpm --filter web build`、`git diff --check`。
 - TL-P5-02：新增 `TimelineUpdatePreview` 组件，按 create_planned/confirm_planned/update_event/archive_event/create_discovered/reject 展示时间线写入前 diff、前后快照、字段变化和 sourceTrace，并接入 timeline validation artifact；涉及文件：`apps/web/components/agent/TimelineUpdatePreview.tsx`、`apps/web/components/agent/AgentArtifactPanel.tsx`、`docs/architecture/timeline-generation-development-plan.md`；验证命令：`pnpm --filter web build`、`git diff --check`。
 - TL-P5-03：更新 `GenerationConfigPanel` 中 `autoUpdateTimeline` 的说明，明确开启后会运行章节后时间线 preview/validate，默认不写库，只有 `metadata.timelineAutoWritePolicy=validated_auto_write` 且校验零 issue 时才允许自动写入；涉及文件：`apps/web/components/GenerationConfigPanel.tsx`、`docs/architecture/timeline-generation-development-plan.md`；验证命令：`pnpm --filter web build`、`git diff --check`。
+- TL-P5-04：Agent Artifact 为 timeline-only preview/validate/persist 补充来源 tool 展示，并在 continuity mixed 校验中保留原关系/时间线 summary 的同时复用 `TimelineUpdatePreview` 展示时间线写入前 diff；涉及文件：`apps/web/components/agent/AgentArtifactPanel.tsx`、`docs/architecture/timeline-generation-development-plan.md`；验证命令：`pnpm --filter web build`、`git diff --check`。
 
 ### Phase 1：时间线候选契约与校验核心
 
@@ -248,7 +249,7 @@
 | TL-P5-01 | done | `TimelinePanel` 展示状态、来源、计划/确认差异 | `apps/web/components/TimelinePanel.tsx` | planned/active/changed/archived 可读 |
 | TL-P5-02 | done | 新增时间线更新预览组件 | `apps/web/components/*` | 展示 create/update/archive/confirm diff |
 | TL-P5-03 | done | Generation Config 文案更新 | `GenerationConfigPanel.tsx` | `autoUpdateTimeline` 明确说明会运行校验和写入策略 |
-| TL-P5-04 | todo | Agent Artifact 支持 timeline-only preview/validate/persist 结果 | `AgentArtifactPanel.tsx` | 与 continuity mixed diff 并存 |
+| TL-P5-04 | done | Agent Artifact 支持 timeline-only preview/validate/persist 结果 | `AgentArtifactPanel.tsx` | 与 continuity mixed diff 并存 |
 | TL-P5-05 | todo | 浏览器真实测试 | Docker Compose + Browser Use/Playwright | 时间线页面能看到生成后的状态变化 |
 
 ### Phase 6：测试、评估与回归
