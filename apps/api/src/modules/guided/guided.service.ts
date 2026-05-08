@@ -1535,82 +1535,90 @@ ${singleChapterContext.chapterPositionContext}`;
             // Per-volume save: preserve existing chapterNo values instead of deleting and re-creating
             // the whole volume. This keeps single-chapter refinement from moving other chapters.
             const targetVolumeId = volumeNoToId.get(volumeNo);
-            if (targetVolumeId) {
-              const existingChapters = await this.prisma.chapter.findMany({
-                where: { projectId, volumeId: targetVolumeId },
-                orderBy: { chapterNo: 'asc' },
-              });
+            if (!targetVolumeId) {
+              throw new BadRequestException(`guided_chapter 写入失败：第 ${volumeNo} 卷尚未持久化，无法关联章节。请先审批写入 guided_volume，再保存章节细纲。`);
+            }
+            const existingChapters = await this.prisma.chapter.findMany({
+              where: { projectId, volumeId: targetVolumeId },
+              orderBy: { chapterNo: 'asc' },
+            });
 
-              const maxChapter = await this.prisma.chapter.aggregate({
-                where: { projectId },
-                _max: { chapterNo: true },
-              });
-              let nextChapterNo = (maxChapter._max.chapterNo ?? 0) + 1;
+            const maxChapter = await this.prisma.chapter.aggregate({
+              where: { projectId },
+              _max: { chapterNo: true },
+            });
+            let nextChapterNo = (maxChapter._max.chapterNo ?? 0) + 1;
 
-              const operations: Prisma.PrismaPromise<unknown>[] = [];
-              const isSingleChapterSave = structuredData.saveMode === 'single_chapter' && chapters.length === 1;
-              const singleChapterNo = isSingleChapterSave ? asNumber(chapters[0].chapterNo) : undefined;
+            const operations: Prisma.PrismaPromise<unknown>[] = [];
+            const isSingleChapterSave = structuredData.saveMode === 'single_chapter' && chapters.length === 1;
+            const singleChapterNo = isSingleChapterSave ? asNumber(chapters[0].chapterNo) : undefined;
 
-              chapters.forEach((ch, index) => {
-                const existing = singleChapterNo !== undefined
-                  ? existingChapters.find((item) => item.chapterNo === singleChapterNo)
-                  : existingChapters[index];
-                const data = {
-                  volumeId: targetVolumeId,
-                  title: asString(ch.title),
-                  objective: asString(ch.objective),
-                  conflict: asString(ch.conflict),
-                  outline: asString(ch.outline),
-                  craftBrief: normalizeChapterCraftBrief(ch),
-                  status: 'planned' as const,
-                };
+            chapters.forEach((ch, index) => {
+              const existing = singleChapterNo !== undefined
+                ? existingChapters.find((item) => item.chapterNo === singleChapterNo)
+                : existingChapters[index];
+              const data = {
+                volumeId: targetVolumeId,
+                title: asString(ch.title),
+                objective: asString(ch.objective),
+                conflict: asString(ch.conflict),
+                outline: asString(ch.outline),
+                craftBrief: normalizeChapterCraftBrief(ch),
+                status: 'planned' as const,
+              };
 
-                if (existing) {
-                  if (hasChapterFieldChange(existing, data)) {
-                    operations.push(this.prisma.chapter.update({
-                      where: { id: existing.id },
-                      data,
-                    }));
-                  }
-                  return;
-                }
-
-                operations.push(this.prisma.chapter.create({
-                  data: {
-                    projectId,
-                    volumeId: targetVolumeId,
-                    chapterNo: singleChapterNo !== undefined && singleChapterNo >= nextChapterNo ? singleChapterNo : nextChapterNo++,
-                    title: data.title,
-                    objective: data.objective,
-                    conflict: data.conflict,
-                    outline: data.outline,
-                    craftBrief: data.craftBrief,
-                    status: 'planned',
-                  },
-                }));
-              });
-
-              if (singleChapterNo === undefined) {
-                const extraChapterIds = existingChapters.slice(chapters.length).map((ch) => ch.id);
-                if (extraChapterIds.length > 0) {
-                  operations.push(this.prisma.chapter.deleteMany({
-                    where: { projectId, id: { in: extraChapterIds } },
+              if (existing) {
+                if (hasChapterFieldChange(existing, data)) {
+                  operations.push(this.prisma.chapter.update({
+                    where: { id: existing.id },
+                    data,
                   }));
                 }
+                return;
               }
 
-              if (operations.length > 0) {
-                await this.prisma.$transaction(operations);
+              operations.push(this.prisma.chapter.create({
+                data: {
+                  projectId,
+                  volumeId: targetVolumeId,
+                  chapterNo: singleChapterNo !== undefined && singleChapterNo >= nextChapterNo ? singleChapterNo : nextChapterNo++,
+                  title: data.title,
+                  objective: data.objective,
+                  conflict: data.conflict,
+                  outline: data.outline,
+                  craftBrief: data.craftBrief,
+                  status: 'planned',
+                },
+              }));
+            });
+
+            if (singleChapterNo === undefined) {
+              const extraChapterIds = existingChapters.slice(chapters.length).map((ch) => ch.id);
+              if (extraChapterIds.length > 0) {
+                operations.push(this.prisma.chapter.deleteMany({
+                  where: { projectId, id: { in: extraChapterIds } },
+                }));
               }
+            }
+
+            if (operations.length > 0) {
+              await this.prisma.$transaction(operations);
             }
           } else {
             // Full save: replace all chapters for this project and create globally sequential numbers.
+            const referencedVolumeNos = chapters
+              .map((chapter) => asNumber(chapter.volumeNo))
+              .filter((item): item is number => item !== undefined && Number.isInteger(item) && item > 0);
+            const unresolvedVolumeNos = [...new Set(referencedVolumeNos.filter((item) => !volumeNoToId.has(item)))];
+            if (unresolvedVolumeNos.length) {
+              throw new BadRequestException(`guided_chapter 写入失败：章节引用的卷尚未持久化：${unresolvedVolumeNos.join(', ')}。请先审批写入 guided_volume，再保存章节细纲。`);
+            }
             await this.prisma.chapter.deleteMany({ where: { projectId } });
 
             await this.prisma.chapter.createMany({
               data: chapters.map((ch, index) => {
                 const chVolumeNo = asNumber(ch.volumeNo);
-                const resolvedVolumeId = chVolumeNo ? volumeNoToId.get(chVolumeNo) ?? null : null;
+                const resolvedVolumeId = chVolumeNo ? volumeNoToId.get(chVolumeNo) : null;
 
                 return {
                   projectId,

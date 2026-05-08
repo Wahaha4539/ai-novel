@@ -3731,6 +3731,75 @@ test('VCC guided_chapter resolves persisted volume narrativePlan without session
   assert.deepEqual(volumeSelects[0], { volumeNo: true, title: true, synopsis: true, objective: true, chapterCount: true, narrativePlan: true });
 });
 
+test('VCC guided_chapter rejects per-volume write before volume is persisted', async () => {
+  const validVolume = createVccGuidedVolume();
+  const existingName = (validVolume.narrativePlan.characterPlan as ReturnType<typeof createVccCharacterPlan>).existingCharacterArcs[0].characterName;
+  let sessionUpdated = false;
+  let cacheCleared = false;
+  let chapterTouched = false;
+  let transactionCalled = false;
+  const prisma = {
+    character: { async findMany() { return [{ name: existingName, alias: [] }, { name: '沈栖', alias: [] }]; } },
+    guidedSession: {
+      async findUnique() { return { stepData: { guided_volume_result: { volumes: [validVolume] } } }; },
+      async update() { sessionUpdated = true; return {}; },
+    },
+    volume: { async findMany() { return []; } },
+    chapter: {
+      async findMany() { chapterTouched = true; return []; },
+      async aggregate() { chapterTouched = true; return { _max: { chapterNo: 0 } }; },
+      create() { chapterTouched = true; return Promise.resolve({}); },
+    },
+    async $transaction() {
+      transactionCalled = true;
+      return [];
+    },
+  };
+  const cache = { async deleteProjectRecallResults() { cacheCleared = true; } };
+  const service = new GuidedService(prisma as never, {} as never, cache as never);
+
+  await assert.rejects(
+    () => service.finalizeStep('p1', 'guided_chapter', { chapters: [createVccGuidedChapter({ chapterNo: 1, volumeNo: 1 })] }, 1),
+    /第 1 卷尚未持久化|先审批写入 guided_volume/,
+  );
+  assert.equal(chapterTouched, false);
+  assert.equal(transactionCalled, false);
+  assert.equal(sessionUpdated, false);
+  assert.equal(cacheCleared, false);
+});
+
+test('VCC guided_chapter rejects full write with unresolved volume references', async () => {
+  const validVolume = createVccGuidedVolume();
+  const existingName = (validVolume.narrativePlan.characterPlan as ReturnType<typeof createVccCharacterPlan>).existingCharacterArcs[0].characterName;
+  let sessionUpdated = false;
+  let cacheCleared = false;
+  let deleteManyCalled = false;
+  let createManyCalled = false;
+  const prisma = {
+    character: { async findMany() { return [{ name: existingName, alias: [] }, { name: '沈栖', alias: [] }]; } },
+    guidedSession: {
+      async findUnique() { return { stepData: { guided_volume_result: { volumes: [validVolume] } } }; },
+      async update() { sessionUpdated = true; return {}; },
+    },
+    volume: { async findMany() { return []; } },
+    chapter: {
+      async deleteMany() { deleteManyCalled = true; return { count: 0 }; },
+      async createMany() { createManyCalled = true; return { count: 0 }; },
+    },
+  };
+  const cache = { async deleteProjectRecallResults() { cacheCleared = true; } };
+  const service = new GuidedService(prisma as never, {} as never, cache as never);
+
+  await assert.rejects(
+    () => service.finalizeStep('p1', 'guided_chapter', { chapters: [createVccGuidedChapter({ chapterNo: 1, volumeNo: 1 })] }),
+    /章节引用的卷尚未持久化|先审批写入 guided_volume/,
+  );
+  assert.equal(deleteManyCalled, false);
+  assert.equal(createManyCalled, false);
+  assert.equal(sessionUpdated, false);
+  assert.equal(cacheCleared, false);
+});
+
 test('VCC guided_chapter rejects mismatched chapter number', async () => {
   const llm = {
     async chat() {
