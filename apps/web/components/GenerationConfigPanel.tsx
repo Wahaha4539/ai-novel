@@ -116,7 +116,12 @@ export function GenerationConfigPanel({ selectedProject, selectedProjectId, onSa
               <ToggleField label="自动续写" checked={form.autoContinue} onChange={(value) => updateField('autoContinue', value)} />
               <ToggleField label="自动总结" checked={form.autoSummarize} onChange={(value) => updateField('autoSummarize', value)} />
               <ToggleField label="自动更新角色状态" checked={form.autoUpdateCharacterState} onChange={(value) => updateField('autoUpdateCharacterState', value)} />
-              <ToggleField label="自动更新时间线" checked={form.autoUpdateTimeline} onChange={(value) => updateField('autoUpdateTimeline', value)} />
+              <ToggleField
+                label="自动更新时间线"
+                description="开启后在章节生成或润色后运行时间线对齐预览与校验；默认不写库，只有 metadata.timelineAutoWritePolicy=validated_auto_write 且校验零 issue 时才允许自动写入。"
+                checked={form.autoUpdateTimeline}
+                onChange={(value) => updateField('autoUpdateTimeline', value)}
+              />
               <ToggleField label="自动校验" checked={form.autoValidation} onChange={(value) => updateField('autoValidation', value)} />
             </div>
           </div>
@@ -182,12 +187,12 @@ function SectionTitle({ title }: { title: string }) {
   );
 }
 
-function ToggleField({ label, checked, onChange }: { label: string; checked: boolean; onChange: (value: boolean) => void }) {
+function ToggleField({ label, description, checked, onChange }: { label: string; description?: string; checked: boolean; onChange: (value: boolean) => void }) {
   return (
     <label
       className="flex items-center justify-between gap-3"
       style={{
-        minHeight: '3rem',
+        minHeight: description ? '4.5rem' : '3rem',
         padding: '0.75rem 0.9rem',
         border: '1px solid var(--border-dim)',
         borderRadius: '0.75rem',
@@ -195,8 +200,15 @@ function ToggleField({ label, checked, onChange }: { label: string; checked: boo
         cursor: 'pointer',
       }}
     >
-      <span className="text-sm font-medium" style={{ color: checked ? 'var(--text-main)' : 'var(--text-muted)', minWidth: 0 }}>
-        {label}
+      <span style={{ minWidth: 0 }}>
+        <span className="block text-sm font-medium" style={{ color: checked ? 'var(--text-main)' : 'var(--text-muted)' }}>
+          {label}
+        </span>
+        {description ? (
+          <span className="mt-1 block text-xs leading-5" style={{ color: checked ? 'var(--text-muted)' : 'var(--text-dim)', overflowWrap: 'anywhere' }}>
+            {description}
+          </span>
+        ) : null}
       </span>
       <input className="sr-only" type="checkbox" checked={checked} onChange={(event) => onChange(event.target.checked)} />
       <span
