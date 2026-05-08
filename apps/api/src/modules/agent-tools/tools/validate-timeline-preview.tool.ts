@@ -247,6 +247,10 @@ export class ValidateTimelinePreviewTool implements BaseTool<ValidateTimelinePre
         if (candidate.sourceType !== 'agent_timeline_plan') {
           issues.push(this.issue(candidate, 'create_planned candidates must have sourceType=agent_timeline_plan.', `${path}.sourceType`));
         }
+      } else if (candidate.action === 'create_discovered') {
+        if (candidate.existingTimelineEventId) {
+          issues.push(this.issue(candidate, 'create_discovered must not include existingTimelineEventId.', `${path}.existingTimelineEventId`));
+        }
       } else {
         if (!candidate.existingTimelineEventId) {
           issues.push(this.issue(candidate, `${candidate.action} requires existingTimelineEventId.`, `${path}.existingTimelineEventId`));

@@ -6985,6 +6985,10 @@ function makeAlignmentTimelinePrisma(reads: string[], writes: string[], options:
         reads.push('chapter.findFirst');
         return { id: 'chapter-7', projectId: 'p1', chapterNo: 7, title: 'Chapter 7' };
       },
+      async findMany() {
+        reads.push('chapter.findMany');
+        return [{ id: 'chapter-7', projectId: 'p1', chapterNo: 7, title: 'Chapter 7' }];
+      },
       create: writeGuard('chapter.create'),
       update: writeGuard('chapter.update'),
       delete: writeGuard('chapter.delete'),
@@ -7294,6 +7298,117 @@ test('align_chapter_timeline_preview returns read-only alignment candidates from
   assert.match(llmCalls[0].messages[1].content, /story-1/);
   assert.match(llmCalls[0].messages[1].content, /timeline-planned-7/);
   assert.equal(usages[0].appStep, 'align_chapter_timeline_preview');
+});
+
+test('align_chapter_timeline_preview supports confirm update create_discovered and archive actions', async () => {
+  const writes: string[] = [];
+  const reads: string[] = [];
+  const storySource = { sourceType: 'story_event', sourceId: 'story-1', title: 'Archive key revealed', chapterId: 'chapter-7', chapterNo: 7 };
+  const candidates = [
+    makeAlignmentTimelineCandidateRaw(),
+    makeAlignmentTimelineCandidateRaw({
+      candidateId: 'tl_align_update_7',
+      action: 'update_event',
+      existingTimelineEventId: 'timeline-active-7',
+      title: 'Guard identifies Lin Che',
+      eventTime: 'Chapter 7 dawn',
+      result: 'The guard now knows Lin Che used the false pass.',
+      eventStatus: 'changed',
+      sourceTrace: {
+        contextSources: [
+          storySource,
+          { sourceType: 'timeline_event', sourceId: 'timeline-active-7', title: 'Guard identifies Lin Che', chapterId: 'chapter-7', chapterNo: 7 },
+        ],
+      },
+    }),
+    makeAlignmentTimelineCandidateRaw({
+      candidateId: 'tl_align_create_7',
+      action: 'create_discovered',
+      existingTimelineEventId: undefined,
+      title: 'Hidden seal breaks',
+      eventTime: 'Chapter 7 late night',
+      cause: 'Lin Che turns the false key twice.',
+      result: 'A hidden seal breaks and reveals a fresh clue.',
+      eventStatus: 'active',
+      sourceTrace: { contextSources: [storySource] },
+    }),
+    makeAlignmentTimelineCandidateRaw({
+      candidateId: 'tl_align_archive_7',
+      action: 'archive_event',
+      existingTimelineEventId: 'timeline-stale-7',
+      title: 'Unused decoy path',
+      eventTime: 'Chapter 7 noon',
+      result: 'The planned decoy path is contradicted by the draft.',
+      eventStatus: 'archived',
+      sourceTrace: {
+        contextSources: [
+          storySource,
+          { sourceType: 'timeline_event', sourceId: 'timeline-stale-7', title: 'Unused decoy path', chapterId: 'chapter-7', chapterNo: 7 },
+        ],
+      },
+    }),
+  ];
+  const prisma = makeAlignmentTimelinePrisma(reads, writes, {
+    timelineEvents: [
+      {
+        id: 'timeline-planned-7',
+        projectId: 'p1',
+        chapterId: 'chapter-7',
+        chapterNo: 7,
+        title: 'Archive key revealed',
+        eventTime: 'Chapter 7 night',
+        participants: ['Lin Che'],
+        eventStatus: 'planned',
+        sourceType: 'agent_timeline_plan',
+      },
+      {
+        id: 'timeline-active-7',
+        projectId: 'p1',
+        chapterId: 'chapter-7',
+        chapterNo: 7,
+        title: 'Guard identifies Lin Che',
+        eventTime: 'Chapter 7 dawn',
+        participants: ['Lin Che'],
+        eventStatus: 'active',
+        sourceType: 'manual',
+      },
+      {
+        id: 'timeline-stale-7',
+        projectId: 'p1',
+        chapterId: 'chapter-7',
+        chapterNo: 7,
+        title: 'Unused decoy path',
+        eventTime: 'Chapter 7 noon',
+        participants: ['Lin Che'],
+        eventStatus: 'planned',
+        sourceType: 'agent_timeline_plan',
+      },
+    ],
+  });
+  const llm = {
+    async chatJson() {
+      return { data: { candidates, assumptions: [], risks: [] }, result: null };
+    },
+  };
+  const context = { agentRunId: 'run-align', projectId: 'p1', mode: 'plan' as const, approved: false, outputs: {}, policy: {} };
+  const previewTool = new AlignChapterTimelinePreviewTool(llm as never, prisma as never);
+  const validateTool = new ValidateTimelinePreviewTool(prisma as never);
+
+  const preview = await previewTool.run({ chapterId: 'chapter-7', draftId: 'draft-7', maxCandidates: 4 }, context as never);
+  const validation = await validateTool.run({ preview }, context as never);
+
+  assert.deepEqual(preview.candidates.map((candidate) => candidate.action), ['confirm_planned', 'update_event', 'create_discovered', 'archive_event']);
+  assert.equal(validation.valid, true);
+  assert.deepEqual(validation.accepted.map((candidate) => candidate.action), ['confirm_planned', 'update_event', 'create_discovered', 'archive_event']);
+  assert.equal(validation.writePreview.summary.confirmPlannedCount, 1);
+  assert.equal(validation.writePreview.summary.updateCount, 1);
+  assert.equal(validation.writePreview.summary.createDiscoveredCount, 1);
+  assert.equal(validation.writePreview.summary.archiveCount, 1);
+  assert.equal(validation.writePreview.entries.find((entry) => entry.candidateId === 'tl_align_confirm_7')?.after?.eventStatus, 'active');
+  assert.equal(validation.writePreview.entries.find((entry) => entry.candidateId === 'tl_align_update_7')?.after?.eventStatus, 'changed');
+  assert.equal(validation.writePreview.entries.find((entry) => entry.candidateId === 'tl_align_create_7')?.after?.eventStatus, 'active');
+  assert.equal(validation.writePreview.entries.find((entry) => entry.candidateId === 'tl_align_archive_7')?.after?.eventStatus, 'archived');
+  assert.deepEqual(writes, []);
 });
 
 test('align_chapter_timeline_preview fails fast on LLM errors incomplete output and illegal trace refs', async () => {
