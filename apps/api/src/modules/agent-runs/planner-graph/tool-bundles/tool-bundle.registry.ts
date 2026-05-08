@@ -1,5 +1,6 @@
 import { Injectable } from '@nestjs/common';
 import { ToolRegistryService } from '../../../agent-tools/tool-registry.service';
+import type { ToolManifestForPlanner } from '../../../agent-tools/tool-manifest.types';
 import type { RouteDecision, SelectedToolBundle } from '../planner-graph.state';
 import { guidedToolBundles } from './guided.tool-bundle';
 import { importToolBundles } from './import.tool-bundle';
@@ -48,6 +49,10 @@ export class ToolBundleRegistry {
     };
   }
 
+  listManifestsForBundle(bundle: SelectedToolBundle): ToolManifestForPlanner[] {
+    return this.tools.listManifestsForPlanner(bundle.strictToolNames);
+  }
+
   resolveForRoute(route: Pick<RouteDecision, 'domain' | 'intent'>): SelectedToolBundle {
     const definition = TOOL_BUNDLE_DEFINITIONS.find((item) => item.domain === route.domain && item.intents.includes(route.intent))
       ?? TOOL_BUNDLE_DEFINITIONS.find((item) => item.domain === route.domain);
@@ -57,6 +62,10 @@ export class ToolBundleRegistry {
 
   assertAllBundlesRegistered(): void {
     for (const definition of TOOL_BUNDLE_DEFINITIONS) this.assertDefinitionToolsRegistered(definition);
+  }
+
+  registeredToolCount(): number {
+    return this.tools.list().length;
   }
 
   private assertDefinitionToolsRegistered(definition: ToolBundleDefinition): void {

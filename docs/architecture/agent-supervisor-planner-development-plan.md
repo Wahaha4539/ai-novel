@@ -201,7 +201,7 @@
 
 ### ASP-P3-001 实现 classifyIntentNode
 
-- 状态：`[ ]`
+- 状态：`[x]`
 - 模块：API
 - 文件：
   - `apps/api/src/modules/agent-runs/planner-graph/nodes/classify-intent.node.ts`
@@ -239,6 +239,12 @@
   - diagnostics 记录 selected tool count。
 - 验证：
   - `pnpm --dir apps/api run test:agent`
+- 完成记录（2026-05-09）：
+  - 新增 `createSelectToolBundleNode`，根据 `RouteDecision` 选择 bundle 并生成 selected manifests；guided context 存在时优先选择 `guided.step`。
+  - `ToolBundleRegistry` 增加按 bundle strict tools 输出 manifests 和 registered tool count 的方法，diagnostics 记录 selected/all tool count。
+  - 修改文件：`apps/api/src/modules/agent-runs/planner-graph/nodes/select-tool-bundle.node.ts`、`apps/api/src/modules/agent-runs/planner-graph/nodes/index.ts`、`apps/api/src/modules/agent-runs/planner-graph/tool-bundles/tool-bundle.registry.ts`、`apps/api/src/modules/agent-runs/agent-services.spec.ts`、`docs/architecture/agent-supervisor-planner-development-plan.md`。
+  - 测试：`AGENT_TEST_FILTER="selectToolBundleNode" pnpm --dir apps/api run test:agent`，通过（1/333 targeted）。
+  - 测试：`pnpm --filter api build`，通过。
 
 ### ASP-P3-003 将 route 注入 DomainPlanner prompt
 

@@ -22,6 +22,7 @@ import { AgentReplannerService } from './agent-replanner.service';
 import { AgentRuntimeService } from './agent-runtime.service';
 import { AgentPlannerService } from './agent-planner.service';
 import { AgentPlannerGraphService } from './planner-graph/agent-planner-graph.service';
+import { createSelectToolBundleNode } from './planner-graph/nodes';
 import { TOOL_BUNDLE_DEFINITIONS, ToolBundleRegistry } from './planner-graph/tool-bundles';
 import { RootSupervisor, validateRouteDecision } from './planner-graph/supervisors/root-supervisor';
 import { AgentPolicyService, AgentSecondConfirmationRequiredError } from './agent-policy.service';
@@ -8312,6 +8313,51 @@ test('ToolBundleRegistry resolves core bundles and rejects missing registered to
     () => new ToolBundleRegistry(missingVolumePersistTools).resolveBundle('outline.volume'),
     /ToolBundle outline\.volume references unregistered tools: persist_volume_outline/,
   );
+});
+
+test('selectToolBundleNode selects outline and guided bundles with diagnostics', async () => {
+  const allBundleToolNames = [...new Set(TOOL_BUNDLE_DEFINITIONS.flatMap((definition) => [
+    ...definition.strictToolNames,
+    ...(definition.optionalToolNames ?? []),
+    ...(definition.deniedToolNames ?? []),
+  ]))];
+  const tools = {
+    list: () => allBundleToolNames.map((name) => createTool({ name, requiresApproval: false, riskLevel: 'low', sideEffects: [] })),
+    listManifestsForPlanner: (toolNames?: string[]) => (toolNames?.length ? [...new Set(toolNames)] : allBundleToolNames).map((name) => ({
+      name,
+      displayName: name,
+      description: name,
+      whenToUse: [],
+      whenNotToUse: [],
+      allowedModes: ['plan', 'act'],
+      riskLevel: 'low',
+      requiresApproval: false,
+      sideEffects: [],
+    })),
+  } as unknown as ToolRegistryService;
+  const node = createSelectToolBundleNode(new ToolBundleRegistry(tools));
+  const baseState = {
+    goal: 'route smoke',
+    defaults: { taskType: 'general', summary: 'smoke', assumptions: [], risks: [] },
+    diagnostics: { graphVersion: 'test', nodes: [] },
+  };
+
+  const volume = await node({ ...baseState, route: { domain: 'outline', intent: 'generate_volume_outline', confidence: 0.9, reasons: ['test'] } });
+  assert.equal(volume.selectedBundle?.bundleName, 'outline.volume');
+  assert.deepEqual(volume.selectedTools?.map((tool) => tool.name), ['inspect_project_context', 'generate_volume_outline_preview', 'persist_volume_outline']);
+  assert.equal(volume.diagnostics?.selectedToolCount, 3);
+
+  const chapter = await node({ ...baseState, route: { domain: 'outline', intent: 'split_volume_to_chapters', confidence: 0.9, reasons: ['test'] } });
+  assert.equal(chapter.selectedBundle?.bundleName, 'outline.chapter');
+  assert.ok(chapter.selectedTools?.some((tool) => tool.name === 'generate_chapter_outline_preview'));
+
+  const guided = await node({
+    ...baseState,
+    route: { domain: 'writing', intent: 'chapter_write', confidence: 0.9, reasons: ['test'] },
+    context: { session: { guided: { currentStep: 'guided_volume' } } } as AgentContextV2,
+  });
+  assert.equal(guided.selectedBundle?.bundleName, 'guided.step');
+  assert.ok(guided.selectedTools?.every((tool) => ['generate_guided_step_preview', 'validate_guided_step_preview', 'persist_guided_step_result'].includes(tool.name)));
 });
 
 test('Tool manifest filtering preserves requested order and fails on unknown tools', () => {
