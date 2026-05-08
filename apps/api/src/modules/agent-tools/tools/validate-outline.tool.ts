@@ -2,6 +2,7 @@ import { Injectable } from '@nestjs/common';
 import { PrismaService } from '../../../prisma/prisma.service';
 import { BaseTool, ToolContext } from '../base-tool';
 import { OutlinePreviewOutput } from './generate-outline-preview.tool';
+import { assertChapterCharacterExecution, assertVolumeCharacterPlan, VolumeCharacterPlan } from './outline-character-contracts';
 
 interface ValidateOutlineInput {
   preview?: OutlinePreviewOutput;
@@ -13,6 +14,20 @@ interface OutlineValidationIssue {
   severity: OutlineValidationSeverity;
   message: string;
   suggestion?: string;
+}
+
+interface CharacterValidationStats {
+  volumeCharacterCandidateCount: number;
+  chapterCharacterExecutionCount: number;
+  characterExecutionMissingCount: number;
+  unknownCharacterReferenceCount: number;
+  temporaryCharacterCount: number;
+  characterRiskCount: number;
+}
+
+interface CharacterCatalog {
+  existingCharacterNames: string[];
+  existingCharacterAliases: Record<string, string[]>;
 }
 
 export interface ValidateOutlineOutput {
@@ -30,6 +45,12 @@ export interface ValidateOutlineOutput {
     storyUnitMissingCount: number;
     sceneBeatCount: number;
     continuityMissingCount: number;
+    volumeCharacterCandidateCount: number;
+    chapterCharacterExecutionCount: number;
+    characterExecutionMissingCount: number;
+    unknownCharacterReferenceCount: number;
+    temporaryCharacterCount: number;
+    characterRiskCount: number;
   };
   sourceRisks: string[];
   writePreview?: {
@@ -62,14 +83,16 @@ export class ValidateOutlineTool implements BaseTool<ValidateOutlineInput, Valid
 
   async run(args: ValidateOutlineInput, _context: ToolContext): Promise<ValidateOutlineOutput> {
     const issues: OutlineValidationIssue[] = [];
+    const characterStats = this.createCharacterStats();
     const preview = args.preview;
 
     if (!preview) {
       issues.push({ severity: 'error', message: '缺少大纲预览，无法执行写入前校验。', suggestion: '请先重新生成大纲预览。' });
-      return this.buildOutput(issues, [], undefined, []);
+      return this.buildOutput(issues, [], undefined, [], characterStats);
     }
 
     const chapters = preview.chapters ?? [];
+    const characterCatalog = await this.loadCharacterCatalog(_context.projectId);
     if (!chapters.length) {
       issues.push({ severity: 'error', message: '大纲预览中没有章节。', suggestion: '至少需要 1 个章节才能写入卷和章节表。' });
     }
@@ -82,6 +105,8 @@ export class ValidateOutlineTool implements BaseTool<ValidateOutlineInput, Valid
     if (expectedChapterCount && expectedChapterCount !== chapters.length) {
       issues.push({ severity: 'error', message: `卷声明章节数为 ${expectedChapterCount}，但实际预览为 ${chapters.length} 章。`, suggestion: '请重新生成完整章节细纲，不要写入数量不一致的预览。' });
     }
+
+    const characterPlan = this.validateVolumeCharacterPlan(preview, characterCatalog, issues, characterStats);
 
     const chapterNos = chapters.map((chapter) => Number(chapter.chapterNo));
     const duplicatedChapterNos = this.findDuplicatedNumbers(chapterNos);
@@ -119,14 +144,15 @@ export class ValidateOutlineTool implements BaseTool<ValidateOutlineInput, Valid
         issues.push({ severity: 'warning', message: `${label} 的预期字数偏低。`, suggestion: '如非短篇/片段，建议提高到更合理的章节字数。' });
       }
       this.validateCraftBrief(chapter.craftBrief, label, issues);
+      this.validateChapterCharacterExecution(chapter, label, characterPlan, characterCatalog, issues, characterStats);
     });
 
     const writePreview = await this.buildWritePreview(preview, _context);
-    return this.buildOutput(issues, chapters, expectedChapterCount, preview.risks ?? [], writePreview);
+    return this.buildOutput(issues, chapters, expectedChapterCount, preview.risks ?? [], characterStats, writePreview);
   }
 
   /** 统一构建输出，确保前端和 report_result 都能稳定读取 issueCount/stats。 */
-  private buildOutput(issues: OutlineValidationIssue[], chapters: OutlinePreviewOutput['chapters'], expectedChapterCount: number | undefined, sourceRisks: string[], writePreview?: ValidateOutlineOutput['writePreview']): ValidateOutlineOutput {
+  private buildOutput(issues: OutlineValidationIssue[], chapters: OutlinePreviewOutput['chapters'], expectedChapterCount: number | undefined, sourceRisks: string[], characterStats: CharacterValidationStats, writePreview?: ValidateOutlineOutput['writePreview']): ValidateOutlineOutput {
     const duplicatedChapterNos = this.findDuplicatedNumbers(chapters.map((chapter) => Number(chapter.chapterNo)));
     const craftBriefCount = chapters.filter((chapter) => Object.keys(this.asRecord(chapter.craftBrief)).length > 0).length;
     const storyUnitCount = chapters.filter((chapter) => Object.keys(this.asRecord(this.asRecord(chapter.craftBrief).storyUnit)).length > 0).length;
@@ -147,6 +173,7 @@ export class ValidateOutlineTool implements BaseTool<ValidateOutlineInput, Valid
         storyUnitMissingCount: Math.max(0, chapters.length - storyUnitCount),
         sceneBeatCount,
         continuityMissingCount,
+        ...characterStats,
       },
       sourceRisks,
       ...(writePreview ? { writePreview } : {}),
@@ -157,6 +184,137 @@ export class ValidateOutlineTool implements BaseTool<ValidateOutlineInput, Valid
    * 在 Plan 阶段提前派生写入 diff，让审批台能说明哪些章节会创建、更新或跳过。
    * 这里只读数据库，不改变正式业务数据；真正写入仍由 persist_outline 在 Act 阶段执行。
    */
+  private createCharacterStats(): CharacterValidationStats {
+    return {
+      volumeCharacterCandidateCount: 0,
+      chapterCharacterExecutionCount: 0,
+      characterExecutionMissingCount: 0,
+      unknownCharacterReferenceCount: 0,
+      temporaryCharacterCount: 0,
+      characterRiskCount: 0,
+    };
+  }
+
+  private validateVolumeCharacterPlan(
+    preview: OutlinePreviewOutput,
+    characterCatalog: CharacterCatalog,
+    issues: OutlineValidationIssue[],
+    stats: CharacterValidationStats,
+  ): VolumeCharacterPlan | undefined {
+    try {
+      const narrativePlan = this.asRecord(preview.volume?.narrativePlan);
+      const characterPlan = assertVolumeCharacterPlan(narrativePlan.characterPlan, {
+        chapterCount: Number(preview.volume?.chapterCount),
+        existingCharacterNames: characterCatalog.existingCharacterNames,
+        existingCharacterAliases: characterCatalog.existingCharacterAliases,
+        label: 'volume.narrativePlan.characterPlan',
+      });
+      stats.volumeCharacterCandidateCount = characterPlan.newCharacterCandidates.length;
+      return characterPlan;
+    } catch (error) {
+      this.addCharacterIssue(
+        issues,
+        stats,
+        `volume.narrativePlan.characterPlan invalid: ${this.errorMessage(error)}`,
+        'Regenerate the outline preview with a complete volume characterPlan before approval or persist.',
+      );
+      return undefined;
+    }
+  }
+
+  private validateChapterCharacterExecution(
+    chapter: OutlinePreviewOutput['chapters'][number],
+    label: string,
+    characterPlan: VolumeCharacterPlan | undefined,
+    characterCatalog: CharacterCatalog,
+    issues: OutlineValidationIssue[],
+    stats: CharacterValidationStats,
+  ): void {
+    const craftBrief = this.asRecord(chapter.craftBrief);
+    const characterExecution = this.asRecord(craftBrief.characterExecution);
+    if (!Object.keys(characterExecution).length) {
+      stats.characterExecutionMissingCount += 1;
+      this.addCharacterIssue(
+        issues,
+        stats,
+        `${label} missing craftBrief.characterExecution.`,
+        'Regenerate this chapter outline with POV, cast, relationshipBeats, and newMinorCharacters.',
+      );
+      return;
+    }
+
+    if (!characterPlan) return;
+
+    try {
+      const existingCharacterNames = [
+        ...characterCatalog.existingCharacterNames,
+        ...characterPlan.existingCharacterArcs.map((arc) => arc.characterName),
+      ];
+      const execution = assertChapterCharacterExecution(characterExecution, {
+        existingCharacterNames,
+        existingCharacterAliases: characterCatalog.existingCharacterAliases,
+        volumeCandidateNames: characterPlan.newCharacterCandidates.map((candidate) => candidate.name),
+        sceneBeats: this.asRecordArray(craftBrief.sceneBeats).map((sceneBeat) => ({
+          sceneArcId: this.text(sceneBeat.sceneArcId),
+          participants: this.stringArray(sceneBeat.participants),
+        })),
+        actionBeatCount: this.stringArray(craftBrief.actionBeats).length,
+        label: `${label}.craftBrief.characterExecution`,
+      });
+      stats.chapterCharacterExecutionCount += 1;
+      stats.temporaryCharacterCount += execution.newMinorCharacters.length;
+    } catch (error) {
+      this.addCharacterIssue(
+        issues,
+        stats,
+        `${label}.craftBrief.characterExecution invalid: ${this.errorMessage(error)}`,
+        'Regenerate the chapter with cast sources that resolve to existing characters, volume candidates, or declared minor temporary characters.',
+      );
+    }
+  }
+
+  private addCharacterIssue(
+    issues: OutlineValidationIssue[],
+    stats: CharacterValidationStats,
+    message: string,
+    suggestion: string,
+  ): void {
+    stats.characterRiskCount += 1;
+    if (this.isUnknownCharacterIssue(message)) stats.unknownCharacterReferenceCount += 1;
+    issues.push({ severity: 'error', message, suggestion });
+  }
+
+  private isUnknownCharacterIssue(message: string): boolean {
+    return /unknown|not registered|not listed|not covered|candidate|未知|未进入|未出现在|未被|候选/i.test(message);
+  }
+
+  private async loadCharacterCatalog(projectId: string): Promise<CharacterCatalog> {
+    const characterModel = (this.prisma as unknown as {
+      character?: { findMany?: (args: unknown) => Promise<Array<{ name: string; alias?: unknown }>> };
+    }).character;
+    if (!characterModel?.findMany) return { existingCharacterNames: [], existingCharacterAliases: {} };
+
+    const characters = await characterModel.findMany({
+      where: { projectId },
+      select: { name: true, alias: true },
+    });
+    const existingCharacterAliases: Record<string, string[]> = {};
+    for (const character of characters) {
+      const aliases = Array.isArray(character.alias)
+        ? character.alias.filter((alias): alias is string => typeof alias === 'string' && alias.trim().length > 0)
+        : [];
+      if (aliases.length) existingCharacterAliases[character.name] = aliases;
+    }
+    return {
+      existingCharacterNames: characters.map((character) => character.name).filter(Boolean),
+      existingCharacterAliases,
+    };
+  }
+
+  private errorMessage(error: unknown): string {
+    return error instanceof Error ? error.message : String(error);
+  }
+
   private async buildWritePreview(preview: OutlinePreviewOutput, context: ToolContext): Promise<ValidateOutlineOutput['writePreview']> {
     const validChapterNos = preview.chapters.map((chapter) => Number(chapter.chapterNo)).filter((value) => Number.isFinite(value) && value > 0);
     const [existingVolume, existingChapters] = await Promise.all([

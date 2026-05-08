@@ -35,7 +35,7 @@ import { RetrievalPlannerService } from '../generation/retrieval-planner.service
 import { ValidateOutlineTool } from '../agent-tools/tools/validate-outline.tool';
 import { ValidateImportedAssetsTool } from '../agent-tools/tools/validate-imported-assets.tool';
 import { PersistOutlineTool } from '../agent-tools/tools/persist-outline.tool';
-import { GenerateOutlinePreviewTool } from '../agent-tools/tools/generate-outline-preview.tool';
+import { GenerateOutlinePreviewTool, OutlinePreviewOutput } from '../agent-tools/tools/generate-outline-preview.tool';
 import { GenerateVolumeOutlinePreviewTool } from '../agent-tools/tools/generate-volume-outline-preview.tool';
 import { assertChapterCharacterExecution, assertVolumeCharacterPlan } from '../agent-tools/tools/outline-character-contracts';
 import { ResolveChapterTool } from '../agent-tools/tools/resolve-chapter.tool';
@@ -377,6 +377,64 @@ function createVccNarrativePlan(overrides: Record<string, unknown> = {}) {
     endingHook: '半页账纸背面出现沈栖父亲的旧签名',
     handoffToNextVolume: '带着半页账纸追查东闸名单原件',
     ...overrides,
+  };
+}
+
+function createVccCharacterPlanForChapterCount(chapterCount: number, overrides: Record<string, unknown> = {}) {
+  const base = createVccCharacterPlan();
+  return createVccCharacterPlan({
+    existingCharacterArcs: base.existingCharacterArcs.map((arc) => ({
+      ...arc,
+      lastActiveChapter: chapterCount,
+    })),
+    newCharacterCandidates: base.newCharacterCandidates.map((candidate) => ({
+      ...candidate,
+      firstAppearChapter: Math.min(Number(candidate.firstAppearChapter) || 1, chapterCount),
+    })),
+    relationshipArcs: base.relationshipArcs.map((arc) => ({
+      ...arc,
+      turnChapterNos: [Math.max(1, Math.min(chapterCount, 2))],
+    })),
+    ...overrides,
+  });
+}
+
+function createVccNarrativePlanForChapterCount(chapterCount: number, overrides: Record<string, unknown> = {}) {
+  return createVccNarrativePlan({
+    storyUnits: [
+      {
+        unitId: 'v1_unit_01',
+        title: '旧闸棚失踪档案',
+        chapterRange: { start: 1, end: chapterCount },
+        localGoal: '拿到第一份可核对证据',
+        localConflict: '巡检处封锁账房并登记靠近者',
+        serviceFunctions: ['mainline', 'relationship_shift', 'foreshadow'],
+        payoff: '主角带走证据但名字进入记录',
+        stateChangeAfterUnit: '调查从传闻变成可追查证据',
+      },
+    ],
+    characterPlan: createVccCharacterPlanForChapterCount(chapterCount),
+    ...overrides,
+  });
+}
+
+function createVccOutlinePreview(chapterCount = 1, overrides: Record<string, unknown> = {}): OutlinePreviewOutput {
+  const volume = {
+    volumeNo: 1,
+    title: '旧闸棚账册',
+    synopsis: '卷简介',
+    objective: '拿到账册证据',
+    chapterCount,
+    narrativePlan: createVccNarrativePlanForChapterCount(chapterCount),
+    ...(overrides.volume as Record<string, unknown> | undefined),
+  };
+  const chapters = Array.from({ length: chapterCount }, (_, index) => createOutlineChapter(index + 1, 1, {
+    outline: '林澈在旧闸棚账房核对账页墨痕，巡检员夺走账册并登记他的名字；同伴在后门藏下半页证据；雨廊尽头的东闸即将关闭，迫使他带着残缺证据离开。',
+  }));
+  return {
+    volume,
+    chapters: (overrides.chapters as OutlinePreviewOutput['chapters'] | undefined) ?? chapters,
+    risks: (overrides.risks as string[] | undefined) ?? [],
   };
 }
 
@@ -2076,7 +2134,7 @@ test('ValidateOutlineTool 容忍 LLM 返回非字符串章节梗概', async () =
   const result = await tool.run(
     {
       preview: {
-        volume: { volumeNo: 1, title: '卷一', synopsis: '', objective: '', chapterCount: 1 },
+        volume: { volumeNo: 1, title: '卷一', synopsis: '', objective: '', chapterCount: 1, narrativePlan: createVccNarrativePlanForChapterCount(1) },
         chapters: [{
           chapterNo: 1,
           title: '一',
@@ -2166,7 +2224,7 @@ test('ValidateOutlineTool 对重复章节标题给出 warning', async () => {
   const result = await tool.run(
     {
       preview: {
-        volume: { volumeNo: 1, title: '卷一', synopsis: '卷简介', objective: '卷目标', chapterCount: 2 },
+        volume: { volumeNo: 1, title: '卷一', synopsis: '卷简介', objective: '卷目标', chapterCount: 2, narrativePlan: createVccNarrativePlanForChapterCount(2) },
         chapters: [
           createOutlineChapter(1, 1, {
             title: '第 1 章：压力入场',
@@ -2191,6 +2249,73 @@ test('ValidateOutlineTool 对重复章节标题给出 warning', async () => {
 
   assert.equal(result.valid, true);
   assert.equal(result.issues.some((issue) => /重复章节标题/.test(issue.message) && /压力入场/.test(issue.message)), true);
+});
+
+test('VCC validate_outline rejects missing characterExecution', async () => {
+  const prisma = {
+    volume: { async findUnique() { return null; } },
+    chapter: { async findMany() { return []; } },
+    character: { async findMany() { return []; } },
+  };
+  const craftBrief = { ...createOutlineCraftBrief(), characterExecution: undefined };
+  const preview = createVccOutlinePreview(1, { chapters: [createOutlineChapter(1, 1, { craftBrief })] });
+  const tool = new ValidateOutlineTool(prisma as never);
+
+  const result = await tool.run(
+    { preview },
+    { agentRunId: 'run-vcc-validate-missing-execution', projectId: 'p1', mode: 'plan', approved: false, outputs: {}, policy: {} },
+  );
+
+  assert.equal(result.valid, false);
+  assert.equal(result.stats.characterExecutionMissingCount, 1);
+  assert.equal(result.issues.some((issue) => /craftBrief\.characterExecution/.test(issue.message)), true);
+});
+
+test('VCC validate_outline reports character planning stats', async () => {
+  const prisma = {
+    volume: { async findUnique() { return null; } },
+    chapter: { async findMany() { return []; } },
+    character: { async findMany() { return []; } },
+  };
+  const tool = new ValidateOutlineTool(prisma as never);
+
+  const result = await tool.run(
+    { preview: createVccOutlinePreview(1) },
+    { agentRunId: 'run-vcc-validate-stats', projectId: 'p1', mode: 'plan', approved: false, outputs: {}, policy: {} },
+  );
+
+  assert.equal(result.valid, true);
+  assert.equal(result.stats.volumeCharacterCandidateCount, 1);
+  assert.equal(result.stats.chapterCharacterExecutionCount, 1);
+  assert.equal(result.stats.characterExecutionMissingCount, 0);
+  assert.equal(result.stats.temporaryCharacterCount, 2);
+  assert.equal(result.stats.characterRiskCount, 0);
+});
+
+test('VCC validate_outline rejects scene participants outside cast', async () => {
+  const prisma = {
+    volume: { async findUnique() { return null; } },
+    chapter: { async findMany() { return []; } },
+    character: { async findMany() { return []; } },
+  };
+  const baseCraftBrief = createOutlineCraftBrief();
+  const craftBrief = {
+    ...baseCraftBrief,
+    sceneBeats: [
+      { ...(baseCraftBrief.sceneBeats as Array<Record<string, unknown>>)[0], participants: ['未知访客'] },
+      ...(baseCraftBrief.sceneBeats as Array<Record<string, unknown>>).slice(1),
+    ],
+  };
+  const tool = new ValidateOutlineTool(prisma as never);
+
+  const result = await tool.run(
+    { preview: createVccOutlinePreview(1, { chapters: [createOutlineChapter(1, 1, { craftBrief })] }) },
+    { agentRunId: 'run-vcc-validate-scene-cast', projectId: 'p1', mode: 'plan', approved: false, outputs: {}, policy: {} },
+  );
+
+  assert.equal(result.valid, false);
+  assert.equal(result.stats.unknownCharacterReferenceCount, 1);
+  assert.equal(result.issues.some((issue) => /characterExecution/.test(issue.message)), true);
 });
 
 test('ValidateImportedAssetsTool 生成导入写入前 diff，并标记重复/已存在资产', async () => {
@@ -5005,6 +5130,74 @@ test('PersistOutlineTool 阻止重复章节编号写入', async () => {
   );
 });
 
+test('VCC persist_outline rejects invalid character planning validation', async () => {
+  const tool = new PersistOutlineTool({} as never);
+  await assert.rejects(
+    () => tool.run(
+      { preview: createVccOutlinePreview(1), validation: { valid: false } },
+      { agentRunId: 'run-vcc-persist-invalid-validation', projectId: 'p1', mode: 'act', approved: true, outputs: {}, policy: {} },
+    ),
+    /validate_outline.*valid=true/,
+  );
+});
+
+test('VCC persist_outline rejects missing characterExecution without validation', async () => {
+  const prisma = {
+    character: { async findMany() { return []; } },
+  };
+  const craftBrief = { ...createOutlineCraftBrief(), characterExecution: undefined };
+  const tool = new PersistOutlineTool(prisma as never);
+
+  await assert.rejects(
+    () => tool.run(
+      { preview: createVccOutlinePreview(1, { chapters: [createOutlineChapter(1, 1, { craftBrief })] }) },
+      { agentRunId: 'run-vcc-persist-missing-execution', projectId: 'p1', mode: 'act', approved: true, outputs: {}, policy: {} },
+    ),
+    /characterExecution/,
+  );
+});
+
+test('VCC persist_outline does not create Character', async () => {
+  const createdChapters: Array<Record<string, unknown>> = [];
+  const characterCreates: Array<Record<string, unknown>> = [];
+  const prisma = {
+    character: {
+      async findMany() { return []; },
+      async create(args: Record<string, unknown>) {
+        characterCreates.push(args);
+        throw new Error('persist_outline must not create Character');
+      },
+    },
+    async $transaction(callback: (tx: Record<string, unknown>) => Promise<unknown>) {
+      return callback({
+        volume: {
+          async upsert() { return { id: 'v1' }; },
+        },
+        chapter: {
+          async findUnique() { return null; },
+          async create(args: { data: Record<string, unknown> }) {
+            createdChapters.push(args.data);
+            return { id: 'c1' };
+          },
+          async update() {
+            throw new Error('planned chapter should be created, not updated');
+          },
+        },
+      });
+    },
+  };
+  const tool = new PersistOutlineTool(prisma as never);
+
+  const result = await tool.run(
+    { preview: createVccOutlinePreview(1), validation: { valid: true } },
+    { agentRunId: 'run-vcc-persist-no-character', projectId: 'p1', mode: 'act', approved: true, outputs: {}, policy: {} },
+  );
+
+  assert.equal(result.createdCount, 1);
+  assert.equal(createdChapters.length, 1);
+  assert.equal(characterCreates.length, 0);
+});
+
 test('PersistOutlineTool 写入新建和 planned 章节 craftBrief 并跳过 drafted', async () => {
   const upsertedVolumes: Array<{ create: Record<string, unknown>; update: Record<string, unknown> }> = [];
   const createdChapters: Array<Record<string, unknown>> = [];
@@ -5038,41 +5231,29 @@ test('PersistOutlineTool 写入新建和 planned 章节 craftBrief 并跳过 dra
     },
   };
   const tool = new PersistOutlineTool(prisma as never);
-  const craftBrief = {
-    visibleGoal: '拿到旧档案',
-    coreConflict: '档案室被封',
-    actionBeats: ['潜入', '交锋', '带走证据'],
-    concreteClues: [{ name: '湿钥匙' }],
-    irreversibleConsequence: '主角被监控拍下。',
-  };
+  const preview = createVccOutlinePreview(3);
+  preview.chapters[0].craftBrief = createOutlineCraftBrief({ visibleGoal: '拿到旧档案' });
+  preview.chapters[1].craftBrief = createOutlineCraftBrief({ visibleGoal: '确认档案被换' });
+  preview.chapters[2].craftBrief = createOutlineCraftBrief({ visibleGoal: '不应覆盖 drafted' });
   const result = await tool.run(
-    {
-      preview: {
-        volume: { volumeNo: 1, title: '卷一', synopsis: '卷简介', objective: '卷目标', chapterCount: 3, narrativePlan: { storyUnits: [{ unitId: 'v1_unit_01', title: '档案潜入' }] } },
-        chapters: [
-          { chapterNo: 1, title: '一', objective: '目标', conflict: '冲突', hook: '钩子', outline: '梗概', expectedWordCount: 2000, craftBrief },
-          { chapterNo: 2, title: '二', objective: '目标', conflict: '冲突', hook: '钩子', outline: '梗概', expectedWordCount: 2000, craftBrief: { ...craftBrief, visibleGoal: '确认档案被换' } },
-          { chapterNo: 3, title: '三', objective: '目标', conflict: '冲突', hook: '钩子', outline: '梗概', expectedWordCount: 2000, craftBrief: { ...craftBrief, visibleGoal: '不应覆盖 drafted' } },
-        ],
-        risks: [],
-      },
-    },
+    { preview },
     { agentRunId: 'run1', projectId: 'p1', mode: 'act', approved: true, outputs: {}, policy: {} },
   );
 
   assert.equal(result.createdCount, 1);
   assert.equal(result.updatedCount, 1);
   assert.equal(result.skippedCount, 1);
-  assert.deepEqual(upsertedVolumes[0].create.narrativePlan, { storyUnits: [{ unitId: 'v1_unit_01', title: '档案潜入' }] });
-  assert.deepEqual(upsertedVolumes[0].update.narrativePlan, { storyUnits: [{ unitId: 'v1_unit_01', title: '档案潜入' }] });
+  assert.equal(Boolean((upsertedVolumes[0].create.narrativePlan as Record<string, unknown>).characterPlan), true);
+  assert.equal(Boolean((upsertedVolumes[0].update.narrativePlan as Record<string, unknown>).characterPlan), true);
   assert.equal((createdChapters[0].craftBrief as Record<string, unknown>).visibleGoal, '拿到旧档案');
   assert.equal((updatedChapters[0].craftBrief as Record<string, unknown>).visibleGoal, '确认档案被换');
   assert.equal(updatedChapters.some((chapter) => chapter.id === 'c3'), false);
 });
 
-test('PersistOutlineTool 兼容旧 outline_preview 缺 craftBrief，不覆盖 planned 章节既有执行卡', async () => {
+test('PersistOutlineTool 拒绝旧 outline_preview 缺 craftBrief', async () => {
   const updatedChapters: Array<Record<string, unknown>> = [];
   const prisma = {
+    character: { async findMany() { return []; } },
     async $transaction(callback: (tx: Record<string, unknown>) => Promise<unknown>) {
       return callback({
         volume: {
@@ -5091,12 +5272,15 @@ test('PersistOutlineTool 兼容旧 outline_preview 缺 craftBrief，不覆盖 pl
   };
   const tool = new PersistOutlineTool(prisma as never);
 
-  await tool.run(
-    { preview: { volume: { volumeNo: 1, title: '卷一', synopsis: '卷简介', objective: '卷目标', chapterCount: 1 }, chapters: [{ chapterNo: 1, title: '一', objective: '目标', conflict: '冲突', hook: '钩子', outline: '梗概', expectedWordCount: 2000 }], risks: [] } },
-    { agentRunId: 'run1', projectId: 'p1', mode: 'act', approved: true, outputs: {}, policy: {} },
+  await assert.rejects(
+    () => tool.run(
+      { preview: { volume: { volumeNo: 1, title: '卷一', synopsis: '卷简介', objective: '卷目标', chapterCount: 1, narrativePlan: createVccNarrativePlanForChapterCount(1) }, chapters: [{ chapterNo: 1, title: '一', objective: '目标', conflict: '冲突', hook: '钩子', outline: '梗概', expectedWordCount: 2000 }], risks: [] } },
+      { agentRunId: 'run1', projectId: 'p1', mode: 'act', approved: true, outputs: {}, policy: {} },
+    ),
+    /characterExecution/,
   );
 
-  assert.equal(Object.prototype.hasOwnProperty.call(updatedChapters[0], 'craftBrief'), false);
+  assert.equal(updatedChapters.length, 0);
 });
 
 test('GenerateOutlinePreviewTool keeps long outer timeout without output token cap', async () => {
