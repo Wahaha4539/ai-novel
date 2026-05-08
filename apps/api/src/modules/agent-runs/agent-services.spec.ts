@@ -8434,6 +8434,76 @@ test('DomainPlanner route prompt uses selected tools and records diagnostics', a
   assert.ok(update.diagnostics?.nodes.some((item) => item.name === 'domainPlanner'));
 });
 
+test('Planner repair selected tools prompt does not return to full manifests', async () => {
+  const payloads: Array<Record<string, any>> = [];
+  const toolList = [
+    createTool({ name: 'echo_report', requiresApproval: false, riskLevel: 'low', sideEffects: [] }),
+    createTool({ name: 'write_chapter', requiresApproval: true, riskLevel: 'high', sideEffects: ['draft_write'] }),
+  ];
+  const tools = {
+    list: () => toolList,
+    listManifestsForPlanner: (toolNames?: string[]) => (toolNames?.length ? toolNames : toolList.map((tool) => tool.name)).map((name) => {
+      const tool = toolList.find((item) => item.name === name);
+      if (!tool) throw new Error(`missing ${name}`);
+      return {
+        name: tool.name,
+        displayName: tool.name,
+        description: tool.description,
+        whenToUse: [],
+        whenNotToUse: [],
+        allowedModes: tool.allowedModes,
+        riskLevel: tool.riskLevel,
+        requiresApproval: tool.requiresApproval,
+        sideEffects: tool.sideEffects,
+      };
+    }),
+  } as unknown as ToolRegistryService;
+  const llm = {
+    async chatJson(messages: Array<{ role: string; content: string }>) {
+      payloads.push(JSON.parse(messages[1].content));
+      if (payloads.length === 1) {
+        return {
+          data: {
+            taskType: 'not_allowed',
+            summary: 'Invalid first plan.',
+            assumptions: [],
+            risks: [],
+            steps: [
+              { stepNo: 1, name: 'Report', tool: 'echo_report', mode: 'act', requiresApproval: false, args: { message: 'invalid' } },
+            ],
+          },
+          result: { model: 'planner-mock' },
+        };
+      }
+      return {
+        data: {
+          taskType: 'general',
+          summary: 'Repaired selected tool plan.',
+          assumptions: [],
+          risks: [],
+          steps: [
+            { stepNo: 1, name: 'Report', tool: 'echo_report', mode: 'act', requiresApproval: false, args: { message: 'ok' } },
+          ],
+        },
+        result: { model: 'planner-mock' },
+      };
+    },
+  };
+  const planner = new AgentPlannerService(new SkillRegistryService(), tools, new RuleEngineService(), llm as never);
+  const plan = await planner.createPlanWithTools({
+    goal: 'repair selected tools',
+    route: { domain: 'general', intent: 'clarify', confidence: 0.4, reasons: ['test'] },
+    selectedBundle: { bundleName: 'general.echo', strictToolNames: ['echo_report'], optionalToolNames: [], deniedToolNames: ['write_chapter'], selectionReason: 'test' },
+    selectedTools: tools.listManifestsForPlanner(['echo_report']),
+  });
+
+  assert.equal(plan.plannerDiagnostics?.source, 'llm_repair');
+  assert.equal(payloads.length, 2);
+  assert.deepEqual((payloads[1].registeredTools as Array<Record<string, unknown>>).map((tool) => tool.name), ['echo_report']);
+  assert.deepEqual(payloads[1].toolBundle.selectedToolNames, ['echo_report']);
+  assert.doesNotMatch(JSON.stringify(payloads[1].registeredTools), /write_chapter/);
+});
+
 test('Tool manifest filtering preserves requested order and fails on unknown tools', () => {
   const registry = Object.create(ToolRegistryService.prototype) as ToolRegistryService;
   (registry as unknown as { tools: Map<string, BaseTool> }).tools = new Map<string, BaseTool>();

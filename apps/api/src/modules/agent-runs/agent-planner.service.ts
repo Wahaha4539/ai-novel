@@ -344,12 +344,14 @@ export class AgentPlannerService {
       return { ...this.validateAndNormalizeLlmPlan(data, defaults, context), plannerDiagnostics: { source: 'llm', model: result.model, usage: result.usage, llmCalls: llmBudget.used, maxLlmCalls: llmBudget.max, schemaVersion: 2, ...this.plannerScopeDiagnostics(toolScope) } };
     } catch (error) {
       llmBudget.failures.push(this.failureDetail('schema_validation', error));
-      return this.repairLlmPlan(goal, defaults, data, error instanceof Error ? error.message : String(error), llmBudget, context);
+      return this.repairLlmPlan(goal, defaults, data, error instanceof Error ? error.message : String(error), llmBudget, context, toolScope);
     }
   }
 
-  private async repairLlmPlan(goal: string, defaults: PlannerOutputDefaults, invalidPlan: unknown, validationError: string, llmBudget: PlannerLlmBudget, context?: AgentContextV2): Promise<AgentPlanSpec> {
-    const registeredTools = this.toolManifestsForPrompt();
+  private async repairLlmPlan(goal: string, defaults: PlannerOutputDefaults, invalidPlan: unknown, validationError: string, llmBudget: PlannerLlmBudget, context?: AgentContextV2, toolScope?: PlannerToolScope): Promise<AgentPlanSpec> {
+    const registeredTools = toolScope?.selectedTools?.length
+      ? toolScope.selectedTools.map((tool) => this.compactToolManifestForPrompt(tool))
+      : this.toolManifestsForPrompt();
     const promptContext = this.contextForPrompt(context);
     const availableTaskTypes = this.listTaskTypes();
     this.consumeLlmCall(llmBudget, 'repair_plan');
@@ -382,6 +384,7 @@ export class AgentPlannerService {
             {
               userGoal: goal,
               agentContext: promptContext,
+              ...this.plannerScopePromptPayload(toolScope),
               currentAgentMode: 'plan',
               stepModeContract: 'steps[].mode 固定为 act；Plan/Act 运行时模式由后端 AgentRuntimeService 注入，不由 LLM 决定。',
               availableTaskTypes,
@@ -420,7 +423,7 @@ export class AgentPlannerService {
       { appStep: 'agent_planner', maxTokens: 4500, timeoutMs: DEFAULT_LLM_TIMEOUT_MS, retries: 1, temperature: 0.1 },
     );
 
-    return { ...this.validateAndNormalizeLlmPlan(data, defaults, context), plannerDiagnostics: { source: 'llm_repair', model: result.model, usage: result.usage, repairedFromError: validationError, llmCalls: llmBudget.used, maxLlmCalls: llmBudget.max, schemaVersion: 2 } };
+    return { ...this.validateAndNormalizeLlmPlan(data, defaults, context), plannerDiagnostics: { source: 'llm_repair', model: result.model, usage: result.usage, repairedFromError: validationError, llmCalls: llmBudget.used, maxLlmCalls: llmBudget.max, schemaVersion: 2, ...this.plannerScopeDiagnostics(toolScope) } };
   }
 
   private contextForPrompt(context?: AgentContextV2): AgentContextPromptPayload | undefined {

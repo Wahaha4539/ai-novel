@@ -196,6 +196,12 @@
   - 单测覆盖 repair 阶段看不到 bundle 外工具。
 - 验证：
   - `pnpm --dir apps/api run test:agent`
+- 完成记录（2026-05-09）：
+  - scoped Planner 的 repair prompt 复用同一组 `selectedTools`，不再回退到全量 `toolManifestsForPrompt()`。
+  - repair prompt 同步注入 `routeDecision` 与 `toolBundle`，diagnostics 保留 route/bundle 摘要。
+  - 修改文件：`apps/api/src/modules/agent-runs/agent-planner.service.ts`、`apps/api/src/modules/agent-runs/agent-services.spec.ts`、`docs/architecture/agent-supervisor-planner-development-plan.md`。
+  - 测试：`AGENT_TEST_FILTER="Planner repair selected tools" pnpm --dir apps/api run test:agent`，通过（1/335 targeted）。
+  - 测试：`pnpm --filter api build`，通过。
 
 ## 5. P3 RootSupervisor 路由
 
