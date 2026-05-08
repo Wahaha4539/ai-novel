@@ -178,6 +178,7 @@
 - TL-P1-03：在 timeline helper 中新增章节引用校验，要求候选 `chapterId/chapterNo` 能解析到当前项目同一章节，跨项目章节索引、缺失章节和 id/no 不匹配都会直接报错；涉及文件：`apps/api/src/modules/agent-tools/tools/timeline-preview.support.ts`、`apps/api/src/modules/agent-runs/agent-services.spec.ts`、`docs/architecture/timeline-generation-development-plan.md`；验证命令：`pnpm --filter api test:agent`、`pnpm --filter api build`、`git diff --check`。
 - TL-P1-04：新增重复时间线事件检测，拒绝同项目同章同标题同时间的候选互撞或撞上既有 `TimelineEvent`，并保留更新自身事件的合法场景；涉及文件：`apps/api/src/modules/agent-tools/tools/timeline-preview.support.ts`、`apps/api/src/modules/agent-runs/agent-services.spec.ts`、`docs/architecture/timeline-generation-development-plan.md`；验证命令：`pnpm --filter api test:agent`、`pnpm --filter api build`、`git diff --check`。
 - TL-P1-05：新增 LLM 时间线预览输出 normalize 入口，LLM 报错、缺失 `candidates`、关键字段缺失或候选数量不足都会直接抛错，成功输出保持 `preview_only` 且要求校验和写入前审批；涉及文件：`apps/api/src/modules/agent-tools/tools/timeline-preview.support.ts`、`apps/api/src/modules/agent-runs/agent-services.spec.ts`、`docs/architecture/timeline-generation-development-plan.md`；验证命令：`pnpm --filter api test:agent`、`pnpm --filter api build`、`git diff --check`。
+- TL-P2-01：新增只读 `generate_timeline_preview` 工具，LLM 输出必须是 `create_planned`、`planned`、`agent_timeline_plan` 且 sourceTrace 可核对，工具只读取章节和既有时间线事件并复用章节引用/重复检测；涉及文件：`apps/api/src/modules/agent-tools/tools/generate-timeline-preview.tool.ts`、`apps/api/src/modules/agent-runs/agent-services.spec.ts`、`docs/architecture/timeline-generation-development-plan.md`；验证命令：`pnpm --filter api test:agent`、`pnpm --filter api build`、`git diff --check`。
 
 ### Phase 1：时间线候选契约与校验核心
 
@@ -193,7 +194,7 @@
 
 | ID | 状态 | 任务 | 主要文件 | 验收标准 |
 |---|---|---|---|---|
-| TL-P2-01 | todo | 新增 `generate_timeline_preview` 工具 | `apps/api/src/modules/agent-tools/tools/generate-timeline-preview.tool.ts` | 只读，无 Prisma 写方法调用，输出 planned 候选 |
+| TL-P2-01 | done | 新增 `generate_timeline_preview` 工具 | `apps/api/src/modules/agent-tools/tools/generate-timeline-preview.tool.ts` | 只读，无 Prisma 写方法调用，输出 planned 候选 |
 | TL-P2-02 | todo | 新增 `validate_timeline_preview` 工具 | `apps/api/src/modules/agent-tools/tools/validate-timeline-preview.tool.ts` | 输出 accepted/rejected/writePreview |
 | TL-P2-03 | todo | 新增 `persist_timeline_events` 工具 | `apps/api/src/modules/agent-tools/tools/persist-timeline-events.tool.ts` | Act + approved 才写入；只写当前 projectId |
 | TL-P2-04 | todo | 注册工具与 Manifest | `AgentToolsModule`、`ToolRegistryService`、`builtin-skills.ts` | Planner 能看到使用边界、审批和副作用 |

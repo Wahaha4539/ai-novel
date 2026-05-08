@@ -62,6 +62,7 @@ import { GenerateStoryBiblePreviewTool } from '../agent-tools/tools/generate-sto
 import { ValidateStoryBibleTool } from '../agent-tools/tools/validate-story-bible.tool';
 import { PersistStoryBibleTool } from '../agent-tools/tools/persist-story-bible.tool';
 import { GenerateContinuityPreviewTool, PersistContinuityChangesTool, ValidateContinuityChangesTool } from '../agent-tools/tools/continuity-changes.tool';
+import { GenerateTimelinePreviewTool } from '../agent-tools/tools/generate-timeline-preview.tool';
 import { assertNoTimelineDuplicateConflicts, normalizeTimelineCandidate, normalizeTimelineCandidates, normalizeTimelinePreviewFromLlmCall, validateTimelineCandidateChapterRefs } from '../agent-tools/tools/timeline-preview.support';
 import { GenerateChapterCraftBriefPreviewTool, PersistChapterCraftBriefTool, ValidateChapterCraftBriefTool } from '../agent-tools/tools/chapter-craft-brief-tools.tool';
 import { GenerateSceneCardsPreviewTool, ListSceneCardsTool, PersistSceneCardsTool, UpdateSceneCardTool, ValidateSceneCardsTool } from '../agent-tools/tools/scene-card-tools.tool';
@@ -6707,6 +6708,98 @@ test('timeline preview LLM normalization fails fast on LLM errors incomplete JSO
   assert.equal(valid.writePlan.requiresValidation, true);
   assert.equal(valid.writePlan.requiresApprovalBeforePersist, true);
   assert.equal(valid.candidates.length, 1);
+});
+
+test('generate_timeline_preview tool returns planned read-only candidates and rejects non-planned output', async () => {
+  const writes: string[] = [];
+  const reads: string[] = [];
+  const writeGuard = (name: string) => async () => {
+    writes.push(name);
+    throw new Error(`should not write ${name}`);
+  };
+  const baseTrace = makeTimelineCandidateRaw().sourceTrace as Record<string, unknown>;
+  const plannedCandidate = makeTimelineCandidateRaw({
+    chapterId: 'chapter-7',
+    sourceTrace: {
+      ...baseTrace,
+      agentRunId: 'run-timeline',
+      toolName: 'generate_timeline_preview',
+      chapterId: 'chapter-7',
+    },
+  });
+  const prisma = {
+    chapter: {
+      async findMany() {
+        reads.push('chapter.findMany');
+        return [{ id: 'chapter-7', projectId: 'p1', chapterNo: 7 }];
+      },
+      create: writeGuard('chapter.create'),
+      update: writeGuard('chapter.update'),
+      delete: writeGuard('chapter.delete'),
+      upsert: writeGuard('chapter.upsert'),
+      updateMany: writeGuard('chapter.updateMany'),
+      deleteMany: writeGuard('chapter.deleteMany'),
+    },
+    timelineEvent: {
+      async findMany() {
+        reads.push('timelineEvent.findMany');
+        return [];
+      },
+      create: writeGuard('timelineEvent.create'),
+      update: writeGuard('timelineEvent.update'),
+      delete: writeGuard('timelineEvent.delete'),
+      upsert: writeGuard('timelineEvent.upsert'),
+      updateMany: writeGuard('timelineEvent.updateMany'),
+      deleteMany: writeGuard('timelineEvent.deleteMany'),
+    },
+  };
+  const llmCalls: Array<{ options: Record<string, unknown> }> = [];
+  const llm = {
+    async chatJson(_messages: unknown, options: Record<string, unknown>) {
+      llmCalls.push({ options });
+      return {
+        data: { candidates: [plannedCandidate], assumptions: ['来源为第七章细纲。'], risks: ['需在 validate 阶段检查知识范围。'] },
+        result: { model: 'mock-timeline', usage: { total_tokens: 42 }, elapsedMs: 5 },
+      };
+    },
+  };
+  const usages: Array<Record<string, unknown>> = [];
+  const context = {
+    agentRunId: 'run-timeline',
+    projectId: 'p1',
+    mode: 'plan' as const,
+    approved: false,
+    outputs: {},
+    policy: {},
+    recordLlmUsage: (usage: Record<string, unknown>) => usages.push(usage),
+  };
+  const tool = new GenerateTimelinePreviewTool(llm as never, prisma as never);
+
+  const result = await tool.run({ instruction: '为第七章生成计划时间线', sourceType: 'chapter_outline', minCandidates: 1, maxCandidates: 1 }, context as never);
+
+  assert.equal(result.candidates.length, 1);
+  assert.equal(result.candidates[0].action, 'create_planned');
+  assert.equal(result.candidates[0].eventStatus, 'planned');
+  assert.equal(result.candidates[0].sourceType, 'agent_timeline_plan');
+  assert.equal(result.writePlan.mode, 'preview_only');
+  assert.deepEqual(reads, ['chapter.findMany', 'timelineEvent.findMany']);
+  assert.deepEqual(writes, []);
+  assert.equal(llmCalls[0].options.jsonMode, true);
+  assert.equal(usages[0].appStep, 'generate_timeline_preview');
+
+  const invalidTool = new GenerateTimelinePreviewTool({
+    async chatJson() {
+      return {
+        data: { candidates: [makeTimelineCandidateRaw({ ...plannedCandidate, eventStatus: 'active' })], assumptions: [], risks: [] },
+        result: null,
+      };
+    },
+  } as never, prisma as never);
+  await assert.rejects(
+    () => invalidTool.run({ instruction: '非法非计划输出', minCandidates: 1, maxCandidates: 1 }, context as never),
+    /eventStatus must be planned/,
+  );
+  assert.deepEqual(writes, []);
 });
 
 test('RetrievalService 使用 querySpec hash 缓存召回并按开关和 Planner 查询隔离', async () => {
