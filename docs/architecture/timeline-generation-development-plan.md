@@ -174,13 +174,14 @@
 - TL-P0-02：在事实抽取成功用例中加入 `timelineEvent` 写方法探针，锁定 `extractChapterFacts` 当前只写事实层、记忆层和首登场候选，不写 `TimelineEvent`；涉及文件：`apps/api/src/modules/agent-runs/agent-services.spec.ts`、`docs/architecture/timeline-generation-development-plan.md`；验证命令：`pnpm --filter api test:agent`、`pnpm --filter api build`、`git diff --check`。
 - TL-P0-03：补充 `TimelineEventStatus`、`TimelineEventSourceType`、`TimelineEventMetadata`、`TimelineEventSourceTrace`、`TimelineEventValidationTrace` 共享类型，并在文档中明确 `eventStatus`、`sourceType`、`metadata.sourceTrace` 和 `metadata.validation` 的语义与失败边界；涉及文件：`packages/shared-types/src/index.ts`、`docs/architecture/timeline-generation-development-plan.md`；验证命令：`pnpm --filter api test:agent`、`pnpm --filter api build`、`pnpm --filter web build`、`git diff --check`。
 - TL-P1-01：新增 timeline-only 候选动作、候选字段、sourceTrace、preview/validate/persist 输入输出与 writePreview 类型契约，API 工具层提供独立 `timeline-preview.types.ts`；涉及文件：`packages/shared-types/src/index.ts`、`apps/api/src/modules/agent-tools/tools/timeline-preview.types.ts`、`docs/architecture/timeline-generation-development-plan.md`；验证命令：`pnpm --filter api build`、`pnpm --filter web build`、`pnpm --filter api test:agent`、`git diff --check`。
+- TL-P1-02：新增 `timeline-preview.support.ts`，实现 timeline-only 候选 normalize，缺 `candidateId/title/eventTime/cause/result/impactScope/knownBy/sourceTrace` 等关键字段或候选数量不足会直接抛错，不补齐内容；涉及文件：`apps/api/src/modules/agent-tools/tools/timeline-preview.support.ts`、`apps/api/src/modules/agent-runs/agent-services.spec.ts`、`docs/architecture/timeline-generation-development-plan.md`；验证命令：`pnpm --filter api test:agent`、`pnpm --filter api build`、`git diff --check`。
 
 ### Phase 1：时间线候选契约与校验核心
 
 | ID | 状态 | 任务 | 主要文件 | 验收标准 |
 |---|---|---|---|---|
 | TL-P1-01 | done | 定义 timeline candidate/input/output 类型 | `apps/api/src/modules/agent-tools/tools/*`、`packages/shared-types/src/index.ts` | 类型包含必填字段、动作、sourceTrace、writePreview |
-| TL-P1-02 | todo | 实现通用时间线候选 normalize，但不得补齐关键内容 | 新增 `timeline-preview.support.ts` 或同类 helper | 缺 title/cause/result/impactScope/knownBy 等直接报错 |
+| TL-P1-02 | done | 实现通用时间线候选 normalize，但不得补齐关键内容 | 新增 `timeline-preview.support.ts` 或同类 helper | 缺 title/cause/result/impactScope/knownBy 等直接报错 |
 | TL-P1-03 | todo | 实现章节引用校验 | `timeline-events.service.ts` 或工具 helper | `chapterId/chapterNo` 必须属于当前项目且互相匹配 |
 | TL-P1-04 | todo | 实现重复事件和冲突检测 | 新增工具测试 | 同项目同章同标题同时间重复会拒绝 |
 | TL-P1-05 | todo | 测试 LLM 失败、JSON 不完整、字段缺失、数量不足直接抛错 | `agent-services.spec.ts` | 不产生可审批候选，不写库 |

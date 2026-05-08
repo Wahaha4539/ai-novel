@@ -62,6 +62,7 @@ import { GenerateStoryBiblePreviewTool } from '../agent-tools/tools/generate-sto
 import { ValidateStoryBibleTool } from '../agent-tools/tools/validate-story-bible.tool';
 import { PersistStoryBibleTool } from '../agent-tools/tools/persist-story-bible.tool';
 import { GenerateContinuityPreviewTool, PersistContinuityChangesTool, ValidateContinuityChangesTool } from '../agent-tools/tools/continuity-changes.tool';
+import { normalizeTimelineCandidate, normalizeTimelineCandidates } from '../agent-tools/tools/timeline-preview.support';
 import { GenerateChapterCraftBriefPreviewTool, PersistChapterCraftBriefTool, ValidateChapterCraftBriefTool } from '../agent-tools/tools/chapter-craft-brief-tools.tool';
 import { GenerateSceneCardsPreviewTool, ListSceneCardsTool, PersistSceneCardsTool, UpdateSceneCardTool, ValidateSceneCardsTool } from '../agent-tools/tools/scene-card-tools.tool';
 import { RelationshipGraphService } from '../agent-tools/relationship-graph.service';
@@ -6531,6 +6532,85 @@ test('FactExtractorService respects GenerationProfile by keeping disallowed new 
   assert.equal(firstAppearances[0].entityType, 'character');
   assert.equal(firstAppearances[0].status, 'pending_review');
   assert.equal(result.pendingReviewMemoryChunks, 1);
+});
+
+function makeTimelineCandidateRaw(overrides: Record<string, unknown> = {}) {
+  return {
+    candidateId: 'tlc_plan_7',
+    action: 'create_planned',
+    chapterNo: 7,
+    title: '雨夜发现旧玉佩异动',
+    eventTime: '第七日傍晚',
+    locationName: '旧档案库',
+    participants: ['林烬', '沈砚'],
+    cause: '林烬追查缺页档案',
+    result: '旧玉佩在雨夜发光，指向被封存的旧案',
+    impactScope: '主线线索',
+    isPublic: false,
+    knownBy: ['林烬'],
+    unknownBy: ['沈砚'],
+    eventStatus: 'planned',
+    sourceType: 'agent_timeline_plan',
+    impactAnalysis: '为下一章进入旧案线做事实约束。',
+    conflictRisk: '需要避免让沈砚提前知道玉佩异动。',
+    sourceTrace: {
+      sourceKind: 'planned_timeline_event',
+      projectId: 'p1',
+      originTool: 'generate_timeline_preview',
+      candidateId: 'tlc_plan_7',
+      candidateAction: 'create_planned',
+      chapterNo: 7,
+      contextSources: [{ sourceType: 'chapter_outline', sourceId: 'outline-7', title: '第七章细纲', chapterNo: 7 }],
+      evidence: '第七章细纲要求旧玉佩在雨夜异动。',
+      generatedAt: '2026-05-08T00:00:00.000Z',
+    },
+    ...overrides,
+  };
+}
+
+test('timeline preview normalize preserves supplied fields and sourceTrace without content fallback', () => {
+  const candidate = normalizeTimelineCandidate(makeTimelineCandidateRaw(), {
+    expectedProjectId: 'p1',
+    expectedSourceKind: 'planned_timeline_event',
+    expectedOriginTool: 'generate_timeline_preview',
+  });
+  const candidates = normalizeTimelineCandidates([makeTimelineCandidateRaw()], {
+    expectedProjectId: 'p1',
+    minCandidates: 1,
+    maxCandidates: 1,
+  });
+
+  assert.equal(candidate.candidateId, 'tlc_plan_7');
+  assert.equal(candidate.title, '雨夜发现旧玉佩异动');
+  assert.equal(candidate.cause, '林烬追查缺页档案');
+  assert.equal(candidate.result, '旧玉佩在雨夜发光，指向被封存的旧案');
+  assert.equal(candidate.impactScope, '主线线索');
+  assert.deepEqual(candidate.knownBy, ['林烬']);
+  assert.deepEqual(candidate.unknownBy, ['沈砚']);
+  assert.equal(candidate.sourceTrace.projectId, 'p1');
+  assert.equal(candidate.metadata.sourceTrace.candidateId, 'tlc_plan_7');
+  assert.equal(candidate.proposedFields.metadata.candidateAction, 'create_planned');
+  assert.equal(candidates.length, 1);
+});
+
+test('timeline preview normalize fails when required content fields or trusted trace are missing', () => {
+  for (const field of ['candidateId', 'title', 'eventTime', 'cause', 'result', 'impactScope', 'eventStatus', 'sourceType', 'impactAnalysis', 'conflictRisk']) {
+    const raw = makeTimelineCandidateRaw({ [field]: '' });
+    assert.throws(() => normalizeTimelineCandidate(raw), new RegExp(`timelineCandidate\\.${field}`));
+  }
+
+  for (const field of ['participants', 'knownBy', 'unknownBy']) {
+    const raw = makeTimelineCandidateRaw({ [field]: [] });
+    assert.throws(() => normalizeTimelineCandidate(raw), new RegExp(`timelineCandidate\\.${field}`));
+  }
+
+  assert.throws(() => normalizeTimelineCandidate(makeTimelineCandidateRaw({ chapterNo: undefined })), /chapterId or timelineCandidate\.chapterNo is required/);
+  assert.throws(() => normalizeTimelineCandidate(makeTimelineCandidateRaw({ sourceTrace: undefined })), /timelineCandidate\.sourceTrace must be a JSON object/);
+  assert.throws(
+    () => normalizeTimelineCandidate(makeTimelineCandidateRaw({ sourceTrace: { ...(makeTimelineCandidateRaw().sourceTrace as Record<string, unknown>), projectId: 'p2' } }), { expectedProjectId: 'p1' }),
+    /cross-project or mismatched/,
+  );
+  assert.throws(() => normalizeTimelineCandidates([], { minCandidates: 1 }), /below required minimum 1/);
 });
 
 test('RetrievalService 使用 querySpec hash 缓存召回并按开关和 Planner 查询隔离', async () => {
