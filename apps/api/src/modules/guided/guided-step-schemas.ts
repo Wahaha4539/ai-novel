@@ -165,6 +165,7 @@ export const GUIDED_STEP_JSON_SCHEMAS = {
   guided_volume: JSON.stringify({
     volumes: [{
       volumeNo: 1,
+      chapterCount: 4,
       title: '有文学性的卷名',
       synopsis: 'Markdown结构，必须含全书主线阶段/本卷主线/本卷戏剧问题/卷内支线/单元故事/支线交叉点/卷末交接等段落',
       objective: '本卷核心目标(具体可检验)',

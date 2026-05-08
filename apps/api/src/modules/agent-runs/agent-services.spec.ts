@@ -3415,6 +3415,7 @@ function createVccGuidedChapter(overrides: Record<string, unknown> = {}) {
 function createVccGuidedVolume(overrides: Record<string, unknown> = {}) {
   return {
     volumeNo: 1,
+    chapterCount: 3,
     title: '旧闸棚账册',
     synopsis: '## 全书主线阶段\n主角确认旧账册并非普通缺页，而是有人长期替换记录。\n## 本卷主线\n在东闸关闭前拿到账册证据。',
     objective: '拿到账册被替换的可验证证据',
@@ -3427,7 +3428,7 @@ test('VCC guided_volume requires characterPlan', async () => {
   let transactionCalled = false;
   const prisma = {
     character: { async findMany() { return []; } },
-    guidedSession: { async findUnique() { return { stepData: { guided_characters_result: { characters: [{ name: '林澈' }] } } }; } },
+    guidedSession: { async findUnique() { return { stepData: { guided_characters_result: { characters: [{ name: '林澈' }, { name: '沈栖' }] } } }; } },
     volume: {
       deleteMany() {
         transactionCalled = true;
@@ -3455,12 +3456,45 @@ test('VCC guided_volume requires characterPlan', async () => {
   assert.equal(transactionCalled, false);
 });
 
+test('VCC guided_volume requires explicit volumeNo and chapterCount', async () => {
+  let transactionCalled = false;
+  const prisma = {
+    character: { async findMany() { return []; } },
+    guidedSession: { async findUnique() { return { stepData: { guided_characters_result: { characters: [{ name: '林澈' }, { name: '沈栖' }] } } }; } },
+    volume: {
+      deleteMany() {
+        transactionCalled = true;
+        return Promise.resolve({ count: 1 });
+      },
+      createMany() {
+        transactionCalled = true;
+        return Promise.resolve({ count: 1 });
+      },
+    },
+    async $transaction() {
+      transactionCalled = true;
+      return [];
+    },
+  };
+  const service = new GuidedService(prisma as never, {} as never, {} as never);
+
+  await assert.rejects(
+    () => service.finalizeStep('p1', 'guided_volume', { volumes: [createVccGuidedVolume({ volumeNo: undefined })] }),
+    /volumeNo/,
+  );
+  await assert.rejects(
+    () => service.finalizeStep('p1', 'guided_volume', { volumes: [createVccGuidedVolume({ chapterCount: undefined })] }),
+    /chapterCount/,
+  );
+  assert.equal(transactionCalled, false);
+});
+
 test('VCC guided_chapter requires characterExecution', async () => {
   let chapterWriteCalled = false;
   const validVolume = createVccGuidedVolume();
   const existingName = (validVolume.narrativePlan.characterPlan as ReturnType<typeof createVccCharacterPlan>).existingCharacterArcs[0].characterName;
   const prisma = {
-    character: { async findMany() { return [{ name: existingName, alias: [] }]; } },
+    character: { async findMany() { return [{ name: existingName, alias: [] }, { name: '沈栖', alias: [] }]; } },
     guidedSession: { async findUnique() { return { stepData: { guided_volume_result: { volumes: [validVolume] } } }; } },
     volume: { async findMany() { return []; } },
     chapter: {
@@ -3513,7 +3547,7 @@ test('VCC guided_chapter finalize does not create supporting Character', async (
   let savedStepData: Record<string, unknown> | undefined;
   const prisma = {
     character: {
-      async findMany() { return [{ name: existingName, alias: [] }]; },
+      async findMany() { return [{ name: existingName, alias: [] }, { name: '沈栖', alias: [] }]; },
       async deleteMany() { characterWrites.push('deleteMany'); return { count: 1 }; },
       async createMany() { characterWrites.push('createMany'); return { count: 1 }; },
     },
@@ -3911,7 +3945,55 @@ test('ValidateGuidedStepPreviewTool 标记缺字段、重复编号并保持只�
   assert.equal((chapters.writePreview.summary as Record<string, number>).duplicateCount, 2);
   assert.deepEqual(tool.sideEffects, []);
   assert.equal(tool.requiresApproval, false);
-  assert.deepEqual(reads, ['character.findMany', 'volume.findMany', 'volume.findMany', 'chapter.findMany']);
+  assert.deepEqual(reads, ['character.findMany', 'character.findMany', 'volume.findMany', 'character.findMany', 'volume.findMany', 'volume.findMany', 'chapter.findMany']);
+});
+
+test('VCC validate_guided_step_preview rejects missing characterPlan', async () => {
+  const prisma = {
+    character: { async findMany() { return [{ name: '林澈', alias: [] }, { name: '沈栖', alias: [] }]; } },
+    guidedSession: { async findUnique() { return { stepData: {} }; } },
+    volume: { async findMany() { return []; } },
+  };
+  const tool = new ValidateGuidedStepPreviewTool(prisma as never);
+  const badVolume = createVccGuidedVolume({
+    narrativePlan: { ...createVccNarrativePlanForChapterCount(3), characterPlan: undefined },
+  });
+
+  const result = await tool.run(
+    { stepKey: 'guided_volume', structuredData: { volumes: [badVolume] } },
+    { agentRunId: 'run-vcc-validate-guided-volume', projectId: 'p1', mode: 'plan', approved: false, outputs: {}, policy: {} },
+  );
+
+  assert.equal(result.valid, false);
+  assert.equal(result.issues.some((issue) => /characterPlan|角色规划/.test(issue.message)), true);
+});
+
+test('VCC validate_guided_step_preview rejects invalid characterExecution', async () => {
+  const validVolume = createVccGuidedVolume();
+  const prisma = {
+    character: { async findMany() { return [{ name: '林澈', alias: [] }, { name: '沈栖', alias: [] }]; } },
+    guidedSession: { async findUnique() { return { stepData: { guided_volume_result: { volumes: [validVolume] } } }; } },
+    volume: { async findMany() { return []; } },
+    chapter: { async findMany() { return []; } },
+  };
+  const tool = new ValidateGuidedStepPreviewTool(prisma as never);
+  const baseCraftBrief = createOutlineCraftBrief();
+  const craftBrief = {
+    ...baseCraftBrief,
+    sceneBeats: [
+      { ...(baseCraftBrief.sceneBeats as Array<Record<string, unknown>>)[0], participants: ['未列入角色'] },
+      ...(baseCraftBrief.sceneBeats as Array<Record<string, unknown>>).slice(1),
+    ],
+  };
+
+  const result = await tool.run(
+    { stepKey: 'guided_chapter', volumeNo: 1, structuredData: { chapters: [createVccGuidedChapter({ craftBrief })] } },
+    { agentRunId: 'run-vcc-validate-guided-chapter', projectId: 'p1', mode: 'plan', approved: false, outputs: {}, policy: {} },
+  );
+
+  assert.equal(result.valid, false);
+  assert.equal(result.issues.some((issue) => /characterExecution|角色执行/.test(issue.message)), true);
+  assert.equal(result.issues.some((issue) => /未被 characterExecution\.cast 覆盖/.test(issue.message)), true);
 });
 
 test('ValidateGuidedStepPreviewTool 为有效基础设定生成写入前 diff', async () => {

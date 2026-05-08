@@ -7,6 +7,7 @@ import {
 } from '../../guided/guided-step-schemas';
 import { BaseTool, ToolContext } from '../base-tool';
 import type { ToolManifestV2 } from '../tool-manifest.types';
+import { assertChapterCharacterExecution, assertVolumeCharacterPlan, type VolumeCharacterPlan } from './outline-character-contracts';
 
 interface ValidateGuidedStepPreviewInput {
   stepKey?: string;
@@ -20,6 +21,12 @@ interface GuidedStepValidationIssue {
   severity: GuidedStepValidationSeverity;
   message: string;
   path?: string;
+}
+
+interface GuidedCharacterValidationContext {
+  existingCharacterNames: string[];
+  existingCharacterAliases: Record<string, string[]>;
+  volumePlansByNo: Map<number, VolumeCharacterPlan>;
 }
 
 export interface ValidateGuidedStepPreviewOutput {
@@ -118,13 +125,20 @@ export class ValidateGuidedStepPreviewTool implements BaseTool<ValidateGuidedSte
     }
 
     const guidedStepKey = stepKey as GuidedStepSchemaKey;
-    this.validateByStep(guidedStepKey, structuredData, args.volumeNo, issues);
+    const characterContext = await this.buildCharacterValidationContext(guidedStepKey, structuredData, args.volumeNo, context);
+    this.validateByStep(guidedStepKey, structuredData, args.volumeNo, issues, characterContext);
     const writePreview = await this.buildWritePreview(guidedStepKey, structuredData, args.volumeNo, context);
 
     return this.buildOutput(issues, writePreview);
   }
 
-  private validateByStep(stepKey: GuidedStepSchemaKey, data: Record<string, unknown>, volumeNo: number | undefined, issues: GuidedStepValidationIssue[]) {
+  private validateByStep(
+    stepKey: GuidedStepSchemaKey,
+    data: Record<string, unknown>,
+    volumeNo: number | undefined,
+    issues: GuidedStepValidationIssue[],
+    characterContext: GuidedCharacterValidationContext,
+  ) {
     switch (stepKey) {
       case 'guided_setup':
         this.validateProjectProfile(data, issues);
@@ -139,10 +153,10 @@ export class ValidateGuidedStepPreviewTool implements BaseTool<ValidateGuidedSte
         this.validateOutline(data, issues);
         break;
       case 'guided_volume':
-        this.validateVolumes(data, issues);
+        this.validateVolumes(data, issues, characterContext);
         break;
       case 'guided_chapter':
-        this.validateChapters(data, volumeNo, issues);
+        this.validateChapters(data, volumeNo, issues, characterContext);
         break;
       case 'guided_foreshadow':
         this.validateForeshadow(data, issues);
@@ -192,7 +206,7 @@ export class ValidateGuidedStepPreviewTool implements BaseTool<ValidateGuidedSte
     }
   }
 
-  private validateVolumes(data: Record<string, unknown>, issues: GuidedStepValidationIssue[]) {
+  private validateVolumes(data: Record<string, unknown>, issues: GuidedStepValidationIssue[], characterContext: GuidedCharacterValidationContext) {
     const volumes = this.arrayOfRecords(data.volumes);
     if (!volumes.length) {
       issues.push({ severity: 'error', message: '卷纲预览中没有 volumes。', path: 'structuredData.volumes' });
@@ -208,14 +222,28 @@ export class ValidateGuidedStepPreviewTool implements BaseTool<ValidateGuidedSte
       const path = `structuredData.volumes[${index}]`;
       const label = `第 ${index + 1} 个卷预览`;
       const volumeNo = this.number(volume.volumeNo);
+      const chapterCount = this.number(volume.chapterCount);
       if (volumeNo === undefined || volumeNo <= 0) issues.push({ severity: 'error', message: `${label} 的 volumeNo 必须是正数。`, path: `${path}.volumeNo` });
+      if (chapterCount === undefined || chapterCount <= 0) issues.push({ severity: 'error', message: `${label} 的 chapterCount 必须是正数。`, path: `${path}.chapterCount` });
       if (!this.text(volume.title)) issues.push({ severity: 'warning', message: `${label} 缺少 title。`, path: `${path}.title` });
       if (!this.text(volume.synopsis)) issues.push({ severity: 'warning', message: `${label} 缺少 synopsis。`, path: `${path}.synopsis` });
       if (!this.text(volume.objective)) issues.push({ severity: 'warning', message: `${label} 缺少 objective。`, path: `${path}.objective` });
+      if (chapterCount !== undefined && chapterCount > 0) {
+        try {
+          assertVolumeCharacterPlan(this.asRecord(volume.narrativePlan)?.characterPlan, {
+            chapterCount,
+            existingCharacterNames: characterContext.existingCharacterNames,
+            existingCharacterAliases: characterContext.existingCharacterAliases,
+            label: `${path}.narrativePlan.characterPlan`,
+          });
+        } catch (error) {
+          issues.push({ severity: 'error', message: `${label} 的角色规划无效：${this.errorMessage(error)}。`, path: `${path}.narrativePlan.characterPlan` });
+        }
+      }
     });
   }
 
-  private validateChapters(data: Record<string, unknown>, volumeNo: number | undefined, issues: GuidedStepValidationIssue[]) {
+  private validateChapters(data: Record<string, unknown>, volumeNo: number | undefined, issues: GuidedStepValidationIssue[], characterContext: GuidedCharacterValidationContext) {
     const chapters = this.arrayOfRecords(data.chapters);
     if (!chapters.length) {
       issues.push({ severity: 'error', message: '章节细纲预览中没有 chapters。', path: 'structuredData.chapters' });
@@ -231,7 +259,9 @@ export class ValidateGuidedStepPreviewTool implements BaseTool<ValidateGuidedSte
       const path = `structuredData.chapters[${index}]`;
       const label = `第 ${chapter.chapterNo || index + 1} 章`;
       const chapterNo = this.number(chapter.chapterNo);
+      const itemVolumeNo = this.number(chapter.volumeNo) ?? volumeNo;
       if (chapterNo === undefined || chapterNo <= 0) issues.push({ severity: 'error', message: `${label} 的 chapterNo 必须是正数。`, path: `${path}.chapterNo` });
+      if (itemVolumeNo === undefined || itemVolumeNo <= 0) issues.push({ severity: 'error', message: `${label} 的 volumeNo 必须是正数。`, path: `${path}.volumeNo` });
       if (volumeNo !== undefined) {
         const itemVolumeNo = this.number(chapter.volumeNo);
         if (itemVolumeNo !== undefined && itemVolumeNo !== volumeNo) {
@@ -245,13 +275,20 @@ export class ValidateGuidedStepPreviewTool implements BaseTool<ValidateGuidedSte
       if (this.text(chapter.outline) && this.text(chapter.outline).length < 60) {
         issues.push({ severity: 'error', message: `${label} 的 outline 过短，缺少具体场景链。`, path: `${path}.outline` });
       }
-      this.validateChapterCraftBrief(chapter.craftBrief, label, `${path}.craftBrief`, issues);
+      this.validateChapterCraftBrief(chapter.craftBrief, label, `${path}.craftBrief`, issues, characterContext, itemVolumeNo ? characterContext.volumePlansByNo.get(itemVolumeNo) : undefined);
     });
 
     this.validateSupportingCharacters(data, volumeNo, issues);
   }
 
-  private validateChapterCraftBrief(value: unknown, label: string, path: string, issues: GuidedStepValidationIssue[]) {
+  private validateChapterCraftBrief(
+    value: unknown,
+    label: string,
+    path: string,
+    issues: GuidedStepValidationIssue[],
+    characterContext: GuidedCharacterValidationContext,
+    volumePlan: VolumeCharacterPlan | undefined,
+  ) {
     const brief = this.asRecord(value);
     if (!brief || !Object.keys(brief).length) {
       issues.push({ severity: 'error', message: `${label} 缺少 craftBrief 执行卡。`, path });
@@ -306,12 +343,27 @@ export class ValidateGuidedStepPreviewTool implements BaseTool<ValidateGuidedSte
     const continuityState = this.asRecord(brief.continuityState);
     if (!continuityState || !this.text(continuityState.nextImmediatePressure)) {
       issues.push({ severity: 'error', message: `${label} 的 craftBrief.continuityState.nextImmediatePressure 为空。`, path: `${path}.continuityState.nextImmediatePressure` });
-      return;
+    } else {
+      const hasConcreteState = ['characterPositions', 'activeThreats', 'ownedClues', 'relationshipChanges']
+        .some((field) => this.stringArray(continuityState[field]).length > 0);
+      if (!hasConcreteState) {
+        issues.push({ severity: 'error', message: `${label} 的 craftBrief.continuityState 缺少角色位置、威胁、线索或关系变化。`, path: `${path}.continuityState` });
+      }
     }
-    const hasConcreteState = ['characterPositions', 'activeThreats', 'ownedClues', 'relationshipChanges']
-      .some((field) => this.stringArray(continuityState[field]).length > 0);
-    if (!hasConcreteState) {
-      issues.push({ severity: 'error', message: `${label} 的 craftBrief.continuityState 缺少角色位置、威胁、线索或关系变化。`, path: `${path}.continuityState` });
+    if (!volumePlan) {
+      issues.push({ severity: 'error', message: `${label} 缺少可用卷级 characterPlan，无法校验章节角色执行。`, path });
+    }
+    try {
+      assertChapterCharacterExecution(brief.characterExecution, {
+        existingCharacterNames: characterContext.existingCharacterNames,
+        existingCharacterAliases: characterContext.existingCharacterAliases,
+        volumeCandidateNames: volumePlan?.newCharacterCandidates.map((candidate) => candidate.name) ?? [],
+        sceneBeats: sceneBeats.map((beat) => ({ sceneArcId: this.text(beat.sceneArcId), participants: beat.participants })),
+        actionBeatCount: this.stringArray(brief.actionBeats).length,
+        label: `${label}.craftBrief.characterExecution`,
+      });
+    } catch (error) {
+      issues.push({ severity: 'error', message: `${label} 的角色执行无效：${this.errorMessage(error)}。`, path: `${path}.characterExecution` });
     }
   }
 
@@ -563,6 +615,82 @@ export class ValidateGuidedStepPreviewTool implements BaseTool<ValidateGuidedSte
     };
   }
 
+  private async buildCharacterValidationContext(
+    stepKey: GuidedStepSchemaKey,
+    _data: Record<string, unknown>,
+    _volumeNo: number | undefined,
+    context: ToolContext,
+  ): Promise<GuidedCharacterValidationContext> {
+    const characterContext: GuidedCharacterValidationContext = {
+      existingCharacterNames: [],
+      existingCharacterAliases: {},
+      volumePlansByNo: new Map(),
+    };
+    if (stepKey !== 'guided_volume' && stepKey !== 'guided_chapter') return characterContext;
+
+    const session = await this.findGuidedSession(context.projectId);
+    const stepData = this.asRecord((this.asRecord(session)?.stepData)) ?? {};
+    const addCharacterName = (nameValue: unknown) => {
+      const name = this.text(nameValue);
+      if (name && !characterContext.existingCharacterNames.includes(name)) characterContext.existingCharacterNames.push(name);
+      return name;
+    };
+
+    const characterRows = await this.findCharacters(context.projectId);
+    for (const character of characterRows) {
+      const name = addCharacterName(character.name);
+      const aliases = this.stringArray(character.alias);
+      if (name && aliases.length) characterContext.existingCharacterAliases[name] = aliases;
+    }
+    const guidedCharactersResult = this.asRecord(stepData.guided_characters_result);
+    this.arrayOfRecords(guidedCharactersResult?.characters).forEach((character) => addCharacterName(character.name));
+
+    if (stepKey === 'guided_chapter') {
+      const persistedVolumes = await this.findVolumesWithCharacterPlans(context.projectId);
+      for (const volume of persistedVolumes) this.addVolumeCharacterPlan(volume, characterContext);
+      const guidedVolumeResult = this.asRecord(stepData.guided_volume_result);
+      for (const volume of this.arrayOfRecords(guidedVolumeResult?.volumes)) this.addVolumeCharacterPlan(volume, characterContext);
+    }
+
+    return characterContext;
+  }
+
+  private async findGuidedSession(projectId: string): Promise<unknown> {
+    const delegate = (this.prisma as unknown as { guidedSession?: { findUnique?: (args: Record<string, unknown>) => Promise<unknown> } }).guidedSession;
+    return delegate?.findUnique ? delegate.findUnique({ where: { projectId } }) : null;
+  }
+
+  private async findCharacters(projectId: string): Promise<Array<Record<string, unknown>>> {
+    const delegate = (this.prisma as unknown as { character?: { findMany?: (args: Record<string, unknown>) => Promise<unknown[]> } }).character;
+    if (!delegate?.findMany) return [];
+    const rows = await delegate.findMany({ where: { projectId }, select: { name: true, alias: true } });
+    return this.arrayOfRecords(rows);
+  }
+
+  private async findVolumesWithCharacterPlans(projectId: string): Promise<Array<Record<string, unknown>>> {
+    const delegate = (this.prisma as unknown as { volume?: { findMany?: (args: Record<string, unknown>) => Promise<unknown[]> } }).volume;
+    if (!delegate?.findMany) return [];
+    const rows = await delegate.findMany({ where: { projectId }, select: { volumeNo: true, chapterCount: true, narrativePlan: true } });
+    return this.arrayOfRecords(rows);
+  }
+
+  private addVolumeCharacterPlan(volume: Record<string, unknown>, characterContext: GuidedCharacterValidationContext): void {
+    const volumeNo = this.number(volume.volumeNo);
+    const chapterCount = this.number(volume.chapterCount);
+    if (!Number.isInteger(volumeNo) || !volumeNo || volumeNo < 1 || !Number.isInteger(chapterCount) || !chapterCount || chapterCount < 1) return;
+    try {
+      const characterPlan = assertVolumeCharacterPlan(this.asRecord(volume.narrativePlan)?.characterPlan, {
+        chapterCount,
+        existingCharacterNames: characterContext.existingCharacterNames,
+        existingCharacterAliases: characterContext.existingCharacterAliases,
+        label: `第 ${volumeNo} 卷.narrativePlan.characterPlan`,
+      });
+      characterContext.volumePlansByNo.set(volumeNo, characterPlan);
+    } catch {
+      // Invalid upstream plans are reported by the chapter validation as missing usable characterPlan.
+    }
+  }
+
   private buildOutput(issues: GuidedStepValidationIssue[], writePreview: Record<string, unknown>): ValidateGuidedStepPreviewOutput {
     return {
       valid: !issues.some((issue) => issue.severity === 'error'),
@@ -635,5 +763,9 @@ export class ValidateGuidedStepPreviewTool implements BaseTool<ValidateGuidedSte
     if (typeof value === 'string') return value.trim();
     if (typeof value === 'number' || typeof value === 'boolean') return String(value);
     return '';
+  }
+
+  private errorMessage(error: unknown): string {
+    return error instanceof Error ? error.message : String(error);
   }
 }

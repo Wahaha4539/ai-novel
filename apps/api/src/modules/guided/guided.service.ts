@@ -185,10 +185,11 @@ ${INTERACTION_STYLE}
 - narrativePlan 必须包含 storyUnits 数组；每个单元故事覆盖 3-5 章，写清 unitId、title、chapterRange、localGoal、localConflict、serviceFunctions、payoff、stateChangeAfterUnit
 - narrativePlan 必须包含 characterPlan；characterPlan.existingCharacterArcs 写既有角色本卷弧线，newCharacterCandidates 写本卷重要新增角色候选，relationshipArcs 写可解析角色之间的关系弧，roleCoverage 写主线/反派压力/情感配重/信息承载覆盖
 - newCharacterCandidates 可为空；若有候选，每个候选必须包含 candidateId、name、roleType、scope=volume、narrativeFunction、personalityCore、motivation、firstAppearChapter、expectedArc、approvalStatus=candidate；重要新增角色不得只出现在章节 supportingCharacters 中
+- 每卷必须显式输出 volumeNo 和 chapterCount；chapterCount 必须是本卷总章节数，不允许只让后端从 storyUnits 推断
 
 ${INTERACTION_STYLE}
 完成时输出的 JSON 格式：
-\`[STEP_COMPLETE]\`{"volumes":[{"volumeNo":1,"title":"卷名","synopsis":"Markdown结构：含全书主线阶段/本卷主线/本卷戏剧问题/卷内支线/单元故事/支线交叉点/卷末交接","objective":"本卷核心目标(具体可检验)","narrativePlan":{"globalMainlineStage":"全书主线阶段","volumeMainline":"本卷主线","dramaticQuestion":"本卷戏剧问题","startState":"开局状态","endState":"结尾状态","mainlineMilestones":["关键节点"],"subStoryLines":[{"name":"支线名","type":"mystery","function":"叙事作用","startState":"起点","progress":"推进方式","endState":"阶段结果","relatedCharacters":["角色名"],"chapterNodes":[1]}],"storyUnits":[{"unitId":"v1_unit_01","title":"单元故事名","chapterRange":{"start":1,"end":4},"localGoal":"单元局部目标","localConflict":"单元核心阻力","serviceFunctions":["mainline","relationship_shift","foreshadow"],"payoff":"单元阶段结局","stateChangeAfterUnit":"单元结束后的状态变化"}],"characterPlan":{"existingCharacterArcs":[{"characterName":"既有角色名","roleInVolume":"本卷角色功能","entryState":"入卷状态","volumeGoal":"本卷目标","pressure":"压力","keyChoices":["关键选择"],"firstActiveChapter":1,"endState":"出卷状态"}],"newCharacterCandidates":[],"relationshipArcs":[],"roleCoverage":{"mainlineDrivers":["既有角色名"],"antagonistPressure":[],"emotionalCounterweights":[],"expositionCarriers":[]}},"foreshadowPlan":["伏笔分配"],"endingHook":"卷末钩子","handoffToNextVolume":"卷末交接"}}]}`,
+\`[STEP_COMPLETE]\`{"volumes":[{"volumeNo":1,"chapterCount":4,"title":"卷名","synopsis":"Markdown结构：含全书主线阶段/本卷主线/本卷戏剧问题/卷内支线/单元故事/支线交叉点/卷末交接","objective":"本卷核心目标(具体可检验)","narrativePlan":{"globalMainlineStage":"全书主线阶段","volumeMainline":"本卷主线","dramaticQuestion":"本卷戏剧问题","startState":"开局状态","endState":"结尾状态","mainlineMilestones":["关键节点"],"subStoryLines":[{"name":"支线名","type":"mystery","function":"叙事作用","startState":"起点","progress":"推进方式","endState":"阶段结果","relatedCharacters":["角色名"],"chapterNodes":[1]}],"storyUnits":[{"unitId":"v1_unit_01","title":"单元故事名","chapterRange":{"start":1,"end":4},"localGoal":"单元局部目标","localConflict":"单元核心阻力","serviceFunctions":["mainline","relationship_shift","foreshadow"],"payoff":"单元阶段结局","stateChangeAfterUnit":"单元结束后的状态变化"}],"characterPlan":{"existingCharacterArcs":[{"characterName":"既有角色名","roleInVolume":"本卷角色功能","entryState":"入卷状态","volumeGoal":"本卷目标","pressure":"压力","keyChoices":["关键选择"],"firstActiveChapter":1,"endState":"出卷状态"}],"newCharacterCandidates":[],"relationshipArcs":[],"roleCoverage":{"mainlineDrivers":["既有角色名"],"antagonistPressure":[],"emotionalCounterweights":[],"expositionCarriers":[]}},"foreshadowPlan":["伏笔分配"],"endingHook":"卷末钩子","handoffToNextVolume":"卷末交接"}}]}`,
 
   guided_chapter: `你是一个资深小说创作顾问。你正在引导用户完成「章节细纲」规划步骤。
 帮助用户为当前卷规划具体章节和本卷新登场的配角。可以给出章节节奏方案供选择。
@@ -859,7 +860,11 @@ export class GuidedService {
     if (!volumes.length) return;
     const catalog = await this.loadGuidedCharacterCatalog(projectId);
     volumes.forEach((volume, index) => {
-      this.assertGuidedVolumeCharacterPlan(volume, catalog, `第 ${asNumber(volume.volumeNo) ?? index + 1} 卷`);
+      const volumeNo = asNumber(volume.volumeNo);
+      if (!Number.isInteger(volumeNo) || !volumeNo || volumeNo < 1) {
+        throw new BadRequestException(`第 ${index + 1} 个卷级角色规划校验失败：缺少有效 volumeNo。请重新生成卷纲并显式返回卷号。`);
+      }
+      this.assertGuidedVolumeCharacterPlan(volume, catalog, `第 ${volumeNo} 卷`);
     });
   }
 
@@ -868,9 +873,9 @@ export class GuidedService {
     catalog: CharacterReferenceCatalogForGuided,
     label: string,
   ): VolumeCharacterPlan {
-    const chapterCount = inferVolumeChapterCount(volume);
-    if (!chapterCount) {
-      throw new BadRequestException(`${label} 卷级角色规划校验失败：缺少有效 chapterCount 或 narrativePlan.storyUnits 章节范围，无法确认 firstAppearChapter 是否越界。请重新生成卷纲并给出连续章节范围。`);
+    const chapterCount = asNumber(volume.chapterCount);
+    if (!Number.isInteger(chapterCount) || !chapterCount || chapterCount < 1) {
+      throw new BadRequestException(`${label} 卷级角色规划校验失败：缺少有效 chapterCount，无法确认 firstAppearChapter 是否越界。请重新生成卷纲并显式返回本卷总章节数。`);
     }
     const narrativePlan = asRecord(volume.narrativePlan);
     try {
@@ -1486,7 +1491,8 @@ ${singleChapterContext.chapterPositionContext}`;
             this.prisma.volume.createMany({
               data: volumes.map((vol, index) => ({
                 projectId,
-                volumeNo: (vol.volumeNo as number | undefined) ?? index + 1,
+                volumeNo: requireGuidedPositiveInt(vol.volumeNo, `第 ${index + 1} 个卷纲 volumeNo`),
+                chapterCount: requireGuidedPositiveInt(vol.chapterCount, `第 ${index + 1} 个卷纲 chapterCount`),
                 title: asString(vol.title),
                 synopsis: asString(vol.synopsis),
                 objective: asString(vol.objective),
@@ -1768,22 +1774,16 @@ function asInputJsonObject(val: unknown): Prisma.InputJsonValue {
   return JSON.parse(JSON.stringify(record)) as Prisma.InputJsonValue;
 }
 
-function inferVolumeChapterCount(volume: Record<string, unknown>): number | undefined {
-  const explicit = asNumber(volume.chapterCount);
-  if (explicit && explicit > 0) return explicit;
-
-  const narrativePlan = asRecord(volume.narrativePlan);
-  const storyUnits = asRecordArray(narrativePlan?.storyUnits);
-  const maxEnd = storyUnits.reduce((max, unit) => {
-    const range = asRecord(unit.chapterRange);
-    const end = asNumber(range?.end);
-    return end && end > max ? end : max;
-  }, 0);
-  return maxEnd > 0 ? maxEnd : undefined;
-}
-
 function errorMessage(error: unknown): string {
   return error instanceof Error ? error.message : String(error);
+}
+
+function requireGuidedPositiveInt(value: unknown, label: string): number {
+  const numeric = asNumber(value);
+  if (!Number.isInteger(numeric) || !numeric || numeric < 1) {
+    throw new BadRequestException(`${label} 必须是正整数。`);
+  }
+  return numeric;
 }
 
 function normalizeVolumeNarrativePlan(volume: Record<string, unknown>): Prisma.InputJsonValue {
