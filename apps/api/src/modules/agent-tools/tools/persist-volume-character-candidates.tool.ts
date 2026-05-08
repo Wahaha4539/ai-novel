@@ -11,6 +11,7 @@ interface PersistVolumeCharacterCandidatesInput {
   preview?: OutlinePreviewOutput;
   approvedCandidateIds?: string[];
   approvedCandidateNames?: string[];
+  approveAll?: boolean;
   includeRelationshipArcs?: boolean;
 }
 
@@ -60,6 +61,7 @@ export class PersistVolumeCharacterCandidatesTool implements BaseTool<PersistVol
       preview: { type: 'object' as const },
       approvedCandidateIds: { type: 'array' as const, items: { type: 'string' as const } },
       approvedCandidateNames: { type: 'array' as const, items: { type: 'string' as const } },
+      approveAll: { type: 'boolean' as const },
       includeRelationshipArcs: { type: 'boolean' as const },
     },
   };
@@ -84,8 +86,8 @@ export class PersistVolumeCharacterCandidatesTool implements BaseTool<PersistVol
   manifest: ToolManifestV2 = {
     name: this.name,
     displayName: 'Persist Volume Character Candidates',
-    description: 'After explicit approval, writes selected volume-level character candidates into the official Character table. It does not persist chapter-only temporary characters and does not overwrite manual characters.',
-    whenToUse: ['Use after validate_outline when the user explicitly approves turning volume character candidates into official characters.'],
+    description: 'After explicit approval, writes explicitly selected volume-level character candidates into the official Character table. Set approvedCandidateIds/approvedCandidateNames, or approveAll=true only when the user approved every candidate. It does not persist chapter-only temporary characters and does not overwrite manual characters.',
+    whenToUse: ['Use after validate_outline when the user explicitly approves turning selected volume character candidates into official characters.'],
     whenNotToUse: ['Do not use for chapter minor_temporary characters.', 'Do not use for drafting chapter prose or persisting outline JSON.'],
     inputSchema: this.inputSchema,
     outputSchema: this.outputSchema,
@@ -108,6 +110,9 @@ export class PersistVolumeCharacterCandidatesTool implements BaseTool<PersistVol
     if (context.mode !== 'act') throw new BadRequestException('persist_volume_character_candidates must run in act mode.');
     if (!context.approved) throw new BadRequestException('persist_volume_character_candidates requires explicit user approval.');
     if (!args.preview?.volume?.narrativePlan) throw new BadRequestException('persist_volume_character_candidates requires an outline preview with volume.narrativePlan.characterPlan.');
+    if (!this.hasExplicitCandidateSelection(args)) {
+      throw new BadRequestException('persist_volume_character_candidates requires explicit approvedCandidateIds/approvedCandidateNames, or approveAll=true when the user approved every volume character candidate.');
+    }
 
     const result = await this.prisma.$transaction(async (tx) => {
       const existingCharacters = await tx.character.findMany({
@@ -165,7 +170,7 @@ export class PersistVolumeCharacterCandidatesTool implements BaseTool<PersistVol
   private selectCandidates(characterPlan: VolumeCharacterPlan, args: PersistVolumeCharacterCandidatesInput): VolumeCharacterPlan['newCharacterCandidates'] {
     const idSelection = new Set((args.approvedCandidateIds ?? []).map((item) => this.normalizeName(item)).filter(Boolean));
     const nameSelection = new Set((args.approvedCandidateNames ?? []).map((item) => this.normalizeName(item)).filter(Boolean));
-    if (!idSelection.size && !nameSelection.size) return characterPlan.newCharacterCandidates;
+    if (args.approveAll === true) return characterPlan.newCharacterCandidates;
 
     const candidates = characterPlan.newCharacterCandidates.filter((candidate) => (
       idSelection.has(this.normalizeName(candidate.candidateId)) || nameSelection.has(this.normalizeName(candidate.name))
@@ -178,6 +183,12 @@ export class PersistVolumeCharacterCandidatesTool implements BaseTool<PersistVol
       throw new BadRequestException(`Unknown volume character candidate selection: ${[...unknownIds, ...unknownNames].join(', ')}`);
     }
     return candidates;
+  }
+
+  private hasExplicitCandidateSelection(args: PersistVolumeCharacterCandidatesInput): boolean {
+    return args.approveAll === true
+      || (args.approvedCandidateIds ?? []).some((item) => this.normalizeName(item).length > 0)
+      || (args.approvedCandidateNames ?? []).some((item) => this.normalizeName(item).length > 0);
   }
 
   private async persistRelationshipArcs(

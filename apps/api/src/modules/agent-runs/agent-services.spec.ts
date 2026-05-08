@@ -5641,6 +5641,26 @@ test('VCC persist_volume_character_candidates requires approval', async () => {
   );
 });
 
+test('VCC persist_volume_character_candidates requires explicit candidate selection', async () => {
+  let transactionCalled = false;
+  const prisma = {
+    async $transaction() {
+      transactionCalled = true;
+      return {};
+    },
+  };
+  const tool = new PersistVolumeCharacterCandidatesTool(prisma as never, {} as never);
+
+  await assert.rejects(
+    () => tool.run(
+      { preview: createVccOutlinePreview(1) },
+      { agentRunId: 'run-vcc-character-selection', projectId: 'p1', mode: 'act', approved: true, outputs: {}, policy: {} },
+    ),
+    /approvedCandidateIds\/approvedCandidateNames|approveAll/,
+  );
+  assert.equal(transactionCalled, false);
+});
+
 test('VCC persist_volume_character_candidates creates updates skips and writes relationships', async () => {
   const baseCandidate = createVccCharacterPlanForChapterCount(4).newCharacterCandidates[0] as Record<string, unknown>;
   const candidateManualConflict = { ...baseCandidate, candidateId: 'cand_manual', name: '邵衡', firstAppearChapter: 1 };
@@ -5659,6 +5679,7 @@ test('VCC persist_volume_character_candidates creates updates skips and writes r
   const invalidatedProjectIds: string[] = [];
   const existingCharacters = [
     { id: 'char-lin', name: '林澈', alias: [], source: 'manual', metadata: {} },
+    { id: 'char-shen', name: '沈栖', alias: [], source: 'manual', metadata: {} },
     { id: 'char-manual-shao', name: '邵衡', alias: ['旧名邵衡'], source: 'manual', metadata: { userEdited: true } },
     { id: 'char-agent-fang', name: '方迟', alias: [], source: 'agent_outline', metadata: { old: true } },
   ];
@@ -5691,7 +5712,7 @@ test('VCC persist_volume_character_candidates creates updates skips and writes r
   const tool = new PersistVolumeCharacterCandidatesTool(prisma as never, cache as never);
 
   const result = await tool.run(
-    { preview, includeRelationshipArcs: true },
+    { preview, approveAll: true, includeRelationshipArcs: true },
     { agentRunId: 'run-vcc-character-write', projectId: 'p1', mode: 'act', approved: true, outputs: {}, policy: {} },
   );
 
@@ -5727,7 +5748,7 @@ test('VCC persist_volume_character_candidates rejects incomplete candidate', asy
   const prisma = {
     async $transaction(callback: (tx: Record<string, unknown>) => Promise<unknown>) {
       return callback({
-        character: { async findMany() { return [{ id: 'char-lin', name: '林澈', alias: [], source: 'manual', metadata: {} }]; } },
+        character: { async findMany() { return [{ id: 'char-lin', name: '林澈', alias: [], source: 'manual', metadata: {} }, { id: 'char-shen', name: '沈栖', alias: [], source: 'manual', metadata: {} }]; } },
         relationshipEdge: { async findMany() { return []; } },
       });
     },
@@ -5736,7 +5757,7 @@ test('VCC persist_volume_character_candidates rejects incomplete candidate', asy
 
   await assert.rejects(
     () => tool.run(
-      { preview },
+      { preview, approveAll: true },
       { agentRunId: 'run-vcc-character-incomplete', projectId: 'p1', mode: 'act', approved: true, outputs: {}, policy: {} },
     ),
     /motivation/,
