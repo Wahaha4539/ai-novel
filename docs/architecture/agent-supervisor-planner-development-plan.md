@@ -185,7 +185,7 @@
 
 ### ASP-P2-003 重构 Planner repair 使用 selected tools
 
-- 状态：`[ ]`
+- 状态：`[x]`
 - 模块：API
 - 文件：
   - `apps/api/src/modules/agent-runs/agent-planner.service.ts`
@@ -216,6 +216,13 @@
 - 验证：
   - 新增路由单测。
   - `pnpm --dir apps/api run test:agent`
+- 完成记录（2026-05-09）：
+  - 新增 `RootSupervisor` 和 `classifyIntentNode`，输出结构化 `RouteDecision` 并做本地 schema 校验。
+  - 路由不接收 tools，不生成 `AgentPlanSpec` 或小说内容；低置信度返回 `general:clarify` 和 clarification questions。
+  - 支持 outline、writing、revision、import、quality、guided、timeline、worldbuilding、general 路由。
+  - 修改文件：`apps/api/src/modules/agent-runs/planner-graph/supervisors/root-supervisor.ts`、`apps/api/src/modules/agent-runs/planner-graph/nodes/classify-intent.node.ts`、`apps/api/src/modules/agent-runs/planner-graph/nodes/index.ts`、`apps/api/src/modules/agent-runs/agent-services.spec.ts`、`docs/architecture/agent-supervisor-planner-development-plan.md`。
+  - 测试：`AGENT_TEST_FILTER="RootSupervisor" pnpm --dir apps/api run test:agent`，通过（1/332 targeted）。
+  - 测试：`pnpm --filter api build`，通过。
 
 ### ASP-P3-002 实现 selectToolBundleNode
 

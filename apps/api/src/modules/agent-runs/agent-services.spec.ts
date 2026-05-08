@@ -23,10 +23,12 @@ import { AgentRuntimeService } from './agent-runtime.service';
 import { AgentPlannerService } from './agent-planner.service';
 import { AgentPlannerGraphService } from './planner-graph/agent-planner-graph.service';
 import { TOOL_BUNDLE_DEFINITIONS, ToolBundleRegistry } from './planner-graph/tool-bundles';
+import { RootSupervisor, validateRouteDecision } from './planner-graph/supervisors/root-supervisor';
 import { AgentPolicyService, AgentSecondConfirmationRequiredError } from './agent-policy.service';
 import { AgentTraceService } from './agent-trace.service';
 import { AgentRunsService } from './agent-runs.service';
 import { AgentRunWatchdogService } from './agent-run-watchdog.service';
+import type { AgentContextV2 } from './agent-context-builder.service';
 import { GenerateChapterService } from '../generation/generate-chapter.service';
 import { GenerationService } from '../generation/generation.service';
 import { GenerationProfileService } from '../generation-profile/generation-profile.service';
@@ -8327,6 +8329,45 @@ test('Tool manifest filtering preserves requested order and fails on unknown too
     toolManifestsForPrompt: (toolNames?: string[]) => Array<{ name: string; outputFields?: string[] }>;
   };
   assert.deepEqual(planner.toolManifestsForPrompt(['beta_tool']).map((manifest) => manifest.name), ['beta_tool']);
+});
+
+test('RootSupervisor classifies planner domains without tool manifests', () => {
+  const supervisor = new RootSupervisor();
+  const cases: Array<{ goal: string; domain: string; intent: string }> = [
+    { goal: '帮我重写第一卷大纲。', domain: 'outline', intent: 'generate_volume_outline' },
+    { goal: '把第一卷拆成 30 章。', domain: 'outline', intent: 'split_volume_to_chapters' },
+    { goal: '帮我写第十二章正文。', domain: 'writing', intent: 'chapter_write' },
+    { goal: '重写第十二章，不沿用旧稿。', domain: 'revision', intent: 'chapter_rewrite' },
+    { goal: '导入文档，只要故事大纲。', domain: 'import', intent: 'project_import_preview' },
+    { goal: '检查男主人设是不是崩了。', domain: 'quality', intent: 'character_consistency_check' },
+    { goal: '基于当前大纲生成计划时间线候选，不要写入。', domain: 'timeline', intent: 'timeline_plan' },
+    { goal: '补充宗门体系，但不要影响已有剧情。', domain: 'worldbuilding', intent: 'worldbuilding_expand' },
+  ];
+
+  for (const item of cases) {
+    const route = supervisor.classify({ goal: item.goal });
+    assert.equal(route.domain, item.domain);
+    assert.equal(route.intent, item.intent);
+    assert.equal(route.ambiguity?.needsClarification, undefined);
+    assert.ok(route.confidence >= 0.8);
+    assert.doesNotThrow(() => validateRouteDecision(route));
+  }
+
+  const guidedRoute = supervisor.classify({
+    goal: '帮我解释当前步骤应该怎么填。',
+    context: {
+      session: { guided: { currentStep: 'guided_volume', currentStepLabel: '卷规划' } },
+    } as AgentContextV2,
+  });
+  assert.equal(guidedRoute.domain, 'guided');
+  assert.equal(guidedRoute.intent, 'guided_step_consultation');
+  assert.ok(guidedRoute.confidence >= 0.9);
+
+  const unclear = supervisor.classify({ goal: '帮我弄一下。' });
+  assert.equal(unclear.domain, 'general');
+  assert.equal(unclear.intent, 'clarify');
+  assert.equal(unclear.ambiguity?.needsClarification, true);
+  assert.ok(unclear.confidence < 0.5);
 });
 
 test('Planner prompt compacts tool manifests without losing callable input schema', async () => {
