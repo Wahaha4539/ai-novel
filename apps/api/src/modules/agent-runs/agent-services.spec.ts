@@ -26,6 +26,7 @@ import { AgentTraceService } from './agent-trace.service';
 import { AgentRunsService } from './agent-runs.service';
 import { AgentRunWatchdogService } from './agent-run-watchdog.service';
 import { GenerateChapterService } from '../generation/generate-chapter.service';
+import { GenerationService } from '../generation/generation.service';
 import { GenerationProfileService } from '../generation-profile/generation-profile.service';
 import { UpdateGenerationProfileDto } from '../generation-profile/dto/update-generation-profile.dto';
 import { ChapterAutoRepairService } from '../generation/chapter-auto-repair.service';
@@ -6665,6 +6666,99 @@ test('Executor 使用运行时最新草稿指针并跳过无问题的二次修�
   assert.equal(executed.find((item) => item.name === 'polish_chapter')?.args.draftId, 'draft-write');
   assert.equal(executed.find((item) => item.name === 'auto_repair_chapter')?.args.draftId, 'draft-polish');
   assert.equal(executed.find((item) => item.name === 'extract_chapter_facts')?.args.draftId, 'draft-polish');
+});
+
+function makeGenerationServiceTimelineHarness(options: { autoUpdateTimeline: boolean; validationValid?: boolean }) {
+  const calls: string[] = [];
+  let completedPayload: Record<string, unknown> | undefined;
+  let failedMessage: string | undefined;
+  const preview = { candidates: [{ candidateId: 'tl_align_1' }], assumptions: [], risks: [], writePlan: { mode: 'preview_only' } };
+  const validation = {
+    valid: options.validationValid ?? true,
+    issues: options.validationValid === false ? [{ severity: 'error', message: 'bad sourceTrace' }] : [],
+    accepted: options.validationValid === false ? [] : [{ candidateId: 'tl_align_1' }],
+    rejected: [],
+    writePreview: { entries: [] },
+  };
+  const service = new GenerationService(
+    { async getById() { return { id: 'c1', projectId: 'p1' }; } } as never,
+    {
+      async create() { calls.push('job.create'); return { id: 'job-1' }; },
+      async markRunning() { calls.push('job.running'); },
+      async markCompleted(_jobId: string, payload: Record<string, unknown>) { calls.push('job.completed'); completedPayload = payload; },
+      async markFailed(_jobId: string, message: string) { calls.push('job.failed'); failedMessage = message; },
+      async getById() { return { id: 'job-1', status: failedMessage ? 'failed' : 'completed', responsePayload: completedPayload, errorMessage: failedMessage }; },
+    } as never,
+    {
+      async run() { calls.push('write'); return { draftId: 'draft-write', retrievalPayload: { context: true } }; },
+      async loadGenerationProfileSnapshot() { calls.push('profile'); return createGenerationProfile({ autoUpdateTimeline: options.autoUpdateTimeline }); },
+    } as never,
+    { async run() { calls.push('postprocess'); return { draftId: 'draft-post' }; } } as never,
+    { async run() { calls.push('polish'); return { draftId: 'draft-final', polishedWordCount: 1200 }; } } as never,
+    {
+      async extractChapterFacts() {
+        calls.push('facts');
+        return { chapterId: 'c1', draftId: 'draft-final', summary: 'facts summary', createdEvents: 1 };
+      },
+    } as never,
+    { async rebuildChapter() { calls.push('memory'); return { createdCount: 1 }; } } as never,
+    { async reviewPending() { calls.push('memoryReview'); return { reviewedCount: 0 }; } } as never,
+    { async runFactRules() { calls.push('factValidation'); return { valid: true }; } } as never,
+    {
+      async run(args: Record<string, unknown>, context: Record<string, unknown>) {
+        calls.push(`align:${args.draftId}:${context.agentRunId}`);
+        return preview;
+      },
+    } as never,
+    {
+      async run() {
+        calls.push('timelineValidate');
+        return validation;
+      },
+    } as never,
+  );
+  return { service, calls, preview, validation };
+}
+
+test('GenerationService skips chapter timeline alignment when autoUpdateTimeline is false', async () => {
+  const { service, calls } = makeGenerationServiceTimelineHarness({ autoUpdateTimeline: false });
+
+  const result = await service.generateChapter('c1', { mode: 'draft' });
+  const responsePayload = (result as { responsePayload: Record<string, unknown> }).responsePayload;
+  const timelineAlignment = responsePayload.timelineAlignment as Record<string, unknown>;
+
+  assert.equal((result as { status: string }).status, 'completed');
+  assert.equal(timelineAlignment.skipped, true);
+  assert.equal(timelineAlignment.reason, 'autoUpdateTimeline_disabled');
+  assert.equal(calls.some((call) => call.startsWith('align:')), false);
+  assert.equal(calls.includes('timelineValidate'), false);
+});
+
+test('GenerationService runs read-only chapter timeline preview and validation when autoUpdateTimeline is true', async () => {
+  const { service, calls, preview, validation } = makeGenerationServiceTimelineHarness({ autoUpdateTimeline: true });
+
+  const result = await service.generateChapter('c1', { mode: 'draft' });
+  const responsePayload = (result as { responsePayload: Record<string, unknown> }).responsePayload;
+  const timelineAlignment = responsePayload.timelineAlignment as Record<string, unknown>;
+
+  assert.equal((result as { status: string }).status, 'completed');
+  assert.equal(timelineAlignment.skipped, false);
+  assert.equal(timelineAlignment.preview, preview);
+  assert.equal(timelineAlignment.validation, validation);
+  assert.ok(calls.includes('align:draft-final:job-1'));
+  assert.ok(calls.includes('timelineValidate'));
+});
+
+test('GenerationService fails chapter generation when timeline validation rejects auto alignment', async () => {
+  const { service, calls } = makeGenerationServiceTimelineHarness({ autoUpdateTimeline: true, validationValid: false });
+
+  const result = await service.generateChapter('c1', { mode: 'draft' });
+
+  assert.equal((result as { status: string }).status, 'failed');
+  assert.match((result as { errorMessage: string }).errorMessage, /timeline alignment validation failed/);
+  assert.ok(calls.includes('align:draft-final:job-1'));
+  assert.ok(calls.includes('timelineValidate'));
+  assert.equal(calls.includes('job.completed'), false);
 });
 
 test('FactExtractorService 抽取事实后同步生成 pending_review 记忆且不写 TimelineEvent', async () => {

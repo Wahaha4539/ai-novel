@@ -6,6 +6,8 @@ import { JobsModule } from '../jobs/jobs.module';
 import { LlmModule } from '../llm/llm.module';
 import { MemoryModule } from '../memory/memory.module';
 import { ValidationModule } from '../validation/validation.module';
+import { AlignChapterTimelinePreviewTool } from '../agent-tools/tools/align-chapter-timeline-preview.tool';
+import { ValidateTimelinePreviewTool } from '../agent-tools/tools/validate-timeline-preview.tool';
 import { ChapterAutoRepairService } from './chapter-auto-repair.service';
 import { ChapterRewriteCleanupService } from './chapter-rewrite-cleanup.service';
 import { GenerateChapterService } from './generate-chapter.service';
@@ -18,7 +20,7 @@ import { RetrievalPlannerService } from './retrieval-planner.service';
 
 @Module({
   imports: [PrismaModule, ChaptersModule, JobsModule, LlmModule, MemoryModule, FactsModule, ValidationModule],
-  providers: [GenerationService, PostProcessChapterService, PolishChapterService, PromptBuilderService, GenerateChapterService, ChapterAutoRepairService, ChapterRewriteCleanupService, RetrievalPlannerService],
+  providers: [GenerationService, PostProcessChapterService, PolishChapterService, PromptBuilderService, GenerateChapterService, ChapterAutoRepairService, ChapterRewriteCleanupService, RetrievalPlannerService, AlignChapterTimelinePreviewTool, ValidateTimelinePreviewTool],
   exports: [PostProcessChapterService, PolishChapterService, PromptBuilderService, GenerateChapterService, ChapterAutoRepairService, ChapterRewriteCleanupService, RetrievalPlannerService],
   controllers: [GenerationController],
 })

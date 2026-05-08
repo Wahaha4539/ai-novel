@@ -397,6 +397,15 @@ export class GenerateChapterService {
     return { draftId: draft.id, chapterId, versionNo: draft.versionNo, actualWordCount, summary: content.slice(0, 160), retrievalPayload, preflight, qualityGate, promptDebug: prompt.debug, modelInfo, rewriteCleanup };
   }
 
+  async loadGenerationProfileSnapshot(projectId: string): Promise<GenerationProfileSnapshot> {
+    const project = await this.prisma.project.findUnique({
+      where: { id: projectId },
+      include: { generationProfile: true },
+    });
+    if (!project) throw new NotFoundException(`项目不存在：${projectId}`);
+    return buildGenerationProfileSnapshot(project.generationProfile);
+  }
+
   private async resetChapterForRewrite(projectId: string, chapterId: string): Promise<ChapterRewriteCleanupResult> {
     if (!this.rewriteCleanup) {
       throw new BadRequestException('rewrite mode requires ChapterRewriteCleanupService.');

@@ -1,8 +1,13 @@
 import { Injectable } from '@nestjs/common';
 import { randomUUID } from 'crypto';
 import { StructuredLogger } from '../../common/logging/structured-logger';
+import { AlignChapterTimelinePreviewTool } from '../agent-tools/tools/align-chapter-timeline-preview.tool';
+import type { GenerateTimelinePreviewOutput, ValidateTimelinePreviewOutput } from '../agent-tools/tools/timeline-preview.types';
+import { ValidateTimelinePreviewTool } from '../agent-tools/tools/validate-timeline-preview.tool';
 import { ChaptersService } from '../chapters/chapters.service';
 import { FactExtractorService } from '../facts/fact-extractor.service';
+import type { FactExtractionResult } from '../facts/fact-extractor.service';
+import type { GenerationProfileSnapshot } from '../generation-profile/generation-profile.defaults';
 import { JobsService } from '../jobs/jobs.service';
 import { MemoryRebuildService } from '../memory/memory-rebuild.service';
 import { MemoryReviewService } from '../memory/memory-review.service';
@@ -14,6 +19,13 @@ import { PolishChapterService } from './polish-chapter.service';
 import { PostProcessChapterService } from './postprocess-chapter.service';
 
 const AUTO_POLISH_INSTRUCTION = '请在不改变剧情事实、人物关系、时间线和章节主线结果的前提下，润色当前章节正文：提升句子流畅度、画面感、节奏和衔接，修正明显语病与重复表达。直接输出润色后的完整章节正文，不要添加说明。';
+
+interface ChapterTimelineAlignmentResult {
+  skipped: boolean;
+  reason?: string;
+  preview?: GenerateTimelinePreviewOutput;
+  validation?: ValidateTimelinePreviewOutput;
+}
 
 @Injectable()
 export class GenerationService {
@@ -29,6 +41,8 @@ export class GenerationService {
     private readonly memoryRebuildService: MemoryRebuildService,
     private readonly memoryReviewService: MemoryReviewService,
     private readonly validationService: ValidationService,
+    private readonly alignChapterTimelinePreviewTool: AlignChapterTimelinePreviewTool,
+    private readonly validateTimelinePreviewTool: ValidateTimelinePreviewTool,
   ) {}
 
   async generateChapter(chapterId: string, dto: GenerateChapterDto) {
@@ -75,11 +89,22 @@ export class GenerationService {
       const polish = await this.polishChapterService.run(chapter.projectId, chapterId, AUTO_POLISH_INSTRUCTION, postprocess.draftId);
       const finalDraftId = polish.draftId;
       const facts = await this.factExtractorService.extractChapterFacts(chapter.projectId, chapterId, finalDraftId);
+      const generationProfile = await this.generateChapterService.loadGenerationProfileSnapshot(chapter.projectId);
+      const timelineAlignment = await this.maybeAlignChapterTimeline({
+        projectId: chapter.projectId,
+        chapterId,
+        draftId: finalDraftId,
+        generationProfile,
+        facts,
+        requestId,
+        jobId: job.id,
+        source: 'generate_chapter',
+      });
       const validation = dto.validateAfterWrite === false ? { skipped: true } : await this.validationService.runFactRules(chapter.projectId, chapterId);
       const memory = await this.memoryRebuildService.rebuildChapter(chapter.projectId, chapterId, finalDraftId);
       const memoryReview = await this.memoryReviewService.reviewPending(chapter.projectId, chapterId);
 
-      const responsePayload = { draft, postprocess, polish, facts, validation, memory, memoryReview };
+      const responsePayload = { draft, postprocess, polish, facts, timelineAlignment, validation, memory, memoryReview };
       await this.jobsService.markCompleted(job.id, responsePayload, draft.retrievalPayload);
       this.logger.log('generation.job.completed', { ...logContext, draftId: finalDraftId, originalDraftId: draft.draftId, polishedWordCount: polish.polishedWordCount });
       return this.jobsService.getById(job.id);
@@ -100,6 +125,15 @@ export class GenerationService {
 
     const result = await this.polishChapterService.run(chapter.projectId, chapterId, dto.userInstruction);
     const facts = await this.factExtractorService.extractChapterFacts(chapter.projectId, chapterId, result.draftId);
+    const generationProfile = await this.generateChapterService.loadGenerationProfileSnapshot(chapter.projectId);
+    const timelineAlignment = await this.maybeAlignChapterTimeline({
+      projectId: chapter.projectId,
+      chapterId,
+      draftId: result.draftId,
+      generationProfile,
+      facts,
+      source: 'polish_chapter',
+    });
     const validation = await this.validationService.runFactRules(chapter.projectId, chapterId);
     const memory = await this.memoryRebuildService.rebuildChapter(chapter.projectId, chapterId, result.draftId);
     const memoryReview = await this.memoryReviewService.reviewPending(chapter.projectId, chapterId);
@@ -110,6 +144,52 @@ export class GenerationService {
       polishedWordCount: result.polishedWordCount,
     });
 
-    return { ...result, facts, validation, memory, memoryReview };
+    return { ...result, facts, timelineAlignment, validation, memory, memoryReview };
+  }
+
+  private async maybeAlignChapterTimeline(input: {
+    projectId: string;
+    chapterId: string;
+    draftId: string;
+    generationProfile: GenerationProfileSnapshot;
+    facts: FactExtractionResult;
+    requestId?: string;
+    jobId?: string;
+    source: 'generate_chapter' | 'polish_chapter';
+  }): Promise<ChapterTimelineAlignmentResult> {
+    if (!input.generationProfile.autoUpdateTimeline) {
+      return { skipped: true, reason: 'autoUpdateTimeline_disabled' };
+    }
+
+    const context = {
+      agentRunId: input.jobId ?? input.requestId ?? `chapter_generation:${input.draftId}`,
+      projectId: input.projectId,
+      chapterId: input.chapterId,
+      mode: 'plan' as const,
+      approved: false,
+      outputs: {},
+      policy: {},
+    };
+    const preview = await this.alignChapterTimelinePreviewTool.run(
+      {
+        chapterId: input.chapterId,
+        draftId: input.draftId,
+        maxCandidates: 8,
+        instruction: 'Align the extracted current-chapter StoryEvent evidence with planned and active TimelineEvent rows. Return preview candidates only.',
+        context: {
+          source: input.source,
+          factsSummary: input.facts.summary,
+          createdEvents: input.facts.createdEvents,
+          draftId: input.draftId,
+        },
+      },
+      context,
+    );
+    const validation = await this.validateTimelinePreviewTool.run({ preview }, context);
+    if (!validation.valid) {
+      const messages = validation.issues.map((issue) => issue.message).filter(Boolean);
+      throw new Error(`timeline alignment validation failed: ${messages.join('; ') || 'no accepted timeline candidates'}`);
+    }
+    return { skipped: false, preview, validation };
   }
 }
