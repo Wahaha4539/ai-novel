@@ -2379,12 +2379,13 @@ test('ValidateOutlineTool 容忍 LLM 返回非字符串章节梗概', async () =
   const prisma = {
     volume: { async findUnique() { return null; } },
     chapter: { async findMany() { return []; } },
+    character: { async findMany() { return [{ name: '林澈', alias: [] }, { name: '沈栖', alias: [] }]; } },
   };
   const tool = new ValidateOutlineTool(prisma as never);
   const result = await tool.run(
     {
       preview: {
-        volume: { volumeNo: 1, title: '卷一', synopsis: '', objective: '', chapterCount: 1, narrativePlan: createVccNarrativePlanForChapterCount(1) },
+        volume: { volumeNo: 1, title: '卷一', synopsis: '卷简介', objective: '卷目标', chapterCount: 1, narrativePlan: createVccNarrativePlanForChapterCount(1) },
         chapters: [{
           chapterNo: 1,
           title: '一',
@@ -2415,6 +2416,7 @@ test('ValidateOutlineTool 拦截旧 outline_preview 缺 craftBrief', async () =>
   const prisma = {
     volume: { async findUnique() { return null; } },
     chapter: { async findMany() { return []; } },
+    character: { async findMany() { return [{ name: '林澈', alias: [] }, { name: '沈栖', alias: [] }]; } },
   };
   const tool = new ValidateOutlineTool(prisma as never);
   const result = await tool.run(
@@ -2432,6 +2434,7 @@ test('ValidateOutlineTool 校验 craftBrief 行动链、线索和不可逆后果
   const prisma = {
     volume: { async findUnique() { return null; } },
     chapter: { async findMany() { return []; } },
+    character: { async findMany() { return [{ name: '林澈', alias: [] }, { name: '沈栖', alias: [] }]; } },
   };
   const tool = new ValidateOutlineTool(prisma as never);
   const result = await tool.run(
@@ -2469,6 +2472,7 @@ test('ValidateOutlineTool 对重复章节标题给出 warning', async () => {
   const prisma = {
     volume: { async findUnique() { return null; } },
     chapter: { async findMany() { return []; } },
+    character: { async findMany() { return [{ name: '林澈', alias: [] }, { name: '沈栖', alias: [] }]; } },
   };
   const tool = new ValidateOutlineTool(prisma as never);
   const result = await tool.run(
@@ -5937,6 +5941,7 @@ test('PersistOutlineTool 写入新建和 planned 章节 craftBrief 并跳过 dra
   const createdChapters: Array<Record<string, unknown>> = [];
   const updatedChapters: Array<Record<string, unknown>> = [];
   const prisma = {
+    character: { async findMany() { return [{ name: '林澈', alias: [] }, { name: '沈栖', alias: [] }]; } },
     async $transaction(callback: (tx: Record<string, unknown>) => Promise<unknown>) {
       return callback({
         volume: {
@@ -5987,7 +5992,7 @@ test('PersistOutlineTool 写入新建和 planned 章节 craftBrief 并跳过 dra
 test('PersistOutlineTool 拒绝旧 outline_preview 缺 craftBrief', async () => {
   const updatedChapters: Array<Record<string, unknown>> = [];
   const prisma = {
-    character: { async findMany() { return []; } },
+    character: { async findMany() { return [{ name: '林澈', alias: [] }, { name: '沈栖', alias: [] }]; } },
     async $transaction(callback: (tx: Record<string, unknown>) => Promise<unknown>) {
       return callback({
         volume: {
