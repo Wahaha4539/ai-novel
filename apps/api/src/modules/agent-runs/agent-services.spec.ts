@@ -6772,6 +6772,28 @@ test('GenerationService runs read-only chapter timeline preview and validation w
   assert.equal(calls.some((call) => call.startsWith('timelinePersist:')), false);
 });
 
+test('GenerationService applies autoUpdateTimeline true and false behavior after polish', async () => {
+  const disabled = makeGenerationServiceTimelineHarness({ autoUpdateTimeline: false });
+  const disabledResult = await disabled.service.polishChapter('c1', { userInstruction: '润色当前章' });
+  const disabledAlignment = disabledResult.timelineAlignment;
+
+  assert.equal(disabledAlignment.skipped, true);
+  assert.equal(disabledAlignment.reason, 'autoUpdateTimeline_disabled');
+  assert.equal(disabled.calls.some((call) => call.startsWith('align:')), false);
+  assert.equal(disabled.calls.includes('timelineValidate'), false);
+
+  const enabled = makeGenerationServiceTimelineHarness({ autoUpdateTimeline: true });
+  const enabledResult = await enabled.service.polishChapter('c1', { userInstruction: '润色当前章' });
+  const enabledAlignment = enabledResult.timelineAlignment;
+
+  assert.equal(enabledAlignment.skipped, false);
+  assert.equal(enabledAlignment.preview, enabled.preview);
+  assert.equal(enabledAlignment.validation, enabled.validation);
+  assert.ok(enabled.calls.includes('align:draft-final:chapter_generation:draft-final'));
+  assert.ok(enabled.calls.includes('timelineValidate'));
+  assert.equal(enabled.calls.some((call) => call.startsWith('timelinePersist:')), false);
+});
+
 test('GenerationService fails chapter generation when timeline validation rejects auto alignment', async () => {
   const { service, calls } = makeGenerationServiceTimelineHarness({ autoUpdateTimeline: true, validationValid: false });
 
