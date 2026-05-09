@@ -643,6 +643,16 @@
 4. CI gate 能防止工具泄漏和 prompt 体积回退。
 5. graph planner 可以作为默认 Planner 路径。
 
+最终验证记录（2026-05-09）：
+
+- `pnpm --dir apps/api run test:agent`，通过（356/356）。
+- `pnpm --dir apps/api run eval:agent:live`，通过（legacy 24/24，graph 8/8，prompt size gate 通过）。
+- `pnpm --dir apps/api run eval:agent:retrieval`，通过（24/24）。
+- `pnpm --dir apps/api run eval:agent:replan`，通过（16/16）。
+- `pnpm --filter api build`，通过。
+- `pnpm --filter web build`，通过。
+- 未执行真实 Web/UI 测试；本轮未启动 Docker Compose。
+
 ## 13. 推荐执行顺序
 
 ```text
