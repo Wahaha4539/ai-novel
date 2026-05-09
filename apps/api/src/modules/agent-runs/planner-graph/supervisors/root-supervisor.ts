@@ -128,7 +128,7 @@ function isVolumeOutlineGoal(goal: string): boolean {
 }
 
 function isOutlineGoal(goal: string): boolean {
-  return includesAny(goal, ['推进卡', '执行卡', 'craftbrief', 'craft brief', '行动链', '场景卡', 'scenecard', 'scene card', '拆成场景'])
+  return includesAny(goal, ['推进卡', '执行卡', 'craftbrief', 'craft brief', '行动链', '场景卡', 'scenecard', 'scene card', '拆成场景', '单元故事', '故事单元', '支线故事', '人物登场', '人物情感', '人物刻画', '背景故事', '单元分类'])
     || isChapterOutlineGoal(goal)
     || isVolumeOutlineGoal(goal);
 }

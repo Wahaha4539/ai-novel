@@ -41,17 +41,18 @@ export class ToolBundleRegistry {
   resolveBundle(name: string): SelectedToolBundle {
     const definition = this.getDefinition(name);
     this.assertDefinitionToolsRegistered(definition);
+    const registered = this.registeredToolNameSet();
     return {
       bundleName: definition.name,
       strictToolNames: [...definition.strictToolNames],
-      optionalToolNames: [...(definition.optionalToolNames ?? [])],
+      optionalToolNames: (definition.optionalToolNames ?? []).filter((toolName) => registered.has(toolName)),
       ...(definition.deniedToolNames?.length ? { deniedToolNames: [...definition.deniedToolNames] } : {}),
       selectionReason: definition.plannerGuidance.join(' '),
     };
   }
 
   listManifestsForBundle(bundle: SelectedToolBundle): ToolManifestForPlanner[] {
-    return this.tools.listManifestsForPlanner(bundle.strictToolNames);
+    return this.tools.listManifestsForPlanner([...bundle.strictToolNames, ...bundle.optionalToolNames]);
   }
 
   listAllManifestsForPlanner(): ToolManifestForPlanner[] {
@@ -94,23 +95,19 @@ export class ToolBundleRegistry {
   }
 
   private assertDefinitionToolsRegistered(definition: ToolBundleDefinition): void {
-    this.assertToolNamesRegistered(definition.name, this.bundleToolNames(definition));
+    this.assertToolNamesRegistered(definition.name, definition.strictToolNames);
   }
 
   private assertToolNamesRegistered(label: string, referenced: string[]): void {
-    const registered = new Set(this.tools.list().map((tool) => tool.name));
+    const registered = this.registeredToolNameSet();
     const missing = referenced.filter((toolName) => !registered.has(toolName));
     if (missing.length) {
       throw new Error(`ToolBundle ${label} references unregistered tools: ${missing.join(', ')}`);
     }
   }
 
-  private bundleToolNames(definition: ToolBundleDefinition): string[] {
-    return [...new Set([
-      ...definition.strictToolNames,
-      ...(definition.optionalToolNames ?? []),
-      ...(definition.deniedToolNames ?? []),
-    ])];
+  private registeredToolNameSet(): Set<string> {
+    return new Set(this.tools.list().map((tool) => tool.name));
   }
 
   private cloneDefinition(definition: ToolBundleDefinition): ToolBundleDefinition {

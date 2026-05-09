@@ -37,43 +37,11 @@ export function assertVolumeNarrativePlan(value: unknown, options: AssertVolumeN
     }
   }
 
-  const storyUnits = requiredRecordArray(record.storyUnits, `${label}.storyUnits`);
-  const normalizedRanges: Array<{ start: number; end: number; label: string }> = [];
-  for (const [index, storyUnit] of storyUnits.entries()) {
-    const itemLabel = `${label}.storyUnits[${index}]`;
-    for (const field of ['unitId', 'title', 'localGoal', 'localConflict', 'payoff', 'stateChangeAfterUnit']) {
-      requiredText(storyUnit[field], `${itemLabel}.${field}`);
-    }
-    const range = asRecord(storyUnit.chapterRange);
-    const start = requiredPositiveInt(range.start, `${itemLabel}.chapterRange.start`);
-    const end = requiredPositiveInt(range.end, `${itemLabel}.chapterRange.end`);
-    if (end < start || start > options.chapterCount) {
-      throw new Error(`${itemLabel}.chapterRange 无效，未生成完整卷纲。`);
-    }
-    const length = end - start + 1;
-    if (options.chapterCount >= 3 && (length < 3 || length > 5)) {
-      throw new Error(`${itemLabel}.chapterRange 必须覆盖 3-5 章，未生成完整卷纲。`);
-    }
-    if (stringArray(storyUnit.serviceFunctions).length < 3) {
-      throw new Error(`${itemLabel}.serviceFunctions 少于 3 项，未生成完整卷纲。`);
-    }
-    normalizedRanges.push({ start, end, label: itemLabel });
-  }
-
-  const sortedRanges = normalizedRanges.sort((left, right) => left.start - right.start);
-  let expectedStart = 1;
-  for (const range of sortedRanges) {
-    if (range.start !== expectedStart) {
-      throw new Error(`${range.label}.chapterRange 未连续覆盖全卷章节，未生成完整卷纲。`);
-    }
-    expectedStart = range.end + 1;
-  }
-  if (expectedStart !== options.chapterCount + 1) {
-    throw new Error(`${label}.storyUnits 未覆盖到第 ${options.chapterCount} 章，未生成完整卷纲。`);
-  }
+  const storyUnits = optionalStoryUnits(record.storyUnits, `${label}.storyUnits`, options.chapterCount);
 
   return {
     ...record,
+    ...(storyUnits.length ? { storyUnits } : {}),
     foreshadowPlan,
     characterPlan: assertVolumeCharacterPlan(record.characterPlan, {
       chapterCount: options.chapterCount,
@@ -83,6 +51,47 @@ export function assertVolumeNarrativePlan(value: unknown, options: AssertVolumeN
       label: `${label}.characterPlan`,
     }),
   };
+}
+
+function optionalStoryUnits(value: unknown, label: string, chapterCount: number): Array<Record<string, unknown>> {
+  const storyUnits = recordArray(value);
+  if (!storyUnits.length) return [];
+  const normalizedRanges: Array<{ start: number; end: number; label: string }> = [];
+  const normalizedStoryUnits = storyUnits.map((storyUnit, index) => {
+    const itemLabel = `${label}[${index}]`;
+    for (const field of ['unitId', 'title', 'localGoal', 'localConflict', 'payoff', 'stateChangeAfterUnit']) {
+      requiredText(storyUnit[field], `${itemLabel}.${field}`);
+    }
+    const range = asRecord(storyUnit.chapterRange);
+    const start = requiredPositiveInt(range.start, `${itemLabel}.chapterRange.start`);
+    const end = requiredPositiveInt(range.end, `${itemLabel}.chapterRange.end`);
+    if (end < start || start > chapterCount) {
+      throw new Error(`${itemLabel}.chapterRange 无效，未生成完整卷纲。`);
+    }
+    const length = end - start + 1;
+    if (chapterCount >= 3 && (length < 3 || length > 5)) {
+      throw new Error(`${itemLabel}.chapterRange 必须覆盖 3-5 章，未生成完整卷纲。`);
+    }
+    const serviceFunctions = stringArray(storyUnit.serviceFunctions);
+    if (serviceFunctions.length < 3) {
+      throw new Error(`${itemLabel}.serviceFunctions 少于 3 项，未生成完整卷纲。`);
+    }
+    normalizedRanges.push({ start, end, label: itemLabel });
+    return { ...storyUnit, chapterRange: { start, end }, serviceFunctions };
+  });
+
+  const sortedRanges = normalizedRanges.sort((left, right) => left.start - right.start);
+  let expectedStart = 1;
+  for (const range of sortedRanges) {
+    if (range.start !== expectedStart) {
+      throw new Error(`${range.label}.chapterRange 未连续覆盖全卷章节，未生成完整卷纲。`);
+    }
+    expectedStart = range.end + 1;
+  }
+  if (expectedStart !== chapterCount + 1) {
+    throw new Error(`${label} 未覆盖到第 ${chapterCount} 章，未生成完整卷纲。`);
+  }
+  return normalizedStoryUnits;
 }
 
 type ForeshadowPlanItem = string | Record<string, unknown>;
@@ -181,11 +190,15 @@ function requiredPositiveInt(value: unknown, label: string): number {
 }
 
 function requiredRecordArray(value: unknown, label: string): Array<Record<string, unknown>> {
-  const records = Array.isArray(value)
-    ? value.map((item) => asRecord(item)).filter((item) => Object.keys(item).length > 0)
-    : [];
+  const records = recordArray(value);
   if (!records.length) throw new Error(`${label} 缺失，未生成完整卷纲。`);
   return records;
+}
+
+function recordArray(value: unknown): Array<Record<string, unknown>> {
+  return Array.isArray(value)
+    ? value.map((item) => asRecord(item)).filter((item) => Object.keys(item).length > 0)
+    : [];
 }
 
 function positiveIntArray(value: unknown): number[] {

@@ -644,10 +644,20 @@ function ChapterField({ label, value, multiline = false }: { label: string; valu
 
 function storyUnitsFromPlan(value: VolumeSummary['narrativePlan']): Record<string, unknown>[] {
   const plan = asObjectRecord(value);
-  const units = Array.isArray(plan?.storyUnits) ? plan.storyUnits : [];
-  return units
-    .map((item) => asObjectRecord(item))
-    .filter((item): item is Record<string, unknown> => Boolean(item));
+  const storyUnitPlan = asObjectRecord(plan?.storyUnitPlan);
+  const v2Units = recordList(storyUnitPlan?.units);
+  if (v2Units.length) {
+    const allocations = recordList(storyUnitPlan?.chapterAllocation);
+    return v2Units.map((unit) => {
+      const allocation = allocations.find((item) => textValue(item.unitId) === textValue(unit.unitId));
+      return {
+        ...unit,
+        chapterRange: asObjectRecord(allocation?.chapterRange),
+        serviceFunctions: [textValue(unit.primaryPurpose), ...stringList(unit.secondaryPurposes)].filter(Boolean),
+      };
+    });
+  }
+  return recordList(plan?.storyUnits);
 }
 
 function asCraftBriefRecord(value: ChapterSummary['craftBrief']): Record<string, unknown> {

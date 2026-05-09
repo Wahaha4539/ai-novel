@@ -46,6 +46,7 @@ import { PersistOutlineTool } from '../agent-tools/tools/persist-outline.tool';
 import { PersistVolumeOutlineTool } from '../agent-tools/tools/persist-volume-outline.tool';
 import { GenerateOutlinePreviewTool, OutlinePreviewOutput } from '../agent-tools/tools/generate-outline-preview.tool';
 import { GenerateVolumeOutlinePreviewTool } from '../agent-tools/tools/generate-volume-outline-preview.tool';
+import { GenerateStoryUnitsPreviewTool, PersistStoryUnitsTool, type StoryUnitsPreviewOutput } from '../agent-tools/tools/generate-story-units-preview.tool';
 import { assertChapterCharacterExecution, assertVolumeCharacterPlan } from '../agent-tools/tools/outline-character-contracts';
 import { PersistVolumeCharacterCandidatesTool } from '../agent-tools/tools/persist-volume-character-candidates.tool';
 import { ResolveChapterTool } from '../agent-tools/tools/resolve-chapter.tool';
@@ -455,6 +456,197 @@ function createVccStoryUnitsForChapterCount(chapterCount: number) {
   }
   return units;
 }
+
+function createVccStoryUnitPlan(chapterCount = 4, overrides: Record<string, unknown> = {}) {
+  return {
+    planningPrinciple: '主线单元负责工程压力，人物和悬念单元穿插提供情感与信息增量。',
+    purposeMix: {
+      mainline_progress: '50%',
+      character_depth: '20%',
+      mystery_clue: '20%',
+      daily_buffer: '10%',
+    },
+    units: [
+      {
+        unitId: 'v1_unit_01',
+        title: '旧闸棚账册',
+        primaryPurpose: 'mainline_progress',
+        secondaryPurposes: ['mystery_clue', 'relationship_emotion'],
+        relationToMainline: 'direct',
+        suggestedChapterMin: Math.min(1, chapterCount),
+        suggestedChapterMax: chapterCount,
+        narrativePurpose: '让林澈从传闻进入证据现场，并把账册缺页和东闸封锁建立因果。',
+        localGoal: '拿到账册被改的第一份证据',
+        localConflict: '巡检处封锁账房并登记所有靠近者',
+        requiredDeliveries: ['铜扣证据', '半页账纸'],
+        characterFocus: ['林澈', '沈栖'],
+        relationshipChanges: ['沈栖从只守规则到替林澈藏下半页账纸'],
+        worldbuildingReveals: ['旧闸棚调阅制度和临检记录规则'],
+        clueProgression: ['铜扣指向东闸旧名单'],
+        emotionalEffect: ['压迫', '悬疑'],
+        payoff: '林澈带走半页账纸但名字进入临检记录',
+        stateChangeAfterUnit: '调查从传闻变成可追查证据',
+      },
+    ],
+    chapterAllocation: [
+      {
+        unitId: 'v1_unit_01',
+        chapterRange: { start: 1, end: chapterCount },
+        chapterRoles: Array.from({ length: chapterCount }, (_, index) => ['入局', '升级', '反转', '收束'][index] ?? `推进${index + 1}`),
+      },
+    ],
+    ...overrides,
+  };
+}
+
+test('generate_story_units_preview 生成丰富单元故事计划和章节分配', async () => {
+  let receivedMessages: Array<{ role: string; content: string }> = [];
+  let receivedOptions: Record<string, unknown> | undefined;
+  const storyUnitPlan = createVccStoryUnitPlan(4);
+  const llm = {
+    async chatJson(messages: Array<{ role: string; content: string }>, options: Record<string, unknown>) {
+      receivedMessages = messages;
+      receivedOptions = options;
+      return {
+        data: { volumeNo: 1, chapterCount: 4, storyUnitPlan, risks: ['人物情感线需要后续章节承接'] },
+        result: { model: 'mock-story-units', usage: { total_tokens: 55 } },
+      };
+    },
+  };
+  const tool = new GenerateStoryUnitsPreviewTool(llm as never);
+  const result = await tool.run(
+    {
+      context: { project: { title: '旧档案' }, characters: [{ name: '林澈' }, { name: '沈栖' }] },
+      volumeOutline: { volumeNo: 1, title: '旧闸棚账册', chapterCount: 4, narrativePlan: createVccNarrativePlanForChapterCount(4, { storyUnits: undefined }) },
+      instruction: '丰富单元故事分类，加入人物登场、人物情感、背景故事和支线小故事',
+      volumeNo: 1,
+      chapterCount: 4,
+    },
+    { agentRunId: 'run-story-units', projectId: 'p1', mode: 'plan', approved: false, outputs: {}, policy: {} },
+  );
+
+  assert.equal(result.volumeNo, 1);
+  assert.equal(result.chapterCount, 4);
+  assert.equal(result.storyUnitPlan.units.length, 1);
+  assert.equal(result.storyUnitPlan.units[0].secondaryPurposes.length, 2);
+  assert.equal(result.storyUnitPlan.chapterAllocation?.[0].chapterRange.end, 4);
+  assert.deepEqual(result.risks, ['人物情感线需要后续章节承接']);
+  assert.equal(receivedOptions?.jsonMode, true);
+  assert.match(receivedMessages[0].content, /人物登场/);
+  assert.match(receivedMessages[0].content, /chapterAllocation/);
+  assert.match(receivedMessages[0].content, /不生成 chapters/);
+});
+
+test('generate_story_units_preview 缺少丰富目的字段时直接报错', async () => {
+  const badPlan = JSON.parse(JSON.stringify(createVccStoryUnitPlan(4))) as Record<string, any>;
+  delete badPlan.units[0].secondaryPurposes;
+  const tool = new GenerateStoryUnitsPreviewTool({
+    async chatJson() {
+      return { data: { volumeNo: 1, chapterCount: 4, storyUnitPlan: badPlan, risks: [] }, result: { model: 'mock-story-units' } };
+    },
+  } as never);
+
+  await assert.rejects(
+    () => tool.run(
+      { volumeNo: 1, chapterCount: 4 },
+      { agentRunId: 'run-story-units-bad', projectId: 'p1', mode: 'plan', approved: false, outputs: {}, policy: {} },
+    ),
+    /secondaryPurposes/,
+  );
+});
+
+test('generate_story_units_preview 有目标章数时缺少 chapterAllocation 直接报错', async () => {
+  const badPlan = JSON.parse(JSON.stringify(createVccStoryUnitPlan(4))) as Record<string, unknown>;
+  delete badPlan.chapterAllocation;
+  const tool = new GenerateStoryUnitsPreviewTool({
+    async chatJson() {
+      return { data: { volumeNo: 1, chapterCount: 4, storyUnitPlan: badPlan, risks: [] }, result: { model: 'mock-story-units' } };
+    },
+  } as never);
+
+  await assert.rejects(
+    () => tool.run(
+      { volumeNo: 1, chapterCount: 4 },
+      { agentRunId: 'run-story-units-missing-allocation', projectId: 'p1', mode: 'plan', approved: false, outputs: {}, policy: {} },
+    ),
+    /chapterAllocation/,
+  );
+});
+
+test('generate_story_units_preview LLM timeout 直接抛错且不生成 fallback', async () => {
+  let calls = 0;
+  const tool = new GenerateStoryUnitsPreviewTool({
+    async chatJson() {
+      calls += 1;
+      throw new LlmTimeoutError('单元故事超时', 'planner', DEFAULT_LLM_TIMEOUT_MS);
+    },
+  } as never);
+
+  await assert.rejects(
+    () => tool.run(
+      { volumeNo: 1, chapterCount: 4 },
+      { agentRunId: 'run-story-units-timeout', projectId: 'p1', mode: 'plan', approved: false, outputs: {}, policy: {} },
+    ),
+    /单元故事超时/,
+  );
+  assert.equal(calls, 1);
+});
+
+test('persist_story_units 审批后只写入 Volume.narrativePlan.storyUnitPlan', async () => {
+  const updates: Array<Record<string, any>> = [];
+  let chapterTouched = false;
+  const prisma = {
+    volume: {
+      async findUnique() {
+        return { id: 'v1', narrativePlan: { volumeMainline: '旧闸棚账册主线' } };
+      },
+      async update(args: Record<string, any>) {
+        updates.push(args);
+        return { id: args.where.id };
+      },
+    },
+    chapter: {
+      async update() { chapterTouched = true; throw new Error('persist_story_units 不应写章节'); },
+      async create() { chapterTouched = true; throw new Error('persist_story_units 不应创建章节'); },
+    },
+  };
+  const tool = new PersistStoryUnitsTool(prisma as never);
+  const preview: StoryUnitsPreviewOutput = {
+    volumeNo: 1,
+    chapterCount: 4,
+    storyUnitPlan: createVccStoryUnitPlan(4) as StoryUnitsPreviewOutput['storyUnitPlan'],
+    risks: ['待确认情感支线'],
+  };
+
+  await assert.rejects(
+    () => tool.run(
+      { preview },
+      { agentRunId: 'run-persist-story-units-plan', projectId: 'p1', mode: 'plan', approved: true, outputs: {}, policy: {} },
+    ),
+    /act mode/,
+  );
+  await assert.rejects(
+    () => tool.run(
+      { preview },
+      { agentRunId: 'run-persist-story-units-unapproved', projectId: 'p1', mode: 'act', approved: false, outputs: {}, policy: {} },
+    ),
+    /approval/,
+  );
+
+  const result = await tool.run(
+    { preview },
+    { agentRunId: 'run-persist-story-units', projectId: 'p1', mode: 'act', approved: true, outputs: {}, policy: {} },
+  );
+  assert.equal(result.volumeId, 'v1');
+  assert.equal(result.storyUnitCount, 1);
+  assert.equal(result.updatedStoryUnitPlanOnly, true);
+  assert.equal(updates.length, 1);
+  assert.equal(chapterTouched, false);
+  assert.equal(updates[0].where.id, 'v1');
+  assert.equal(updates[0].data.narrativePlan.volumeMainline, '旧闸棚账册主线');
+  assert.equal(updates[0].data.narrativePlan.storyUnitPlan.units[0].unitId, 'v1_unit_01');
+  assert.equal(updates[0].data.narrativePlan.storyUnits, undefined);
+});
 
 function createVccOutlinePreview(chapterCount = 1, overrides: Record<string, unknown> = {}): OutlinePreviewOutput {
   const volume = {
@@ -984,7 +1176,7 @@ test('VCC outline preview requires volume characterPlan', async () => {
   assert.equal(((result.volume.narrativePlan?.characterPlan as Record<string, unknown>).newCharacterCandidates as Array<Record<string, unknown>>)[0].name, '邵衡');
 });
 
-test('VCC outline preview rejects incomplete volume narrativePlan', async () => {
+test('VCC outline preview accepts volume narrativePlan without legacy storyUnits', async () => {
   const llm = {
     async chatJson(messages: Array<{ role: string; content: string }>) {
       const prompt = messages[1]?.content ?? '';
@@ -1010,18 +1202,17 @@ test('VCC outline preview rejects incomplete volume narrativePlan', async () => 
   };
   const tool = new GenerateOutlinePreviewTool(llm as never);
 
-  await assert.rejects(
-    () => tool.run(
-      {
-        context: { project: { title: '旧档案' }, characters: [{ name: '林澈' }, { name: '沈栖' }] },
-        instruction: '生成完整细纲',
-        volumeNo: 1,
-        chapterCount: 4,
-      },
-      { agentRunId: 'run-vcc-outline-narrative', projectId: 'p1', mode: 'plan', approved: false, outputs: {}, policy: {} },
-    ),
-    /storyUnits/,
+  const result = await tool.run(
+    {
+      context: { project: { title: '旧档案' }, characters: [{ name: '林澈' }, { name: '沈栖' }] },
+      instruction: '生成完整细纲',
+      volumeNo: 1,
+      chapterCount: 4,
+    },
+    { agentRunId: 'run-vcc-outline-narrative', projectId: 'p1', mode: 'plan', approved: false, outputs: {}, policy: {} },
   );
+  assert.equal(result.chapters.length, 4);
+  assert.equal((result.volume.narrativePlan as Record<string, unknown>).storyUnits, undefined);
 });
 
 test('VCC chapter outline preview preserves characterExecution', async () => {
@@ -3478,6 +3669,40 @@ test('AgentRuntime maps timeline persist artifact in act mode', () => {
   assert.deepEqual(artifacts.map((item) => item.content), [preview, validation, persist]);
 });
 
+test('VCC AgentRuntime maps volume character candidate preview and filters existing characters', () => {
+  const runtime = new AgentRuntimeService({} as never, {} as never, {} as never, {} as never, {} as never, {} as never) as unknown as {
+    buildPreviewArtifacts: (taskType: string, outputs: Record<number, unknown>, steps: Array<{ stepNo: number; tool: string }>) => Array<{ artifactType: string; title: string; content: Record<string, unknown> }>;
+  };
+  const baseCandidate = createVccCharacterPlanForChapterCount(4).newCharacterCandidates[0] as Record<string, unknown>;
+  const characterPlan = createVccCharacterPlanForChapterCount(4, {
+    newCharacterCandidates: [
+      { ...baseCandidate, candidateId: 'cand_existing', name: '沈栖', firstAppearChapter: 1 },
+      { ...baseCandidate, candidateId: 'cand_new', name: '顾临', firstAppearChapter: 2 },
+    ],
+  });
+  const preview = createVccOutlinePreview(4, {
+    volume: { narrativePlan: createVccNarrativePlanForChapterCount(4, { characterPlan }) },
+  });
+  const inspectContext = { characters: [{ name: '沈栖', aliases: ['旧名沈栖'], source: 'manual' }] };
+
+  const artifacts = runtime.buildPreviewArtifacts(
+    'outline_design',
+    { 1: inspectContext, 2: preview },
+    [
+      { stepNo: 1, tool: 'inspect_project_context' },
+      { stepNo: 2, tool: 'generate_volume_outline_preview' },
+    ],
+  );
+
+  assert.deepEqual(artifacts.map((item) => item.artifactType), ['outline_preview', 'volume_character_candidates_preview']);
+  const content = artifacts[1].content;
+  assert.equal(content.totalCandidateCount, 2);
+  assert.equal(content.persistableCount, 1);
+  assert.equal(content.existingCount, 1);
+  assert.equal(((content.persistableCandidates as Array<Record<string, unknown>>)[0]).name, '顾临');
+  assert.equal(((content.existingCandidates as Array<Record<string, unknown>>)[0]).name, '沈栖');
+});
+
 test('VCC AgentRuntime maps volume character candidate persist artifact', () => {
   const runtime = new AgentRuntimeService({} as never, {} as never, {} as never, {} as never, {} as never, {} as never) as unknown as {
     buildExecutionArtifacts: (taskType: string, outputs: Record<number, unknown>, steps: Array<{ stepNo: number; tool: string }>) => Array<{ artifactType: string; title: string; content: unknown }>;
@@ -3608,12 +3833,12 @@ test('VCC guided_volume rejects incomplete narrativePlan before writes', async (
   };
   const service = new GuidedService(prisma as never, {} as never, {} as never);
   const badVolume = createVccGuidedVolume({
-    narrativePlan: { ...createVccNarrativePlanForChapterCount(3), storyUnits: undefined },
+    narrativePlan: { ...createVccNarrativePlanForChapterCount(3), characterPlan: undefined },
   });
 
   await assert.rejects(
     () => service.finalizeStep('p1', 'guided_volume', { volumes: [badVolume] }),
-    /storyUnits|叙事规划|narrativePlan/,
+    /characterPlan|叙事规划|narrativePlan/,
   );
   assert.equal(transactionCalled, false);
 });
@@ -4408,7 +4633,7 @@ test('VCC validate_guided_step_preview rejects incomplete volume narrativePlan',
   };
   const tool = new ValidateGuidedStepPreviewTool(prisma as never);
   const badVolume = createVccGuidedVolume({
-    narrativePlan: { ...createVccNarrativePlanForChapterCount(3), storyUnits: undefined },
+    narrativePlan: { ...createVccNarrativePlanForChapterCount(3), foreshadowPlan: undefined },
   });
 
   const result = await tool.run(
@@ -4417,7 +4642,7 @@ test('VCC validate_guided_step_preview rejects incomplete volume narrativePlan',
   );
 
   assert.equal(result.valid, false);
-  assert.equal(result.issues.some((issue) => /storyUnits|叙事规划|narrativePlan/.test(issue.message)), true);
+  assert.equal(result.issues.some((issue) => /foreshadowPlan|叙事规划|narrativePlan/.test(issue.message)), true);
 });
 
 test('VCC validate_guided_step_preview rejects invalid characterExecution', async () => {
@@ -4542,7 +4767,7 @@ test('VCC persist_guided_step_result rejects incomplete guided_volume before ser
   };
   const tool = new PersistGuidedStepResultTool(guidedService as never, validateTool);
   const badVolume = createVccGuidedVolume({
-    narrativePlan: { ...createVccNarrativePlanForChapterCount(3), storyUnits: undefined },
+    narrativePlan: { ...createVccNarrativePlanForChapterCount(3), foreshadowPlan: undefined },
   });
 
   await assert.rejects(
@@ -4550,7 +4775,7 @@ test('VCC persist_guided_step_result rejects incomplete guided_volume before ser
       { stepKey: 'guided_volume', structuredData: { volumes: [badVolume] } },
       { agentRunId: 'run-vcc-persist-guided-narrative', projectId: 'p1', mode: 'act', approved: true, outputs: {}, policy: {} },
     ),
-    /storyUnits|校验未通过|narrativePlan/,
+    /foreshadowPlan|校验未通过|narrativePlan/,
   );
   assert.equal(finalizeCalled, false);
 });
@@ -6296,7 +6521,7 @@ test('VCC persist_volume_character_candidates requires explicit candidate select
   assert.equal(transactionCalled, false);
 });
 
-test('VCC persist_volume_character_candidates creates updates skips and writes relationships', async () => {
+test('VCC persist_volume_character_candidates creates skips existing characters and writes relationships', async () => {
   const baseCandidate = createVccCharacterPlanForChapterCount(4).newCharacterCandidates[0] as Record<string, unknown>;
   const candidateManualConflict = { ...baseCandidate, candidateId: 'cand_manual', name: '邵衡', firstAppearChapter: 1 };
   const candidateNew = { ...baseCandidate, candidateId: 'cand_gulin', name: '顾临', firstAppearChapter: 2, expectedArc: '从旁观证人转为公开递交证词的人' };
@@ -6352,17 +6577,18 @@ test('VCC persist_volume_character_candidates creates updates skips and writes r
   );
 
   assert.equal(result.createdCount, 1);
-  assert.equal(result.updatedCount, 1);
-  assert.equal(result.skippedCount, 1);
+  assert.equal(result.updatedCount, 0);
+  assert.equal(result.skippedCount, 2);
   assert.equal(result.relationshipCreatedCount, 1);
   assert.equal(createdCharacters[0].name, '顾临');
   assert.equal(createdCharacters[0].source, 'agent_outline');
   assert.equal(createdCharacters[0].scope, 'volume');
   assert.equal(createdCharacters[0].activeFromChapter, 2);
   assert.equal((createdCharacters[0].metadata as Record<string, unknown>).candidateId, 'cand_gulin');
-  assert.equal(updatedCharacters[0].id, 'char-agent-fang');
+  assert.equal(updatedCharacters.length, 0);
   assert.equal(updatedCharacters.some((item) => item.id === 'char-manual-shao'), false);
   assert.equal(result.characterResults.find((item) => item.name === '邵衡')?.action, 'skipped');
+  assert.equal(result.characterResults.find((item) => item.name === '方迟')?.action, 'skipped');
   assert.equal(createdRelationships[0].characterAId, 'char-lin');
   assert.equal(createdRelationships[0].characterBId, 'char-gulin');
   assert.equal(createdRelationships[0].sourceType, 'agent_outline');
@@ -6498,7 +6724,7 @@ test('VCC validate_outline and persist_outline reject incomplete volume narrativ
   };
   const preview = createVccOutlinePreview(3, {
     volume: {
-      narrativePlan: { ...createVccNarrativePlanForChapterCount(3), storyUnits: undefined },
+      narrativePlan: { ...createVccNarrativePlanForChapterCount(3), foreshadowPlan: undefined },
     },
   });
   const validateTool = new ValidateOutlineTool(prisma as never);
@@ -6507,11 +6733,11 @@ test('VCC validate_outline and persist_outline reject incomplete volume narrativ
 
   const validation = await validateTool.run({ preview }, context);
   assert.equal(validation.valid, false);
-  assert.equal(validation.issues.some((issue) => /storyUnits|narrativePlan/.test(issue.message)), true);
+  assert.equal(validation.issues.some((issue) => /foreshadowPlan|narrativePlan/.test(issue.message)), true);
 
   await assert.rejects(
     () => persistTool.run({ preview, validation: { valid: true } }, context),
-    /storyUnits|narrative planning|narrativePlan/,
+    /foreshadowPlan|narrative planning|narrativePlan/,
   );
   assert.equal(transactionCalled, false);
 });
@@ -7902,7 +8128,8 @@ test('Planner prompt 将长章节细纲引导到 outline_design 而非正文写�
   const toolList = [
     createTool({ name: 'inspect_project_context', requiresApproval: false, riskLevel: 'low', sideEffects: [] }),
     createTool({ name: 'generate_outline_preview', description: '生成卷/章节细纲与执行卡预览，章节细纲每章一次 LLM。', requiresApproval: false, riskLevel: 'low', sideEffects: [] }),
-    createTool({ name: 'generate_volume_outline_preview', description: '生成卷大纲、卷内支线与 storyUnits。', requiresApproval: false, riskLevel: 'low', sideEffects: [] }),
+    createTool({ name: 'generate_volume_outline_preview', description: '生成卷大纲与卷内支线，不固定单元故事章节。', requiresApproval: false, riskLevel: 'low', sideEffects: [] }),
+    createTool({ name: 'generate_story_units_preview', description: '独立生成单元故事计划和章节分配。', requiresApproval: false, riskLevel: 'low', sideEffects: [] }),
     createTool({ name: 'generate_chapter_outline_preview', description: '生成单章章节细纲与执行卡预览。', requiresApproval: false, riskLevel: 'low', sideEffects: [] }),
     createTool({ name: 'merge_chapter_outline_previews', description: '合并单章章节细纲预览。', requiresApproval: false, riskLevel: 'low', sideEffects: [] }),
     createTool({ name: 'validate_outline', requiresApproval: false, riskLevel: 'low', sideEffects: [] }),
@@ -7953,26 +8180,31 @@ test('Planner prompt 将长章节细纲引导到 outline_design 而非正文写�
   const promptPayload = JSON.parse(capturedMessages[1].content);
 
   assert.equal(plan.taskType, 'outline_design');
-  assert.equal(plan.steps.length, 65);
+  assert.equal(plan.steps.length, 66);
   assert.equal(plan.steps[0].tool, 'inspect_project_context');
   assert.equal(plan.steps[1].tool, 'generate_volume_outline_preview');
   assert.equal(plan.steps[1].args.chapterCount, 60);
-  assert.equal(plan.steps.filter((step) => step.tool === 'generate_chapter_outline_preview').length, 60);
-  assert.equal(plan.steps[2].tool, 'generate_chapter_outline_preview');
-  assert.equal(plan.steps[2].args.chapterNo, 1);
+  assert.equal(plan.steps[2].tool, 'generate_story_units_preview');
   assert.equal(plan.steps[2].args.volumeOutline, '{{steps.2.output.volume}}');
-  assert.equal(plan.steps[3].args.previousChapter, '{{steps.3.output.chapter}}');
-  assert.equal(plan.steps[61].args.previousChapter, '{{steps.61.output.chapter}}');
-  assert.equal(plan.steps[62].tool, 'merge_chapter_outline_previews');
-  assert.equal((plan.steps[62].args.previews as unknown[]).length, 60);
-  assert.equal(plan.steps[63].tool, 'validate_outline');
-  assert.equal(plan.steps[64].tool, 'persist_outline');
-  assert.equal(plan.steps[64].requiresApproval, true);
+  assert.equal(plan.steps[2].args.chapterCount, 60);
+  assert.equal(plan.steps.filter((step) => step.tool === 'generate_chapter_outline_preview').length, 60);
+  assert.equal(plan.steps[3].tool, 'generate_chapter_outline_preview');
+  assert.equal(plan.steps[3].args.chapterNo, 1);
+  assert.equal(plan.steps[3].args.volumeOutline, '{{steps.2.output.volume}}');
+  assert.equal(plan.steps[3].args.storyUnitPlan, '{{steps.3.output.storyUnitPlan}}');
+  assert.equal(plan.steps[4].args.previousChapter, '{{steps.4.output.chapter}}');
+  assert.equal(plan.steps[62].args.previousChapter, '{{steps.62.output.chapter}}');
+  assert.equal(plan.steps[63].tool, 'merge_chapter_outline_previews');
+  assert.equal((plan.steps[63].args.previews as unknown[]).length, 60);
+  assert.equal(plan.steps[64].tool, 'validate_outline');
+  assert.equal(plan.steps[65].tool, 'persist_outline');
+  assert.equal(plan.steps[65].requiresApproval, true);
   assert.equal(capturedOptions?.timeoutMs, DEFAULT_LLM_TIMEOUT_MS);
   assert.match(capturedMessages[0].content, /卷细纲 \/ 章节细纲 \/ 60 章细纲/);
   assert.match(capturedMessages[0].content, /不要误判为 write_chapter/);
   assert.match(promptPayload.taskTypeGuidance.outline_design, /60章细纲/);
   assert.match(promptPayload.taskTypeGuidance.outline_design, /generate_volume_outline_preview/);
+  assert.match(promptPayload.taskTypeGuidance.outline_design, /generate_story_units_preview/);
   assert.match(promptPayload.taskTypeGuidance.outline_design, /generate_chapter_outline_preview/);
   assert.match(promptPayload.taskTypeGuidance.outline_design, /merge_chapter_outline_previews/);
   assert.match(JSON.stringify(promptPayload.availableTools), /执行卡预览/);
@@ -7983,6 +8215,7 @@ test('Planner 将只重写卷大纲的旧聚合计划改写为卷纲专用链路
     createTool({ name: 'inspect_project_context', requiresApproval: false, riskLevel: 'low', sideEffects: [] }),
     createTool({ name: 'generate_outline_preview', requiresApproval: false, riskLevel: 'low', sideEffects: [] }),
     createTool({ name: 'generate_volume_outline_preview', requiresApproval: false, riskLevel: 'low', sideEffects: [] }),
+    createTool({ name: 'generate_story_units_preview', requiresApproval: false, riskLevel: 'low', sideEffects: [] }),
     createTool({ name: 'generate_chapter_outline_preview', requiresApproval: false, riskLevel: 'low', sideEffects: [] }),
     createTool({ name: 'merge_chapter_outline_previews', requiresApproval: false, riskLevel: 'low', sideEffects: [] }),
     createTool({ name: 'validate_outline', requiresApproval: false, riskLevel: 'low', sideEffects: [] }),
@@ -8017,10 +8250,63 @@ test('Planner 将只重写卷大纲的旧聚合计划改写为卷纲专用链路
   assert.equal(plan.steps[2].requiresApproval, true);
 });
 
+test('Planner 将单元故事请求编排为独立预览和持久化链路', async () => {
+  let promptPayload: Record<string, any> | undefined;
+  const toolList = [
+    createTool({ name: 'inspect_project_context', requiresApproval: false, riskLevel: 'low', sideEffects: [] }),
+    createTool({ name: 'generate_volume_outline_preview', requiresApproval: false, riskLevel: 'low', sideEffects: [] }),
+    createTool({ name: 'generate_story_units_preview', requiresApproval: false, riskLevel: 'low', sideEffects: [] }),
+    createTool({ name: 'persist_story_units', requiresApproval: true, riskLevel: 'high', sideEffects: ['update_volume_story_unit_plan'] }),
+  ];
+  const tools = {
+    list: () => toolList,
+    listManifestsForPlanner: (toolNames?: string[]) => (toolNames?.length ? toolList.filter((tool) => toolNames.includes(tool.name)) : toolList).map((tool) => ({
+      name: tool.name,
+      displayName: tool.name,
+      description: tool.description,
+      whenToUse: tool.name === 'generate_story_units_preview' ? ['单元故事', '支线故事', '人物登场', '人物情感', '背景故事'] : [],
+      whenNotToUse: [],
+      allowedModes: tool.allowedModes,
+      riskLevel: tool.riskLevel,
+      requiresApproval: tool.requiresApproval,
+      sideEffects: tool.sideEffects,
+    })),
+  } as unknown as ToolRegistryService;
+  const llm = {
+    async chatJson(messages: Array<{ role: string; content: string }>) {
+      promptPayload = JSON.parse(messages[1].content);
+      return {
+        data: {
+          taskType: 'outline_design',
+          summary: '丰富第 1 卷单元故事。',
+          assumptions: [],
+          risks: [],
+          steps: [
+            { stepNo: 1, name: '读取上下文', tool: 'inspect_project_context', mode: 'act', requiresApproval: false, args: { focus: ['outline', 'characters'] } },
+            { stepNo: 2, name: '生成单元故事计划', tool: 'generate_story_units_preview', mode: 'act', requiresApproval: false, args: { context: '{{steps.1.output}}', instruction: '{{context.userMessage}}', volumeNo: 1 } },
+          ],
+        },
+        result: { model: 'planner-mock' },
+      };
+    },
+  };
+  const planner = new AgentPlannerService(new SkillRegistryService(), tools, new RuleEngineService(), llm as never);
+
+  const plan = await planner.createPlan('丰富第 1 卷单元故事，加入人物登场、人物情感和背景故事');
+
+  assert.equal(plan.taskType, 'outline_design');
+  assert.deepEqual(plan.steps.map((step) => step.tool), ['inspect_project_context', 'generate_story_units_preview', 'persist_story_units']);
+  assert.deepEqual(plan.steps[2].args, { preview: '{{steps.2.output}}' });
+  assert.equal(plan.steps[2].requiresApproval, true);
+  assert.ok(!plan.steps.some((step) => step.tool === 'generate_chapter_outline_preview'));
+  assert.match(promptPayload?.taskTypeGuidance.outline_design, /persist_story_units/);
+});
+
 test('Planner 将残缺单章细纲计划展开为所有章节 Tool 调用', () => {
   const toolList = [
     createTool({ name: 'inspect_project_context', requiresApproval: false, riskLevel: 'low', sideEffects: [] }),
     createTool({ name: 'generate_volume_outline_preview', requiresApproval: false, riskLevel: 'low', sideEffects: [] }),
+    createTool({ name: 'generate_story_units_preview', requiresApproval: false, riskLevel: 'low', sideEffects: [] }),
     createTool({ name: 'generate_chapter_outline_preview', requiresApproval: false, riskLevel: 'low', sideEffects: [] }),
     createTool({ name: 'merge_chapter_outline_previews', requiresApproval: false, riskLevel: 'low', sideEffects: [] }),
     createTool({ name: 'validate_outline', requiresApproval: false, riskLevel: 'low', sideEffects: [] }),
@@ -8046,17 +8332,19 @@ test('Planner 将残缺单章细纲计划展开为所有章节 Tool 调用', () 
     { taskType: 'general', summary: 'fallback', assumptions: [], risks: [] },
   );
 
-  assert.equal(plan.steps.length, 8);
+  assert.equal(plan.steps.length, 9);
   assert.equal(plan.steps[1].tool, 'generate_volume_outline_preview');
-  assert.deepEqual(plan.steps.slice(2, 5).map((step) => step.tool), ['generate_chapter_outline_preview', 'generate_chapter_outline_preview', 'generate_chapter_outline_preview']);
-  assert.deepEqual(plan.steps.slice(2, 5).map((step) => step.args.chapterNo), [1, 2, 3]);
-  assert.equal(plan.steps[2].args.volumeOutline, '{{steps.2.output.volume}}');
-  assert.equal(plan.steps[3].args.previousChapter, '{{steps.3.output.chapter}}');
+  assert.equal(plan.steps[2].tool, 'generate_story_units_preview');
+  assert.deepEqual(plan.steps.slice(3, 6).map((step) => step.tool), ['generate_chapter_outline_preview', 'generate_chapter_outline_preview', 'generate_chapter_outline_preview']);
+  assert.deepEqual(plan.steps.slice(3, 6).map((step) => step.args.chapterNo), [1, 2, 3]);
+  assert.equal(plan.steps[3].args.volumeOutline, '{{steps.2.output.volume}}');
+  assert.equal(plan.steps[3].args.storyUnitPlan, '{{steps.3.output.storyUnitPlan}}');
   assert.equal(plan.steps[4].args.previousChapter, '{{steps.4.output.chapter}}');
-  assert.equal(plan.steps[5].tool, 'merge_chapter_outline_previews');
-  assert.deepEqual(plan.steps[5].args.previews, ['{{steps.3.output}}', '{{steps.4.output}}', '{{steps.5.output}}']);
-  assert.equal(plan.steps[7].tool, 'persist_outline');
-  assert.equal(plan.steps[7].requiresApproval, true);
+  assert.equal(plan.steps[5].args.previousChapter, '{{steps.5.output.chapter}}');
+  assert.equal(plan.steps[6].tool, 'merge_chapter_outline_previews');
+  assert.deepEqual(plan.steps[6].args.previews, ['{{steps.4.output}}', '{{steps.5.output}}', '{{steps.6.output}}']);
+  assert.equal(plan.steps[8].tool, 'persist_outline');
+  assert.equal(plan.steps[8].requiresApproval, true);
 });
 
 test('Planner connects outline artifacts to planned timeline preview when timeline tools are available', () => {
@@ -8064,6 +8352,7 @@ test('Planner connects outline artifacts to planned timeline preview when timeli
     createTool({ name: 'inspect_project_context', requiresApproval: false, riskLevel: 'low', sideEffects: [] }),
     createTool({ name: 'generate_outline_preview', requiresApproval: false, riskLevel: 'low', sideEffects: [] }),
     createTool({ name: 'generate_volume_outline_preview', requiresApproval: false, riskLevel: 'low', sideEffects: [] }),
+    createTool({ name: 'generate_story_units_preview', requiresApproval: false, riskLevel: 'low', sideEffects: [] }),
     createTool({ name: 'generate_chapter_outline_preview', requiresApproval: false, riskLevel: 'low', sideEffects: [] }),
     createTool({ name: 'merge_chapter_outline_previews', requiresApproval: false, riskLevel: 'low', sideEffects: [] }),
     createTool({ name: 'validate_outline', requiresApproval: false, riskLevel: 'low', sideEffects: [] }),
@@ -8095,6 +8384,7 @@ test('Planner connects outline artifacts to planned timeline preview when timeli
   assert.deepEqual(plan.steps.map((step) => step.tool), [
     'inspect_project_context',
     'generate_volume_outline_preview',
+    'generate_story_units_preview',
     'generate_chapter_outline_preview',
     'generate_chapter_outline_preview',
     'generate_chapter_outline_preview',
@@ -8104,19 +8394,19 @@ test('Planner connects outline artifacts to planned timeline preview when timeli
     'validate_timeline_preview',
     'persist_outline',
   ]);
-  assert.deepEqual(plan.steps[7].args, {
-    context: { outlinePreview: '{{steps.6.output}}', outlineValidation: '{{steps.7.output}}' },
+  assert.deepEqual(plan.steps[8].args, {
+    context: { outlinePreview: '{{steps.7.output}}', outlineValidation: '{{steps.8.output}}' },
     instruction: '{{context.userMessage}}',
     sourceType: 'chapter_outline',
   });
-  assert.deepEqual(plan.steps[8].args, {
-    preview: '{{steps.8.output}}',
-    taskContext: { outlinePreview: '{{steps.6.output}}', outlineValidation: '{{steps.7.output}}' },
+  assert.deepEqual(plan.steps[9].args, {
+    preview: '{{steps.9.output}}',
+    taskContext: { outlinePreview: '{{steps.7.output}}', outlineValidation: '{{steps.8.output}}' },
   });
-  assert.deepEqual(plan.steps[9].args, { preview: '{{steps.6.output}}', validation: '{{steps.7.output}}' });
-  assert.equal(plan.steps[7].requiresApproval, false);
+  assert.deepEqual(plan.steps[10].args, { preview: '{{steps.7.output}}', validation: '{{steps.8.output}}' });
   assert.equal(plan.steps[8].requiresApproval, false);
-  assert.equal(plan.steps[9].requiresApproval, true);
+  assert.equal(plan.steps[9].requiresApproval, false);
+  assert.equal(plan.steps[10].requiresApproval, true);
 });
 
 test('Planner connects craftBrief artifacts to planned timeline preview when timeline tools are available', () => {
@@ -8178,8 +8468,9 @@ test('Planner connects craftBrief artifacts to planned timeline preview when tim
 test('Planner exposes timeline_plan for read-only planned timeline candidates', async () => {
   let promptPayload: Record<string, any> | undefined;
   const toolList = [
-    createTool({ name: 'inspect_project_context', requiresApproval: false, riskLevel: 'low', sideEffects: [] }),
+    createTool({ name: 'collect_task_context', requiresApproval: false, riskLevel: 'low', sideEffects: [] }),
     createTool({ name: 'generate_timeline_preview', requiresApproval: false, riskLevel: 'low', sideEffects: [] }),
+    createTool({ name: 'align_chapter_timeline_preview', requiresApproval: false, riskLevel: 'low', sideEffects: [] }),
     createTool({ name: 'validate_timeline_preview', requiresApproval: false, riskLevel: 'low', sideEffects: [] }),
     createTool({ name: 'persist_timeline_events', requiresApproval: true, riskLevel: 'high', sideEffects: ['Writes TimelineEvent rows after validation and approval.'] }),
   ];
@@ -8207,7 +8498,7 @@ test('Planner exposes timeline_plan for read-only planned timeline candidates', 
           assumptions: [],
           risks: [],
           steps: [
-            { stepNo: 1, name: 'Inspect planning artifacts', tool: 'inspect_project_context', mode: 'act', requiresApproval: false, args: { focus: ['outline', 'chapters', 'craftBrief'] } },
+            { stepNo: 1, name: 'Collect planning artifacts', tool: 'collect_task_context', mode: 'act', requiresApproval: false, args: { taskType: 'timeline_plan', focus: ['outline', 'chapters', 'craftBrief'] } },
             { stepNo: 2, name: 'Generate planned timeline preview', tool: 'generate_timeline_preview', mode: 'act', requiresApproval: false, args: { context: '{{steps.1.output}}', instruction: '{{context.userMessage}}', sourceType: 'book_outline' } },
           ],
         },
@@ -8220,7 +8511,7 @@ test('Planner exposes timeline_plan for read-only planned timeline candidates', 
   const plan = await planner.createPlan('从现有大纲和 craftBrief 生成计划时间线候选');
 
   assert.equal(plan.taskType, 'timeline_plan');
-  assert.deepEqual(plan.steps.map((step) => step.tool), ['inspect_project_context', 'generate_timeline_preview', 'validate_timeline_preview']);
+  assert.deepEqual(plan.steps.map((step) => step.tool), ['collect_task_context', 'generate_timeline_preview', 'validate_timeline_preview']);
   assert.deepEqual(plan.steps[2].args, { preview: '{{steps.2.output}}', taskContext: '{{steps.1.output}}' });
   assert.deepEqual(plan.requiredApprovals, []);
   assert.ok(promptPayload?.availableTaskTypes.includes('timeline_plan'));
@@ -8545,7 +8836,10 @@ test('selectToolBundleNode selects outline and guided bundles with diagnostics',
     context: { session: { guided: { currentStep: 'guided_volume' } } } as AgentContextV2,
   });
   assert.equal(guided.selectedBundle?.bundleName, 'guided.step');
-  assert.ok(guided.selectedTools?.every((tool) => ['generate_guided_step_preview', 'validate_guided_step_preview', 'persist_guided_step_result'].includes(tool.name)));
+  assert.ok(guided.selectedTools?.every((tool) => ['generate_guided_step_preview', 'validate_guided_step_preview', 'persist_guided_step_result', 'inspect_project_context'].includes(tool.name)));
+  assert.ok(guided.selectedTools?.some((tool) => tool.name === 'generate_guided_step_preview'));
+  assert.ok(guided.selectedTools?.some((tool) => tool.name === 'validate_guided_step_preview'));
+  assert.ok(guided.selectedTools?.some((tool) => tool.name === 'persist_guided_step_result'));
 });
 
 test('DomainPlanner route prompt uses selected tools and records diagnostics', async () => {
@@ -9037,6 +9331,7 @@ function createOutlinePlannerHarness(llm: unknown) {
   return createScopedPlannerHarness([
     'inspect_project_context',
     'generate_volume_outline_preview',
+    'generate_story_units_preview',
     'generate_chapter_outline_preview',
     'merge_chapter_outline_previews',
     'validate_outline',
@@ -9106,7 +9401,7 @@ test('ASP-P4-002 chapter split scoped plan keeps chapter outline chain', async (
   const { planner, tools } = createOutlinePlannerHarness(llm);
   const selectedBundle = {
     bundleName: 'outline.chapter',
-    strictToolNames: ['inspect_project_context', 'generate_volume_outline_preview', 'generate_chapter_outline_preview', 'merge_chapter_outline_previews', 'validate_outline', 'persist_outline'],
+    strictToolNames: ['inspect_project_context', 'generate_volume_outline_preview', 'generate_story_units_preview', 'generate_chapter_outline_preview', 'merge_chapter_outline_previews', 'validate_outline', 'persist_outline'],
     optionalToolNames: [],
     deniedToolNames: ['write_chapter', 'write_chapter_series', 'persist_volume_outline'],
     selectionReason: 'test',
@@ -9120,8 +9415,9 @@ test('ASP-P4-002 chapter split scoped plan keeps chapter outline chain', async (
 
   assert.equal(plan.steps.filter((step) => step.tool === 'generate_chapter_outline_preview').length, 30);
   assert.equal(plan.steps[1].tool, 'generate_volume_outline_preview');
-  assert.equal(plan.steps[2].args.chapterNo, 1);
-  assert.equal(plan.steps[31].args.chapterNo, 30);
+  assert.equal(plan.steps[2].tool, 'generate_story_units_preview');
+  assert.equal(plan.steps[3].args.chapterNo, 1);
+  assert.equal(plan.steps[32].args.chapterNo, 30);
   assert.deepEqual(plan.steps.slice(-3).map((step) => step.tool), ['merge_chapter_outline_previews', 'validate_outline', 'persist_outline']);
 });
 
@@ -9577,7 +9873,14 @@ test('Planner prompt compacts tool manifests without losing callable input schem
     availableTools: tools.listManifestsForPlanner(),
   };
 
-  await planner.createPlan('check character', context as never);
+  const previousGraphFlag = process.env.AGENT_PLANNER_GRAPH_ENABLED;
+  process.env.AGENT_PLANNER_GRAPH_ENABLED = 'false';
+  try {
+    await planner.createPlan('check character', context as never);
+  } finally {
+    if (previousGraphFlag === undefined) delete process.env.AGENT_PLANNER_GRAPH_ENABLED;
+    else process.env.AGENT_PLANNER_GRAPH_ENABLED = previousGraphFlag;
+  }
 
   assert.ok(promptPayload);
   assert.equal((promptPayload.agentContext as Record<string, unknown>).availableTools, undefined);
@@ -9600,8 +9903,12 @@ test('Planner routes chapter progress card requests to craft brief tools and kee
     createTool({ name: 'generate_chapter_craft_brief_preview', description: 'Generate Chapter.craftBrief progress card previews.', requiresApproval: false, riskLevel: 'low', sideEffects: [] }),
     createTool({ name: 'validate_chapter_craft_brief', description: 'Validate Chapter.craftBrief previews.', requiresApproval: false, riskLevel: 'low', sideEffects: [] }),
     createTool({ name: 'persist_chapter_craft_brief', description: 'Persist approved Chapter.craftBrief previews.', requiresApproval: true, riskLevel: 'high', sideEffects: ['update_chapter_craft_brief'] }),
+    createTool({ name: 'list_scene_cards', description: 'List SceneCards.', requiresApproval: false, riskLevel: 'low', sideEffects: [] }),
+    createTool({ name: 'collect_task_context', description: 'Collect task context.', requiresApproval: false, riskLevel: 'low', sideEffects: [] }),
     createTool({ name: 'generate_scene_cards_preview', description: 'Generate SceneCard previews.', requiresApproval: false, riskLevel: 'low', sideEffects: [] }),
     createTool({ name: 'validate_scene_cards', requiresApproval: false, riskLevel: 'low', sideEffects: [] }),
+    createTool({ name: 'persist_scene_cards', requiresApproval: true, riskLevel: 'high', sideEffects: ['create_scene_cards'] }),
+    createTool({ name: 'update_scene_card', requiresApproval: true, riskLevel: 'high', sideEffects: ['update_scene_card'] }),
   ];
   const tools = {
     list: () => toolList,
@@ -9629,8 +9936,8 @@ test('Planner routes chapter progress card requests to craft brief tools and kee
             assumptions: [],
             risks: [],
             steps: [
-              { stepNo: 1, name: 'Resolve chapter', tool: 'resolve_chapter', mode: 'act', requiresApproval: false, args: { chapterRef: '第 3 章' } },
-              { stepNo: 2, name: 'Generate scene cards', tool: 'generate_scene_cards_preview', mode: 'act', requiresApproval: false, args: { chapterId: '{{steps.1.output.chapterId}}', maxScenes: 5 } },
+              { stepNo: 1, name: 'Collect scene context', tool: 'collect_task_context', mode: 'act', requiresApproval: false, args: { taskType: 'scene_card_planning', chapterNo: 3, focus: ['outline', 'characters', 'pacing'] } },
+              { stepNo: 2, name: 'Generate scene cards', tool: 'generate_scene_cards_preview', mode: 'act', requiresApproval: false, args: { context: '{{steps.1.output}}', instruction: '{{context.userMessage}}', chapterNo: 3, maxScenes: 5 } },
               { stepNo: 3, name: 'Validate scene cards', tool: 'validate_scene_cards', mode: 'act', requiresApproval: false, args: { preview: '{{steps.2.output}}' } },
             ],
           },
@@ -9665,7 +9972,7 @@ test('Planner routes chapter progress card requests to craft brief tools and kee
   assert.deepEqual(craftPlan.steps.map((step) => step.tool), ['resolve_chapter', 'collect_chapter_context', 'generate_chapter_craft_brief_preview', 'validate_chapter_craft_brief', 'persist_chapter_craft_brief']);
   assert.equal(craftPlan.steps[4].requiresApproval, true);
   assert.equal(scenePlan.taskType, 'scene_card_planning');
-  assert.deepEqual(scenePlan.steps.map((step) => step.tool), ['resolve_chapter', 'generate_scene_cards_preview', 'validate_scene_cards']);
+  assert.deepEqual(scenePlan.steps.map((step) => step.tool), ['collect_task_context', 'generate_scene_cards_preview', 'validate_scene_cards']);
   assert.match(craftPromptPayload.taskTypeGuidance.chapter_craft_brief, /generate_chapter_craft_brief_preview/);
   assert.match(craftPromptPayload.taskTypeGuidance.chapter_craft_brief, /chapter_write/);
   assert.match(craftPromptPayload.taskTypeGuidance.scene_card_planning, /not for Chapter\.craftBrief/);
@@ -14097,6 +14404,8 @@ test('AppModule compiles with phase4 CRUD and phase5 quality modules registered'
   assert.ok(registry.get('merge_import_previews'));
   assert.ok(registry.get('cross_target_consistency_check'));
   assert.ok(registry.get('generate_volume_outline_preview'));
+  assert.ok(registry.get('generate_story_units_preview'));
+  assert.ok(registry.get('persist_story_units'));
   assert.ok(registry.get('generate_outline_preview'));
   assert.ok(registry.get('generate_chapter_outline_preview'));
   assert.ok(registry.get('merge_chapter_outline_previews'));
@@ -14136,6 +14445,8 @@ test('AppModule compiles with phase4 CRUD and phase5 quality modules registered'
   assert.ok(builtinSkill.defaultTools.includes('validate_timeline_preview'));
   assert.ok(builtinSkill.defaultTools.includes('persist_timeline_events'));
   assert.ok(builtinSkill.defaultTools.includes('generate_volume_outline_preview'));
+  assert.ok(builtinSkill.defaultTools.includes('generate_story_units_preview'));
+  assert.ok(builtinSkill.defaultTools.includes('persist_story_units'));
   assert.ok(builtinSkill.defaultTools.includes('generate_chapter_outline_preview'));
   assert.ok(builtinSkill.defaultTools.includes('merge_chapter_outline_previews'));
   assert.ok(builtinSkill.defaultTools.includes('validate_outline'));
@@ -14175,7 +14486,17 @@ test('AppModule compiles with phase4 CRUD and phase5 quality modules registered'
   assert.ok(volumeOutlineManifest);
   assert.equal(volumeOutlineManifest.requiresApproval, false);
   assert.deepEqual(volumeOutlineManifest.sideEffects, []);
-  assert.match(volumeOutlineManifest.whenToUse.join(' | '), /卷大纲|storyUnits|Volume\.narrativePlan/);
+  assert.match(volumeOutlineManifest.whenToUse.join(' | '), /卷大纲|Volume\.narrativePlan/);
+  assert.doesNotMatch(volumeOutlineManifest.description, /storyUnits/);
+  const storyUnitsManifest = manifests.find((item) => item.name === 'generate_story_units_preview');
+  assert.ok(storyUnitsManifest);
+  assert.equal(storyUnitsManifest.requiresApproval, false);
+  assert.deepEqual(storyUnitsManifest.sideEffects, []);
+  assert.match(storyUnitsManifest.whenToUse.join(' | '), /单元故事|支线故事|generate_volume_outline_preview/);
+  const storyUnitsPersistManifest = manifests.find((item) => item.name === 'persist_story_units');
+  assert.ok(storyUnitsPersistManifest);
+  assert.equal(storyUnitsPersistManifest.requiresApproval, true);
+  assert.equal(storyUnitsPersistManifest.riskLevel, 'high');
   const volumeOutlinePersistManifest = manifests.find((item) => item.name === 'persist_volume_outline');
   assert.ok(volumeOutlinePersistManifest);
   assert.equal(volumeOutlinePersistManifest.requiresApproval, true);
@@ -14745,7 +15066,7 @@ test('generate_outline_preview 缺少 chapterCount 时不调用 LLM', async () =
   assert.equal(calls, 0);
 });
 
-test('generate_volume_outline_preview 生成卷大纲故事单元且不生成章节', async () => {
+test('generate_volume_outline_preview 只生成卷纲且不固定单元故事章节', async () => {
   let receivedMessages: Array<{ role: string; content: string }> = [];
   let receivedOptions: Record<string, unknown> | undefined;
   const llm = {
@@ -14757,7 +15078,7 @@ test('generate_volume_outline_preview 生成卷大纲故事单元且不生成章
           volume: {
             volumeNo: 1,
             title: '罪桥初潮',
-            synopsis: '## 全书主线阶段\n罪桥翻案开端\n## 本卷主线\n完成北逃生桥抢修\n## 本卷戏剧问题\n罪匠能否让裂潮营相信证据\n## 卷内支线\n父亲旧案与妹妹欠契交叉\n## 单元故事\n验桥、立规两个单元\n## 支线交叉点\n浮税盟料账压住亲情线\n## 卷末交接\n逃生桥胜利留下盐风峡压力',
+            synopsis: '## 全书主线阶段\n罪桥翻案开端\n## 本卷主线\n完成北逃生桥抢修\n## 本卷戏剧问题\n罪匠能否让裂潮营相信证据\n## 卷内支线\n父亲旧案与妹妹欠契交叉\n## 支线交叉点\n浮税盟料账压住亲情线\n## 卷末交接\n逃生桥胜利留下盐风峡压力',
             objective: '让陆沉舟完成北逃生桥抢修并建立工队雏形',
             chapterCount: 6,
             narrativePlan: {
@@ -14770,10 +15091,6 @@ test('generate_volume_outline_preview 生成卷大纲故事单元且不生成章
               subStoryLines: [
                 { name: '陆衡旧案', type: 'mystery', function: '牵出活盐骨来源', startState: '骨片刻号出现', progress: '料账和桥号逐步咬合', endState: '确认旧桥料被转运', relatedCharacters: ['陆沉舟', '曹钧'], chapterNodes: [1, 3, 6] },
                 { name: '陆知微欠契', type: 'family', function: '压迫主角选择', startState: '欠契被发现', progress: '浮税盟拿亲情钳制陆沉舟', endState: '陆沉舟决定不闭嘴', relatedCharacters: ['陆沉舟', '罗简'], chapterNodes: [2, 5] },
-              ],
-              storyUnits: [
-                { unitId: 'v1_unit_01', title: '三更验桥', chapterRange: { start: 1, end: 3 }, localGoal: '证明活盐骨会吞力', localConflict: '罗简封账、辛白榫护方案、罪民不信任', serviceFunctions: ['mainline', 'engineering_diagnosis', 'foreshadow'], payoff: '沈峙承认北桥快梁危险', stateChangeAfterUnit: '陆沉舟从罪囚变成死责验桥人' },
-                { unitId: 'v1_unit_02', title: '临规立队', chapterRange: { start: 4, end: 6 }, localGoal: '用临时规则组织罪民换梁抢修', localConflict: '填桥基军令与浮税盟追责同时压下', serviceFunctions: ['mainline', 'relationship_shift', 'institution'], payoff: '第一批罪民愿按陆沉舟口令施工', stateChangeAfterUnit: '沉舟工队雏形出现' },
               ],
               foreshadowPlan: ['第1-3章埋陆衡旧桥号，第6章回收为旧案入口'],
               endingHook: '盐风峡路权成为下一卷压力',
@@ -14794,12 +15111,10 @@ test('generate_volume_outline_preview 生成卷大纲故事单元且不生成章
   );
 
   assert.equal(result.volume.chapterCount, 6);
-  const storyUnits = result.volume.narrativePlan?.storyUnits;
-  assert.ok(Array.isArray(storyUnits));
-  assert.equal(storyUnits.length, 2);
+  assert.equal(result.volume.narrativePlan?.storyUnits, undefined);
   assert.equal(receivedOptions?.jsonMode, true);
   assert.match(receivedMessages[0].content, /故事性要求/);
-  assert.match(receivedMessages[0].content, /storyUnits 必须连续覆盖/);
+  assert.match(receivedMessages[0].content, /不要在本工具中生成 narrativePlan\.storyUnits/);
 });
 
 test('generate_volume_outline_preview 未传 chapterCount 时沿用目标卷章节数', async () => {
@@ -14852,7 +15167,7 @@ test('generate_volume_outline_preview LLM timeout 直接抛错且不生成 fallb
   assert.equal(calls, 1);
 });
 
-test('generate_volume_outline_preview 缺失 storyUnits 时直接报错', async () => {
+test('generate_volume_outline_preview 缺失 characterPlan 时直接报错', async () => {
   const llm = {
     async chatJson() {
       return {
@@ -14891,7 +15206,7 @@ test('generate_volume_outline_preview 缺失 storyUnits 时直接报错', async 
       { context: { project: { title: '逆潮脊梁' } }, instruction: '生成第一卷卷大纲', volumeNo: 1, chapterCount: 6 },
       { agentRunId: 'run1', projectId: 'p1', mode: 'plan', approved: false, outputs: {}, policy: {} },
     ),
-    /storyUnits/,
+    /characterPlan/,
   );
 });
 
@@ -15078,6 +15393,49 @@ test('generate_chapter_outline_preview 生成单章细纲并保留上一章接�
   assert.match(receivedMessages[1].content, /不要输出章节数组/);
   assert.match(receivedMessages[1].content, /第二章钩子/);
   assert.equal(llmUsages[0].model, 'mock-chapter-outline');
+});
+
+test('generate_chapter_outline_preview 使用独立 storyUnitPlan 承接单元故事', async () => {
+  let receivedMessages: Array<{ role: string; content: string }> = [];
+  const chapter = createOutlineChapter(2, 1, { title: '第二章细纲' });
+  const llm = {
+    async chatJson(messages: Array<{ role: string; content: string }>) {
+      receivedMessages = messages;
+      return {
+        data: { chapter, risks: [] },
+        result: { model: 'mock-chapter-story-unit-plan' },
+      };
+    },
+  };
+  const tool = new GenerateChapterOutlinePreviewTool(llm as never);
+  const result = await tool.run(
+    {
+      context: { project: { title: '旧档案' }, characters: [{ name: '林澈' }, { name: '沈栖' }] },
+      volumeOutline: {
+        volumeNo: 1,
+        title: '旧闸棚账册',
+        synopsis: '卷简介',
+        objective: '拿到账册证据',
+        chapterCount: 4,
+        narrativePlan: createVccNarrativePlanForChapterCount(4, { storyUnits: undefined }),
+      },
+      storyUnitPlan: createVccStoryUnitPlan(4),
+      instruction: '生成第 2 章细纲',
+      volumeNo: 1,
+      chapterNo: 2,
+      chapterCount: 4,
+    },
+    { agentRunId: 'run-chapter-story-unit-plan', projectId: 'p1', mode: 'plan', approved: false, outputs: {}, policy: {} },
+  );
+
+  assert.equal(result.chapter.chapterNo, 2);
+  assert.equal(result.chapter.craftBrief?.storyUnit?.unitId, 'v1_unit_01');
+  assert.deepEqual(result.chapter.craftBrief?.storyUnit?.chapterRange, { start: 1, end: 4 });
+  assert.ok(result.volume.narrativePlan?.storyUnitPlan);
+  assert.equal(result.volume.narrativePlan?.storyUnits, undefined);
+  assert.match(receivedMessages[1].content, /上游单元故事计划/);
+  assert.match(receivedMessages[1].content, /旧闸棚账册/);
+  assert.match(receivedMessages[1].content, /不要在章节细纲里创造新的单元故事/);
 });
 
 test('generate_chapter_outline_preview LLM timeout 直接抛错且不生成 fallback', async () => {

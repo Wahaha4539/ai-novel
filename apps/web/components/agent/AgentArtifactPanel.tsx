@@ -38,27 +38,122 @@ function dedupeArtifacts(artifacts: NonNullable<AgentRun['artifacts']>) {
 
 function enrichArtifactsFromPlanSteps(run: AgentRun | null): NonNullable<AgentRun['artifacts']> {
   const artifacts = [...(run?.artifacts ?? [])];
-  if (!run || artifacts.some((artifact) => artifact.artifactType === 'guided_step_preview')) return artifacts;
+  if (!run) return artifacts;
 
-  const previewStep = [...(run.steps ?? [])].reverse().find((step) => {
-    const toolName = step.tool ?? (step as { toolName?: string | null }).toolName;
+  if (!artifacts.some((artifact) => artifact.artifactType === 'guided_step_preview')) {
+    const previewStep = latestSucceededPlanStep(run, 'generate_guided_step_preview');
+    if (previewStep?.output) {
+      artifacts.push({
+        id: `${run.id}:guided_step_preview:${previewStep.stepNo}`,
+        artifactType: 'guided_step_preview',
+        title: '创作引导步骤预览',
+        content: previewStep.output,
+        createdAt: previewStep.finishedAt ?? previewStep.startedAt,
+      });
+    }
+  }
+
+  if (!artifacts.some((artifact) => artifact.artifactType === 'volume_character_candidates_preview')) {
+    const characterPreview = buildVolumeCharacterCandidatesPreviewFromRun(run);
+    if (characterPreview) artifacts.push(characterPreview);
+  }
+
+  return artifacts;
+}
+
+function latestSucceededPlanStep(run: AgentRun, toolName: string) {
+  return [...(run.steps ?? [])].reverse().find((step) => {
+    const stepToolName = step.tool ?? (step as { toolName?: string | null }).toolName;
     return step.mode === 'plan'
       && step.status === 'succeeded'
-      && toolName === 'generate_guided_step_preview'
+      && stepToolName === toolName
       && step.output;
   });
-  if (!previewStep) return artifacts;
+}
 
-  return [
-    ...artifacts,
-    {
-      id: `${run.id}:guided_step_preview:${previewStep.stepNo}`,
-      artifactType: 'guided_step_preview',
-      title: '创作引导步骤预览',
-      content: previewStep.output,
-      createdAt: previewStep.finishedAt ?? previewStep.startedAt,
-    },
-  ];
+function buildVolumeCharacterCandidatesPreviewFromRun(run: AgentRun): NonNullable<AgentRun['artifacts']>[number] | undefined {
+  const previewStep = latestSucceededPlanStep(run, 'generate_volume_outline_preview')
+    ?? latestSucceededPlanStep(run, 'merge_chapter_outline_previews')
+    ?? latestSucceededPlanStep(run, 'generate_outline_preview');
+  if (!previewStep?.output) return undefined;
+  const inspectStep = latestSucceededPlanStep(run, 'inspect_project_context');
+  const content = buildVolumeCharacterCandidatesPreviewContent(previewStep.output, inspectStep?.output);
+  if (!content) return undefined;
+  return {
+    id: `${run.id}:volume_character_candidates_preview:${previewStep.stepNo}`,
+    artifactType: 'volume_character_candidates_preview',
+    title: '卷级角色候选写入预览',
+    content,
+    createdAt: previewStep.finishedAt ?? previewStep.startedAt,
+  };
+}
+
+function buildVolumeCharacterCandidatesPreviewContent(preview: unknown, inspectContext: unknown) {
+  const data = asRecord(preview);
+  const volume = asRecord(data?.volume);
+  const narrativePlan = asRecord(volume?.narrativePlan);
+  const characterPlan = asRecord(narrativePlan?.characterPlan);
+  const candidates = recordList(characterPlan?.newCharacterCandidates);
+  if (!candidates.length) return undefined;
+  const existingCatalog = buildExistingCharacterCatalog(inspectContext);
+  const persistableCandidates: Array<Record<string, unknown>> = [];
+  const existingCandidates: Array<Record<string, unknown>> = [];
+
+  candidates.forEach((candidate) => {
+    const name = textValue(candidate.name, '');
+    if (!name) return;
+    const row = {
+      candidateId: textValue(candidate.candidateId, ''),
+      name,
+      roleType: textValue(candidate.roleType, ''),
+      firstAppearChapter: numberValue(candidate.firstAppearChapter),
+      narrativeFunction: textValue(candidate.narrativeFunction, ''),
+      expectedArc: textValue(candidate.expectedArc, ''),
+    };
+    const existing = existingCatalog.get(normalizeComparableName(name));
+    if (existing) {
+      existingCandidates.push({
+        ...row,
+        existingName: existing.name,
+        existingSource: existing.source,
+        matchedBy: existing.matchedBy,
+        reason: 'already_exists_in_character_table',
+      });
+    } else {
+      persistableCandidates.push(row);
+    }
+  });
+
+  return {
+    volumeNo: numberValue(volume?.volumeNo),
+    volumeTitle: textValue(volume?.title, ''),
+    totalCandidateCount: candidates.length,
+    persistableCount: persistableCandidates.length,
+    existingCount: existingCandidates.length,
+    persistableCandidates,
+    existingCandidates,
+    relationshipArcCount: recordList(characterPlan?.relationshipArcs).length,
+    approvalMessage: 'persist_volume_character_candidates 只应写入可持久化候选；正式 Character 表中已存在的姓名或别名会在写入前跳过。',
+  };
+}
+
+function buildExistingCharacterCatalog(inspectContext: unknown) {
+  const inspect = asRecord(inspectContext);
+  const catalog = new Map<string, { name: string; source?: string; matchedBy: 'name' | 'alias' }>();
+  recordList(inspect?.characters).forEach((character) => {
+    const name = textValue(character.name, '');
+    if (!name) return;
+    const source = textValue(character.source, '');
+    catalog.set(normalizeComparableName(name), { name, source, matchedBy: 'name' });
+    stringList(character.aliases).forEach((alias) => {
+      catalog.set(normalizeComparableName(alias), { name, source, matchedBy: 'alias' });
+    });
+  });
+  return catalog;
+}
+
+function normalizeComparableName(value: string) {
+  return value.trim().toLocaleLowerCase();
 }
 
 function filterArtifacts(artifacts: NonNullable<AgentRun['artifacts']>, query: string) {
@@ -90,6 +185,9 @@ function artifactSourceInfo(artifactType: string | undefined, targetSources: Pro
   if (artifactType === 'timeline_preview') return { label: '计划时间线', tool: 'generate_timeline_preview', verb: '生成', scope: 'TimelineEvent 候选' };
   if (artifactType === 'timeline_validation_report') return { label: '时间线校验', tool: 'validate_timeline_preview', verb: '校验', scope: '写入前 diff' };
   if (artifactType === 'timeline_persist_result') return { label: '时间线写入', tool: 'persist_timeline_events', verb: '写入', scope: 'TimelineEvent' };
+  if (artifactType === 'story_units_preview') return { label: '单元故事计划', tool: 'generate_story_units_preview', verb: '生成', scope: 'Volume.narrativePlan.storyUnitPlan' };
+  if (artifactType === 'story_units_persist_result') return { label: '单元故事计划', tool: 'persist_story_units', verb: '写入', scope: 'Volume.narrativePlan.storyUnitPlan' };
+  if (artifactType === 'volume_character_candidates_preview') return { label: '卷级角色候选', tool: 'generate_volume_outline_preview', verb: '生成', scope: 'persist_volume_character_candidates 写入前过滤' };
   if (artifactType === 'volume_character_candidates_persist_result') return { label: '卷级角色候选', tool: 'persist_volume_character_candidates', verb: '写入', scope: 'Character / RelationshipEdge' };
   return undefined;
 }
@@ -164,6 +262,7 @@ function typeEmoji(type?: string): string {
   if (!type) return '📦';
   if (type.includes('guided')) return '🧭';
   if (type.includes('outline')) return '📑';
+  if (type.includes('story_units')) return '📚';
   if (type.includes('plot')) return '🧭';
   if (type.includes('chapter')) return '📝';
   if (type.includes('character')) return '👤';
@@ -301,6 +400,9 @@ function TypedArtifactPreview({
   if (artifactType === 'plot_consistency_report') return <PlotConsistencySummary content={content} />;
   if (artifactType === 'task_context_preview') return <TaskContextSummary content={content} />;
   if (artifactType === 'outline_persist_result') return <OutlinePersistSummary content={content} />;
+  if (artifactType === 'story_units_preview') return <StoryUnitsPreviewSummary content={content} />;
+  if (artifactType === 'story_units_persist_result') return <StoryUnitsPersistSummary content={content} />;
+  if (artifactType === 'volume_character_candidates_preview') return <VolumeCharacterCandidatesPreviewSummary content={content} />;
   if (artifactType === 'volume_character_candidates_persist_result') return <VolumeCharacterCandidatesPersistSummary content={content} />;
   if (artifactType === 'import_persist_result') return <PersistSummary content={content} />;
   if (artifactType === 'chapter_draft_result') return <ChapterDraftSummary content={content} />;
@@ -1607,6 +1709,128 @@ function OutlinePersistSummary({ content }: { content: unknown }) {
             <div key={index} className="text-xs leading-5" style={{ color: '#fbbf24' }}>写入风险：{risk}</div>
           ))}
         </div>
+      )}
+    </div>
+  );
+}
+
+function StoryUnitsPreviewSummary({ content }: { content: unknown }) {
+  const data = asRecord(content) ?? {};
+  const plan = asRecord(data?.storyUnitPlan) ?? {};
+  const units = recordList(plan?.units);
+  const allocations = recordList(plan?.chapterAllocation);
+  const purposeMix = asRecord(plan?.purposeMix) ?? {};
+  const purposeMixText = Object.entries(purposeMix).slice(0, 6).map(([key, value]) => `${key}: ${String(value)}`).join(' / ');
+  const chapterCount = numberValue(data?.chapterCount);
+  return (
+    <div className="space-y-3">
+      <div className="grid gap-2 md:grid-cols-4">
+        <Metric label="目标卷" value={numberValue(data?.volumeNo) ? `第 ${numberValue(data?.volumeNo)} 卷` : '—'} />
+        <Metric label="目标章数" value={chapterCount || '—'} />
+        <Metric label="单元故事" value={units.length} tone={units.length ? 'ok' : 'warn'} />
+        <Metric label="章节分配" value={allocations.length} tone={allocations.length ? 'ok' : undefined} />
+      </div>
+      {textValue(plan?.planningPrinciple, '') && (
+        <div className="text-xs leading-5" style={{ color: 'var(--text-muted)' }}>{textValue(plan?.planningPrinciple)}</div>
+      )}
+      {purposeMixText && (
+        <div className="rounded-lg border px-3 py-2 text-xs leading-5" style={{ borderColor: 'var(--border-dim)', background: 'rgba(15,23,42,0.18)', color: 'var(--text-muted)' }}>
+          {purposeMixText}
+        </div>
+      )}
+      <div className="grid gap-3 md:grid-cols-2">
+        {units.slice(0, 8).map((unit, index) => {
+          const unitId = textValue(unit.unitId, `unit-${index}`);
+          const allocation = allocations.find((item) => textValue(item.unitId, '') === unitId);
+          const range = asRecord(allocation?.chapterRange);
+          const rangeText = numberValue(range?.start) && numberValue(range?.end)
+            ? `第 ${numberValue(range?.start)}-${numberValue(range?.end)} 章`
+            : `${numberValue(unit.suggestedChapterMin) || '?'}-${numberValue(unit.suggestedChapterMax) || '?'} 章`;
+          const purposes = [textValue(unit.primaryPurpose, ''), ...stringList(unit.secondaryPurposes)].filter(Boolean);
+          return (
+            <div key={unitId} className="rounded-lg border px-3 py-2 text-xs leading-5" style={{ borderColor: 'var(--border-dim)', background: 'rgba(15,23,42,0.18)', color: 'var(--text-muted)' }}>
+              <div className="font-semibold" style={{ color: 'var(--text-main)' }}>{textValue(unit.title, unitId)} · {rangeText}</div>
+              {purposes.length > 0 && <div style={{ color: '#5eead4' }}>{purposes.slice(0, 4).join(' / ')}</div>}
+              {textValue(unit.narrativePurpose, '') && <div>{textValue(unit.narrativePurpose)}</div>}
+              {textValue(unit.payoff, '') && <div>回收：{textValue(unit.payoff)}</div>}
+            </div>
+          );
+        })}
+      </div>
+      {units.length > 8 && <div className="text-xs" style={{ color: 'var(--text-dim)' }}>还有 {units.length - 8} 个单元故事，完整内容见原始 JSON。</div>}
+    </div>
+  );
+}
+
+function StoryUnitsPersistSummary({ content }: { content: unknown }) {
+  const data = asRecord(content) ?? {};
+  return (
+    <div className="grid gap-2 md:grid-cols-4">
+      <Metric label="目标卷" value={numberValue(data?.volumeNo) ? `第 ${numberValue(data?.volumeNo)} 卷` : '—'} />
+      <Metric label="单元故事" value={numberValue(data?.storyUnitCount, 0)} tone="ok" />
+      <Metric label="仅更新单元计划" value={data?.updatedStoryUnitPlanOnly ? '是' : '否'} tone={data?.updatedStoryUnitPlanOnly ? 'ok' : 'warn'} />
+      <Metric label="Volume ID" value={textValue(data?.volumeId, '—')} />
+    </div>
+  );
+}
+
+function VolumeCharacterCandidatesPreviewSummary({ content }: { content: unknown }) {
+  const data = asRecord(content) ?? {};
+  const persistableCandidates = recordList(data?.persistableCandidates);
+  const existingCandidates = recordList(data?.existingCandidates);
+  const totalCandidateCount = numberValue(data?.totalCandidateCount, persistableCandidates.length + existingCandidates.length);
+  const persistableCount = numberValue(data?.persistableCount, persistableCandidates.length);
+  const existingCount = numberValue(data?.existingCount, existingCandidates.length);
+  const relationshipArcCount = numberValue(data?.relationshipArcCount);
+  return (
+    <div className="space-y-3">
+      <div className="grid gap-2 md:grid-cols-4">
+        <Metric label="候选总数" value={totalCandidateCount} />
+        <Metric label="可写入角色" value={persistableCount} tone={persistableCount ? 'ok' : 'warn'} />
+        <Metric label="已存在跳过" value={existingCount} tone={existingCount ? 'warn' : 'ok'} />
+        <Metric label="关系弧" value={relationshipArcCount} tone={relationshipArcCount ? undefined : 'ok'} />
+      </div>
+      {textValue(data?.approvalMessage, '') && (
+        <div className="rounded-lg border px-3 py-2 text-xs leading-5" style={{ borderColor: 'rgba(20,184,166,0.30)', background: 'rgba(20,184,166,0.07)', color: 'var(--text-muted)' }}>
+          {textValue(data?.approvalMessage)}
+        </div>
+      )}
+      <div className="grid gap-3 md:grid-cols-2">
+        <VolumeCharacterCandidateList title="可写入候选" items={persistableCandidates} tone="ok" emptyText="没有新的卷级角色候选可写入。" />
+        <VolumeCharacterCandidateList title="正式角色已存在，写入前跳过" items={existingCandidates} tone="warn" emptyText="没有命中正式角色表的候选。" />
+      </div>
+    </div>
+  );
+}
+
+function VolumeCharacterCandidateList({ title, items, tone, emptyText }: { title: string; items: Array<Record<string, unknown>>; tone: 'ok' | 'warn'; emptyText: string }) {
+  const color = tone === 'ok' ? '#86efac' : '#fbbf24';
+  return (
+    <div className="space-y-2 rounded-lg border px-3 py-2" style={{ borderColor: 'var(--border-dim)', background: 'rgba(15,23,42,0.18)' }}>
+      <div className="text-xs font-semibold" style={{ color: 'var(--text-main)' }}>{title}</div>
+      {items.length ? (
+        <div className="space-y-2">
+          {items.slice(0, 8).map((item, index) => {
+            const name = textValue(item.name, '未命名角色');
+            const details = [
+              textValue(item.roleType, ''),
+              numberValue(item.firstAppearChapter) ? `第 ${numberValue(item.firstAppearChapter)} 章` : '',
+              textValue(item.candidateId, ''),
+            ].filter(Boolean);
+            const existing = textValue(item.existingName, '');
+            const source = textValue(item.existingSource, '');
+            return (
+              <div key={textValue(item.candidateId, `${name}-${index}`)} className="text-xs leading-5" style={{ color: 'var(--text-muted)' }}>
+                <b style={{ color }}>{name}</b>{details.length ? ` · ${details.join(' · ')}` : ''}
+                {textValue(item.narrativeFunction, '') && <div>{textValue(item.narrativeFunction)}</div>}
+                {existing && <div>已存在：{existing}{source ? ` · ${source}` : ''}</div>}
+              </div>
+            );
+          })}
+          {items.length > 8 && <div className="text-xs" style={{ color: 'var(--text-dim)' }}>还有 {items.length - 8} 个候选，完整内容见原始 JSON。</div>}
+        </div>
+      ) : (
+        <div className="text-xs" style={{ color: 'var(--text-muted)' }}>{emptyText}</div>
       )}
     </div>
   );

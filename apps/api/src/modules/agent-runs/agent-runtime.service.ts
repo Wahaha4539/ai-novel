@@ -1013,9 +1013,14 @@ export class AgentRuntimeService {
   private buildPreviewArtifacts(taskType: string, outputs: Record<number, unknown>, steps: Pick<AgentPlanSpec, 'steps'>['steps'] = []): AgentArtifactDraft[] {
     if (taskType === 'outline_design') {
       const preview = this.latestOutputByTools(outputs, steps, ['merge_chapter_outline_previews', 'generate_outline_preview', 'generate_volume_outline_preview']);
+      const storyUnitsPreview = this.latestOutputByTools(outputs, steps, ['generate_story_units_preview']);
       const validation = this.latestOutputByTools(outputs, steps, ['validate_outline']);
+      const inspectContext = this.latestOutputByTools(outputs, steps, ['inspect_project_context']);
+      const volumeCharacterCandidatesPreview = this.buildVolumeCharacterCandidatesPreview(preview, inspectContext);
       return [
         ...(preview ? [{ artifactType: 'outline_preview', title: '大纲预览', content: preview }] : []),
+        ...(storyUnitsPreview ? [{ artifactType: 'story_units_preview', title: '单元故事计划预览', content: storyUnitsPreview }] : []),
+        ...(volumeCharacterCandidatesPreview ? [volumeCharacterCandidatesPreview] : []),
         ...(validation ? [{ artifactType: 'outline_validation_report', title: '大纲校验报告', content: validation }] : []),
         ...this.buildTimelineArtifacts(outputs, steps),
       ];
@@ -1089,6 +1094,92 @@ export class AgentRuntimeService {
     ];
   }
 
+  private buildVolumeCharacterCandidatesPreview(preview: unknown, inspectContext: unknown): AgentArtifactDraft | undefined {
+    const previewRecord = this.asRecord(preview);
+    const volume = this.asRecord(previewRecord.volume);
+    const narrativePlan = this.asRecord(volume.narrativePlan);
+    const characterPlan = this.asRecord(narrativePlan.characterPlan);
+    const candidates = this.recordArray(characterPlan.newCharacterCandidates);
+    if (!candidates.length) return undefined;
+
+    const existingCatalog = this.buildExistingCharacterCatalog(inspectContext);
+    const persistableCandidates: Array<Record<string, unknown>> = [];
+    const existingCandidates: Array<Record<string, unknown>> = [];
+
+    for (const candidate of candidates) {
+      const name = this.stringValue(candidate.name);
+      if (!name) continue;
+      const normalizedName = this.normalizeComparableName(name);
+      const existing = existingCatalog.get(normalizedName);
+      const row = {
+        candidateId: this.stringValue(candidate.candidateId),
+        name,
+        roleType: this.stringValue(candidate.roleType),
+        firstAppearChapter: this.numberValue(candidate.firstAppearChapter),
+        narrativeFunction: this.stringValue(candidate.narrativeFunction),
+        expectedArc: this.stringValue(candidate.expectedArc),
+      };
+      if (existing) {
+        existingCandidates.push({
+          ...row,
+          existingName: existing.name,
+          existingSource: existing.source,
+          matchedBy: existing.matchedBy,
+          reason: 'already_exists_in_character_table',
+        });
+      } else {
+        persistableCandidates.push(row);
+      }
+    }
+
+    return {
+      artifactType: 'volume_character_candidates_preview',
+      title: '卷级角色候选写入预览',
+      content: {
+        volumeNo: this.numberValue(volume.volumeNo),
+        volumeTitle: this.stringValue(volume.title),
+        totalCandidateCount: candidates.length,
+        persistableCount: persistableCandidates.length,
+        existingCount: existingCandidates.length,
+        persistableCandidates,
+        existingCandidates,
+        relationshipArcCount: this.recordArray(characterPlan.relationshipArcs).length,
+        approvalMessage: 'persist_volume_character_candidates 只应写入可持久化候选；正式 Character 表中已存在的姓名或别名会在写入前跳过。',
+      },
+    };
+  }
+
+  private buildExistingCharacterCatalog(inspectContext: unknown): Map<string, { name: string; source?: string; matchedBy: 'name' | 'alias' }> {
+    const inspect = this.asRecord(inspectContext);
+    const catalog = new Map<string, { name: string; source?: string; matchedBy: 'name' | 'alias' }>();
+    for (const character of this.recordArray(inspect.characters)) {
+      const name = this.stringValue(character.name);
+      if (!name) continue;
+      const source = this.stringValue(character.source);
+      catalog.set(this.normalizeComparableName(name), { name, source, matchedBy: 'name' });
+      for (const alias of this.stringArray(character.aliases)) {
+        catalog.set(this.normalizeComparableName(alias), { name, source, matchedBy: 'alias' });
+      }
+    }
+    return catalog;
+  }
+
+  private recordArray(value: unknown): Array<Record<string, unknown>> {
+    return Array.isArray(value)
+      ? value.map((item) => this.asRecord(item)).filter((item) => Object.keys(item).length > 0)
+      : [];
+  }
+
+  private stringArray(value: unknown): string[] {
+    return Array.isArray(value)
+      ? value.map((item) => (typeof item === 'string' ? item.trim() : '')).filter(Boolean)
+      : [];
+  }
+
+  private normalizeComparableName(value: string): string {
+    return value.trim().toLocaleLowerCase();
+  }
+
   /**
    * 将关键 Tool 输出提升为 AgentArtifact，便于前端按业务类型预览，而不是只看原始 step JSON。
    * 这里不重新解释 LLM 内容，只按已审批执行结果做只读拆分，避免引入额外副作用。
@@ -1099,13 +1190,17 @@ export class AgentRuntimeService {
       const validation = this.latestOutputByTools(outputs, steps, ['validate_outline']);
       const persist = this.latestOutputByTools(outputs, steps, ['persist_outline']);
       const volumePersist = this.latestOutputByTools(outputs, steps, ['persist_volume_outline']);
+      const storyUnitsPreview = this.latestOutputByTools(outputs, steps, ['generate_story_units_preview']);
+      const storyUnitsPersist = this.latestOutputByTools(outputs, steps, ['persist_story_units']);
       const characterPersist = this.latestOutputByTools(outputs, steps, ['persist_volume_character_candidates']);
       return [
         ...(preview ? [{ artifactType: 'outline_preview', title: '大纲预览', content: preview }] : []),
+        ...(storyUnitsPreview ? [{ artifactType: 'story_units_preview', title: '单元故事计划预览', content: storyUnitsPreview }] : []),
         ...(validation ? [{ artifactType: 'outline_validation_report', title: '大纲校验报告', content: validation }] : []),
         ...this.buildTimelineArtifacts(outputs, steps, true),
         ...(persist ? [{ artifactType: 'outline_persist_result', title: '大纲写入结果', content: persist }] : []),
         ...(volumePersist ? [{ artifactType: 'outline_persist_result', title: '卷大纲写入结果', content: volumePersist }] : []),
+        ...(storyUnitsPersist ? [{ artifactType: 'story_units_persist_result', title: '单元故事计划写入结果', content: storyUnitsPersist }] : []),
         ...(characterPersist ? [{ artifactType: 'volume_character_candidates_persist_result', title: '卷级角色候选写入结果', content: characterPersist }] : []),
       ];
     }

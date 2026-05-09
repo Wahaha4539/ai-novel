@@ -78,7 +78,7 @@ export class PlanValidatorService {
     if (route.domain === 'outline' && route.intent === 'generate_volume_outline') {
       this.rejectTools(tools, ['generate_outline_preview', 'generate_chapter_outline_preview', 'merge_chapter_outline_previews', 'validate_outline', 'persist_outline', 'write_chapter', 'write_chapter_series'], 'volume outline route');
     }
-    if (route.domain === 'outline' && route.intent === 'split_volume_to_chapters' && !tools.has('generate_chapter_outline_preview')) {
+    if (route.domain === 'outline' && route.intent === 'split_volume_to_chapters' && !tools.has('generate_chapter_outline_preview') && !tools.has('generate_outline_preview')) {
       throw new Error('PlanValidator blocked outline.chapter route without generate_chapter_outline_preview');
     }
     if (route.domain === 'guided') {

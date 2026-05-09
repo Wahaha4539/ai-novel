@@ -1,7 +1,7 @@
 import type { AgentContextV2 } from '../../agent-context-builder.service';
 import type { RouteDecision } from '../planner-graph.state';
 
-export type OutlineSupervisorIntent = 'volume_outline' | 'chapter_outline' | 'craft_brief' | 'scene_card';
+export type OutlineSupervisorIntent = 'volume_outline' | 'story_units' | 'chapter_outline' | 'craft_brief' | 'scene_card';
 
 export type OutlineRouteDecision = RouteDecision & {
   domain: 'outline';
@@ -24,8 +24,12 @@ export class OutlineSupervisor {
       return route('craft_brief', 'chapter_craft_brief', 0.88, ['目标是章节推进卡或 Chapter.craftBrief。'], { chapterNo, needsApproval: true, needsPersistence: true });
     }
 
-    if (includesAny(normalized, ['场景卡', 'scenecard', 'scene card', '拆成场景'])) {
+    if (includesAny(normalized, ['场景卡', 'scenecard', 'scene card', '拆成场景']) || (normalized.includes('拆成') && normalized.includes('场景'))) {
       return route('scene_card', 'scene_card_planning', 0.86, ['目标是场景卡规划或更新。'], { chapterNo, needsApproval: true, needsPersistence: true });
+    }
+
+    if (isStoryUnitsGoal(normalized)) {
+      return route('story_units', 'story_units', 0.88, ['目标是生成或丰富卷级单元故事/支线故事计划。'], { volumeNo, needsApproval: true, needsPersistence: true });
     }
 
     if (isChapterOutlineGoal(normalized)) {
@@ -78,6 +82,11 @@ function isChapterOutlineGoal(goal: string): boolean {
   if (hasNegatedChapterOutlineGoal(goal)) return false;
   return includesAny(goal, ['章节细纲', '卷细纲', '章节规划', '等长细纲', '拆成'])
     || /[0-9０-９一二三四五六七八九十百]+ ?章/.test(goal) && includesAny(goal, ['细纲', '大纲', '规划']);
+}
+
+function isStoryUnitsGoal(goal: string): boolean {
+  return includesAny(goal, ['单元故事', '故事单元', '支线故事', '人物登场', '人物情感', '人物刻画', '背景故事', '丰富单元', '单元分类', 'storyunit', 'story unit'])
+    && !isChapterOutlineGoal(goal);
 }
 
 function hasNegatedChapterOutlineGoal(goal: string): boolean {
