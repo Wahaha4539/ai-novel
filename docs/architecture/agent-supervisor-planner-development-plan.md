@@ -557,7 +557,7 @@
 
 ### ASP-P8-002 前端展示 planner debug 信息
 
-- 状态：`[ ]`
+- 状态：`[x]`
 - 模块：Web
 - 文件：
   - `apps/web/components/agent/AgentPlanPanel.tsx`
@@ -571,6 +571,12 @@
 - 验证：
   - `pnpm --filter web build`
   - 如做真实 UI 测试，按 Docker Compose 流程启动
+- 完成记录（2026-05-09）：
+  - 计划简报底部新增折叠式 `Planner debug`，展示 route、bundle、selected/allowed tools、promptBudget 和 graph node 摘要。
+  - `agent_plan_preview` 产物新增专用摘要视图，并复用同一折叠调试区域；普通视图默认不展开技术细节，且不显示完整 manifest。
+  - 前端 plan 类型与 normalize 逻辑保留 `plannerDiagnostics`，避免仅依赖原始 JSON。
+  - 修改文件：`apps/web/components/agent/AgentPlanPanel.tsx`、`apps/web/components/agent/AgentArtifactPanel.tsx`、`apps/web/components/agent/AgentSharedWidgets.tsx`、`apps/web/hooks/useAgentRun.ts`、`docs/architecture/agent-supervisor-planner-development-plan.md`。
+  - 测试：`pnpm --filter web build`，通过。
 
 ## 11. P9 灰度与默认启用
 

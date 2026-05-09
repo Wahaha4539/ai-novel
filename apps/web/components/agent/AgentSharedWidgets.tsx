@@ -48,7 +48,9 @@ export function formatDate(value?: string) {
  * 这里统一投影为前端展示契约，保证生产接口演进期间工作台仍可读。
  */
 export function normalizePlan(record: AgentPlanRecord): AgentPlanPayload {
-  return record.plan ?? { summary: record.summary, assumptions: record.assumptions, risks: record.risks, steps: record.steps, requiredApprovals: record.requiredApprovals };
+  return record.plan
+    ? { ...record.plan, plannerDiagnostics: record.plan.plannerDiagnostics ?? record.plannerDiagnostics }
+    : { summary: record.summary, assumptions: record.assumptions, risks: record.risks, steps: record.steps, requiredApprovals: record.requiredApprovals, plannerDiagnostics: record.plannerDiagnostics };
 }
 
 /** 获取 Run 中最新版本的 Plan */

@@ -28,6 +28,7 @@ export interface AgentPlanPayload {
   requiredApprovals?: Array<{ approvalType?: string; target?: { stepNos?: number[]; tools?: string[] } }>;
   riskReview?: { riskLevel?: 'low' | 'medium' | 'high'; reasons?: string[]; requiresApproval?: boolean; approvalMessage?: string };
   userVisiblePlan?: { summary?: string; bullets?: string[]; hiddenTechnicalSteps?: boolean };
+  plannerDiagnostics?: Record<string, unknown>;
 }
 
 export interface AgentRunStepRecord {

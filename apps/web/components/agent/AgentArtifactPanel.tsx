@@ -18,6 +18,7 @@ import {
   type ProjectImportAssetType,
   type ProjectImportTargetSource,
 } from './AgentSharedWidgets';
+import { PlannerDiagnosticsDetails } from './AgentPlanPanel';
 import { TimelineUpdatePreview } from './TimelineUpdatePreview';
 
 // ────────────────────────────────────────────
@@ -275,6 +276,7 @@ function TypedArtifactPreview({
   actionDisabled?: boolean;
 }) {
   if (artifactType === 'outline_preview') return <OutlinePreviewSummary content={content} />;
+  if (artifactType === 'agent_plan_preview') return <AgentPlanPreviewSummary content={content} />;
   if (artifactType === 'guided_step_preview') return <GuidedStepPreviewSummary content={content} />;
   if (artifactType === 'outline_validation_report' || artifactType === 'import_validation_report' || artifactType === 'fact_validation_report' || artifactType === 'worldbuilding_validation_report') return <ValidationSummary content={content} />;
   if (artifactType === 'project_profile_preview') return <ProjectProfileSummary content={content} />;
@@ -313,6 +315,39 @@ function TypedArtifactPreview({
 }
 
 // ── 以下为各类型产物摘要组件 ──
+
+function AgentPlanPreviewSummary({ content }: { content: unknown }) {
+  const data = asRecord(content);
+  const steps = asArray(data?.steps);
+  const approvals = asArray(data?.requiredApprovals);
+  const diagnostics = asRecord(data?.plannerDiagnostics);
+  const toolNames = steps.map((step) => textValue(asRecord(step)?.tool, '')).filter(Boolean);
+  return (
+    <div className="space-y-3">
+      <div className="grid gap-2 md:grid-cols-4">
+        <Metric label="任务类型" value={textValue(data?.taskType)} />
+        <Metric label="步骤" value={steps.length} />
+        <Metric label="审批" value={approvals.length} tone={approvals.length ? 'warn' : 'ok'} />
+        <Metric label="Planner" value={textValue(diagnostics?.source, '—')} />
+      </div>
+      {toolNames.length > 0 && (
+        <div className="flex flex-wrap gap-2">
+          {toolNames.slice(0, 12).map((tool) => (
+            <code
+              key={tool}
+              className="rounded-full border px-2 py-1 text-[11px]"
+              style={{ borderColor: 'rgba(103,232,249,0.28)', color: '#67e8f9', background: 'rgba(15,23,42,0.20)' }}
+            >
+              {tool}
+            </code>
+          ))}
+          {toolNames.length > 12 && <span className="text-xs" style={{ color: 'var(--text-dim)' }}>+{toolNames.length - 12}</span>}
+        </div>
+      )}
+      <PlannerDiagnosticsDetails diagnostics={diagnostics} className="mt-0" />
+    </div>
+  );
+}
 
 function OutlinePreviewSummary({ content }: { content: unknown }) {
   const data = asRecord(content);

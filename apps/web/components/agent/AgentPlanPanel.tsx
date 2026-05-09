@@ -1,7 +1,7 @@
 'use client';
 
 import { AgentPlanPayload, AgentPlanRecord, AgentRun } from '../../hooks/useAgentRun';
-import { EmptyText, ListBlock, Metric, normalizePlan, planVersionLabel, projectImportTargetSources } from './AgentSharedWidgets';
+import { EmptyText, ListBlock, Metric, asArray, asRecord, normalizePlan, numberValue, planVersionLabel, projectImportTargetSources, textValue } from './AgentSharedWidgets';
 
 // ────────────────────────────────────────────
 // Plan 版本 diff 对比
@@ -41,6 +41,108 @@ function enrichPlanFromPreviewArtifact(run: AgentRun | null, plan?: AgentPlanPay
   const preview = [...(run?.artifacts ?? [])].reverse().find((artifact) => artifact.artifactType === 'agent_plan_preview');
   const content = preview?.content && typeof preview.content === 'object' ? (preview.content as AgentPlanPayload) : undefined;
   return content ? { ...plan, ...content, steps: plan.steps ?? content.steps, requiredApprovals: plan.requiredApprovals ?? content.requiredApprovals } : plan;
+}
+
+function stringList(value: unknown): string[] {
+  return asArray(value).map((item) => textValue(item, '')).filter(Boolean);
+}
+
+function formatPromptChars(selected: number, all: number) {
+  if (Number.isFinite(selected) && Number.isFinite(all) && all > 0) return `${selected}/${all}`;
+  if (Number.isFinite(selected)) return String(selected);
+  return '—';
+}
+
+function formatRate(value: unknown) {
+  const rate = numberValue(value, NaN);
+  return Number.isFinite(rate) ? `${Math.round(rate * 100)}%` : '—';
+}
+
+function toolChips(tools: string[], tone: 'selected' | 'allowed') {
+  const borderColor = tone === 'selected' ? 'rgba(103,232,249,0.30)' : 'rgba(20,184,166,0.28)';
+  const color = tone === 'selected' ? '#67e8f9' : '#5eead4';
+  return tools.slice(0, 12).map((tool) => (
+    <code
+      key={`${tone}-${tool}`}
+      className="rounded-full border px-2 py-1 text-[11px]"
+      style={{ borderColor, color, background: 'rgba(15,23,42,0.20)' }}
+    >
+      {tool}
+    </code>
+  ));
+}
+
+export function PlannerDiagnosticsDetails({ diagnostics, className = 'mt-4' }: { diagnostics?: unknown; className?: string }) {
+  const data = asRecord(diagnostics);
+  if (!data || !Object.keys(data).length) return null;
+  const route = asRecord(data.route);
+  const toolBundle = asRecord(data.toolBundle);
+  const promptBudget = asRecord(data.promptBudget);
+  const selectedTools = stringList(data.selectedToolNames);
+  const allowedTools = stringList(data.allowedToolNames);
+  const graphNodes = asArray(data.graphNodes).map((item) => asRecord(item)).filter((item): item is Record<string, unknown> => Boolean(item));
+  const selectedChars = numberValue(promptBudget?.selectedToolsChars, NaN);
+  const allChars = numberValue(promptBudget?.allToolsChars, NaN);
+  const routeLabel = route ? `${textValue(route.domain)} / ${textValue(route.intent)}` : '—';
+  const bundleLabel = textValue(toolBundle?.name);
+
+  return (
+    <details
+      className={className}
+      style={{ borderRadius: '0.75rem', border: '1px solid rgba(103,232,249,0.18)', background: 'rgba(15,23,42,0.22)' }}
+    >
+      <summary className="flex cursor-pointer items-center justify-between gap-3 px-3 py-2 text-xs">
+        <span className="font-bold" style={{ color: 'var(--agent-text-label)' }}>Planner debug</span>
+        <span className="truncate text-[11px]" style={{ color: 'var(--text-dim)' }}>{textValue(data.source)} · {bundleLabel}</span>
+      </summary>
+      <div className="space-y-3 border-t px-3 py-3" style={{ borderColor: 'rgba(103,232,249,0.12)' }}>
+        <div className="grid gap-2 md:grid-cols-4">
+          <Metric label="route" value={routeLabel} />
+          <Metric label="bundle" value={bundleLabel} />
+          <Metric label="tools" value={numberValue(toolBundle?.selectedToolCount, selectedTools.length)} />
+          <Metric label="prompt chars" value={formatPromptChars(selectedChars, allChars)} />
+          <Metric label="reduction" value={formatRate(promptBudget?.promptReductionRate)} tone={numberValue(promptBudget?.promptReductionRate, 0) > 0 ? 'ok' : undefined} />
+          <Metric label="graph" value={textValue(data.graphVersion, '—')} />
+          <Metric label="nodes" value={graphNodes.length} />
+          <Metric label="llm calls" value={numberValue(data.llmCalls, 0)} />
+        </div>
+        {selectedTools.length > 0 && (
+          <div className="space-y-2">
+            <div className="text-[10px] font-bold uppercase" style={{ color: 'var(--agent-text-label)', letterSpacing: '0.06em' }}>selected tools</div>
+            <div className="flex flex-wrap gap-2">
+              {toolChips(selectedTools, 'selected')}
+              {selectedTools.length > 12 && <span className="text-xs" style={{ color: 'var(--text-dim)' }}>+{selectedTools.length - 12}</span>}
+            </div>
+          </div>
+        )}
+        {allowedTools.length > selectedTools.length && (
+          <div className="space-y-2">
+            <div className="text-[10px] font-bold uppercase" style={{ color: 'var(--agent-text-label)', letterSpacing: '0.06em' }}>allowed tools</div>
+            <div className="flex flex-wrap gap-2">
+              {toolChips(allowedTools, 'allowed')}
+              {allowedTools.length > 12 && <span className="text-xs" style={{ color: 'var(--text-dim)' }}>+{allowedTools.length - 12}</span>}
+            </div>
+          </div>
+        )}
+        {graphNodes.length > 0 && (
+          <div className="space-y-2">
+            <div className="text-[10px] font-bold uppercase" style={{ color: 'var(--agent-text-label)', letterSpacing: '0.06em' }}>graph nodes</div>
+            <div className="grid gap-2 md:grid-cols-2">
+              {graphNodes.slice(0, 8).map((node, index) => (
+                <div key={`${textValue(node.name, 'node')}-${index}`} className="rounded-lg border px-2 py-2 text-xs" style={{ borderColor: 'var(--border-dim)', color: 'var(--text-muted)', background: 'rgba(15,23,42,0.18)' }}>
+                  <div className="flex items-center justify-between gap-2">
+                    <code style={{ color: 'var(--text-main)' }}>{textValue(node.name, 'node')}</code>
+                    <span style={{ color: node.status === 'failed' ? '#f87171' : '#5eead4' }}>{textValue(node.status)}</span>
+                  </div>
+                  {node.detail ? <div className="mt-1 break-words" style={{ color: 'var(--text-dim)' }}>{textValue(node.detail)}</div> : null}
+                </div>
+              ))}
+            </div>
+          </div>
+        )}
+      </div>
+    </details>
+  );
 }
 
 /** 计划简报面板：展示 Agent 理解、假设、缺失信息、风险和用户可读步骤。 */
@@ -122,6 +224,7 @@ export function AgentPlanPanel({ run, plan }: AgentPlanPanelProps) {
             <ListBlock title="风险/规则" items={displayPlan.riskReview?.reasons?.length ? displayPlan.riskReview.reasons : (displayPlan.risks ?? [])} />
           </div>
           {displayPlan.riskReview?.approvalMessage && <p className="mt-3 text-xs leading-5" style={{ color: '#fef3c7' }}>{displayPlan.riskReview.approvalMessage}</p>}
+          <PlannerDiagnosticsDetails diagnostics={displayPlan.plannerDiagnostics} />
         </>
       ) : (
         <EmptyText text="提交任务后，这里会显示 Agent 的理解、假设和风险。" />
