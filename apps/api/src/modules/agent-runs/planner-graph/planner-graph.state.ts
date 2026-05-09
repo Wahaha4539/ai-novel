@@ -48,9 +48,15 @@ export interface PlannerGraphOutputDefaults {
 
 export interface AgentPlannerGraphDiagnostics {
   graphVersion: string;
+  route?: Pick<RouteDecision, 'domain' | 'intent' | 'confidence'>;
+  toolBundleName?: string;
   promptChars?: number;
   selectedToolCount?: number;
   allToolCount?: number;
+  selectedToolNames?: string[];
+  allowedToolNames?: string[];
+  selectedToolsChars?: number;
+  allToolsChars?: number;
   nodes: Array<{ name: string; status: 'ok' | 'failed'; detail?: string }>;
 }
 

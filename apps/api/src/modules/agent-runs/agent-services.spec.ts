@@ -20,7 +20,7 @@ import { AgentExecutorService, AgentWaitingReviewError } from './agent-executor.
 import { AgentExecutionObservationError } from './agent-observation.types';
 import { AgentReplannerService } from './agent-replanner.service';
 import { AgentRuntimeService } from './agent-runtime.service';
-import { AgentPlannerService, type AgentPlanSpec } from './agent-planner.service';
+import { AgentPlannerFailedError, AgentPlannerService, type AgentPlanSpec } from './agent-planner.service';
 import { AgentPlannerGraphService } from './planner-graph/agent-planner-graph.service';
 import { PlanValidatorService } from './planner-graph/plan-validator.service';
 import { createDomainPlannerNode, createSelectToolBundleNode } from './planner-graph/nodes';
@@ -8535,6 +8535,178 @@ test('DomainPlanner route prompt uses selected tools and records diagnostics', a
   assert.equal(diagnostics.route.domain, 'general');
   assert.equal(diagnostics.toolBundle.name, 'general.echo');
   assert.ok(update.diagnostics?.nodes.some((item) => item.name === 'domainPlanner'));
+});
+
+test('ASP-P8-001 planner diagnostics include scoped route bundle and prompt budget', async () => {
+  const toolList = [
+    createTool({ name: 'echo_report', requiresApproval: false, riskLevel: 'low', sideEffects: [] }),
+    createTool({ name: 'write_chapter', requiresApproval: true, riskLevel: 'high', sideEffects: ['draft_write'] }),
+  ];
+  const tools = {
+    list: () => toolList,
+    listManifestsForPlanner: (toolNames?: string[]) => (toolNames?.length ? toolNames : toolList.map((tool) => tool.name)).map((name) => {
+      const tool = toolList.find((item) => item.name === name);
+      if (!tool) throw new Error(`missing ${name}`);
+      return {
+        name: tool.name,
+        displayName: tool.name,
+        description: tool.description,
+        whenToUse: [`Use ${tool.name}`],
+        whenNotToUse: [],
+        allowedModes: tool.allowedModes,
+        riskLevel: tool.riskLevel,
+        requiresApproval: tool.requiresApproval,
+        sideEffects: tool.sideEffects,
+      };
+    }),
+  } as unknown as ToolRegistryService;
+  const llm = {
+    async chatJson() {
+      return {
+        data: {
+          taskType: 'general',
+          summary: 'Selected diagnostics plan.',
+          assumptions: [],
+          risks: [],
+          steps: [
+            { stepNo: 1, name: 'Report', tool: 'echo_report', mode: 'act', requiresApproval: false, args: { message: 'ok' } },
+          ],
+        },
+        result: { model: 'planner-mock', usage: { prompt_tokens: 1, completion_tokens: 1 } },
+      };
+    },
+  };
+  const planner = new AgentPlannerService(new SkillRegistryService(), tools, new RuleEngineService(), llm as never);
+  const plan = await planner.createPlanWithTools({
+    goal: 'report diagnostics',
+    route: { domain: 'general', intent: 'clarify', confidence: 0.41, reasons: ['test'] },
+    selectedBundle: {
+      bundleName: 'general.echo',
+      strictToolNames: ['echo_report'],
+      optionalToolNames: [],
+      deniedToolNames: ['write_chapter'],
+      selectionReason: 'test',
+    },
+    selectedTools: tools.listManifestsForPlanner(['echo_report']),
+  });
+
+  const diagnostics = plan.plannerDiagnostics as Record<string, any>;
+  assert.equal(diagnostics.route.domain, 'general');
+  assert.equal(diagnostics.route.intent, 'clarify');
+  assert.equal(diagnostics.toolBundle.name, 'general.echo');
+  assert.equal(diagnostics.toolBundle.selectedToolCount, 1);
+  assert.equal(diagnostics.toolBundle.allToolCount, 2);
+  assert.deepEqual(diagnostics.selectedToolNames, ['echo_report']);
+  assert.deepEqual(diagnostics.allowedToolNames, ['echo_report']);
+  assert.ok(diagnostics.promptBudget.selectedToolsChars > 0);
+  assert.ok(diagnostics.promptBudget.allToolsChars > diagnostics.promptBudget.selectedToolsChars);
+});
+
+test('ASP-P8-001 selectToolBundleNode records graph route bundle and selected tools', async () => {
+  const allBundleToolNames = [...new Set(TOOL_BUNDLE_DEFINITIONS.flatMap((definition) => [
+    ...definition.strictToolNames,
+    ...(definition.optionalToolNames ?? []),
+    ...(definition.deniedToolNames ?? []),
+  ]))];
+  const tools = {
+    list: () => allBundleToolNames.map((name) => createTool({ name, requiresApproval: false, riskLevel: 'low', sideEffects: [] })),
+    listManifestsForPlanner: (toolNames?: string[]) => (toolNames?.length ? [...new Set(toolNames)] : allBundleToolNames).map((name) => ({
+      name,
+      displayName: name,
+      description: name,
+      whenToUse: [],
+      whenNotToUse: [],
+      allowedModes: ['plan', 'act'],
+      riskLevel: 'low',
+      requiresApproval: false,
+      sideEffects: [],
+    })),
+  } as unknown as ToolRegistryService;
+  const node = createSelectToolBundleNode(new ToolBundleRegistry(tools));
+
+  const result = await node({
+    goal: 'diagnostics route smoke',
+    defaults: { taskType: 'general', summary: 'smoke', assumptions: [], risks: [] },
+    route: { domain: 'outline', intent: 'generate_volume_outline', confidence: 0.9, reasons: ['test'] },
+    diagnostics: { graphVersion: 'test', nodes: [] },
+  });
+
+  const diagnostics = result.diagnostics as Record<string, any>;
+  assert.equal(diagnostics.route.domain, 'outline');
+  assert.equal(diagnostics.route.intent, 'generate_volume_outline');
+  assert.equal(diagnostics.toolBundleName, 'outline.volume');
+  assert.deepEqual(diagnostics.selectedToolNames, ['inspect_project_context', 'generate_volume_outline_preview', 'persist_volume_outline']);
+  assert.ok(diagnostics.allowedToolNames.includes('persist_volume_outline'));
+  assert.ok(diagnostics.selectedToolsChars > 0);
+  assert.ok(diagnostics.allToolsChars > diagnostics.selectedToolsChars);
+  assert.deepEqual((diagnostics.nodes as Array<{ name: string }>).map((node) => node.name), ['selectToolBundle']);
+});
+
+test('ASP-P8-001 planner failure diagnostics identify validator stage', async () => {
+  const toolList = [
+    createTool({ name: 'echo_report', requiresApproval: false, riskLevel: 'low', sideEffects: [] }),
+    createTool({ name: 'write_chapter', requiresApproval: true, riskLevel: 'high', sideEffects: ['draft_write'] }),
+  ];
+  const tools = {
+    list: () => toolList,
+    listManifestsForPlanner: (toolNames?: string[]) => (toolNames?.length ? toolNames : toolList.map((tool) => tool.name)).map((name) => {
+      const tool = toolList.find((item) => item.name === name);
+      if (!tool) throw new Error(`missing ${name}`);
+      return {
+        name: tool.name,
+        displayName: tool.name,
+        description: tool.description,
+        whenToUse: [`Use ${tool.name}`],
+        whenNotToUse: [],
+        allowedModes: tool.allowedModes,
+        riskLevel: tool.riskLevel,
+        requiresApproval: tool.requiresApproval,
+        sideEffects: tool.sideEffects,
+      };
+    }),
+  } as unknown as ToolRegistryService;
+  const llm = {
+    async chatJson() {
+      return {
+        data: {
+          taskType: 'general',
+          summary: 'Invalid selected diagnostics plan.',
+          assumptions: [],
+          risks: [],
+          steps: [
+            { stepNo: 1, name: 'Write outside bundle', tool: 'write_chapter', mode: 'act', requiresApproval: true, args: { chapterId: 'c1' } },
+          ],
+        },
+        result: { model: 'planner-mock', usage: { prompt_tokens: 1, completion_tokens: 1 } },
+      };
+    },
+  };
+  const planner = new AgentPlannerService(new SkillRegistryService(), tools, new RuleEngineService(), llm as never);
+
+  try {
+    await planner.createPlanWithTools({
+      goal: 'invalid diagnostics',
+      route: { domain: 'general', intent: 'clarify', confidence: 0.41, reasons: ['test'] },
+      selectedBundle: {
+        bundleName: 'general.echo',
+        strictToolNames: ['echo_report'],
+        optionalToolNames: [],
+        deniedToolNames: ['write_chapter'],
+        selectionReason: 'test',
+      },
+      selectedTools: tools.listManifestsForPlanner(['echo_report']),
+    });
+    assert.fail('Expected scoped planner validation to fail');
+  } catch (error) {
+    assert.ok(error instanceof AgentPlannerFailedError);
+    const diagnostics = error.diagnostics as Record<string, any>;
+    assert.equal(diagnostics.route.domain, 'general');
+    assert.equal(diagnostics.toolBundle.name, 'general.echo');
+    assert.deepEqual(diagnostics.selectedToolNames, ['echo_report']);
+    assert.ok(diagnostics.promptBudget.selectedToolsChars > 0);
+    assert.ok((diagnostics.failures as Array<Record<string, string>>).some((failure) => failure.stage === 'validator'));
+    assert.ok((diagnostics.failures as Array<Record<string, string>>).some((failure) => failure.stage === 'repair_validator'));
+  }
 });
 
 test('Planner repair selected tools prompt does not return to full manifests', async () => {

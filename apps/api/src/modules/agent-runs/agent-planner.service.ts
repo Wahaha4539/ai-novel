@@ -159,6 +159,7 @@ export class AgentPlannerService {
       if (this.isGraphPlannerEnabled()) return await this.createGraphWrappedPlan(goal, defaults, llmBudget, context);
       return await this.createLlmPlan(goal, defaults, llmBudget, context);
     } catch (error) {
+      if (error instanceof AgentPlannerFailedError) throw error;
       const failures = [...llmBudget.failures, this.failureDetail('planner_failed', error)];
       const diagnostics = { llmCalls: llmBudget.used, maxLlmCalls: llmBudget.max, failures };
       throw new AgentPlannerFailedError(`Agent Planner 生成高质量计划失败：${JSON.stringify(diagnostics)}`, diagnostics);
@@ -208,14 +209,30 @@ export class AgentPlannerService {
 
   private withGraphDiagnostics(plan: AgentPlanSpec, graphState: AgentPlannerGraphState): AgentPlanSpec {
     const legacyDiagnostics = plan.plannerDiagnostics ?? {};
+    const scopeDiagnostics = this.plannerScopeDiagnostics({
+      route: graphState.route,
+      selectedBundle: graphState.selectedBundle,
+      selectedTools: graphState.selectedTools,
+    });
+    const graphPromptBudget = this.removeUndefinedArgs({
+      selectedToolsChars: graphState.diagnostics.selectedToolsChars,
+      allToolsChars: graphState.diagnostics.allToolsChars,
+    });
+    const promptBudget = this.mergeDiagnosticsObjects(
+      this.asOptionalRecord(legacyDiagnostics.promptBudget),
+      this.asOptionalRecord(scopeDiagnostics.promptBudget),
+      Object.keys(graphPromptBudget).length ? graphPromptBudget : undefined,
+    );
     return {
       ...plan,
       plannerDiagnostics: {
         ...legacyDiagnostics,
+        ...scopeDiagnostics,
         source: 'langgraph_supervisor',
         legacySource: legacyDiagnostics.source,
         graphVersion: graphState.diagnostics.graphVersion,
         graphNodes: graphState.diagnostics.nodes,
+        ...(promptBudget ? { promptBudget } : {}),
       },
     };
   }
@@ -345,7 +362,7 @@ export class AgentPlannerService {
     try {
       return { ...this.validateAndNormalizeScopedPlan(data, defaults, context, toolScope), plannerDiagnostics: { source: 'llm', model: result.model, usage: result.usage, llmCalls: llmBudget.used, maxLlmCalls: llmBudget.max, schemaVersion: 2, ...this.plannerScopeDiagnostics(toolScope) } };
     } catch (error) {
-      llmBudget.failures.push(this.failureDetail('schema_validation', error));
+      llmBudget.failures.push(this.failureDetail(this.validationFailureStage(toolScope), error));
       return this.repairLlmPlan(goal, defaults, data, error instanceof Error ? error.message : String(error), llmBudget, context, toolScope);
     }
   }
@@ -425,7 +442,12 @@ export class AgentPlannerService {
       { appStep: 'agent_planner', maxTokens: 4500, timeoutMs: DEFAULT_LLM_TIMEOUT_MS, retries: 1, temperature: 0.1 },
     );
 
-    return { ...this.validateAndNormalizeScopedPlan(data, defaults, context, toolScope), plannerDiagnostics: { source: 'llm_repair', model: result.model, usage: result.usage, repairedFromError: validationError, llmCalls: llmBudget.used, maxLlmCalls: llmBudget.max, schemaVersion: 2, ...this.plannerScopeDiagnostics(toolScope) } };
+    try {
+      return { ...this.validateAndNormalizeScopedPlan(data, defaults, context, toolScope), plannerDiagnostics: { source: 'llm_repair', model: result.model, usage: result.usage, repairedFromError: validationError, llmCalls: llmBudget.used, maxLlmCalls: llmBudget.max, schemaVersion: 2, ...this.plannerScopeDiagnostics(toolScope) } };
+    } catch (error) {
+      llmBudget.failures.push(this.failureDetail(`repair_${this.validationFailureStage(toolScope)}`, error));
+      throw error;
+    }
   }
 
   private validateAndNormalizeScopedPlan(data: unknown, defaults: PlannerOutputDefaults, context?: AgentContextV2, toolScope?: PlannerToolScope): AgentPlanSpec {
@@ -457,21 +479,66 @@ export class AgentPlannerService {
   }
 
   private plannerScopeDiagnostics(scope?: PlannerToolScope): Record<string, unknown> {
+    const selectedTools = scope?.selectedTools ?? [];
+    const selectedToolNames = selectedTools.map((tool) => tool.name);
+    const allowedToolNames = scope?.selectedBundle
+      ? [...new Set([...scope.selectedBundle.strictToolNames, ...scope.selectedBundle.optionalToolNames])]
+      : selectedToolNames;
+    const allTools = scope?.selectedBundle || selectedTools.length ? this.tools.listManifestsForPlanner() : undefined;
+    const selectedToolsChars = selectedTools.length ? this.manifestChars(selectedTools) : undefined;
+    const allToolsChars = allTools ? this.manifestChars(allTools) : undefined;
+    const promptBudget = this.removeUndefinedArgs({
+      selectedToolsChars,
+      allToolsChars,
+      promptReductionRate: allToolsChars && selectedToolsChars !== undefined
+        ? Number(((allToolsChars - selectedToolsChars) / allToolsChars).toFixed(4))
+        : undefined,
+    });
     return this.removeUndefinedArgs({
       route: scope?.route
-        ? {
+        ? this.removeUndefinedArgs({
             domain: scope.route.domain,
             intent: scope.route.intent,
             confidence: scope.route.confidence,
-          }
+            volumeNo: scope.route.volumeNo,
+            chapterNo: scope.route.chapterNo,
+            needsApproval: scope.route.needsApproval,
+            needsPersistence: scope.route.needsPersistence,
+            ambiguity: scope.route.ambiguity,
+          })
         : undefined,
       toolBundle: scope?.selectedBundle
-        ? {
+        ? this.removeUndefinedArgs({
             name: scope.selectedBundle.bundleName,
-            selectedToolCount: scope.selectedBundle.strictToolNames.length,
-          }
+            selectedToolCount: selectedTools.length || scope.selectedBundle.strictToolNames.length,
+            strictToolCount: scope.selectedBundle.strictToolNames.length,
+            optionalToolCount: scope.selectedBundle.optionalToolNames.length,
+            deniedToolCount: scope.selectedBundle.deniedToolNames?.length,
+            allToolCount: allTools?.length,
+          })
         : undefined,
+      selectedToolNames: selectedToolNames.length ? selectedToolNames : undefined,
+      allowedToolNames: allowedToolNames.length ? allowedToolNames : undefined,
+      promptBudget: Object.keys(promptBudget).length ? promptBudget : undefined,
     });
+  }
+
+  private validationFailureStage(scope?: PlannerToolScope): string {
+    return scope?.selectedBundle || scope?.route ? 'validator' : 'schema_validation';
+  }
+
+  private manifestChars(manifests: ToolManifestForPlanner[]): number {
+    return JSON.stringify(manifests).length;
+  }
+
+  private asOptionalRecord(value: unknown): Record<string, unknown> | undefined {
+    const record = this.asRecord(value);
+    return Object.keys(record).length ? record : undefined;
+  }
+
+  private mergeDiagnosticsObjects(...records: Array<Record<string, unknown> | undefined>): Record<string, unknown> | undefined {
+    const merged = Object.assign({}, ...records.filter(Boolean));
+    return Object.keys(merged).length ? merged : undefined;
   }
 
   private toolManifestsForPrompt(toolNames?: string[]): PlannerPromptToolManifest[] {

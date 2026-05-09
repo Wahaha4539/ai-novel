@@ -536,7 +536,7 @@
 
 ### ASP-P8-001 扩展 plannerDiagnostics
 
-- 状态：`[ ]`
+- 状态：`[x]`
 - 模块：API
 - 文件：
   - `apps/api/src/modules/agent-runs/agent-planner.service.ts`
@@ -548,6 +548,12 @@
   - 出错时能定位是 classify、bundle、planner 还是 validator。
 - 验证：
   - `pnpm --dir apps/api run test:agent`
+- 完成记录（2026-05-09）：
+  - `plannerDiagnostics` 扩展 route、toolBundle、selected/allowed tool names、promptBudget 和 graphNodes 摘要，不暴露完整 manifest。
+  - `selectToolBundleNode` 记录 graph route、bundle、selected tools、allowed tools、selected/all tools prompt 字符数和节点执行结果。
+  - scoped planner 校验失败会记录 `validator` / `repair_validator` 阶段，便于定位失败来自 validator。
+  - 修改文件：`apps/api/src/modules/agent-runs/agent-planner.service.ts`、`apps/api/src/modules/agent-runs/planner-graph/planner-graph.state.ts`、`apps/api/src/modules/agent-runs/planner-graph/nodes/select-tool-bundle.node.ts`、`apps/api/src/modules/agent-runs/planner-graph/tool-bundles/tool-bundle.registry.ts`、`apps/api/src/modules/agent-runs/agent-services.spec.ts`、`docs/architecture/agent-supervisor-planner-development-plan.md`。
+  - 测试：`AGENT_TEST_FILTER="ASP-P8-001" pnpm --dir apps/api run test:agent`，通过（3/355 targeted）。
 
 ### ASP-P8-002 前端展示 planner debug 信息
 

@@ -54,6 +54,10 @@ export class ToolBundleRegistry {
     return this.tools.listManifestsForPlanner(bundle.strictToolNames);
   }
 
+  listAllManifestsForPlanner(): ToolManifestForPlanner[] {
+    return this.tools.listManifestsForPlanner();
+  }
+
   resolveForRoute(route: Pick<RouteDecision, 'domain' | 'intent' | 'needsPersistence'>, context?: AgentContextV2): SelectedToolBundle {
     const definition = TOOL_BUNDLE_DEFINITIONS.find((item) => item.domain === route.domain && item.intents.includes(route.intent))
       ?? TOOL_BUNDLE_DEFINITIONS.find((item) => item.domain === route.domain);
