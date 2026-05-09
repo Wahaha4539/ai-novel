@@ -14895,12 +14895,91 @@ test('generate_volume_outline_preview 缺失 storyUnits 时直接报错', async 
   );
 });
 
+test('generate_volume_outline_preview accepts structured foreshadowPlan items', async () => {
+  const narrativePlan = createVccNarrativePlanForChapterCount(6) as Record<string, unknown>;
+  narrativePlan.foreshadowPlan = [
+    {
+      name: '残桥斜向受力线',
+      appearRange: { start: 1, end: 3 },
+      recoverRange: { start: 4, end: 6 },
+      recoveryMethod: '陆沉舟在活盐骨试梁中发现同类斜向受力线，确认残桥并非自然老化。',
+    },
+  ];
+  const llm = {
+    async chatJson() {
+      return {
+        data: {
+          volume: {
+            volumeNo: 1,
+            title: '罪桥初潮',
+            synopsis: '卷简介',
+            objective: '卷目标',
+            chapterCount: 6,
+            narrativePlan,
+          },
+          risks: [],
+        },
+        result: { model: 'mock-volume-outline', usage: { total_tokens: 42 } },
+      };
+    },
+  };
+  const tool = new GenerateVolumeOutlinePreviewTool(llm as never);
+  const result = await tool.run(
+    { context: { project: { title: '逆潮脊梁' }, characters: [{ name: '林澈' }, { name: '沈栖' }] }, instruction: '生成第1卷卷大纲', volumeNo: 1, chapterCount: 6 },
+    { agentRunId: 'run1', projectId: 'p1', mode: 'plan', approved: false, outputs: {}, policy: {} },
+  );
+
+  const foreshadowPlan = result.volume.narrativePlan?.foreshadowPlan as Array<Record<string, unknown>>;
+  assert.ok(Array.isArray(foreshadowPlan));
+  assert.equal(foreshadowPlan.length, 1);
+  assert.deepEqual(foreshadowPlan[0].appearRange, { start: 1, end: 3 });
+  assert.deepEqual(foreshadowPlan[0].recoverRange, { start: 4, end: 6 });
+  assert.match(String(foreshadowPlan[0].recoveryMethod), /活盐骨/);
+});
+
+test('generate_volume_outline_preview rejects structured foreshadowPlan missing recoveryMethod', async () => {
+  const narrativePlan = createVccNarrativePlanForChapterCount(6) as Record<string, unknown>;
+  narrativePlan.foreshadowPlan = [
+    { name: '残桥斜向受力线', appearRange: { start: 1, end: 3 }, recoverRange: { start: 4, end: 6 } },
+  ];
+  const llm = {
+    async chatJson() {
+      return {
+        data: {
+          volume: {
+            volumeNo: 1,
+            title: '罪桥初潮',
+            synopsis: '卷简介',
+            objective: '卷目标',
+            chapterCount: 6,
+            narrativePlan,
+          },
+          risks: [],
+        },
+        result: { model: 'mock-volume-outline', usage: { total_tokens: 42 } },
+      };
+    },
+  };
+  const tool = new GenerateVolumeOutlinePreviewTool(llm as never);
+
+  await assert.rejects(
+    () => tool.run(
+      { context: { project: { title: '逆潮脊梁' }, characters: [{ name: '林澈' }, { name: '沈栖' }] }, instruction: '生成第1卷卷大纲', volumeNo: 1, chapterCount: 6 },
+      { agentRunId: 'run1', projectId: 'p1', mode: 'plan', approved: false, outputs: {}, policy: {} },
+    ),
+    /recoveryMethod/,
+  );
+});
+
 test('generate_volume_outline_preview 校验失败前记录原始 LLM 返回原文', async () => {
   const logs: Array<{ event: string; payload: Record<string, unknown>; error?: unknown }> = [];
   const narrativePlan = createVccNarrativePlanForChapterCount(6) as Record<string, unknown>;
   narrativePlan.foreshadowPlan = [
     { name: '盐痕伏笔', setupRange: '1-2', payoffRange: '5-6', payoffMethod: '揭示活盐骨来源' },
   ];
+  const characterPlan = narrativePlan.characterPlan as Record<string, unknown>;
+  const newCharacterCandidates = characterPlan.newCharacterCandidates as Array<Record<string, unknown>>;
+  newCharacterCandidates[0].roleType = 'key_missing_family';
   const llm = {
     async chatJson() {
       return {
@@ -14930,7 +15009,7 @@ test('generate_volume_outline_preview 校验失败前记录原始 LLM 返回原�
       { context: { project: { title: '逆潮脊梁' }, characters: [{ name: '林澈' }, { name: '沈栖' }] }, instruction: '生成第1卷卷大纲', volumeNo: 1, chapterCount: 6 },
       { agentRunId: 'run1', projectId: 'p1', mode: 'plan', approved: false, outputs: {}, policy: {} },
     ),
-    /foreshadowPlan/,
+    /roleType/,
   );
 
   const responseLog = logs.find((item) => item.event === 'volume_outline_preview.llm_response.received');

@@ -15,11 +15,10 @@ export function assertVolumeNarrativePlan(value: unknown, options: AssertVolumeN
   for (const field of ['globalMainlineStage', 'volumeMainline', 'dramaticQuestion', 'startState', 'endState', 'endingHook', 'handoffToNextVolume']) {
     requiredText(record[field], `${label}.${field}`);
   }
-  for (const field of ['mainlineMilestones', 'foreshadowPlan']) {
-    if (!stringArray(record[field]).length) {
-      throw new Error(`${label}.${field} 缺失，未生成完整卷纲。`);
-    }
+  if (!stringArray(record.mainlineMilestones).length) {
+    throw new Error(`${label}.mainlineMilestones 缺失，未生成完整卷纲。`);
   }
+  const foreshadowPlan = requiredForeshadowPlan(record.foreshadowPlan, `${label}.foreshadowPlan`, options.chapterCount);
 
   const subStoryLines = requiredRecordArray(record.subStoryLines, `${label}.subStoryLines`);
   if (subStoryLines.length < 2) {
@@ -75,6 +74,7 @@ export function assertVolumeNarrativePlan(value: unknown, options: AssertVolumeN
 
   return {
     ...record,
+    foreshadowPlan,
     characterPlan: assertVolumeCharacterPlan(record.characterPlan, {
       chapterCount: options.chapterCount,
       existingCharacterNames: options.existingCharacterNames,
@@ -83,6 +83,87 @@ export function assertVolumeNarrativePlan(value: unknown, options: AssertVolumeN
       label: `${label}.characterPlan`,
     }),
   };
+}
+
+type ForeshadowPlanItem = string | Record<string, unknown>;
+
+const FORESHADOW_SETUP_RANGE_KEYS = ['appearRange', 'setupRange'] as const;
+const FORESHADOW_RECOVER_RANGE_KEYS = ['recoverRange', 'recoveryRange', 'payoffRange'] as const;
+const FORESHADOW_RECOVERY_METHOD_KEYS = ['recoveryMethod', 'payoffMethod'] as const;
+
+function requiredForeshadowPlan(value: unknown, label: string, chapterCount: number): ForeshadowPlanItem[] {
+  if (!Array.isArray(value) || !value.length) {
+    throw new Error(`${label} 缺失，未生成完整卷纲。`);
+  }
+  return value.map((item, index) => normalizeForeshadowPlanItem(item, `${label}[${index}]`, chapterCount));
+}
+
+function normalizeForeshadowPlanItem(item: unknown, label: string, chapterCount: number): ForeshadowPlanItem {
+  const itemText = text(item);
+  if (itemText) return itemText;
+
+  const record = asRecord(item);
+  if (!Object.keys(record).length) {
+    throw new Error(`${label} 缺失，未生成完整卷纲。`);
+  }
+
+  requiredText(record.name, `${label}.name`);
+  const setupRangeKey = firstPresentKey(record, FORESHADOW_SETUP_RANGE_KEYS);
+  if (!setupRangeKey) {
+    throw new Error(`${label}.appearRange 缺失，未生成完整卷纲。`);
+  }
+  const recoverRangeKey = firstPresentKey(record, FORESHADOW_RECOVER_RANGE_KEYS);
+  if (!recoverRangeKey) {
+    throw new Error(`${label}.recoverRange 缺失，未生成完整卷纲。`);
+  }
+  const recoveryMethodKey = firstPresentKey(record, FORESHADOW_RECOVERY_METHOD_KEYS);
+  if (!recoveryMethodKey) {
+    throw new Error(`${label}.recoveryMethod 缺失，未生成完整卷纲。`);
+  }
+
+  const setupRange = requiredForeshadowRange(record[setupRangeKey], `${label}.${setupRangeKey}`, chapterCount);
+  const recoverRange = requiredForeshadowRange(record[recoverRangeKey], `${label}.${recoverRangeKey}`, chapterCount);
+  const recoveryMethod = requiredText(record[recoveryMethodKey], `${label}.${recoveryMethodKey}`);
+
+  return {
+    ...record,
+    [setupRangeKey]: setupRange,
+    [recoverRangeKey]: recoverRange,
+    [recoveryMethodKey]: recoveryMethod,
+  };
+}
+
+function requiredForeshadowRange(value: unknown, label: string, chapterCount: number): unknown {
+  const range = asRecord(value);
+  if (Object.keys(range).length) {
+    const start = requiredPositiveInt(range.start, `${label}.start`);
+    const end = requiredPositiveInt(range.end, `${label}.end`);
+    assertForeshadowRangeBounds(start, end, chapterCount, label);
+    return { ...range, start, end };
+  }
+
+  const rangeText = text(value);
+  if (!rangeText) {
+    throw new Error(`${label} 缺失，未生成完整卷纲。`);
+  }
+  const numbers = rangeText.match(/\d+/g)?.map((item) => Number(item)) ?? [];
+  if (!numbers.length) {
+    throw new Error(`${label} 缺失章节区间，未生成完整卷纲。`);
+  }
+  const start = numbers[0];
+  const end = numbers.length > 1 ? numbers[1] : numbers[0];
+  assertForeshadowRangeBounds(start, end, chapterCount, label);
+  return rangeText;
+}
+
+function assertForeshadowRangeBounds(start: number, end: number, chapterCount: number, label: string) {
+  if (end < start || start > chapterCount || end > chapterCount) {
+    throw new Error(`${label} 无效，未生成完整卷纲。`);
+  }
+}
+
+function firstPresentKey(record: Record<string, unknown>, keys: readonly string[]): string | undefined {
+  return keys.find((key) => record[key] !== undefined && record[key] !== null);
 }
 
 function requiredText(value: unknown, label: string): string {
