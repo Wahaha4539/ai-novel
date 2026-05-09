@@ -465,7 +465,7 @@
 
 ### ASP-P7-001 完善 Writing / Revision bundle
 
-- 状态：`[ ]`
+- 状态：`[x]`
 - 模块：API
 - 文件：
   - `apps/api/src/modules/agent-runs/planner-graph/tool-bundles/writing.tool-bundle.ts`
@@ -478,6 +478,12 @@
   - “润色”不误用 `rewrite_chapter`。
 - 验证：
   - `pnpm --dir apps/api run test:agent`
+- 完成记录（2026-05-09）：
+  - `writing.chapter` 只保留单章正文写作链路，新增 `writing.series` 专门处理多章连续正文。
+  - 将原 revision 包拆为 `revision.polish` 与 `revision.rewrite`，润色/局部修改只暴露 `polish_chapter`，重写只暴露 `rewrite_chapter`，并互相加入 denied tools。
+  - 新增 `ASP-P7-001` targeted 测试覆盖写正文、多章正文、重写、不误用 rewrite 的润色 bundle 选择。
+  - 修改文件：`apps/api/src/modules/agent-runs/planner-graph/tool-bundles/writing.tool-bundle.ts`、`apps/api/src/modules/agent-runs/planner-graph/tool-bundles/revision.tool-bundle.ts`、`apps/api/src/modules/agent-runs/agent-services.spec.ts`、`docs/architecture/agent-supervisor-planner-development-plan.md`。
+  - 测试：`AGENT_TEST_FILTER="ASP-P7-001" pnpm --dir apps/api run test:agent`，通过（1/350 targeted）。
 
 ### ASP-P7-002 完善 Import bundle
 

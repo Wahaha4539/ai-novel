@@ -8299,7 +8299,7 @@ test('ToolBundleRegistry resolves core bundles and rejects missing registered to
   const registry = new ToolBundleRegistry(tools);
 
   registry.assertAllBundlesRegistered();
-  for (const bundleName of ['outline.volume', 'outline.chapter', 'writing.chapter', 'revision.chapter', 'import.project_assets', 'guided.step']) {
+  for (const bundleName of ['outline.volume', 'outline.chapter', 'writing.chapter', 'writing.series', 'revision.polish', 'revision.rewrite', 'import.project_assets', 'guided.step']) {
     assert.ok(TOOL_BUNDLE_DEFINITIONS.some((definition) => definition.name === bundleName));
     assert.equal(registry.resolveBundle(bundleName).bundleName, bundleName);
   }
@@ -8316,6 +8316,39 @@ test('ToolBundleRegistry resolves core bundles and rejects missing registered to
     () => new ToolBundleRegistry(missingVolumePersistTools).resolveBundle('outline.volume'),
     /ToolBundle outline\.volume references unregistered tools: persist_volume_outline/,
   );
+});
+
+test('ASP-P7-001 writing and revision bundles stay separated by intent', () => {
+  const allBundleToolNames = [...new Set(TOOL_BUNDLE_DEFINITIONS.flatMap((definition) => [
+    ...definition.strictToolNames,
+    ...(definition.optionalToolNames ?? []),
+    ...(definition.deniedToolNames ?? []),
+  ]))];
+  const tools = {
+    list: () => allBundleToolNames.map((name) => createTool({ name, requiresApproval: name.startsWith('write_') || name === 'rewrite_chapter' || name === 'polish_chapter', riskLevel: 'low', sideEffects: [] })),
+  } as unknown as ToolRegistryService;
+  const registry = new ToolBundleRegistry(tools);
+
+  const singleWrite = registry.resolveForRoute({ domain: 'writing', intent: 'chapter_write' });
+  assert.equal(singleWrite.bundleName, 'writing.chapter');
+  assert.ok(singleWrite.strictToolNames.includes('write_chapter'));
+  assert.ok(!singleWrite.strictToolNames.includes('write_chapter_series'));
+  assert.ok(singleWrite.deniedToolNames?.includes('rewrite_chapter'));
+
+  const seriesWrite = registry.resolveForRoute({ domain: 'writing', intent: 'multi_chapter_write' });
+  assert.equal(seriesWrite.bundleName, 'writing.series');
+  assert.ok(seriesWrite.strictToolNames.includes('write_chapter_series'));
+  assert.ok(seriesWrite.deniedToolNames?.includes('write_chapter'));
+
+  const rewrite = registry.resolveForRoute({ domain: 'revision', intent: 'chapter_rewrite' });
+  assert.equal(rewrite.bundleName, 'revision.rewrite');
+  assert.ok(rewrite.strictToolNames.includes('rewrite_chapter'));
+  assert.ok(rewrite.deniedToolNames?.includes('polish_chapter'));
+
+  const polish = registry.resolveForRoute({ domain: 'revision', intent: 'chapter_polish' });
+  assert.equal(polish.bundleName, 'revision.polish');
+  assert.ok(polish.strictToolNames.includes('polish_chapter'));
+  assert.ok(polish.deniedToolNames?.includes('rewrite_chapter'));
 });
 
 test('selectToolBundleNode selects outline and guided bundles with diagnostics', async () => {
