@@ -113,8 +113,13 @@ function includesAny(value: string, keywords: string[]): boolean {
 }
 
 function isChapterOutlineGoal(goal: string): boolean {
+  if (hasNegatedChapterOutlineGoal(goal)) return false;
   return includesAny(goal, ['章节细纲', '卷细纲', '章节规划', '等长细纲', '拆成'])
     || /[0-9０-９一二三四五六七八九十百]+ ?章/.test(goal) && includesAny(goal, ['细纲', '大纲', '规划']);
+}
+
+function hasNegatedChapterOutlineGoal(goal: string): boolean {
+  return includesAny(goal, ['不生成章节细纲', '不要生成章节细纲', '不需要章节细纲', '无需章节细纲', '不用章节细纲', '不要章节细纲', '不拆成章节']);
 }
 
 function isVolumeOutlineGoal(goal: string): boolean {

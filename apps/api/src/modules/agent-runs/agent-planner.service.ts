@@ -9,10 +9,17 @@ import { LlmGatewayService } from '../llm/llm-gateway.service';
 import { DEFAULT_LLM_TIMEOUT_MS } from '../llm/llm-timeout.constants';
 import { AgentContextV2 } from './agent-context-builder.service';
 import type { ImportPreviewModeDto } from './dto/create-agent-plan.dto';
-import { invokeAgentPlannerGraph } from './planner-graph/agent-planner.graph';
 import { AgentPlannerGraphService } from './planner-graph/agent-planner-graph.service';
+import { classifyIntentNode, createSelectToolBundleNode } from './planner-graph/nodes';
 import { PlanValidatorService } from './planner-graph/plan-validator.service';
-import type { AgentPlannerGraphState, RouteDecision, SelectedToolBundle } from './planner-graph/planner-graph.state';
+import {
+  appendPlannerGraphNode,
+  createAgentPlannerGraphInitialState,
+  type AgentPlannerGraphState,
+  type RouteDecision,
+  type SelectedToolBundle,
+} from './planner-graph/planner-graph.state';
+import { ToolBundleRegistry } from './planner-graph/tool-bundles';
 
 export interface AgentPlanStepSpec {
   id?: string;
@@ -201,13 +208,44 @@ export class AgentPlannerService {
   }
 
   private async createGraphWrappedPlan(goal: string, defaults: PlannerOutputDefaults, llmBudget: PlannerLlmBudget, context?: AgentContextV2): Promise<AgentPlanSpec> {
-    const legacyPlan = await this.createLlmPlan(goal, defaults, llmBudget, context);
-    const graphInput = { goal, context, defaults, legacyPlan };
-    const graphState = this.plannerGraph
-      ? await this.plannerGraph.invoke(graphInput)
-      : await invokeAgentPlannerGraph(graphInput);
-    if (!graphState.plan) throw new Error('Agent Planner Graph 未返回计划');
-    return this.withGraphDiagnostics(graphState.plan, graphState);
+    let graphState = createAgentPlannerGraphInitialState({ goal, context, defaults });
+    graphState = this.mergeGraphState(graphState, await classifyIntentNode(graphState));
+    this.requireGraphRoute(graphState);
+
+    const registry = new ToolBundleRegistry(this.tools);
+    graphState = this.mergeGraphState(graphState, await createSelectToolBundleNode(registry)(graphState));
+    const selectedRoute = this.requireGraphRoute(graphState);
+    if (!graphState.selectedBundle || !graphState.selectedTools?.length) {
+      throw new Error(`Agent Planner Graph selected no tools for route ${selectedRoute.domain}:${selectedRoute.intent}`);
+    }
+
+    const plan = await this.createLlmPlan(goal, defaults, llmBudget, context, {
+      route: graphState.route,
+      selectedBundle: graphState.selectedBundle,
+      selectedTools: graphState.selectedTools,
+    });
+    graphState = this.mergeGraphState(graphState, {
+      plan,
+      diagnostics: appendPlannerGraphNode(graphState.diagnostics, {
+        name: 'domainPlanner',
+        status: 'ok',
+        detail: `${graphState.selectedBundle.bundleName} plan=${plan.taskType}`,
+      }),
+    });
+    return this.withGraphDiagnostics(plan, graphState);
+  }
+
+  private mergeGraphState(state: AgentPlannerGraphState, update: Partial<AgentPlannerGraphState>): AgentPlannerGraphState {
+    return { ...state, ...update, diagnostics: update.diagnostics ?? state.diagnostics };
+  }
+
+  private requireGraphRoute(state: AgentPlannerGraphState): RouteDecision {
+    if (!state.route) throw new Error('Agent Planner Graph did not classify a route');
+    if (state.route.ambiguity?.needsClarification || state.route.confidence < 0.5) {
+      const questions = state.route.ambiguity?.questions?.join('; ') || 'Please clarify the creative task type.';
+      throw new Error(`Agent Planner Graph route needs clarification for ${state.route.domain}:${state.route.intent}: ${questions}`);
+    }
+    return state.route;
   }
 
   private withGraphDiagnostics(plan: AgentPlanSpec, graphState: AgentPlannerGraphState): AgentPlanSpec {
@@ -456,7 +494,10 @@ export class AgentPlannerService {
   private validateAndNormalizeScopedPlan(data: unknown, defaults: PlannerOutputDefaults, context?: AgentContextV2, toolScope?: PlannerToolScope): AgentPlanSpec {
     const validator = toolScope?.selectedBundle || toolScope?.route ? this.planValidator ?? new PlanValidatorService() : undefined;
     validator?.validateRaw({ data, context, route: toolScope?.route, selectedBundle: toolScope?.selectedBundle });
-    const plan = this.validateAndNormalizeLlmPlan(data, defaults, context);
+    const selectedToolNames = toolScope?.selectedTools?.length
+      ? new Set(toolScope.selectedTools.map((tool) => tool.name))
+      : undefined;
+    const plan = this.validateAndNormalizeLlmPlan(data, defaults, context, selectedToolNames);
     validator?.validate({ plan, context, route: toolScope?.route, selectedBundle: toolScope?.selectedBundle });
     return plan;
   }
@@ -612,11 +653,12 @@ export class AgentPlannerService {
     return Object.fromEntries(Object.entries(args).filter(([name]) => !runtimeParams.has(name)));
   }
 
-  private validateAndNormalizeLlmPlan(data: unknown, defaults: PlannerOutputDefaults, context?: AgentContextV2): AgentPlanSpec {
+  private validateAndNormalizeLlmPlan(data: unknown, defaults: PlannerOutputDefaults, context?: AgentContextV2, allowedToolNames?: Set<string>): AgentPlanSpec {
     const record = this.asRecord(data);
     const availableTaskTypes = new Set(this.listTaskTypes());
-    const registeredTools = new Set(this.tools.list().map((tool) => tool.name));
-    const toolRequiresApproval = new Map(this.tools.list().map((tool) => [tool.name, tool.requiresApproval]));
+    const allTools = this.tools.list();
+    const registeredTools = allowedToolNames ?? new Set(allTools.map((tool) => tool.name));
+    const toolRequiresApproval = new Map(allTools.map((tool) => [tool.name, tool.requiresApproval]));
     const rawSteps = Array.isArray(record.steps) ? record.steps : [];
     const maxSteps = this.rules.getPolicy().limits.maxSteps;
     if (typeof record.taskType !== 'string') throw new Error('LLM Plan taskType 必须由模型明确给出');

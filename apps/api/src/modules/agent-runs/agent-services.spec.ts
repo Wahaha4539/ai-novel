@@ -8226,35 +8226,46 @@ test('Planner exposes timeline_plan for read-only planned timeline candidates', 
   assert.match(promptPayload?.taskTypeGuidance.timeline_plan, /validate_timeline_preview/);
 });
 
-test('Planner graph feature flag wraps legacy plan diagnostics without changing steps', async () => {
+test('Planner graph feature flag scopes createPlan to selected bundle tools', async () => {
   const previousFlag = process.env.AGENT_PLANNER_GRAPH_ENABLED;
-  const toolList = [
-    createTool({ name: 'echo_report', requiresApproval: false, riskLevel: 'low', sideEffects: [] }),
-  ];
+  const allBundleToolNames = [...new Set(TOOL_BUNDLE_DEFINITIONS.flatMap((definition) => [
+    ...definition.strictToolNames,
+    ...(definition.optionalToolNames ?? []),
+    ...(definition.deniedToolNames ?? []),
+  ]))];
+  const promptPayloads: Array<Record<string, any>> = [];
   const tools = {
-    list: () => toolList,
-    listManifestsForPlanner: () => toolList.map((tool) => ({
-      name: tool.name,
-      displayName: tool.name,
-      description: tool.description,
-      whenToUse: ['需要给出只读说明或澄清时使用。'],
+    list: () => allBundleToolNames.map((name) => createTool({
+      name,
+      requiresApproval: name.startsWith('persist_') || name === 'write_chapter' || name === 'rewrite_chapter' || name === 'write_chapter_series',
+      riskLevel: name.startsWith('persist_') || name === 'write_chapter' ? 'high' : 'low',
+      sideEffects: name.startsWith('persist_') || name === 'write_chapter' ? ['write'] : [],
+    })),
+    listManifestsForPlanner: (toolNames?: string[]) => (toolNames?.length ? [...new Set(toolNames)] : allBundleToolNames).map((name) => ({
+      name,
+      displayName: name,
+      description: name,
+      whenToUse: [`Use ${name}`],
       whenNotToUse: [],
-      allowedModes: tool.allowedModes,
-      riskLevel: tool.riskLevel,
-      requiresApproval: tool.requiresApproval,
-      sideEffects: tool.sideEffects,
+      allowedModes: ['plan', 'act'],
+      riskLevel: name.startsWith('persist_') || name === 'write_chapter' ? 'high' : 'low',
+      requiresApproval: name.startsWith('persist_') || name === 'write_chapter' || name === 'rewrite_chapter' || name === 'write_chapter_series',
+      sideEffects: name.startsWith('persist_') || name === 'write_chapter' ? ['write'] : [],
     })),
   } as unknown as ToolRegistryService;
   const llm = {
-    async chatJson() {
+    async chatJson(messages: Array<{ role: string; content: string }>) {
+      promptPayloads.push(JSON.parse(messages[1].content));
       return {
         data: {
-          taskType: 'general',
-          summary: 'Graph flag smoke plan.',
+          taskType: 'outline_design',
+          summary: 'Volume outline plan.',
           assumptions: [],
           risks: [],
           steps: [
-            { stepNo: 1, name: 'Report result', tool: 'echo_report', mode: 'act', requiresApproval: false, args: { message: 'ok' } },
+            { stepNo: 1, name: 'Inspect project context', tool: 'inspect_project_context', mode: 'act', requiresApproval: false, args: { focus: ['outline'] } },
+            { stepNo: 2, name: 'Generate volume outline preview', tool: 'generate_volume_outline_preview', mode: 'act', requiresApproval: false, args: { context: '{{steps.1.output}}' } },
+            { stepNo: 3, name: 'Persist approved volume outline', tool: 'persist_volume_outline', mode: 'act', requiresApproval: true, args: { preview: '{{steps.2.output}}' } },
           ],
         },
         result: { model: 'planner-mock', usage: { prompt_tokens: 1, completion_tokens: 1 } },
@@ -8263,19 +8274,22 @@ test('Planner graph feature flag wraps legacy plan diagnostics without changing 
   };
 
   try {
-    process.env.AGENT_PLANNER_GRAPH_ENABLED = 'false';
-    const legacyPlanner = new AgentPlannerService(new SkillRegistryService(), tools, new RuleEngineService(), llm as never);
-    const legacyPlan = await legacyPlanner.createPlan('graph flag smoke');
-
     process.env.AGENT_PLANNER_GRAPH_ENABLED = 'true';
-    const graphPlanner = new AgentPlannerService(new SkillRegistryService(), tools, new RuleEngineService(), llm as never, new AgentPlannerGraphService());
-    const graphPlan = await graphPlanner.createPlan('graph flag smoke');
+    const graphPlanner = new AgentPlannerService(new SkillRegistryService(), tools, new RuleEngineService(), llm as never, new AgentPlannerGraphService(), new PlanValidatorService());
+    const graphPlan = await graphPlanner.createPlan('重写第1卷卷大纲，不生成章节细纲');
 
-    assert.equal(legacyPlan.plannerDiagnostics?.source, 'llm');
+    assert.equal(promptPayloads.length, 1);
+    const promptToolNames = (promptPayloads[0].availableTools as Array<Record<string, unknown>>).map((tool) => tool.name);
+    assert.deepEqual(promptToolNames, ['inspect_project_context', 'generate_volume_outline_preview', 'persist_volume_outline']);
+    assert.ok(!promptToolNames.includes('write_chapter'));
     assert.equal(graphPlan.plannerDiagnostics?.source, 'langgraph_supervisor');
     assert.equal(graphPlan.plannerDiagnostics?.legacySource, 'llm');
-    assert.ok(Array.isArray(graphPlan.plannerDiagnostics?.graphNodes));
-    assert.deepEqual(graphPlan.steps, legacyPlan.steps);
+    assert.equal((graphPlan.plannerDiagnostics?.toolBundle as Record<string, any>).name, 'outline.volume');
+    assert.deepEqual(graphPlan.plannerDiagnostics?.selectedToolNames, ['inspect_project_context', 'generate_volume_outline_preview', 'persist_volume_outline']);
+    assert.deepEqual(
+      (graphPlan.plannerDiagnostics?.graphNodes as Array<{ name: string }>).map((node) => node.name),
+      ['classifyIntent', 'outlineSupervisor', 'selectToolBundle', 'domainPlanner'],
+    );
   } finally {
     if (previousFlag === undefined) delete process.env.AGENT_PLANNER_GRAPH_ENABLED;
     else process.env.AGENT_PLANNER_GRAPH_ENABLED = previousFlag;
@@ -8285,54 +8299,63 @@ test('Planner graph feature flag wraps legacy plan diagnostics without changing 
 test('ASP-P9-001 graph planner defaults on for test/local and remains closable', async () => {
   const previousFlag = process.env.AGENT_PLANNER_GRAPH_ENABLED;
   const previousNodeEnv = process.env.NODE_ENV;
-  const toolList = [
-    createTool({ name: 'echo_report', requiresApproval: false, riskLevel: 'low', sideEffects: [] }),
-  ];
+  const allBundleToolNames = [...new Set(TOOL_BUNDLE_DEFINITIONS.flatMap((definition) => [
+    ...definition.strictToolNames,
+    ...(definition.optionalToolNames ?? []),
+    ...(definition.deniedToolNames ?? []),
+  ]))];
   const tools = {
-    list: () => toolList,
-    listManifestsForPlanner: () => toolList.map((tool) => ({
-      name: tool.name,
-      displayName: tool.name,
-      description: tool.description,
-      whenToUse: ['需要给出只读说明或澄清时使用。'],
+    list: () => allBundleToolNames.map((name) => createTool({
+      name,
+      requiresApproval: name.startsWith('persist_') || name === 'write_chapter' || name === 'rewrite_chapter' || name === 'write_chapter_series',
+      riskLevel: name.startsWith('persist_') || name === 'write_chapter' ? 'high' : 'low',
+      sideEffects: name.startsWith('persist_') || name === 'write_chapter' ? ['write'] : [],
+    })),
+    listManifestsForPlanner: (toolNames?: string[]) => (toolNames?.length ? [...new Set(toolNames)] : allBundleToolNames).map((name) => ({
+      name,
+      displayName: name,
+      description: name,
+      whenToUse: [`Use ${name}`],
       whenNotToUse: [],
-      allowedModes: tool.allowedModes,
-      riskLevel: tool.riskLevel,
-      requiresApproval: tool.requiresApproval,
-      sideEffects: tool.sideEffects,
+      allowedModes: ['plan', 'act'],
+      riskLevel: name.startsWith('persist_') || name === 'write_chapter' ? 'high' : 'low',
+      requiresApproval: name.startsWith('persist_') || name === 'write_chapter' || name === 'rewrite_chapter' || name === 'write_chapter_series',
+      sideEffects: name.startsWith('persist_') || name === 'write_chapter' ? ['write'] : [],
     })),
   } as unknown as ToolRegistryService;
   const llm = {
     async chatJson() {
       return {
         data: {
-          taskType: 'general',
-          summary: 'Graph default smoke plan.',
+          taskType: 'outline_design',
+          summary: 'Graph default volume outline plan.',
           assumptions: [],
           risks: [],
           steps: [
-            { stepNo: 1, name: 'Report result', tool: 'echo_report', mode: 'act', requiresApproval: false, args: { message: 'ok' } },
+            { stepNo: 1, name: 'Inspect project context', tool: 'inspect_project_context', mode: 'act', requiresApproval: false, args: { focus: ['outline'] } },
+            { stepNo: 2, name: 'Generate volume outline preview', tool: 'generate_volume_outline_preview', mode: 'act', requiresApproval: false, args: { context: '{{steps.1.output}}' } },
+            { stepNo: 3, name: 'Persist approved volume outline', tool: 'persist_volume_outline', mode: 'act', requiresApproval: true, args: { preview: '{{steps.2.output}}' } },
           ],
         },
         result: { model: 'planner-mock', usage: { prompt_tokens: 1, completion_tokens: 1 } },
       };
     },
   };
-  const createPlanner = () => new AgentPlannerService(new SkillRegistryService(), tools, new RuleEngineService(), llm as never, new AgentPlannerGraphService());
+  const createPlanner = () => new AgentPlannerService(new SkillRegistryService(), tools, new RuleEngineService(), llm as never, new AgentPlannerGraphService(), new PlanValidatorService());
 
   try {
     delete process.env.AGENT_PLANNER_GRAPH_ENABLED;
     process.env.NODE_ENV = 'test';
-    const testDefault = await createPlanner().createPlan('graph default smoke');
+    const testDefault = await createPlanner().createPlan('重写第1卷卷大纲，不生成章节细纲');
     assert.equal(testDefault.plannerDiagnostics?.source, 'langgraph_supervisor');
 
     process.env.AGENT_PLANNER_GRAPH_ENABLED = 'false';
-    const forcedLegacy = await createPlanner().createPlan('graph forced legacy smoke');
+    const forcedLegacy = await createPlanner().createPlan('重写第1卷卷大纲，不生成章节细纲');
     assert.equal(forcedLegacy.plannerDiagnostics?.source, 'llm');
 
     delete process.env.AGENT_PLANNER_GRAPH_ENABLED;
     process.env.NODE_ENV = 'production';
-    const productionDefault = await createPlanner().createPlan('graph production default smoke');
+    const productionDefault = await createPlanner().createPlan('重写第1卷卷大纲，不生成章节细纲');
     assert.equal(productionDefault.plannerDiagnostics?.source, 'llm');
   } finally {
     if (previousFlag === undefined) delete process.env.AGENT_PLANNER_GRAPH_ENABLED;
