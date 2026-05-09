@@ -8384,6 +8384,40 @@ test('ASP-P7-002 import bundle scopes tools by mode and requested assets', () =>
   );
 });
 
+test('ASP-P7-003 quality timeline and worldbuilding bundles stay isolated', () => {
+  const allBundleToolNames = [...new Set(TOOL_BUNDLE_DEFINITIONS.flatMap((definition) => [
+    ...definition.strictToolNames,
+    ...(definition.optionalToolNames ?? []),
+    ...(definition.deniedToolNames ?? []),
+  ]))];
+  const registry = new ToolBundleRegistry({
+    list: () => allBundleToolNames.map((name) => createTool({ name, requiresApproval: name.startsWith('persist_'), riskLevel: 'low', sideEffects: [] })),
+  } as unknown as ToolRegistryService);
+
+  const quality = registry.resolveForRoute({ domain: 'quality', intent: 'character_consistency_check' });
+  assert.ok(quality.strictToolNames.includes('character_consistency_check'));
+  assert.ok(!quality.strictToolNames.includes('write_chapter'));
+  assert.ok(!quality.strictToolNames.includes('rewrite_chapter'));
+  assert.ok(quality.deniedToolNames?.includes('polish_chapter'));
+
+  const timelinePreview = registry.resolveForRoute({ domain: 'timeline', intent: 'timeline_plan', needsPersistence: false });
+  assert.ok(timelinePreview.strictToolNames.includes('generate_timeline_preview'));
+  assert.ok(!timelinePreview.strictToolNames.includes('persist_timeline_events'));
+
+  const timelinePersist = registry.resolveForRoute({ domain: 'timeline', intent: 'timeline_plan', needsPersistence: true });
+  assert.ok(timelinePersist.strictToolNames.includes('persist_timeline_events'));
+
+  const worldbuilding = registry.resolveForRoute({ domain: 'worldbuilding', intent: 'worldbuilding_expand' });
+  assert.equal(worldbuilding.bundleName, 'worldbuilding.expand');
+  assert.deepEqual(worldbuilding.strictToolNames.slice(-3), ['generate_worldbuilding_preview', 'validate_worldbuilding', 'persist_worldbuilding']);
+  assert.ok(!worldbuilding.strictToolNames.includes('generate_story_bible_preview'));
+
+  const storyBible = registry.resolveForRoute({ domain: 'worldbuilding', intent: 'story_bible_expand' });
+  assert.equal(storyBible.bundleName, 'worldbuilding.story_bible');
+  assert.deepEqual(storyBible.strictToolNames.slice(-3), ['generate_story_bible_preview', 'validate_story_bible', 'persist_story_bible']);
+  assert.ok(!storyBible.strictToolNames.includes('generate_worldbuilding_preview'));
+});
+
 test('selectToolBundleNode selects outline and guided bundles with diagnostics', async () => {
   const allBundleToolNames = [...new Set(TOOL_BUNDLE_DEFINITIONS.flatMap((definition) => [
     ...definition.strictToolNames,

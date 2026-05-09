@@ -510,7 +510,7 @@
 
 ### ASP-P7-003 完善 Quality / Timeline / Worldbuilding bundle
 
-- 状态：`[ ]`
+- 状态：`[x]`
 - 模块：API
 - 文件：
   - `apps/api/src/modules/agent-runs/planner-graph/tool-bundles/quality.tool-bundle.ts`
@@ -524,6 +524,13 @@
   - 世界观扩展保留 preview -> validate -> approved persist 链路。
 - 验证：
   - `pnpm --dir apps/api run test:agent`
+- 完成记录（2026-05-09）：
+  - Quality bundle 补充 denied 写作/改写工具，角色检查等只读检查不暴露正文写作链路。
+  - Timeline bundle 按 `route.needsPersistence` 动态选择 `persist_timeline_events`，默认预览不进入 selected tools，明确保存时才进入 strict tools。
+  - Worldbuilding bundle 拆分为 `worldbuilding.expand` 与 `worldbuilding.story_bible`，分别保留 preview -> validate -> approved persist 链路，避免互相暴露无关设定写入工具。
+  - 修改文件：`apps/api/src/modules/agent-runs/planner-graph/tool-bundles/quality.tool-bundle.ts`、`apps/api/src/modules/agent-runs/planner-graph/tool-bundles/timeline.tool-bundle.ts`、`apps/api/src/modules/agent-runs/planner-graph/tool-bundles/worldbuilding.tool-bundle.ts`、`apps/api/src/modules/agent-runs/planner-graph/tool-bundles/tool-bundle.registry.ts`、`apps/api/src/modules/agent-runs/agent-services.spec.ts`、`docs/architecture/agent-supervisor-planner-development-plan.md`。
+  - 测试：`AGENT_TEST_FILTER="ASP-P7-003" pnpm --dir apps/api run test:agent`，通过（1/352 targeted）。
+  - 测试：`pnpm --dir apps/api run eval:agent:live`，通过（legacy 24/24，graph 8/8）。
 
 ## 10. P8 可观测性与前端调试
 

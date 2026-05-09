@@ -8,7 +8,7 @@ import { importToolBundles, selectImportProjectAssetsStrictTools } from './impor
 import { outlineToolBundles } from './outline.tool-bundle';
 import { qualityToolBundles } from './quality.tool-bundle';
 import { revisionToolBundles } from './revision.tool-bundle';
-import { timelineToolBundles } from './timeline.tool-bundle';
+import { selectTimelinePlanStrictTools, timelineToolBundles } from './timeline.tool-bundle';
 import type { ToolBundleDefinition } from './tool-bundle.types';
 import { worldbuildingToolBundles } from './worldbuilding.tool-bundle';
 import { writingToolBundles } from './writing.tool-bundle';
@@ -54,7 +54,7 @@ export class ToolBundleRegistry {
     return this.tools.listManifestsForPlanner(bundle.strictToolNames);
   }
 
-  resolveForRoute(route: Pick<RouteDecision, 'domain' | 'intent'>, context?: AgentContextV2): SelectedToolBundle {
+  resolveForRoute(route: Pick<RouteDecision, 'domain' | 'intent' | 'needsPersistence'>, context?: AgentContextV2): SelectedToolBundle {
     const definition = TOOL_BUNDLE_DEFINITIONS.find((item) => item.domain === route.domain && item.intents.includes(route.intent))
       ?? TOOL_BUNDLE_DEFINITIONS.find((item) => item.domain === route.domain);
     if (!definition) throw new Error(`No ToolBundle for route ${route.domain}:${route.intent}`);
@@ -66,6 +66,16 @@ export class ToolBundleRegistry {
         ...selectedBundle,
         strictToolNames,
         selectionReason: `${selectedBundle.selectionReason} Selected import tools are scoped by importPreviewMode and requestedAssetTypes.`,
+      };
+    }
+    if (definition.name === 'timeline.plan') {
+      const strictToolNames = selectTimelinePlanStrictTools(route);
+      this.assertToolNamesRegistered(definition.name, strictToolNames);
+      return {
+        ...selectedBundle,
+        strictToolNames,
+        optionalToolNames: selectedBundle.optionalToolNames.filter((toolName) => !strictToolNames.includes(toolName)),
+        selectionReason: `${selectedBundle.selectionReason} Timeline persistence tools are selected only when route.needsPersistence is true.`,
       };
     }
     return selectedBundle;
