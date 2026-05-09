@@ -196,9 +196,9 @@ export class GenerateStoryUnitsPreviewTool implements BaseTool<GenerateStoryUnit
       `primaryPurpose 和 secondaryPurposes 只能使用：${STORY_UNIT_PURPOSES.join(', ')}。`,
       `relationToMainline 只能使用：${STORY_UNIT_MAINLINE_RELATIONS.join(', ')}。`,
       '每个单元故事必须有具体人物、行动压力、情绪效果、至少 2 项 requiredDeliveries，并至少在人物、关系、世界观或线索四类贡献中命中一类。',
-      '每个单元故事必须给 suggestedChapterMin 和 suggestedChapterMax，但不要把 chapterRange 写进 unit 本体。',
+      '每个单元故事必须给 suggestedChapterMin 和 suggestedChapterMax，二者表示该单元的弹性建议篇幅，不是绝对章号，也不是 chapterAllocation 的硬性上限；不要把 chapterRange 写进 unit 本体。',
       chapterCount
-        ? `本次目标章节数为 ${chapterCount}，必须在 storyUnitPlan.chapterAllocation 中独立分配连续章节范围，覆盖第 1 章到第 ${chapterCount} 章；chapterAllocation 只服务本次章节细分，不改变单元故事本体的弹性。`
+        ? `本次目标章节数为 ${chapterCount}，必须在 storyUnitPlan.chapterAllocation 中独立分配连续章节范围，覆盖第 1 章到第 ${chapterCount} 章；chapterAllocation 是本次章节细分的可执行分配，优先保证连续覆盖、chapterRoles 数量匹配和叙事承接。`
         : '本次没有目标章节数，不要输出 chapterAllocation；只输出可后续扩展的单元故事池。',
       '禁止用“过渡章、调查章、冲突升级章”等模板名凑数；如果上下文不足以生成高质量单元故事，应让调用失败，而不是输出占位骨架。',
       '输出字段只包含 volumeNo、chapterCount、storyUnitPlan、risks。',

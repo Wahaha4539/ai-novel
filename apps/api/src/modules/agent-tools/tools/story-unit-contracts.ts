@@ -155,9 +155,6 @@ function normalizeChapterAllocation(value: unknown, units: VolumeStoryUnit[], op
     const end = requiredPositiveInt(range.end, `${itemLabel}.chapterRange.end`);
     if (end < start) throw new Error(`${itemLabel}.chapterRange 无效，未生成有效章节分配。`);
     const length = end - start + 1;
-    if (length < unit.suggestedChapterMin || length > unit.suggestedChapterMax) {
-      throw new Error(`${itemLabel}.chapterRange 超出 ${unitId} 的 suggestedChapterMin/suggestedChapterMax，未生成一致的单元故事计划。`);
-    }
     const chapterRoles = requiredTextArray(allocation.chapterRoles, `${itemLabel}.chapterRoles`, length);
     if (chapterRoles.length !== length) {
       throw new Error(`${itemLabel}.chapterRoles 数量必须等于章节范围长度，未生成可执行章节分配。`);

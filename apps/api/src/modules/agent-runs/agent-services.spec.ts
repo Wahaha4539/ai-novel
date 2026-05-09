@@ -573,6 +573,28 @@ test('generate_story_units_preview 有目标章数时缺少 chapterAllocation �
   );
 });
 
+test('generate_story_units_preview chapterAllocation 可执行分配优先于建议篇幅', async () => {
+  const plan = JSON.parse(JSON.stringify(createVccStoryUnitPlan(6))) as Record<string, any>;
+  plan.units[0].suggestedChapterMin = 1;
+  plan.units[0].suggestedChapterMax = 2;
+  plan.chapterAllocation[0].chapterRange = { start: 1, end: 6 };
+  plan.chapterAllocation[0].chapterRoles = ['入局', '试压', '交锋', '反转', '代价', '收束'];
+  const tool = new GenerateStoryUnitsPreviewTool({
+    async chatJson() {
+      return { data: { volumeNo: 1, chapterCount: 6, storyUnitPlan: plan, risks: [] }, result: { model: 'mock-story-units' } };
+    },
+  } as never);
+
+  const result = await tool.run(
+    { volumeNo: 1, chapterCount: 6 },
+    { agentRunId: 'run-story-units-flex-allocation', projectId: 'p1', mode: 'plan', approved: false, outputs: {}, policy: {} },
+  );
+
+  assert.equal(result.storyUnitPlan.units[0].suggestedChapterMax, 2);
+  assert.equal(result.storyUnitPlan.chapterAllocation?.[0].chapterRange.end, 6);
+  assert.equal(result.storyUnitPlan.chapterAllocation?.[0].chapterRoles.length, 6);
+});
+
 test('generate_story_units_preview LLM timeout 直接抛错且不生成 fallback', async () => {
   let calls = 0;
   const tool = new GenerateStoryUnitsPreviewTool({
