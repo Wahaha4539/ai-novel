@@ -582,7 +582,7 @@
 
 ### ASP-P9-001 本地默认启用 graph planner
 
-- 状态：`[ ]`
+- 状态：`[x]`
 - 模块：Config / API
 - 文件：
   - `.env.example` 或项目配置文档
@@ -595,6 +595,13 @@
 - 验证：
   - `pnpm --dir apps/api run test:agent`
   - `pnpm run eval:agent:gate`
+- 完成记录（2026-05-09）：
+  - `AGENT_PLANNER_GRAPH_ENABLED` 未设置时，本地/测试环境默认启用 graph planner；生产环境未设置时仍走 legacy。
+  - 显式设置 `AGENT_PLANNER_GRAPH_ENABLED=false` 可在本地/测试/生产强制关闭 graph planner。
+  - `.env.example` 增加本地默认启用配置说明。
+  - 修改文件：`.env.example`、`apps/api/src/modules/agent-runs/agent-planner.service.ts`、`apps/api/src/modules/agent-runs/agent-services.spec.ts`、`docs/architecture/agent-supervisor-planner-development-plan.md`。
+  - 测试：`AGENT_TEST_FILTER="ASP-P9-001" pnpm --dir apps/api run test:agent`，通过（1/356 targeted）。
+  - 测试：`pnpm run eval:agent:gate`，通过（live legacy 24/24、live graph 8/8、retrieval 24/24、replan 16/16）。
 
 ### ASP-P9-002 生产灰度策略
 

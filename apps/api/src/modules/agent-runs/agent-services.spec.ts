@@ -8263,7 +8263,7 @@ test('Planner graph feature flag wraps legacy plan diagnostics without changing 
   };
 
   try {
-    delete process.env.AGENT_PLANNER_GRAPH_ENABLED;
+    process.env.AGENT_PLANNER_GRAPH_ENABLED = 'false';
     const legacyPlanner = new AgentPlannerService(new SkillRegistryService(), tools, new RuleEngineService(), llm as never);
     const legacyPlan = await legacyPlanner.createPlan('graph flag smoke');
 
@@ -8279,6 +8279,66 @@ test('Planner graph feature flag wraps legacy plan diagnostics without changing 
   } finally {
     if (previousFlag === undefined) delete process.env.AGENT_PLANNER_GRAPH_ENABLED;
     else process.env.AGENT_PLANNER_GRAPH_ENABLED = previousFlag;
+  }
+});
+
+test('ASP-P9-001 graph planner defaults on for test/local and remains closable', async () => {
+  const previousFlag = process.env.AGENT_PLANNER_GRAPH_ENABLED;
+  const previousNodeEnv = process.env.NODE_ENV;
+  const toolList = [
+    createTool({ name: 'echo_report', requiresApproval: false, riskLevel: 'low', sideEffects: [] }),
+  ];
+  const tools = {
+    list: () => toolList,
+    listManifestsForPlanner: () => toolList.map((tool) => ({
+      name: tool.name,
+      displayName: tool.name,
+      description: tool.description,
+      whenToUse: ['需要给出只读说明或澄清时使用。'],
+      whenNotToUse: [],
+      allowedModes: tool.allowedModes,
+      riskLevel: tool.riskLevel,
+      requiresApproval: tool.requiresApproval,
+      sideEffects: tool.sideEffects,
+    })),
+  } as unknown as ToolRegistryService;
+  const llm = {
+    async chatJson() {
+      return {
+        data: {
+          taskType: 'general',
+          summary: 'Graph default smoke plan.',
+          assumptions: [],
+          risks: [],
+          steps: [
+            { stepNo: 1, name: 'Report result', tool: 'echo_report', mode: 'act', requiresApproval: false, args: { message: 'ok' } },
+          ],
+        },
+        result: { model: 'planner-mock', usage: { prompt_tokens: 1, completion_tokens: 1 } },
+      };
+    },
+  };
+  const createPlanner = () => new AgentPlannerService(new SkillRegistryService(), tools, new RuleEngineService(), llm as never, new AgentPlannerGraphService());
+
+  try {
+    delete process.env.AGENT_PLANNER_GRAPH_ENABLED;
+    process.env.NODE_ENV = 'test';
+    const testDefault = await createPlanner().createPlan('graph default smoke');
+    assert.equal(testDefault.plannerDiagnostics?.source, 'langgraph_supervisor');
+
+    process.env.AGENT_PLANNER_GRAPH_ENABLED = 'false';
+    const forcedLegacy = await createPlanner().createPlan('graph forced legacy smoke');
+    assert.equal(forcedLegacy.plannerDiagnostics?.source, 'llm');
+
+    delete process.env.AGENT_PLANNER_GRAPH_ENABLED;
+    process.env.NODE_ENV = 'production';
+    const productionDefault = await createPlanner().createPlan('graph production default smoke');
+    assert.equal(productionDefault.plannerDiagnostics?.source, 'llm');
+  } finally {
+    if (previousFlag === undefined) delete process.env.AGENT_PLANNER_GRAPH_ENABLED;
+    else process.env.AGENT_PLANNER_GRAPH_ENABLED = previousFlag;
+    if (previousNodeEnv === undefined) delete process.env.NODE_ENV;
+    else process.env.NODE_ENV = previousNodeEnv;
   }
 });
 

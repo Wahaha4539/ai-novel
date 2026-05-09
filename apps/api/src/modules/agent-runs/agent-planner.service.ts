@@ -193,8 +193,11 @@ export class AgentPlannerService {
   }
 
   private isGraphPlannerEnabled(): boolean {
-    const value = process.env[AGENT_PLANNER_GRAPH_ENABLED]?.trim().toLowerCase();
-    return value === '1' || value === 'true' || value === 'yes' || value === 'on';
+    const rawValue = process.env[AGENT_PLANNER_GRAPH_ENABLED];
+    const value = rawValue?.trim().toLowerCase();
+    if (value) return value === '1' || value === 'true' || value === 'yes' || value === 'on';
+    if (rawValue !== undefined) return false;
+    return process.env.NODE_ENV?.trim().toLowerCase() !== 'production';
   }
 
   private async createGraphWrappedPlan(goal: string, defaults: PlannerOutputDefaults, llmBudget: PlannerLlmBudget, context?: AgentContextV2): Promise<AgentPlanSpec> {
