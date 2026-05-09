@@ -605,7 +605,7 @@
 
 ### ASP-P9-002 生产灰度策略
 
-- 状态：`[ ]`
+- 状态：`[x]`
 - 模块：API / Ops Docs
 - 文件：
   - `docs/architecture/agent-supervisor-planner-design.md`
@@ -617,6 +617,12 @@
   - legacy fallback 默认关闭。
   - diagnostics 能确认每个 run 是否走 graph。
 - 验证：人工审阅和生产前演练
+- 完成记录（2026-05-09）：
+  - 设计文档补充 graph planner 当前默认、生产灰度、扩大比例、回滚步骤和 diagnostics 抽查字段。
+  - 明确生产可通过 `AGENT_PLANNER_GRAPH_ENABLED=false` 回滚，legacy fallback 默认关闭且当前实现不做静默 fallback。
+  - `.env.example` 补充生产 canary/full rollout 配置说明，并记录保留的 `AGENT_PLANNER_LEGACY_FALLBACK=false`。
+  - 修改文件：`docs/architecture/agent-supervisor-planner-design.md`、`.env.example`、`docs/architecture/agent-supervisor-planner-development-plan.md`。
+  - 测试：`git diff --check -- .env.example docs/architecture/agent-supervisor-planner-design.md docs/architecture/agent-supervisor-planner-development-plan.md`，通过。
 
 ## 12. 总体验收
 
