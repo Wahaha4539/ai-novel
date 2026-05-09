@@ -39,7 +39,6 @@ export class LlmJsonInvalidError extends Error {
  */
 @Injectable()
 export class LlmGatewayService {
-  private static readonly JSON_PARSE_LOG_TEXT_LIMIT = 32_000;
   private static readonly JSON_PARSE_LOG_EDGE_LIMIT = 4_000;
   private static readonly JSON_PARSE_LOG_WINDOW_RADIUS = 1_200;
   private static readonly REQUEST_LOG_MESSAGE_LIMIT = 16_000;
@@ -109,13 +108,13 @@ export class LlmGatewayService {
       requestedMaxTokens: options.maxTokens ?? null,
       maxTokensSent: null,
       rawResponseLength: result.text.length,
-      rawResponseTruncated: result.text.length > LlmGatewayService.JSON_PARSE_LOG_TEXT_LIMIT,
-      rawResponseText: this.truncateForLog(result.text, LlmGatewayService.JSON_PARSE_LOG_TEXT_LIMIT),
+      rawResponseTruncated: false,
+      rawResponseText: result.text,
       rawResponsePreview: this.edgeForLog(result.text, 'head'),
       rawResponseTail: this.edgeForLog(result.text, 'tail'),
       jsonCandidateLength: error.rawText.length,
-      jsonCandidateTruncated: error.rawText.length > LlmGatewayService.JSON_PARSE_LOG_TEXT_LIMIT,
-      jsonCandidateText: this.truncateForLog(error.rawText, LlmGatewayService.JSON_PARSE_LOG_TEXT_LIMIT),
+      jsonCandidateTruncated: false,
+      jsonCandidateText: error.rawText,
       jsonCandidateTail: this.edgeForLog(error.rawText, 'tail'),
       parseErrorPosition,
       parseErrorWindow: this.windowForLog(error.rawText, parseErrorPosition),
@@ -263,6 +262,8 @@ export class LlmGatewayService {
           elapsedMs: Date.now() - startedAt,
           httpStatus: response.status,
           responseTextPreview: detail.slice(0, 500),
+          rawProviderResponseLength: detail.length,
+          rawProviderResponseText: detail,
         });
         throw error;
       }
@@ -272,11 +273,26 @@ export class LlmGatewayService {
         elapsedMs: Date.now() - startedAt,
         httpStatus: response.status,
         responseTextPreview: detail.slice(0, 500),
+        rawProviderResponseLength: detail.length,
+        rawProviderResponseText: detail,
       });
       throw error;
     }
 
-    const payload = this.parseProviderJson(response.bodyText, options.appStep);
+    let payload: Record<string, unknown>;
+    try {
+      payload = this.parseProviderJson(response.bodyText, options.appStep);
+    } catch (error) {
+      const normalized = this.normalizeLlmError(error, { ...options, timeoutMs });
+      this.logger.error('llm.gateway.chat.failed', normalized, {
+        ...logContext,
+        elapsedMs: Date.now() - startedAt,
+        httpStatus: response.status,
+        rawProviderResponseLength: response.bodyText.length,
+        rawProviderResponseText: response.bodyText,
+      });
+      throw normalized;
+    }
     const rawPayloadSummary = this.summarizeProviderPayload(payload);
     const text = this.extractText(payload);
     if (!text) {
@@ -285,6 +301,8 @@ export class LlmGatewayService {
         ...logContext,
         elapsedMs: Date.now() - startedAt,
         rawPayloadSummary,
+        rawProviderResponseLength: response.bodyText.length,
+        rawProviderResponseText: response.bodyText,
       });
       throw error;
     }
@@ -296,7 +314,17 @@ export class LlmGatewayService {
       elapsedMs: Date.now() - startedAt,
       rawPayloadSummary,
     };
-    this.logger.log('llm.gateway.chat.completed', { ...logContext, model: result.model, tokenUsage: result.usage, elapsedMs: result.elapsedMs });
+    this.logger.log('llm.gateway.chat.completed', {
+      ...logContext,
+      model: result.model,
+      tokenUsage: result.usage,
+      elapsedMs: result.elapsedMs,
+      rawPayloadSummary,
+      rawResponseLength: result.text.length,
+      rawResponseText: result.text,
+      rawProviderResponseLength: response.bodyText.length,
+      rawProviderResponseText: response.bodyText,
+    });
     return result;
   }
 

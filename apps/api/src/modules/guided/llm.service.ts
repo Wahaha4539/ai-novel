@@ -1,4 +1,5 @@
 import { Injectable } from '@nestjs/common';
+import { StructuredLogger } from '../../common/logging/structured-logger';
 import { LlmProvidersService, ResolvedLlmConfig } from '../llm-providers/llm-providers.service';
 import { buildProviderChatParams } from '../llm/llm-chat-params';
 import { DEFAULT_LLM_TIMEOUT_MS } from '../llm/llm-timeout.constants';
@@ -22,6 +23,8 @@ interface ChatOptions {
  */
 @Injectable()
 export class LlmService {
+  private readonly logger = new StructuredLogger(LlmService.name);
+
   /** Cached env fallback values (read once at startup) */
   private readonly envBaseUrl = process.env.LLM_BASE_URL ?? 'http://localhost:8318/v1';
   private readonly envApiKey = process.env.LLM_API_KEY ?? '';
@@ -65,13 +68,48 @@ export class LlmService {
 
     if (!response.ok) {
       const detail = await response.text();
+      this.logger.error('guided.llm.chat.failed', new Error(`LLM request failed: ${response.status}`), {
+        appStep: options?.appStep,
+        source: config.source,
+        baseUrl: config.baseUrl,
+        model: config.model,
+        elapsedMs: Date.now() - t0,
+        httpStatus: response.status,
+        rawProviderResponseLength: detail.length,
+        rawProviderResponseText: detail,
+      });
       throw new Error(`LLM 请求失败: ${response.status} ${detail.slice(0, 500)}`);
     }
 
-    const payload = await response.json();
+    const bodyText = await response.text();
+    let payload: Record<string, unknown>;
+    try {
+      payload = JSON.parse(bodyText) as Record<string, unknown>;
+    } catch (error) {
+      this.logger.error('guided.llm.chat.failed', error, {
+        appStep: options?.appStep,
+        source: config.source,
+        baseUrl: config.baseUrl,
+        model: config.model,
+        elapsedMs: Date.now() - t0,
+        httpStatus: response.status,
+        rawProviderResponseLength: bodyText.length,
+        rawProviderResponseText: bodyText,
+      });
+      throw error;
+    }
     const text = this.extractText(payload);
 
     if (!text) {
+      this.logger.error('guided.llm.chat.failed', new Error('LLM returned empty content'), {
+        appStep: options?.appStep,
+        source: config.source,
+        baseUrl: config.baseUrl,
+        model: config.model,
+        elapsedMs: Date.now() - t0,
+        rawProviderResponseLength: bodyText.length,
+        rawProviderResponseText: bodyText,
+      });
       throw new Error(`LLM 返回内容为空: ${JSON.stringify(payload).slice(0, 500)}`);
     }
 
@@ -79,6 +117,18 @@ export class LlmService {
     const usage = payload.usage as Record<string, number> | undefined;
     const tokens = usage ? `in=${usage.prompt_tokens ?? '?'} out=${usage.completion_tokens ?? '?'}` : '';
     console.log(`[LLM] ← ${config.model} ${text.length}ch ${elapsed}s ${tokens}`);
+    this.logger.log('guided.llm.chat.completed', {
+      appStep: options?.appStep,
+      source: config.source,
+      baseUrl: config.baseUrl,
+      model: String(payload.model ?? config.model),
+      tokenUsage: usage,
+      elapsedMs: Date.now() - t0,
+      rawResponseLength: text.length,
+      rawResponseText: text,
+      rawProviderResponseLength: bodyText.length,
+      rawProviderResponseText: bodyText,
+    });
     return text;
   }
 
@@ -130,4 +180,5 @@ export class LlmService {
 
     return '';
   }
+
 }

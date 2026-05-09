@@ -10,8 +10,6 @@ import type { CharacterReferenceCatalog } from './outline-character-contracts';
 import { assertVolumeNarrativePlan } from './outline-narrative-contracts';
 
 const VOLUME_OUTLINE_PREVIEW_LLM_TIMEOUT_MS = DEFAULT_LLM_TIMEOUT_MS;
-const VOLUME_OUTLINE_RESPONSE_LOG_LIMIT = 128_000;
-const FORESHADOW_PLAN_RESPONSE_LOG_LIMIT = 16_000;
 
 interface GenerateVolumeOutlinePreviewInput {
   context?: Record<string, unknown>;
@@ -293,21 +291,20 @@ export class GenerateVolumeOutlinePreviewTool implements BaseTool<GenerateVolume
   }
 
   private rawLlmResponseLog(value: unknown): Record<string, unknown> {
-    const text = this.safeJson(value, VOLUME_OUTLINE_RESPONSE_LOG_LIMIT);
+    const text = JSON.stringify(value ?? {}, null, 2);
     const record = this.asRecord(value);
     const volume = this.asRecord(record.volume);
     const narrativePlan = this.asRecord(volume.narrativePlan);
     const foreshadowPlan = narrativePlan.foreshadowPlan;
     return {
-      truncated: text.endsWith('...'),
       length: JSON.stringify(value ?? {}).length,
-      preview: text,
+      rawResponseText: text,
       topLevelKeys: Object.keys(record),
       volumeKeys: Object.keys(volume),
       narrativePlanKeys: Object.keys(narrativePlan),
       foreshadowPlanType: Array.isArray(foreshadowPlan) ? 'array' : typeof foreshadowPlan,
       foreshadowPlanLength: Array.isArray(foreshadowPlan) ? foreshadowPlan.length : undefined,
-      foreshadowPlanPreview: this.safeJson(foreshadowPlan, FORESHADOW_PLAN_RESPONSE_LOG_LIMIT),
+      foreshadowPlanText: JSON.stringify(foreshadowPlan ?? null, null, 2),
     };
   }
 

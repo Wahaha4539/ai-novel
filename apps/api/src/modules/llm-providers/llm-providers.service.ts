@@ -1,4 +1,5 @@
 import { ConflictException, Injectable, Logger, NotFoundException, OnModuleInit } from '@nestjs/common';
+import { StructuredLogger } from '../../common/logging/structured-logger';
 import { PrismaService } from '../../prisma/prisma.service';
 import { CreateLlmProviderDto } from './dto/create-llm-provider.dto';
 import { UpdateLlmProviderDto } from './dto/update-llm-provider.dto';
@@ -67,6 +68,7 @@ export class LlmProvidersService implements OnModuleInit {
   /** Process-local LLM config snapshot; loaded once at API startup and refreshed only after admin writes. */
   private cache: LlmConfigCache = { providers: [], routings: [] };
   private readonly logger = new Logger(LlmProvidersService.name);
+  private readonly structuredLogger = new StructuredLogger(LlmProvidersService.name);
 
   constructor(private readonly prisma: PrismaService) {}
 
@@ -161,6 +163,7 @@ export class LlmProvidersService implements OnModuleInit {
 
   /** 发送一句极短的 chat/completions 请求，验证模型名、Key 和接口兼容性都能真实工作。 */
   private async testChatCompletion(provider: CachedLlmProvider, model: string, appSteps: string[]): Promise<{ model: string; appSteps: string[]; success: boolean; replyContent?: string; error?: string }> {
+    const startedAt = Date.now();
     try {
       const response = await fetch(`${provider.baseUrl.replace(/\/+$/, '')}/chat/completions`, {
         method: 'POST',
@@ -175,10 +178,51 @@ export class LlmProvidersService implements OnModuleInit {
       });
       if (!response.ok) {
         const detail = await response.text();
+        this.structuredLogger.error('llm_provider.connectivity.chat.failed', new Error(`LLM connectivity request failed: ${response.status}`), {
+          providerName: provider.name,
+          source: 'provider_connectivity_test',
+          baseUrl: provider.baseUrl,
+          model,
+          appSteps,
+          elapsedMs: Date.now() - startedAt,
+          httpStatus: response.status,
+          rawProviderResponseLength: detail.length,
+          rawProviderResponseText: detail,
+        });
         return { model, appSteps, success: false, error: `${response.status}: ${detail.slice(0, 500)}` };
       }
-      const payload = await response.json() as Record<string, unknown>;
+      const bodyText = await response.text();
+      let payload: Record<string, unknown>;
+      try {
+        payload = JSON.parse(bodyText) as Record<string, unknown>;
+      } catch (error) {
+        this.structuredLogger.error('llm_provider.connectivity.chat.failed', error, {
+          providerName: provider.name,
+          source: 'provider_connectivity_test',
+          baseUrl: provider.baseUrl,
+          model,
+          appSteps,
+          elapsedMs: Date.now() - startedAt,
+          httpStatus: response.status,
+          rawProviderResponseLength: bodyText.length,
+          rawProviderResponseText: bodyText,
+        });
+        throw error;
+      }
       const reply = this.extractChatReply(payload).trim();
+      this.structuredLogger.log('llm_provider.connectivity.chat.completed', {
+        providerName: provider.name,
+        source: 'provider_connectivity_test',
+        baseUrl: provider.baseUrl,
+        model: String(payload.model ?? model),
+        appSteps,
+        tokenUsage: payload.usage,
+        elapsedMs: Date.now() - startedAt,
+        rawResponseLength: reply.length,
+        rawResponseText: reply,
+        rawProviderResponseLength: bodyText.length,
+        rawProviderResponseText: bodyText,
+      });
       return { model, appSteps, success: Boolean(reply), replyContent: reply, ...(reply ? {} : { error: 'chat/completions 返回内容为空' }) };
     } catch (err) {
       return { model, appSteps, success: false, error: err instanceof Error ? err.message : 'chat/completions 请求失败' };

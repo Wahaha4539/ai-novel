@@ -14553,6 +14553,50 @@ test('LlmGatewayService sends OpenAI-compatible JSON mode when requested', async
   }
 });
 
+test('LlmGatewayService logs full raw chat response text without truncation', async () => {
+  const longContent = `prefix-${'x'.repeat(130_000)}-suffix`;
+  let providerBody = '';
+  const logged: Array<{ event: string; payload: Record<string, unknown> }> = [];
+  const server = createServer((_req, res) => {
+    providerBody = JSON.stringify({ model: 'mock-chat-model', choices: [{ finish_reason: 'stop', message: { content: longContent } }], usage: { completion_tokens: 3 } });
+    res.writeHead(200, { 'Content-Type': 'application/json' });
+    res.end(providerBody);
+  });
+  await new Promise<void>((resolve) => server.listen(0, '127.0.0.1', resolve));
+  const address = server.address() as AddressInfo;
+  const gateway = new LlmGatewayService({
+    resolveForStep() {
+      return {
+        providerName: 'rxinai',
+        baseUrl: `http://127.0.0.1:${address.port}/v1`,
+        apiKey: 'test-key',
+        model: 'gpt-5.5',
+        params: {},
+        source: 'default_provider',
+      };
+    },
+  } as never);
+  (gateway as unknown as { logger: { log: (event: string, payload: Record<string, unknown>) => void; warn: () => void; error: () => void } }).logger = {
+    log(event, payload) { logged.push({ event, payload }); },
+    warn() {},
+    error() {},
+  };
+
+  try {
+    const result = await gateway.chat([{ role: 'user', content: 'hello' }], { appStep: 'planner', timeoutMs: DEFAULT_LLM_TIMEOUT_MS, retries: 0 });
+    assert.equal(result.text, longContent);
+  } finally {
+    await new Promise<void>((resolve, reject) => server.close((error) => (error ? reject(error) : resolve())));
+  }
+
+  const completed = logged.find((item) => item.event === 'llm.gateway.chat.completed');
+  assert.ok(completed);
+  assert.equal(completed.payload.rawResponseLength, longContent.length);
+  assert.equal(completed.payload.rawResponseText, longContent);
+  assert.equal(completed.payload.rawProviderResponseLength, providerBody.length);
+  assert.equal(completed.payload.rawProviderResponseText, providerBody);
+});
+
 test('LlmGatewayService treats Undici headers timeout as LLM_TIMEOUT', () => {
   const gateway = new LlmGatewayService({} as never) as unknown as {
     normalizeLlmError: (error: unknown, options: { appStep?: string; timeoutMs?: number }) => unknown;
@@ -14849,7 +14893,7 @@ test('generate_volume_outline_preview 缺失 storyUnits 时直接报错', async 
   );
 });
 
-test('generate_volume_outline_preview 校验失败前记录原始 LLM 返回摘要', async () => {
+test('generate_volume_outline_preview 校验失败前记录原始 LLM 返回原文', async () => {
   const logs: Array<{ event: string; payload: Record<string, unknown>; error?: unknown }> = [];
   const narrativePlan = createVccNarrativePlanForChapterCount(6) as Record<string, unknown>;
   narrativePlan.foreshadowPlan = [
@@ -14893,8 +14937,8 @@ test('generate_volume_outline_preview 校验失败前记录原始 LLM 返回摘�
   assert.equal(rawResponse.foreshadowPlanType, 'array');
   assert.equal(rawResponse.foreshadowPlanLength, 1);
   assert.ok((rawResponse.narrativePlanKeys as string[]).includes('foreshadowPlan'));
-  assert.match(String(rawResponse.preview), /setupRange/);
-  assert.match(String(rawResponse.foreshadowPlanPreview), /setupRange/);
+  assert.match(String(rawResponse.rawResponseText), /setupRange/);
+  assert.match(String(rawResponse.foreshadowPlanText), /setupRange/);
   assert.ok(logs.some((item) => item.event === 'volume_outline_preview.llm_request.failed'));
 });
 
