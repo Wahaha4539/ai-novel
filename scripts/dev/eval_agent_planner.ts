@@ -762,7 +762,7 @@ async function resolveEvalPlannerScope(
     : rootRoute;
   const selectedBundle = context.session.guided?.currentStep
     ? bundleRegistry.resolveBundle('guided.step')
-    : bundleRegistry.resolveForRoute(route);
+    : bundleRegistry.resolveForRoute(route, context);
   return {
     route,
     selectedBundle,

@@ -1,9 +1,10 @@
 import { Injectable } from '@nestjs/common';
 import { ToolRegistryService } from '../../../agent-tools/tool-registry.service';
 import type { ToolManifestForPlanner } from '../../../agent-tools/tool-manifest.types';
+import type { AgentContextV2 } from '../../agent-context-builder.service';
 import type { RouteDecision, SelectedToolBundle } from '../planner-graph.state';
 import { guidedToolBundles } from './guided.tool-bundle';
-import { importToolBundles } from './import.tool-bundle';
+import { importToolBundles, selectImportProjectAssetsStrictTools } from './import.tool-bundle';
 import { outlineToolBundles } from './outline.tool-bundle';
 import { qualityToolBundles } from './quality.tool-bundle';
 import { revisionToolBundles } from './revision.tool-bundle';
@@ -53,11 +54,21 @@ export class ToolBundleRegistry {
     return this.tools.listManifestsForPlanner(bundle.strictToolNames);
   }
 
-  resolveForRoute(route: Pick<RouteDecision, 'domain' | 'intent'>): SelectedToolBundle {
+  resolveForRoute(route: Pick<RouteDecision, 'domain' | 'intent'>, context?: AgentContextV2): SelectedToolBundle {
     const definition = TOOL_BUNDLE_DEFINITIONS.find((item) => item.domain === route.domain && item.intents.includes(route.intent))
       ?? TOOL_BUNDLE_DEFINITIONS.find((item) => item.domain === route.domain);
     if (!definition) throw new Error(`No ToolBundle for route ${route.domain}:${route.intent}`);
-    return this.resolveBundle(definition.name);
+    const selectedBundle = this.resolveBundle(definition.name);
+    if (definition.name === 'import.project_assets') {
+      const strictToolNames = selectImportProjectAssetsStrictTools(context);
+      this.assertToolNamesRegistered(definition.name, strictToolNames);
+      return {
+        ...selectedBundle,
+        strictToolNames,
+        selectionReason: `${selectedBundle.selectionReason} Selected import tools are scoped by importPreviewMode and requestedAssetTypes.`,
+      };
+    }
+    return selectedBundle;
   }
 
   assertAllBundlesRegistered(): void {
@@ -69,11 +80,14 @@ export class ToolBundleRegistry {
   }
 
   private assertDefinitionToolsRegistered(definition: ToolBundleDefinition): void {
+    this.assertToolNamesRegistered(definition.name, this.bundleToolNames(definition));
+  }
+
+  private assertToolNamesRegistered(label: string, referenced: string[]): void {
     const registered = new Set(this.tools.list().map((tool) => tool.name));
-    const referenced = this.bundleToolNames(definition);
     const missing = referenced.filter((toolName) => !registered.has(toolName));
     if (missing.length) {
-      throw new Error(`ToolBundle ${definition.name} references unregistered tools: ${missing.join(', ')}`);
+      throw new Error(`ToolBundle ${label} references unregistered tools: ${missing.join(', ')}`);
     }
   }
 

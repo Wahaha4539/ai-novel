@@ -16,7 +16,7 @@ export function createSelectToolBundleNode(registry: ToolBundleRegistry) {
     const diagnostics = outlineResult?.diagnostics ?? state.diagnostics;
     const selectedBundle = state.context?.session.guided?.currentStep
       ? registry.resolveBundle('guided.step')
-      : registry.resolveForRoute(route);
+      : registry.resolveForRoute(route, state.context);
     const selectedTools = registry.listManifestsForBundle(selectedBundle);
     return {
       route,

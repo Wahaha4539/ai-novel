@@ -8351,6 +8351,39 @@ test('ASP-P7-001 writing and revision bundles stay separated by intent', () => {
   assert.ok(polish.deniedToolNames?.includes('rewrite_chapter'));
 });
 
+test('ASP-P7-002 import bundle scopes tools by mode and requested assets', () => {
+  const allBundleToolNames = [...new Set(TOOL_BUNDLE_DEFINITIONS.flatMap((definition) => [
+    ...definition.strictToolNames,
+    ...(definition.optionalToolNames ?? []),
+    ...(definition.deniedToolNames ?? []),
+  ]))];
+  const createRegistry = (toolNames = allBundleToolNames) => new ToolBundleRegistry({
+    list: () => toolNames.map((name) => createTool({ name, requiresApproval: name.startsWith('persist_'), riskLevel: 'low', sideEffects: [] })),
+  } as unknown as ToolRegistryService);
+  const route = { domain: 'import' as const, intent: 'project_import_preview' };
+
+  const deepOutline = createRegistry().resolveForRoute(route, { session: { requestedAssetTypes: ['outline'], importPreviewMode: 'deep' } } as AgentContextV2);
+  assert.ok(deepOutline.strictToolNames.includes('generate_import_outline_preview'));
+  assert.ok(deepOutline.strictToolNames.includes('merge_import_previews'));
+  assert.ok(!deepOutline.strictToolNames.includes('build_import_preview'));
+  assert.ok(!deepOutline.strictToolNames.includes('generate_import_characters_preview'));
+
+  const quickFull = createRegistry().resolveForRoute(route, { session: { requestedAssetTypes: ['projectProfile', 'outline', 'characters', 'worldbuilding', 'writingRules'], importPreviewMode: 'quick' } } as AgentContextV2);
+  assert.ok(quickFull.strictToolNames.includes('build_import_preview'));
+  assert.ok(!quickFull.strictToolNames.includes('build_import_brief'));
+  assert.ok(!quickFull.strictToolNames.includes('generate_import_outline_preview'));
+
+  const autoDual = createRegistry().resolveForRoute(route, { session: { requestedAssetTypes: ['outline', 'writingRules'], importPreviewMode: 'auto' } } as AgentContextV2);
+  assert.ok(autoDual.strictToolNames.includes('generate_import_outline_preview'));
+  assert.ok(autoDual.strictToolNames.includes('generate_import_writing_rules_preview'));
+  assert.ok(!autoDual.strictToolNames.includes('generate_import_characters_preview'));
+
+  assert.throws(
+    () => createRegistry(allBundleToolNames.filter((name) => name !== 'generate_import_outline_preview')).resolveForRoute(route, { session: { requestedAssetTypes: ['outline'], importPreviewMode: 'deep' } } as AgentContextV2),
+    /ToolBundle import\.project_assets references unregistered tools: generate_import_outline_preview/,
+  );
+});
+
 test('selectToolBundleNode selects outline and guided bundles with diagnostics', async () => {
   const allBundleToolNames = [...new Set(TOOL_BUNDLE_DEFINITIONS.flatMap((definition) => [
     ...definition.strictToolNames,

@@ -487,7 +487,7 @@
 
 ### ASP-P7-002 完善 Import bundle
 
-- 状态：`[ ]`
+- 状态：`[x]`
 - 模块：API
 - 文件：
   - `apps/api/src/modules/agent-runs/planner-graph/tool-bundles/import.tool-bundle.ts`
@@ -500,6 +500,13 @@
 - 验证：
   - `pnpm --dir apps/api run test:agent`
   - `pnpm --dir apps/api run eval:agent:live`
+- 完成记录（2026-05-09）：
+  - `import.project_assets` strict tools 改为按 `importPreviewMode` 和 `requestedAssetTypes` 动态裁剪：quick 只暴露聚合 `build_import_preview` 链路，deep/auto 少目标只暴露对应 `generate_import_*_preview`。
+  - ToolBundleRegistry 支持带 context 解析 import bundle，并在目标工具缺失时显式失败，不扩大资产范围。
+  - 新增 `ASP-P7-002` targeted 测试覆盖 deep 单目标、quick 多目标、auto 双目标和缺目标工具失败。
+  - 修改文件：`apps/api/src/modules/agent-runs/planner-graph/tool-bundles/import.tool-bundle.ts`、`apps/api/src/modules/agent-runs/planner-graph/tool-bundles/tool-bundle.registry.ts`、`apps/api/src/modules/agent-runs/planner-graph/nodes/select-tool-bundle.node.ts`、`apps/api/src/modules/agent-runs/agent-services.spec.ts`、`scripts/dev/eval_agent_planner.ts`、`docs/architecture/agent-supervisor-planner-development-plan.md`。
+  - 测试：`AGENT_TEST_FILTER="ASP-P7-002" pnpm --dir apps/api run test:agent`，通过（1/351 targeted）。
+  - 测试：`pnpm --dir apps/api run eval:agent:live`，通过（legacy 24/24，graph 8/8）。
 
 ### ASP-P7-003 完善 Quality / Timeline / Worldbuilding bundle
 
