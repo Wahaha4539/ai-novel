@@ -6,7 +6,7 @@ import { BaseTool, ToolContext } from '../base-tool';
 import type { ToolManifestV2 } from '../tool-manifest.types';
 import { OutlinePreviewOutput } from './generate-outline-preview.tool';
 import { recordToolLlmUsage } from './import-preview-llm-usage';
-import type { CharacterReferenceCatalog } from './outline-character-contracts';
+import { VOLUME_CHARACTER_ROLE_TYPES, type CharacterReferenceCatalog } from './outline-character-contracts';
 import { assertVolumeNarrativePlan } from './outline-narrative-contracts';
 
 const VOLUME_OUTLINE_PREVIEW_LLM_TIMEOUT_MS = DEFAULT_LLM_TIMEOUT_MS;
@@ -186,6 +186,7 @@ export class GenerateVolumeOutlinePreviewTool implements BaseTool<GenerateVolume
 
   private buildSystemPrompt(): string {
     return [
+      `newCharacterCandidates.roleType 只能使用固定枚举：${VOLUME_CHARACTER_ROLE_TYPES.join(', ')}；不要自造 key_missing_family、antagonist_agent、mentor 等扩展值；具体叙事功能写入 narrativeFunction。`,
       '你是小说卷大纲设计 Agent。只输出严格 JSON，不要 Markdown、解释或代码块。',
       '本工具只生成 volume 卷大纲与 risks，不生成 chapters、chapter、正文或章节细纲。',
       '卷大纲必须先定盘整卷主线、卷内支线、单元故事 storyUnits、伏笔分配和卷末交接，供后续章节细纲承接。',

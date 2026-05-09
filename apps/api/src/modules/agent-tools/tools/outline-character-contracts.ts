@@ -1,4 +1,5 @@
-export type VolumeCharacterRoleType = 'protagonist' | 'antagonist' | 'supporting' | 'minor';
+export const VOLUME_CHARACTER_ROLE_TYPES = ['protagonist', 'antagonist', 'supporting', 'minor'] as const;
+export type VolumeCharacterRoleType = typeof VOLUME_CHARACTER_ROLE_TYPES[number];
 
 export interface VolumeCharacterPlan {
   existingCharacterArcs: Array<{
@@ -97,7 +98,7 @@ export interface AssertChapterCharacterExecutionOptions extends CharacterReferen
   actionBeatCount?: number;
 }
 
-const VOLUME_ROLE_TYPES = new Set<VolumeCharacterRoleType>(['protagonist', 'antagonist', 'supporting', 'minor']);
+const VOLUME_ROLE_TYPES = new Set<VolumeCharacterRoleType>(VOLUME_CHARACTER_ROLE_TYPES);
 const CHAPTER_CHARACTER_SOURCES = new Set<ChapterCharacterSource>(['existing', 'volume_candidate', 'minor_temporary']);
 const MINOR_IMPORTANCE_PATTERN = /主线|核心|反派|长期|长线|人物弧|弧线|贯穿|主压力|最终对手|关键配角|重要配角|protagonist|antagonist|supporting|mainline|long[-_ ]?term/i;
 

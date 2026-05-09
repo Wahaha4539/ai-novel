@@ -895,6 +895,8 @@ test('VCC volume outline preview preserves complete characterPlan', async () => 
   assert.equal((characterPlan.newCharacterCandidates as Array<Record<string, unknown>>)[0].name, '邵衡');
   assert.match(receivedMessages[0].content, /characterPlan/);
   assert.match(receivedMessages[0].content, /newCharacterCandidates/);
+  assert.match(receivedMessages[0].content, /protagonist, antagonist, supporting, minor/);
+  assert.match(receivedMessages[0].content, /key_missing_family/);
   assert.match(receivedMessages[1].content, /已有角色摘要/);
 });
 
