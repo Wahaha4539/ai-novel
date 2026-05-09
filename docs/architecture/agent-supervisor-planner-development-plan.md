@@ -438,7 +438,7 @@
 
 ### ASP-P6-002 将 outline tool bundles 迁移到 outline subgraph
 
-- 状态：`[ ]`
+- 状态：`[x]`
 - 模块：API
 - 文件：
   - `apps/api/src/modules/agent-runs/planner-graph/tool-bundles/outline.tool-bundle.ts`
@@ -452,6 +452,14 @@
 - 验证：
   - `pnpm --dir apps/api run test:agent`
   - `pnpm --dir apps/api run eval:agent:live`
+- 完成记录（2026-05-09）：
+  - RootSupervisor 对 outline 请求改为只输出粗粒度 `domain=outline`、`intent=outline`，不再直接判断卷纲/章纲/craftBrief/场景卡。
+  - `selectToolBundleNode` 在 outline 粗路由下调用 `outline.subgraph` 精化 RouteDecision，再由 ToolBundleRegistry 选择 `outline.volume` 或 `outline.chapter` 等子 bundle。
+  - eval graph 路径和 prompt size gate 同步使用 outline subgraph 精化逻辑，保持 route/bundle 指标稳定。
+  - 修改文件：`apps/api/src/modules/agent-runs/planner-graph/supervisors/root-supervisor.ts`、`apps/api/src/modules/agent-runs/planner-graph/nodes/select-tool-bundle.node.ts`、`apps/api/src/modules/agent-runs/planner-graph/subgraphs/outline.subgraph.ts`、`apps/api/src/modules/agent-runs/agent-services.spec.ts`、`scripts/dev/eval_agent_planner.ts`、`docs/architecture/agent-supervisor-planner-development-plan.md`。
+  - 测试：`AGENT_TEST_FILTER="ASP-P6-002" pnpm --dir apps/api run test:agent`，通过（1/349 targeted）。
+  - 测试：`AGENT_TEST_FILTER="ASP-P4-002" pnpm --dir apps/api run test:agent`，通过（3/349 targeted）。
+  - 测试：`pnpm --dir apps/api run eval:agent:live`，通过（legacy 24/24，graph 8/8）。
 
 ## 9. P7 扩展领域 ToolBundle
 

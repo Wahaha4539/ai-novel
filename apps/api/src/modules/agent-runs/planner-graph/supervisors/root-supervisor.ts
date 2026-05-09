@@ -43,20 +43,8 @@ export class RootSupervisor {
       return route('timeline', 'timeline_plan', 0.88, ['目标涉及时间线候选、校验或确认。'], { chapterNo, needsApproval: needsPersistence, needsPersistence });
     }
 
-    if (includesAny(normalized, ['推进卡', '执行卡', 'craftbrief', 'craft brief', '行动链'])) {
-      return route('outline', 'chapter_craft_brief', 0.88, ['目标是章节推进卡或 Chapter.craftBrief。'], { chapterNo, needsApproval: true, needsPersistence: true });
-    }
-
-    if (includesAny(normalized, ['场景卡', 'scenecard', 'scene card', '拆成场景'])) {
-      return route('outline', 'scene_card_planning', 0.86, ['目标是场景卡规划或更新。'], { chapterNo, needsApproval: true, needsPersistence: true });
-    }
-
-    if (isChapterOutlineGoal(normalized)) {
-      return route('outline', 'split_volume_to_chapters', 0.9, ['目标明确要求章节细纲、卷细纲或拆分成多章。'], { volumeNo, needsApproval: true, needsPersistence: true });
-    }
-
-    if (isVolumeOutlineGoal(normalized)) {
-      return route('outline', 'generate_volume_outline', 0.9, ['目标只要求卷级大纲，没有要求章节细纲或正文。'], { volumeNo, needsApproval: true, needsPersistence: true });
+    if (isOutlineGoal(normalized)) {
+      return route('outline', 'outline', 0.9, ['目标属于 outline 领域，交由 OutlineSupervisor 判断子意图。'], { volumeNo, chapterNo, needsApproval: true, needsPersistence: true });
     }
 
     if (includesAny(normalized, ['世界观', 'story bible', '设定', '宗门', '灵脉', '规则体系'])) {
@@ -132,6 +120,12 @@ function isChapterOutlineGoal(goal: string): boolean {
 function isVolumeOutlineGoal(goal: string): boolean {
   return includesAny(goal, ['卷大纲', '第1卷大纲', '第一卷大纲', '第 1 卷大纲'])
     || includesAny(goal, ['大纲']) && includesAny(goal, ['卷']) && !isChapterOutlineGoal(goal) && !isWritingGoal(goal);
+}
+
+function isOutlineGoal(goal: string): boolean {
+  return includesAny(goal, ['推进卡', '执行卡', 'craftbrief', 'craft brief', '行动链', '场景卡', 'scenecard', 'scene card', '拆成场景'])
+    || isChapterOutlineGoal(goal)
+    || isVolumeOutlineGoal(goal);
 }
 
 function isWritingGoal(goal: string): boolean {

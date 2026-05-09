@@ -9016,8 +9016,8 @@ test('Tool manifest filtering preserves requested order and fails on unknown too
 test('RootSupervisor classifies planner domains without tool manifests', () => {
   const supervisor = new RootSupervisor();
   const cases: Array<{ goal: string; domain: string; intent: string }> = [
-    { goal: '帮我重写第一卷大纲。', domain: 'outline', intent: 'generate_volume_outline' },
-    { goal: '把第一卷拆成 30 章。', domain: 'outline', intent: 'split_volume_to_chapters' },
+    { goal: '帮我重写第一卷大纲。', domain: 'outline', intent: 'outline' },
+    { goal: '把第一卷拆成 30 章。', domain: 'outline', intent: 'outline' },
     { goal: '帮我写第十二章正文。', domain: 'writing', intent: 'chapter_write' },
     { goal: '重写第十二章，不沿用旧稿。', domain: 'revision', intent: 'chapter_rewrite' },
     { goal: '导入文档，只要故事大纲。', domain: 'import', intent: 'project_import_preview' },
@@ -9080,6 +9080,46 @@ test('ASP-P6-001 outline subgraph returns RouteDecision diagnostics only', async
   const resultRecord = result as unknown as Record<string, unknown>;
   assert.equal(resultRecord.selectedTools, undefined);
   assert.equal(resultRecord.plan, undefined);
+});
+
+test('ASP-P6-002 selectToolBundleNode refines outline route through outline subgraph', async () => {
+  const allBundleToolNames = [...new Set(TOOL_BUNDLE_DEFINITIONS.flatMap((definition) => [
+    ...definition.strictToolNames,
+    ...(definition.optionalToolNames ?? []),
+    ...(definition.deniedToolNames ?? []),
+  ]))];
+  const tools = {
+    list: () => allBundleToolNames.map((name) => createTool({ name, requiresApproval: false, riskLevel: 'low', sideEffects: [] })),
+    listManifestsForPlanner: (toolNames?: string[]) => (toolNames?.length ? [...new Set(toolNames)] : allBundleToolNames).map((name) => ({
+      name,
+      displayName: name,
+      description: name,
+      whenToUse: [],
+      whenNotToUse: [],
+      inputSchema: { type: 'object' },
+      outputSchema: { type: 'object' },
+      allowedModes: ['plan', 'act'] as const,
+      riskLevel: 'low' as const,
+      requiresApproval: false,
+      sideEffects: [],
+    })),
+  } as unknown as ToolRegistryService;
+  const goal = '把第一卷拆成 30 章。';
+  const rootRoute = new RootSupervisor().classify({ goal });
+  const node = createSelectToolBundleNode(new ToolBundleRegistry(tools));
+
+  const result = await node({
+    goal,
+    route: rootRoute,
+    defaults: { taskType: 'general', summary: 'smoke', assumptions: [], risks: [] },
+    diagnostics: { graphVersion: 'test', nodes: [] },
+  });
+
+  assert.equal(rootRoute.intent, 'outline');
+  assert.equal(result.route?.intent, 'split_volume_to_chapters');
+  assert.equal(result.selectedBundle?.bundleName, 'outline.chapter');
+  assert.ok(result.selectedTools?.some((tool) => tool.name === 'generate_chapter_outline_preview'));
+  assert.deepEqual(result.diagnostics?.nodes.map((node) => node.name), ['outlineSupervisor', 'selectToolBundle']);
 });
 
 test('Planner prompt compacts tool manifests without losing callable input schema', async () => {

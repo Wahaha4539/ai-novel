@@ -16,6 +16,7 @@ import { AgentContextV2 } from '../../apps/api/src/modules/agent-runs/agent-cont
 import { AgentPlannerService } from '../../apps/api/src/modules/agent-runs/agent-planner.service';
 import { PlanValidatorService } from '../../apps/api/src/modules/agent-runs/planner-graph/plan-validator.service';
 import type { RouteDecision, SelectedToolBundle } from '../../apps/api/src/modules/agent-runs/planner-graph/planner-graph.state';
+import { invokeOutlineSubgraph } from '../../apps/api/src/modules/agent-runs/planner-graph/subgraphs/outline.subgraph';
 import { RootSupervisor } from '../../apps/api/src/modules/agent-runs/planner-graph/supervisors/root-supervisor';
 import { ToolBundleRegistry } from '../../apps/api/src/modules/agent-runs/planner-graph/tool-bundles';
 import { CollectTaskContextTool } from '../../apps/api/src/modules/agent-tools/tools/collect-task-context.tool';
@@ -264,7 +265,7 @@ async function main() {
     const legacyResults = evaluateLivePlanResults(await runLivePlannerEval({ plannerMode: 'legacy' }), 'Planner 调用失败');
     const legacyReport = buildReport(legacyResults, 'live-planner-legacy', 'live_planner_mock_llm', 'legacy');
     const graphResults = evaluateLivePlanResults(await runLivePlannerEval({ plannerMode: 'graph' }), 'Graph Planner 调用失败');
-    const promptSizeGates = evaluatePromptSizeGates();
+    const promptSizeGates = await evaluatePromptSizeGates();
     const graphReport = buildReport(graphResults, 'live-planner-graph', 'live_planner_mock_llm', 'graph', [legacyReport], promptSizeGates);
     printCaseResults('legacy planner', legacyResults);
     printMetricSummary(legacyReport);
@@ -717,11 +718,7 @@ async function runLivePlannerEval(options: { realLlm?: boolean; sampleSize?: num
     try {
       const context = buildEvalContext(item, toolRegistry);
       if (plannerMode === 'graph') {
-        const route = supervisor.classify({ goal: item.message, context });
-        const selectedBundle = context.session.guided?.currentStep
-          ? bundleRegistry.resolveBundle('guided.step')
-          : bundleRegistry.resolveForRoute(route);
-        const selectedTools = bundleRegistry.listManifestsForBundle(selectedBundle);
+        const { route, selectedBundle, selectedTools } = await resolveEvalPlannerScope(item.message, context, supervisor, bundleRegistry);
         const allTools = toolRegistry.listManifestsForPlanner();
         const plan = await planner.createPlanWithTools({
           goal: item.message,
@@ -751,6 +748,26 @@ async function runLivePlannerEval(options: { realLlm?: boolean; sampleSize?: num
 
 function hasGraphPlannerExpectation(item: EvalCase): boolean {
   return Boolean(item.expected.route || item.expected.bundle);
+}
+
+async function resolveEvalPlannerScope(
+  goal: string,
+  context: AgentContextV2,
+  supervisor: RootSupervisor,
+  bundleRegistry: ToolBundleRegistry,
+): Promise<{ route: RouteDecision; selectedBundle: SelectedToolBundle; selectedTools: ToolManifestForPlanner[] }> {
+  const rootRoute = supervisor.classify({ goal, context });
+  const route = rootRoute.domain === 'outline' && rootRoute.intent === 'outline'
+    ? (await invokeOutlineSubgraph({ goal, context })).route ?? rootRoute
+    : rootRoute;
+  const selectedBundle = context.session.guided?.currentStep
+    ? bundleRegistry.resolveBundle('guided.step')
+    : bundleRegistry.resolveForRoute(route);
+  return {
+    route,
+    selectedBundle,
+    selectedTools: bundleRegistry.listManifestsForBundle(selectedBundle),
+  };
 }
 
 function withGraphEvalDiagnostics(
@@ -790,14 +807,14 @@ function withGraphEvalDiagnostics(
   };
 }
 
-function evaluatePromptSizeGates(): PromptSizeGateResult[] {
+async function evaluatePromptSizeGates(): Promise<PromptSizeGateResult[]> {
   const toolRegistry = new EvalToolRegistry();
   const supervisor = new RootSupervisor();
   const bundleRegistry = new ToolBundleRegistry(toolRegistry as unknown as ToolRegistryService);
   const allTools = toolRegistry.listManifestsForPlanner();
   const allToolsChars = JSON.stringify(allTools).length;
 
-  return PROMPT_SIZE_GATES.map((gate) => {
+  return Promise.all(PROMPT_SIZE_GATES.map(async (gate) => {
     const item = cases.find((candidate) => candidate.id === gate.caseId);
     if (!item) {
       return {
@@ -815,11 +832,7 @@ function evaluatePromptSizeGates(): PromptSizeGateResult[] {
       };
     }
     const context = buildEvalContext(item, toolRegistry);
-    const route = supervisor.classify({ goal: item.message, context });
-    const selectedBundle = context.session.guided?.currentStep
-      ? bundleRegistry.resolveBundle('guided.step')
-      : bundleRegistry.resolveForRoute(route);
-    const selectedTools = bundleRegistry.listManifestsForBundle(selectedBundle);
+    const { selectedBundle, selectedTools } = await resolveEvalPlannerScope(item.message, context, supervisor, bundleRegistry);
     const selectedToolsChars = JSON.stringify(selectedTools).length;
     const ratio = allToolsChars ? selectedToolsChars / allToolsChars : 1;
     const wrongBundle = selectedBundle.bundleName !== gate.expectedBundle;
@@ -837,7 +850,7 @@ function evaluatePromptSizeGates(): PromptSizeGateResult[] {
       passed: !wrongBundle && !tooLarge,
       ...(wrongBundle ? { failure: `expected bundle ${gate.expectedBundle}, got ${selectedBundle.bundleName}` } : tooLarge ? { failure: `selected tools ratio ${roundRate(ratio)} exceeds ${gate.maxSelectedToAllRatio}` } : {}),
     };
-  });
+  }));
 }
 
 async function createPlannerPromptBaselineReport(caseId?: string): Promise<PromptBaselineReport> {
