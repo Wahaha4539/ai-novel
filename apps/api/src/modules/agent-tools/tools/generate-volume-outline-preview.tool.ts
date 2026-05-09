@@ -10,6 +10,8 @@ import type { CharacterReferenceCatalog } from './outline-character-contracts';
 import { assertVolumeNarrativePlan } from './outline-narrative-contracts';
 
 const VOLUME_OUTLINE_PREVIEW_LLM_TIMEOUT_MS = DEFAULT_LLM_TIMEOUT_MS;
+const VOLUME_OUTLINE_RESPONSE_LOG_LIMIT = 128_000;
+const FORESHADOW_PLAN_RESPONSE_LOG_LIMIT = 16_000;
 
 interface GenerateVolumeOutlinePreviewInput {
   context?: Record<string, unknown>;
@@ -127,6 +129,14 @@ export class GenerateVolumeOutlinePreviewTool implements BaseTool<GenerateVolume
         { appStep: 'planner', timeoutMs: VOLUME_OUTLINE_PREVIEW_LLM_TIMEOUT_MS, retries: 0, jsonMode: true },
       );
       recordToolLlmUsage(context, 'planner', response.result);
+      this.logger.log('volume_outline_preview.llm_response.received', {
+        ...logContext,
+        elapsedMs: Date.now() - startedAt,
+        model: response.result.model,
+        tokenUsage: response.result.usage,
+        rawPayloadSummary: response.result.rawPayloadSummary,
+        rawResponse: this.rawLlmResponseLog(response.data),
+      });
       const normalized = this.normalize(response.data, volumeNo, chapterCount, this.extractCharacterCatalog(args.context));
       this.logger.log('volume_outline_preview.llm_request.completed', {
         ...logContext,
@@ -280,6 +290,25 @@ export class GenerateVolumeOutlinePreviewTool implements BaseTool<GenerateVolume
   private safeJson(value: unknown, limit: number): string {
     const text = JSON.stringify(value ?? {}, null, 2);
     return text.length > limit ? `${text.slice(0, limit)}...` : text;
+  }
+
+  private rawLlmResponseLog(value: unknown): Record<string, unknown> {
+    const text = this.safeJson(value, VOLUME_OUTLINE_RESPONSE_LOG_LIMIT);
+    const record = this.asRecord(value);
+    const volume = this.asRecord(record.volume);
+    const narrativePlan = this.asRecord(volume.narrativePlan);
+    const foreshadowPlan = narrativePlan.foreshadowPlan;
+    return {
+      truncated: text.endsWith('...'),
+      length: JSON.stringify(value ?? {}).length,
+      preview: text,
+      topLevelKeys: Object.keys(record),
+      volumeKeys: Object.keys(volume),
+      narrativePlanKeys: Object.keys(narrativePlan),
+      foreshadowPlanType: Array.isArray(foreshadowPlan) ? 'array' : typeof foreshadowPlan,
+      foreshadowPlanLength: Array.isArray(foreshadowPlan) ? foreshadowPlan.length : undefined,
+      foreshadowPlanPreview: this.safeJson(foreshadowPlan, FORESHADOW_PLAN_RESPONSE_LOG_LIMIT),
+    };
   }
 
   private extractCharacterCatalog(contextValue: unknown): CharacterReferenceCatalog {

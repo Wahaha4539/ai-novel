@@ -14849,6 +14849,55 @@ test('generate_volume_outline_preview 缺失 storyUnits 时直接报错', async 
   );
 });
 
+test('generate_volume_outline_preview 校验失败前记录原始 LLM 返回摘要', async () => {
+  const logs: Array<{ event: string; payload: Record<string, unknown>; error?: unknown }> = [];
+  const narrativePlan = createVccNarrativePlanForChapterCount(6) as Record<string, unknown>;
+  narrativePlan.foreshadowPlan = [
+    { name: '盐痕伏笔', setupRange: '1-2', payoffRange: '5-6', payoffMethod: '揭示活盐骨来源' },
+  ];
+  const llm = {
+    async chatJson() {
+      return {
+        data: {
+          volume: {
+            volumeNo: 1,
+            title: '罪桥初潮',
+            synopsis: '卷简介',
+            objective: '卷目标',
+            chapterCount: 6,
+            narrativePlan,
+          },
+          risks: [],
+        },
+        result: { model: 'mock-volume-outline', usage: { total_tokens: 42 }, rawPayloadSummary: { finishReason: 'stop' } },
+      };
+    },
+  };
+  const tool = new GenerateVolumeOutlinePreviewTool(llm as never);
+  (tool as unknown as { logger: { log: (event: string, payload: Record<string, unknown>) => void; error: (event: string, error: unknown, payload: Record<string, unknown>) => void } }).logger = {
+    log(event, payload) { logs.push({ event, payload }); },
+    error(event, error, payload) { logs.push({ event, payload, error }); },
+  };
+
+  await assert.rejects(
+    () => tool.run(
+      { context: { project: { title: '逆潮脊梁' }, characters: [{ name: '林澈' }, { name: '沈栖' }] }, instruction: '生成第1卷卷大纲', volumeNo: 1, chapterCount: 6 },
+      { agentRunId: 'run1', projectId: 'p1', mode: 'plan', approved: false, outputs: {}, policy: {} },
+    ),
+    /foreshadowPlan/,
+  );
+
+  const responseLog = logs.find((item) => item.event === 'volume_outline_preview.llm_response.received');
+  assert.ok(responseLog);
+  const rawResponse = responseLog.payload.rawResponse as Record<string, any>;
+  assert.equal(rawResponse.foreshadowPlanType, 'array');
+  assert.equal(rawResponse.foreshadowPlanLength, 1);
+  assert.ok((rawResponse.narrativePlanKeys as string[]).includes('foreshadowPlan'));
+  assert.match(String(rawResponse.preview), /setupRange/);
+  assert.match(String(rawResponse.foreshadowPlanPreview), /setupRange/);
+  assert.ok(logs.some((item) => item.event === 'volume_outline_preview.llm_request.failed'));
+});
+
 test('generate_chapter_outline_preview 生成单章细纲并保留上一章接力卡', async () => {
   let receivedMessages: Array<{ role: string; content: string }> = [];
   let receivedOptions: Record<string, unknown> | undefined;
