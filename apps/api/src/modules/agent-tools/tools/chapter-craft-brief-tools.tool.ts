@@ -1,12 +1,14 @@
 import { BadRequestException, Injectable, NotFoundException } from '@nestjs/common';
 import { Prisma } from '@prisma/client';
 import { NovelCacheService } from '../../../common/cache/novel-cache.service';
+import { StructuredLogger } from '../../../common/logging/structured-logger';
 import { PrismaService } from '../../../prisma/prisma.service';
 import { LlmGatewayService } from '../../llm/llm-gateway.service';
 import { DEFAULT_LLM_TIMEOUT_MS } from '../../llm/llm-timeout.constants';
 import { BaseTool, ToolContext } from '../base-tool';
 import type { ToolManifestV2 } from '../tool-manifest.types';
 import { recordToolLlmUsage } from './import-preview-llm-usage';
+import { normalizeWithLlmRepair } from './structured-output-repair';
 
 interface GenerateChapterCraftBriefPreviewInput {
   context?: Record<string, unknown>;
@@ -207,10 +209,12 @@ type ChapterTarget = {
 const CHAPTER_CRAFT_BRIEF_SOURCE_KIND = 'chapter_craft_brief' as const;
 const CHAPTER_CRAFT_BRIEF_ORIGIN_TOOL = 'generate_chapter_craft_brief_preview' as const;
 const CHAPTER_CRAFT_BRIEF_LLM_TIMEOUT_MS = DEFAULT_LLM_TIMEOUT_MS;
+const CHAPTER_CRAFT_BRIEF_REPAIR_TIMEOUT_MS = DEFAULT_LLM_TIMEOUT_MS;
 const CHAPTER_CRAFT_BRIEF_MAX_TARGETS = 80;
 
 @Injectable()
 export class GenerateChapterCraftBriefPreviewTool implements BaseTool<GenerateChapterCraftBriefPreviewInput, GenerateChapterCraftBriefPreviewOutput> {
+  private readonly logger = new StructuredLogger(GenerateChapterCraftBriefPreviewTool.name);
   name = 'generate_chapter_craft_brief_preview';
   description = 'Generate Chapter.craftBrief execution-card previews for one or more chapters without writing to the database.';
   inputSchema = {
@@ -242,6 +246,7 @@ export class GenerateChapterCraftBriefPreviewTool implements BaseTool<GenerateCh
   riskLevel: 'low' = 'low';
   requiresApproval = false;
   sideEffects: string[] = [];
+  executionTimeoutMs = CHAPTER_CRAFT_BRIEF_LLM_TIMEOUT_MS + CHAPTER_CRAFT_BRIEF_REPAIR_TIMEOUT_MS + 60_000;
   manifest: ToolManifestV2 = {
     name: this.name,
     displayName: 'Generate Chapter Craft Brief Preview',
@@ -348,7 +353,106 @@ ${JSON.stringify(args.context ?? {}, null, 2).slice(0, 24000)}`,
       progressCurrent: targets.length,
       progressTotal: targets.length,
     });
-    return this.normalize(response.data, args, context, targets, instruction, targetResult.risks);
+    return normalizeWithLlmRepair({
+      toolName: this.name,
+      loggerEventPrefix: 'chapter_craft_brief_preview',
+      llm: this.llm,
+      context,
+      data: response.data,
+      normalize: (data) => this.normalize(
+        data as Partial<GenerateChapterCraftBriefPreviewOutput> & { chapters?: unknown; chapter?: unknown },
+        args,
+        context,
+        targets,
+        instruction,
+        targetResult.risks,
+      ),
+      shouldRepair: ({ error, data }) => this.shouldRepairCraftBriefOutput(data, error, targets),
+      buildRepairMessages: ({ invalidOutput, validationError }) =>
+        this.buildRepairMessages(invalidOutput, validationError, args, targets, instruction),
+      progress: {
+        phaseMessage: 'Repairing chapter craft brief preview structure',
+        timeoutMs: CHAPTER_CRAFT_BRIEF_REPAIR_TIMEOUT_MS,
+      },
+      llmOptions: {
+        appStep: 'planner',
+        maxTokens: Math.min(12000, targets.length * 1250 + 1800),
+        timeoutMs: CHAPTER_CRAFT_BRIEF_REPAIR_TIMEOUT_MS,
+        temperature: 0.1,
+      },
+      maxRepairAttempts: 1,
+      initialModel: response.result.model,
+      logger: this.logger,
+    });
+  }
+
+  private shouldRepairCraftBriefOutput(data: unknown, error: unknown, targets: ChapterTarget[]): boolean {
+    const message = errorMessage(error);
+    if (!this.hasExactTargetCandidateSet(data, targets)) return false;
+    if (/returned candidates \d+\/\d+|requires at least one target/.test(message)) return false;
+    if (/craftBrief is missing|craftBrief\.storyUnit is required/.test(message)) return false;
+    return /craftBrief\.(visibleGoal|hiddenEmotion|coreConflict|mainlineTask|subplotTasks|storyUnit\.|actionBeats|sceneBeats|concreteClues|dialogueSubtext|characterShift|irreversibleConsequence|progressTypes|entryState|exitState|openLoops|closedLoops|handoffToNextChapter|continuityState)/.test(message);
+  }
+
+  private hasExactTargetCandidateSet(data: unknown, targets: ChapterTarget[]): boolean {
+    const output = asRecord(data);
+    if (!output) return false;
+    const rawCandidates = normalizeRawCandidates(output as Partial<GenerateChapterCraftBriefPreviewOutput> & { chapters?: unknown; chapter?: unknown });
+    if (rawCandidates.length !== targets.length) return false;
+    const seenChapterNos = new Set<number>();
+    rawCandidates.forEach((item, index) => {
+      const record = asRecord(item);
+      const chapterNo = positiveInt(record?.chapterNo) ?? targets[index]?.chapterNo;
+      if (chapterNo) seenChapterNos.add(chapterNo);
+    });
+    return targets.every((target) => seenChapterNos.has(target.chapterNo));
+  }
+
+  private buildRepairMessages(
+    invalidOutput: unknown,
+    validationError: string,
+    args: GenerateChapterCraftBriefPreviewInput,
+    targets: ChapterTarget[],
+    instruction: string,
+  ): Array<{ role: 'system'; content: string } | { role: 'user'; content: string }> {
+    return [
+      {
+        role: 'system',
+        content: [
+          'You are the AI Novel Chapter.craftBrief JSON structure repairer. Return strict JSON only, with no Markdown or explanation.',
+          'Repair only local structure errors inside existing candidate craftBrief objects. Preserve chapter targets, objectives, conflict, outline, action chain, clues, consequences, assumptions, and risks as much as possible.',
+          'Do not add or remove target chapters, do not expand the import/generation scope, and do not output placeholder or template craftBrief content.',
+          'If a whole candidate, whole craftBrief, or whole storyUnit is missing, the backend will keep failing; do not rely on deterministic fallback.',
+        ].join('\n'),
+      },
+      {
+        role: 'user',
+        content: JSON.stringify(
+          {
+            userInstruction: instruction,
+            targetChapters: targets.map(compactChapterTarget),
+            targetChapterNos: targets.map((target) => target.chapterNo),
+            targetVolumeIds: [...new Set(targets.map((target) => target.volumeId).filter(Boolean))],
+            validationError,
+            existingCharacterNames: extractContextCharacterNames(args.context),
+            volumeCandidateNames: extractVolumeCandidateNames(args.context),
+            contextSummary: {
+              chapters: sliceArray(args.context?.chapters, 20),
+              characters: sliceArray(args.context?.characters, 30),
+              volumeOutline: asRecord(args.context?.volumeOutline) ?? asRecord(args.context?.volume) ?? null,
+            },
+            invalidOutput,
+            repairContract: {
+              candidates: `exactly ${targets.length} candidates for the target chapterNos; keep the same target scope`,
+              craftBrief: 'fill or correct only the invalid local craftBrief fields using the provided chapter objective, conflict, outline, context, and existing candidate content',
+              forbidden: 'no deterministic templates, no placeholder action beats, no invented long-term important characters outside existing characters or volume candidates',
+            },
+          },
+          null,
+          2,
+        ),
+      },
+    ];
   }
 
   private normalize(
@@ -360,6 +464,9 @@ ${JSON.stringify(args.context ?? {}, null, 2).slice(0, 24000)}`,
     initialRisks: string[] = [],
   ): GenerateChapterCraftBriefPreviewOutput {
     const rawCandidates = normalizeRawCandidates(data);
+    if (rawCandidates.length !== targets.length) {
+      throw new Error(`generate_chapter_craft_brief_preview returned candidates ${rawCandidates.length}/${targets.length}; missing target craftBrief candidates are not auto-filled.`);
+    }
     const rawByChapterNo = new Map<number, Record<string, unknown>>();
     rawCandidates.forEach((item, index) => {
       const record = asRecord(item) ?? {};
@@ -1216,6 +1323,51 @@ function buildCandidateId(chapterId: string, chapterNo: number, index: number): 
     hash = Math.imul(hash, 16777619);
   }
   return `ccb_${chapterNo}_${(hash >>> 0).toString(36)}`;
+}
+
+function errorMessage(error: unknown): string {
+  return error instanceof Error ? error.message : String(error);
+}
+
+function sliceArray(value: unknown, limit: number): unknown[] {
+  return Array.isArray(value) ? value.slice(0, limit) : [];
+}
+
+function extractContextCharacterNames(context?: Record<string, unknown>): string[] {
+  const names = new Set<string>();
+  sliceArray(context?.characters, 80).forEach((item) => {
+    const record = asRecord(item);
+    addName(names, record?.name ?? record?.characterName);
+  });
+  sliceArray(context?.existingCharacterNames, 80).forEach((item) => addName(names, item));
+  return [...names];
+}
+
+function extractVolumeCandidateNames(context?: Record<string, unknown>): string[] {
+  const names = new Set<string>();
+  collectCharacterCandidateNames(context?.newCharacterCandidates, names);
+  collectCharacterCandidateNames(context?.volumeCandidates, names);
+  collectCharacterCandidateNames(asRecord(context?.characterPlan)?.newCharacterCandidates, names);
+  collectCharacterCandidateNames(asRecord(asRecord(context?.volume)?.narrativePlan)?.characterPlan, names);
+  collectCharacterCandidateNames(asRecord(asRecord(context?.volumeOutline)?.narrativePlan)?.characterPlan, names);
+  return [...names];
+}
+
+function collectCharacterCandidateNames(value: unknown, names: Set<string>): void {
+  const record = asRecord(value);
+  if (record?.newCharacterCandidates) {
+    collectCharacterCandidateNames(record.newCharacterCandidates, names);
+    return;
+  }
+  sliceArray(value, 80).forEach((item) => {
+    const candidate = asRecord(item);
+    addName(names, candidate?.name ?? candidate?.characterName);
+  });
+}
+
+function addName(names: Set<string>, value: unknown): void {
+  const name = optionalText(value);
+  if (name) names.add(name);
 }
 
 function text(value: unknown, fallback: string): string {

@@ -1,4 +1,5 @@
 import { Injectable } from '@nestjs/common';
+import { StructuredLogger } from '../../../common/logging/structured-logger';
 import { LlmGatewayService } from '../../llm/llm-gateway.service';
 import { DEFAULT_LLM_TIMEOUT_MS } from '../../llm/llm-timeout.constants';
 import { BaseTool, ToolContext } from '../base-tool';
@@ -6,7 +7,9 @@ import type { ToolManifestV2 } from '../tool-manifest.types';
 import { SourceTextAnalysisOutput } from './analyze-source-text.tool';
 import type { ImportBriefOutput } from './build-import-brief.tool';
 import { recordToolLlmUsage } from './import-preview-llm-usage';
+import { assertNoUnexpectedImportTargets, assertRisksArray, buildImportPreviewRepairMessages, requiredImportObject, shouldRepairImportPreviewOutput } from './import-preview-repair';
 import { ImportPreviewOutput } from './import-preview.types';
+import { normalizeWithLlmRepair } from './structured-output-repair';
 
 interface GenerateImportProjectProfilePreviewInput {
   analysis: SourceTextAnalysisOutput;
@@ -16,6 +19,7 @@ interface GenerateImportProjectProfilePreviewInput {
 }
 
 const IMPORT_PROJECT_PROFILE_PREVIEW_LLM_TIMEOUT_MS = DEFAULT_LLM_TIMEOUT_MS;
+const IMPORT_PROJECT_PROFILE_PREVIEW_REPAIR_TIMEOUT_MS = DEFAULT_LLM_TIMEOUT_MS;
 const IMPORT_PROJECT_PROFILE_PREVIEW_LLM_RETRIES = 1;
 const IMPORT_PROJECT_PROFILE_PREVIEW_PHASE_TIMEOUT_MS = IMPORT_PROJECT_PROFILE_PREVIEW_LLM_TIMEOUT_MS * (IMPORT_PROJECT_PROFILE_PREVIEW_LLM_RETRIES + 1) + 5_000;
 
@@ -30,6 +34,7 @@ export interface GenerateImportProjectProfilePreviewOutput {
  */
 @Injectable()
 export class GenerateImportProjectProfilePreviewTool implements BaseTool<GenerateImportProjectProfilePreviewInput, GenerateImportProjectProfilePreviewOutput> {
+  private readonly logger = new StructuredLogger(GenerateImportProjectProfilePreviewTool.name);
   name = 'generate_import_project_profile_preview';
   description = '根据文档分析生成导入用项目资料预览，只输出 title/genre/theme/tone/logline/synopsis，不写库。';
   inputSchema = {
@@ -75,7 +80,7 @@ export class GenerateImportProjectProfilePreviewTool implements BaseTool<Generat
   riskLevel: 'low' = 'low';
   requiresApproval = false;
   sideEffects: string[] = [];
-  executionTimeoutMs = IMPORT_PROJECT_PROFILE_PREVIEW_PHASE_TIMEOUT_MS + 60_000;
+  executionTimeoutMs = IMPORT_PROJECT_PROFILE_PREVIEW_PHASE_TIMEOUT_MS + IMPORT_PROJECT_PROFILE_PREVIEW_REPAIR_TIMEOUT_MS + 60_000;
 
   constructor(private readonly llm: LlmGatewayService) {}
 
@@ -118,21 +123,64 @@ export class GenerateImportProjectProfilePreviewTool implements BaseTool<Generat
 
     recordToolLlmUsage(context, 'agent_import_project_profile_preview', response.result);
     await context.updateProgress?.({ phase: 'validating', phaseMessage: '正在校验导入项目资料预览', progressCurrent: 1, progressTotal: 1 });
-    return this.normalize(response.data, analysis.sourceText);
+    return normalizeWithLlmRepair({
+      toolName: this.name,
+      loggerEventPrefix: 'import_project_profile_preview',
+      llm: this.llm,
+      context,
+      data: response.data,
+      normalize: (data) => this.normalize(data),
+      shouldRepair: ({ data, error }) => shouldRepairImportPreviewOutput({
+        data,
+        error,
+        toolName: this.name,
+        targetKeys: ['projectProfile'],
+        repairableAliases: ['title', 'genre', 'theme', 'tone', 'logline', 'synopsis'],
+      }),
+      buildRepairMessages: ({ invalidOutput, validationError }) => buildImportPreviewRepairMessages({
+        toolName: this.name,
+        targetDescription: 'projectProfile without projectProfile.outline, plus risks',
+        validationError,
+        invalidOutput,
+        instruction: args.instruction,
+        sourceText: analysis.sourceText,
+        allowedTopLevelKeys: ['projectProfile', 'risks'],
+        repairableAliases: ['title', 'genre', 'theme', 'tone', 'logline', 'synopsis'],
+      }),
+      progress: {
+        phaseMessage: '正在修复导入项目资料预览结构',
+        timeoutMs: IMPORT_PROJECT_PROFILE_PREVIEW_REPAIR_TIMEOUT_MS,
+      },
+      llmOptions: {
+        appStep: 'agent_import_project_profile_preview',
+        maxTokens: 4000,
+        timeoutMs: IMPORT_PROJECT_PROFILE_PREVIEW_REPAIR_TIMEOUT_MS,
+        temperature: 0.1,
+      },
+      maxRepairAttempts: 1,
+      initialModel: response.result.model,
+      logger: this.logger,
+    });
   }
 
-  private normalize(data: unknown, sourceText: string): GenerateImportProjectProfilePreviewOutput {
+  private normalize(data: unknown): GenerateImportProjectProfilePreviewOutput {
+    assertNoUnexpectedImportTargets(data, ['projectProfile'], this.name, { forbiddenProjectProfileFields: ['outline'] });
     const record = this.asRecord(data);
-    const profile = this.asRecord(record.projectProfile);
+    assertRisksArray(record.risks);
+    const profile = requiredImportObject(record.projectProfile, 'projectProfile');
+    const projectProfile = {
+      title: this.optionalScalarText(profile.title),
+      genre: this.optionalScalarText(profile.genre),
+      theme: this.optionalScalarText(profile.theme),
+      tone: this.optionalScalarText(profile.tone),
+      logline: this.optionalScalarText(profile.logline),
+      synopsis: this.optionalScalarText(profile.synopsis),
+    };
+    if (!Object.values(projectProfile).some(Boolean)) {
+      throw new Error('projectProfile missing required wrapper content.');
+    }
     return {
-      projectProfile: {
-        title: this.optionalScalarText(profile.title),
-        genre: this.optionalScalarText(profile.genre),
-        theme: this.optionalScalarText(profile.theme),
-        tone: this.optionalScalarText(profile.tone),
-        logline: this.optionalScalarText(profile.logline),
-        synopsis: this.optionalScalarText(profile.synopsis) ?? this.fallbackSynopsis(sourceText),
-      },
+      projectProfile,
       risks: this.stringArray(record.risks),
     };
   }
@@ -148,11 +196,6 @@ export class GenerateImportProjectProfilePreviewTool implements BaseTool<Generat
       paragraphs: paragraphs.length ? paragraphs : sourceText.split(/\n{1,}|。|；|;/).map((item) => item.trim()).filter(Boolean).slice(0, 80),
       keywords,
     };
-  }
-
-  private fallbackSynopsis(sourceText: string): string | undefined {
-    const synopsis = sourceText.slice(0, 800).trim();
-    return synopsis || undefined;
   }
 
   private asRecord(value: unknown): Record<string, unknown> {

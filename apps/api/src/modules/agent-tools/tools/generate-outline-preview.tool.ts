@@ -7,8 +7,10 @@ import type { ToolManifestV2 } from '../tool-manifest.types';
 import { recordToolLlmUsage } from './import-preview-llm-usage';
 import { assertChapterCharacterExecution, type ChapterCharacterExecution, type CharacterReferenceCatalog, type VolumeCharacterPlan } from './outline-character-contracts';
 import { assertVolumeNarrativePlan } from './outline-narrative-contracts';
+import { normalizeWithLlmRepair } from './structured-output-repair';
 
 const OUTLINE_PREVIEW_LLM_TIMEOUT_MS = DEFAULT_LLM_TIMEOUT_MS;
+const OUTLINE_PREVIEW_REPAIR_TIMEOUT_MS = DEFAULT_LLM_TIMEOUT_MS;
 const OUTLINE_PREVIEW_BATCH_SIZE = 1;
 const OUTLINE_PREVIEW_BATCH_THRESHOLD = OUTLINE_PREVIEW_BATCH_SIZE;
 
@@ -188,8 +190,29 @@ export class GenerateOutlinePreviewTool implements BaseTool<GenerateOutlinePrevi
     const response = await this.callOutlineLlm(args, context, volumeNo, chapterCount);
     recordToolLlmUsage(context, 'planner', response.result);
     await context.updateProgress?.({ phase: 'validating', phaseMessage: '正在校验章节预览', progressCurrent: chapterCount, progressTotal: chapterCount });
-    return this.normalize(response.data, volumeNo, chapterCount, {
-      characterCatalog: this.extractCharacterCatalog(args.context),
+    const characterCatalog = this.extractCharacterCatalog(args.context);
+    return normalizeWithLlmRepair({
+      toolName: this.name,
+      loggerEventPrefix: 'outline_preview',
+      llm: this.llm,
+      context,
+      data: response.data,
+      normalize: (data) => this.normalize(data as OutlinePreviewOutput, volumeNo, chapterCount, { characterCatalog }),
+      shouldRepair: ({ error, data }) => this.shouldRepairOutlineOutput(data, error, chapterCount),
+      buildRepairMessages: ({ invalidOutput, validationError }) =>
+        this.buildRepairMessages(invalidOutput, validationError, args, volumeNo, 1, chapterCount, chapterCount, characterCatalog),
+      progress: {
+        phaseMessage: '正在修复卷章节预览结构',
+        timeoutMs: OUTLINE_PREVIEW_REPAIR_TIMEOUT_MS,
+      },
+      llmOptions: {
+        appStep: 'planner',
+        timeoutMs: OUTLINE_PREVIEW_REPAIR_TIMEOUT_MS,
+        temperature: 0.1,
+      },
+      maxRepairAttempts: 1,
+      initialModel: response.result.model,
+      logger: this.logger,
     });
   }
 
@@ -214,10 +237,32 @@ export class GenerateOutlinePreviewTool implements BaseTool<GenerateOutlinePrevi
       });
       const response = await this.callOutlineLlm(args, context, volumeNo, chapterCount, batch, chapters);
       recordToolLlmUsage(context, 'planner', response.result);
-      const normalized = this.normalize(response.data, volumeNo, batch.chapterCount, {
-        chapterStart: batch.startChapterNo,
-        totalChapterCount: chapterCount,
-        characterCatalog,
+      const normalized = await normalizeWithLlmRepair({
+        toolName: this.name,
+        loggerEventPrefix: 'outline_preview',
+        llm: this.llm,
+        context,
+        data: response.data,
+        normalize: (data) => this.normalize(data as OutlinePreviewOutput, volumeNo, batch.chapterCount, {
+          chapterStart: batch.startChapterNo,
+          totalChapterCount: chapterCount,
+          characterCatalog,
+        }),
+        shouldRepair: ({ error, data }) => this.shouldRepairOutlineOutput(data, error, batch.chapterCount),
+        buildRepairMessages: ({ invalidOutput, validationError }) =>
+          this.buildRepairMessages(invalidOutput, validationError, args, volumeNo, batch.startChapterNo, batch.endChapterNo, chapterCount, characterCatalog),
+        progress: {
+          phaseMessage: `正在修复第 ${batch.startChapterNo}-${batch.endChapterNo} 章细纲结构`,
+          timeoutMs: OUTLINE_PREVIEW_REPAIR_TIMEOUT_MS,
+        },
+        llmOptions: {
+          appStep: 'planner',
+          timeoutMs: OUTLINE_PREVIEW_REPAIR_TIMEOUT_MS,
+          temperature: 0.1,
+        },
+        maxRepairAttempts: 1,
+        initialModel: response.result.model,
+        logger: this.logger,
       });
       volume ??= normalized.volume;
       chapters.push(...normalized.chapters);
@@ -302,6 +347,69 @@ export class GenerateOutlinePreviewTool implements BaseTool<GenerateOutlinePrevi
       messageCount: messages.length,
       totalMessageChars: messages.reduce((sum, message) => sum + message.content.length, 0),
     };
+  }
+
+  private shouldRepairOutlineOutput(data: unknown, error: unknown, expectedChapterCount: number): boolean {
+    const message = this.errorMessage(error);
+    if (/返回章节数/.test(message)) return false;
+    const output = this.asRecord(data);
+    const rawChapters = Array.isArray(output.chapters) ? output.chapters : [];
+    if (rawChapters.length !== expectedChapterCount) return false;
+    if (/chapterNo 不匹配|volumeNo 不匹配/.test(message)) return rawChapters.length > 0;
+    const hasCraftBrief = rawChapters.some((chapter) => Object.keys(this.asRecord(this.asRecord(chapter).craftBrief)).length > 0);
+    if (!hasCraftBrief) return false;
+    if (/临时角色承担了重要或长期角色功能|未进入卷级角色候选/.test(message)) return false;
+    if (/craftBrief\.storyUnit (is required|缺少)|缺少 craftBrief\.storyUnit/.test(message)) return false;
+    if (/craftBrief\.(visibleGoal|hiddenEmotion|coreConflict|mainlineTask|subplotTasks|actionBeats|sceneBeats|concreteClues|dialogueSubtext|characterShift|irreversibleConsequence|progressTypes|entryState|exitState|openLoops|closedLoops|handoffToNextChapter|continuityState)/.test(message)) return true;
+    if (/characterExecution|sceneBeats\[\d+\]\.participants|participants 未被 characterExecution\.cast 覆盖|povCharacter 未出现在 cast|sceneBeatRefs|actionBeatRefs/.test(message)) return true;
+    return false;
+  }
+
+  private buildRepairMessages(
+    invalidOutput: unknown,
+    validationError: string,
+    args: GenerateOutlinePreviewInput,
+    volumeNo: number,
+    startChapterNo: number,
+    endChapterNo: number,
+    chapterCount: number,
+    characterCatalog: CharacterReferenceCatalog,
+  ): Array<{ role: 'system' | 'user'; content: string }> {
+    return [
+      {
+        role: 'system',
+        content: [
+          '你是小说章节细纲 JSON 结构修复器。只输出严格 JSON，不要 Markdown、解释或代码块。',
+          '只修复结构校验错误，尽量保留原卷纲、章节目标、冲突、场景、行动链、线索、人物关系和交接压力；不要重写成新的章节细纲。',
+          '不得输出占位 craftBrief、模板行动链或模板后果；章节数量不足、缺整章、缺整张 craftBrief、重要新角色未进入卷级候选时应保持失败。',
+          '修复后仍必须返回完整对象，只包含 volume、chapters、risks；chapters 数量必须等于本次请求章节数。',
+        ].join('\n'),
+      },
+      {
+        role: 'user',
+        content: JSON.stringify(
+          {
+            userInstruction: args.instruction ?? null,
+            targetVolumeNo: volumeNo,
+            targetChapterRange: { start: startChapterNo, end: endChapterNo },
+            targetChapterCount: chapterCount,
+            requestedChapterCount: endChapterNo - startChapterNo + 1,
+            validationError,
+            existingCharacterNames: characterCatalog.existingCharacterNames ?? [],
+            existingCharacterAliases: characterCatalog.existingCharacterAliases ?? {},
+            volumeCandidateNames: this.extractVolumeCandidateNamesFromOutput(invalidOutput),
+            invalidOutput,
+            repairContract: {
+              volume: 'preserve volume narrativePlan and characterPlan; do not invent new important characters in chapters',
+              chapters: `exactly ${endChapterNo - startChapterNo + 1} items, chapterNo ${startChapterNo}..${endChapterNo}`,
+              craftBrief: 'complete local missing fields only; keep concrete action chain, clues, irreversible consequence, continuityState, and characterExecution coherent',
+            },
+          },
+          null,
+          2,
+        ),
+      },
+    ];
   }
 
   private normalize(
@@ -836,6 +944,17 @@ export class GenerateOutlinePreviewTool implements BaseTool<GenerateOutlinePrevi
   private safeJson(value: unknown, limit: number): string {
     const text = JSON.stringify(value ?? {}, null, 2);
     return text.length > limit ? `${text.slice(0, limit)}...` : text;
+  }
+
+  private extractVolumeCandidateNamesFromOutput(outputValue: unknown): string[] {
+    const output = this.asRecord(outputValue);
+    const volume = this.asRecord(output.volume);
+    const narrativePlan = this.asRecord(volume.narrativePlan);
+    const characterPlan = this.asRecord(narrativePlan.characterPlan);
+    const candidates = Array.isArray(characterPlan.newCharacterCandidates) ? characterPlan.newCharacterCandidates : [];
+    return candidates
+      .map((candidate) => this.text(this.asRecord(candidate).name, ''))
+      .filter(Boolean);
   }
 
   private extractCharacterCatalog(contextValue: unknown): CharacterReferenceCatalog {

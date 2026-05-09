@@ -63,6 +63,14 @@ export interface AgentRunStepRecord {
       tokenUsage?: unknown;
       llmCalls?: Array<{ model?: string; appStep?: string; elapsedMs?: number }>;
     };
+    repairDiagnostics?: Array<{
+      toolName?: string;
+      attempted?: boolean;
+      attempts?: number;
+      repairedFromErrors?: string[];
+      model?: string;
+      failedError?: string;
+    }>;
   };
 }
 

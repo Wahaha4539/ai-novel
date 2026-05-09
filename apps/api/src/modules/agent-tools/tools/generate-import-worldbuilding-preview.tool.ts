@@ -1,4 +1,5 @@
 import { Injectable } from '@nestjs/common';
+import { StructuredLogger } from '../../../common/logging/structured-logger';
 import { LlmGatewayService } from '../../llm/llm-gateway.service';
 import { DEFAULT_LLM_TIMEOUT_MS } from '../../llm/llm-timeout.constants';
 import { BaseTool, ToolContext } from '../base-tool';
@@ -6,7 +7,9 @@ import type { ToolManifestV2 } from '../tool-manifest.types';
 import { SourceTextAnalysisOutput } from './analyze-source-text.tool';
 import type { ImportBriefOutput } from './build-import-brief.tool';
 import { recordToolLlmUsage } from './import-preview-llm-usage';
+import { assertNoUnexpectedImportTargets, assertRisksArray, buildImportPreviewRepairMessages, requiredImportArray, requiredImportText, shouldRepairImportPreviewOutput } from './import-preview-repair';
 import { ImportPreviewOutput } from './import-preview.types';
+import { normalizeWithLlmRepair } from './structured-output-repair';
 
 interface GenerateImportWorldbuildingPreviewInput {
   analysis: SourceTextAnalysisOutput;
@@ -17,6 +20,7 @@ interface GenerateImportWorldbuildingPreviewInput {
 }
 
 const IMPORT_WORLDBUILDING_PREVIEW_LLM_TIMEOUT_MS = DEFAULT_LLM_TIMEOUT_MS;
+const IMPORT_WORLDBUILDING_PREVIEW_REPAIR_TIMEOUT_MS = DEFAULT_LLM_TIMEOUT_MS;
 const IMPORT_WORLDBUILDING_PREVIEW_LLM_RETRIES = 1;
 const IMPORT_WORLDBUILDING_PREVIEW_PHASE_TIMEOUT_MS = IMPORT_WORLDBUILDING_PREVIEW_LLM_TIMEOUT_MS * (IMPORT_WORLDBUILDING_PREVIEW_LLM_RETRIES + 1) + 5_000;
 
@@ -31,6 +35,7 @@ export interface GenerateImportWorldbuildingPreviewOutput {
  */
 @Injectable()
 export class GenerateImportWorldbuildingPreviewTool implements BaseTool<GenerateImportWorldbuildingPreviewInput, GenerateImportWorldbuildingPreviewOutput> {
+  private readonly logger = new StructuredLogger(GenerateImportWorldbuildingPreviewTool.name);
   name = 'generate_import_worldbuilding_preview';
   description = '根据文档分析生成导入用世界设定预览，只输出 lorebookEntries，不写库。';
   inputSchema = {
@@ -78,7 +83,7 @@ export class GenerateImportWorldbuildingPreviewTool implements BaseTool<Generate
   riskLevel: 'low' = 'low';
   requiresApproval = false;
   sideEffects: string[] = [];
-  executionTimeoutMs = IMPORT_WORLDBUILDING_PREVIEW_PHASE_TIMEOUT_MS + 60_000;
+  executionTimeoutMs = IMPORT_WORLDBUILDING_PREVIEW_PHASE_TIMEOUT_MS + IMPORT_WORLDBUILDING_PREVIEW_REPAIR_TIMEOUT_MS + 60_000;
 
   constructor(private readonly llm: LlmGatewayService) {}
 
@@ -123,23 +128,63 @@ export class GenerateImportWorldbuildingPreviewTool implements BaseTool<Generate
 
     recordToolLlmUsage(context, 'agent_import_worldbuilding_preview', response.result);
     await context.updateProgress?.({ phase: 'validating', phaseMessage: '正在校验导入世界观预览', progressCurrent: maxEntries, progressTotal: maxEntries });
-    return this.normalize(response.data, maxEntries);
+    return normalizeWithLlmRepair({
+      toolName: this.name,
+      loggerEventPrefix: 'import_worldbuilding_preview',
+      llm: this.llm,
+      context,
+      data: response.data,
+      normalize: (data) => this.normalize(data, maxEntries),
+      shouldRepair: ({ data, error }) => shouldRepairImportPreviewOutput({
+        data,
+        error,
+        toolName: this.name,
+        targetKeys: ['lorebookEntries'],
+        repairableAliases: ['worldbuilding', 'entries', 'items'],
+        localFieldPattern: /lorebookEntries\[\d+\]\.(entryType|tags)/,
+      }),
+      buildRepairMessages: ({ invalidOutput, validationError }) => buildImportPreviewRepairMessages({
+        toolName: this.name,
+        targetDescription: 'lorebookEntries and risks only',
+        validationError,
+        invalidOutput,
+        instruction: args.instruction,
+        sourceText: analysis.sourceText,
+        allowedTopLevelKeys: ['lorebookEntries', 'risks'],
+        repairableAliases: ['worldbuilding', 'entries', 'items'],
+      }),
+      progress: {
+        phaseMessage: '正在修复导入世界观预览结构',
+        timeoutMs: IMPORT_WORLDBUILDING_PREVIEW_REPAIR_TIMEOUT_MS,
+      },
+      llmOptions: {
+        appStep: 'agent_import_worldbuilding_preview',
+        maxTokens: Math.min(8000, maxEntries * 520 + 1600),
+        timeoutMs: IMPORT_WORLDBUILDING_PREVIEW_REPAIR_TIMEOUT_MS,
+        temperature: 0.1,
+      },
+      maxRepairAttempts: 1,
+      initialModel: response.result.model,
+      logger: this.logger,
+    });
   }
 
   private normalize(data: unknown, maxEntries: number): GenerateImportWorldbuildingPreviewOutput {
+    assertNoUnexpectedImportTargets(data, ['lorebookEntries'], this.name);
     const record = this.asRecord(data);
+    assertRisksArray(record.risks);
     return {
-      lorebookEntries: this.arrayValue(record.lorebookEntries).slice(0, maxEntries).map((item, index) => {
+      lorebookEntries: requiredImportArray(record.lorebookEntries, 'lorebookEntries').slice(0, maxEntries).map((item, index) => {
         const entry = this.asRecord(item);
         const summary = this.optionalScalarText(entry.summary);
         return {
-          title: this.scalarText(entry.title, `世界设定 ${index + 1}`),
-          entryType: this.scalarText(entry.entryType, 'setting'),
-          content: this.scalarText(entry.content, summary ?? '待补充设定内容'),
+          title: requiredImportText(entry.title, `lorebookEntries[${index}].title`, (value) => this.optionalScalarText(value)),
+          entryType: requiredImportText(entry.entryType, `lorebookEntries[${index}].entryType`, (value) => this.optionalScalarText(value)),
+          content: requiredImportText(entry.content, `lorebookEntries[${index}].content`, (value) => this.optionalScalarText(value)),
           summary,
           tags: this.stringArray(entry.tags),
         };
-      }).filter((item) => item.title && item.content),
+      }),
       risks: this.stringArray(record.risks),
     };
   }

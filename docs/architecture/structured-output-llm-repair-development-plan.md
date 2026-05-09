@@ -1,5 +1,5 @@
 # 结构化输出 LLM 自修复开发计划
-> 状态：待实施开发计划  
+> 状态：首次落地完成，并已通过最终验证
 > 范围：Agent 生成类工具的结构化 JSON 产物校验失败修复，包括 `generate_story_units_preview`、`generate_volume_outline_preview`、`generate_chapter_outline_preview`、`generate_outline_preview`、`generate_chapter_craft_brief_preview`、导入预览类工具等。  
 > 目标：把“LLM 返回了有价值内容但结构不满足契约”时的一次性自修复能力抽象为通用基础设施，让各工具复用同一套日志、进度、LLM usage、重试边界和失败策略，同时继续遵守“小说内容失败即失败，不做确定性占位 fallback”的质量原则。
 
@@ -227,71 +227,112 @@ repairDiagnostics?: {
 
 | ID | 状态 | 任务 | 影响文件 | 验收 |
 |---|---|---|---|---|
-| SOR-P0-001 | [ ] | 梳理现有生成类工具的 normalize/assert 入口和可修复错误类型。 | `apps/api/src/modules/agent-tools/tools/*` | 文档列出工具、校验函数、可修错误、不修错误。 |
-| SOR-P0-002 | [ ] | 明确 `generate_story_units_preview` 当前内联 repair 是原型，后续迁移到通用 helper。 | 本文档 | 文档说明 prototype 与目标架构关系。 |
-| SOR-P0-003 | [ ] | 明确失败即失败边界写入任务说明。 | `AGENTS.md` 已有原则，本文档补充 | 所有后续任务不得要求 deterministic 补小说内容。 |
+| SOR-P0-001 | [x] | 梳理现有生成类工具的 normalize/assert 入口和可修复错误类型。 | `apps/api/src/modules/agent-tools/tools/*` | 文档列出工具、校验函数、可修错误、不修错误。 |
+| SOR-P0-002 | [x] | 明确 `generate_story_units_preview` 当前内联 repair 是原型，后续迁移到通用 helper。 | 本文档 | 文档说明 prototype 与目标架构关系。 |
+| SOR-P0-003 | [x] | 明确失败即失败边界写入任务说明。 | `AGENTS.md` 已有原则，本文档补充 | 所有后续任务不得要求 deterministic 补小说内容。 |
+
+现状清点：
+
+| 工具 | normalize/assert 入口 | 可修复边界 | 不修复边界 |
+|---|---|---|---|
+| `generate_story_units_preview` | `normalize` + `assertVolumeStoryUnitPlan` | `chapterAllocation` 局部范围、覆盖、`chapterRoles` 数量、枚举/引用轻微错误 | 缺 `mainlineSegments`、缺 `units`、缺整块 `chapterAllocation`、上下文不足或重要新角色缺卷级候选 |
+| `generate_volume_outline_preview` | `normalize` + 卷纲/角色/伏笔契约校验 | 目标 `chapterCount`、未知既有角色引用、`newCharacterCandidates` 局部字段、`foreshadowPlan` 局部字段 | 非目标卷、卷主线核心缺失、整块 `characterPlan` 缺失、上游上下文不足 |
+| `generate_chapter_outline_preview` | `normalize` + 单章章节细纲/craftBrief 校验 | `craftBrief` 局部字段、cast/source、scene participants、轻微章号/卷号错配 | 缺整章、缺整张 `craftBrief`、缺 `storyUnit`、重要新角色未进卷级候选 |
+| `generate_outline_preview` | 单章响应逐章 normalize + 批量数量校验 | 已返回单章候选内的局部结构错误 | 单批章节数量不足、整章缺失、整张 `craftBrief` 缺失、`storyUnit` 缺失 |
+| `generate_chapter_craft_brief_preview` | `normalizeCraftBriefPreview` + craftBrief 契约校验 | 已有候选内的 craftBrief 字段/数组/子字段局部错误 | 候选数量不足、缺整张执行卡、缺整块 `storyUnit` |
+| 导入预览与导入构建工具 | 各工具 `normalize` + `import-preview-repair` 范围校验 | 顶层包装、枚举别名、局部非内容结构字段 | 原文解析不足、资产数量不足、关键内容缺失、未请求目标范围扩大 |
+
+完成记录：P0 已明确边界。`generate_story_units_preview` 的内联 repair 是已验证原型，P1/P2 将其迁移为通用 runner；所有后续任务继续沿用失败即失败原则，不在 normalize/merge/persist 阶段 deterministic 补小说内容。
 
 ### SOR-P1：抽取通用 Repair Runner
 
 | ID | 状态 | 任务 | 影响文件 | 验收 |
 |---|---|---|---|---|
-| SOR-P1-001 | [ ] | 新增 `structured-output-repair.ts`，实现 `normalizeWithLlmRepair`。 | `apps/api/src/modules/agent-tools/tools/structured-output-repair.ts` | 支持 normalize、shouldRepair、buildRepairMessages、max attempts、progress、日志和 usage。 |
-| SOR-P1-002 | [ ] | helper 捕获 normalize 错误后只在 `shouldRepair=true` 时调用 LLM。 | 同上 | 不可修错误保持原错误传播。 |
-| SOR-P1-003 | [ ] | helper 修复后再次调用原 normalize。 | 同上 | 修复后仍失败时抛出修复错误，不返回半成品。 |
-| SOR-P1-004 | [ ] | helper 日志统一输出 `llm_repair.started/completed/failed`。 | 同上 | 单测断言日志事件或通过 mock logger 验证。 |
-| SOR-P1-005 | [ ] | helper 调用 `recordToolLlmUsage`。 | 同上 | 单测断言首轮和修复轮 usage 都被记录。 |
+| SOR-P1-001 | [x] | 新增 `structured-output-repair.ts`，实现 `normalizeWithLlmRepair`。 | `apps/api/src/modules/agent-tools/tools/structured-output-repair.ts` | 支持 normalize、shouldRepair、buildRepairMessages、max attempts、progress、日志和 usage。 |
+| SOR-P1-002 | [x] | helper 捕获 normalize 错误后只在 `shouldRepair=true` 时调用 LLM。 | 同上 | 不可修错误保持原错误传播。 |
+| SOR-P1-003 | [x] | helper 修复后再次调用原 normalize。 | 同上 | 修复后仍失败时抛出修复错误，不返回半成品。 |
+| SOR-P1-004 | [x] | helper 日志统一输出 `llm_repair.started/completed/failed`。 | 同上 | 单测断言日志事件或通过 mock logger 验证。 |
+| SOR-P1-005 | [x] | helper 调用 `recordToolLlmUsage`。 | 同上 | 单测断言首轮和修复轮 usage 都被记录。 |
+
+完成记录：已新增通用 `normalizeWithLlmRepair`，只在工具白名单 `shouldRepair` 允许时调用一次有限 LLM 修复，修复后重新执行原 normalize；新增 targeted tests `structured output repair` 覆盖可修成功、不可修直接失败、修复仍非法默认只尝试一次，并验证修复日志与修复轮 usage。
 
 ### SOR-P2：迁移单元故事工具
 
 | ID | 状态 | 任务 | 影响文件 | 验收 |
 |---|---|---|---|---|
-| SOR-P2-001 | [ ] | 将 `generate_story_units_preview` 的内联 repair 迁移到 `normalizeWithLlmRepair`。 | `generate-story-units-preview.tool.ts` | 行为不变，代码中不再保留重复 repair runner。 |
-| SOR-P2-002 | [ ] | 保留单元故事专属 `shouldRepairStoryUnitOutput` 和 `buildRepairMessages`。 | 同上 | chapterRoles 数量错误仍能触发一次 LLM 修复。 |
-| SOR-P2-003 | [ ] | 增加 `chapterRange` 不连续和未覆盖全卷的修复测试。 | `agent-services.spec.ts` | LLM 修复后合法则通过，修复后仍非法则失败。 |
-| SOR-P2-004 | [ ] | 保留缺 `mainlineSegments`、缺 `units`、缺整个 `chapterAllocation` 的直接失败测试。 | `agent-services.spec.ts` | 不会因为通用 helper 变成自动补内容。 |
+| SOR-P2-001 | [x] | 将 `generate_story_units_preview` 的内联 repair 迁移到 `normalizeWithLlmRepair`。 | `generate-story-units-preview.tool.ts` | 行为不变，代码中不再保留重复 repair runner。 |
+| SOR-P2-002 | [x] | 保留单元故事专属 `shouldRepairStoryUnitOutput` 和 `buildRepairMessages`。 | 同上 | chapterRoles 数量错误仍能触发一次 LLM 修复。 |
+| SOR-P2-003 | [x] | 增加 `chapterRange` 不连续和未覆盖全卷的修复测试。 | `agent-services.spec.ts` | LLM 修复后合法则通过，修复后仍非法则失败。 |
+| SOR-P2-004 | [x] | 保留缺 `mainlineSegments`、缺 `units`、缺整个 `chapterAllocation` 的直接失败测试。 | `agent-services.spec.ts` | 不会因为通用 helper 变成自动补内容。 |
+
+完成记录：`generate_story_units_preview` 已迁移到通用 helper，保留专属 `shouldRepairChapterAllocation` 与 repair prompt；新增 `chapterRange` 不连续修复成功、未覆盖全卷修复失败、缺 `units` 直接失败测试。Targeted test：`AGENT_TEST_FILTER=generate_story_units_preview pnpm --dir apps/api run test:agent` 通过。
 
 ### SOR-P3：接入卷大纲工具
 
 | ID | 状态 | 任务 | 影响文件 | 验收 |
 |---|---|---|---|---|
-| SOR-P3-001 | [ ] | 给 `generate_volume_outline_preview` 加 repair profile。 | `generate-volume-outline-preview.tool.ts` | 已有 normalize 失败可进入白名单修复。 |
-| SOR-P3-002 | [ ] | 覆盖未知既有角色引用修复：已有误名改名，新角色移入 `newCharacterCandidates`。 | `agent-services.spec.ts` | `罗嵩` 这类未知角色不再只能失败；LLM 可修成候选人物，修复后仍需校验。 |
-| SOR-P3-003 | [ ] | 覆盖 `characterPlan.newCharacterCandidates` 缺必要字段修复。 | `agent-services.spec.ts` | 修复后字段完整；修复失败继续报错。 |
-| SOR-P3-004 | [ ] | 覆盖 `foreshadowPlan` 局部字段缺失修复。 | `agent-services.spec.ts` | 只修结构，不重写卷大纲。 |
+| SOR-P3-001 | [x] | 给 `generate_volume_outline_preview` 加 repair profile。 | `generate-volume-outline-preview.tool.ts` | 已有 normalize 失败可进入白名单修复。 |
+| SOR-P3-002 | [x] | 覆盖未知既有角色引用修复：已有误名改名，新角色移入 `newCharacterCandidates`。 | `agent-services.spec.ts` | `罗嵩` 这类未知角色不再只能失败；LLM 可修成候选人物，修复后仍需校验。 |
+| SOR-P3-003 | [x] | 覆盖 `characterPlan.newCharacterCandidates` 缺必要字段修复。 | `agent-services.spec.ts` | 修复后字段完整；修复失败继续报错。 |
+| SOR-P3-004 | [x] | 覆盖 `foreshadowPlan` 局部字段缺失修复。 | `agent-services.spec.ts` | 只修结构，不重写卷大纲。 |
+
+完成记录：`generate_volume_outline_preview` 已接入通用 helper，repair 白名单限定为目标章节数错、未知既有角色引用、`newCharacterCandidates` 局部字段、`foreshadowPlan` 局部字段；缺整块 `characterPlan`、卷号错和卷主线核心缺失仍失败。新增 tests 覆盖未知角色移入候选、既有角色误名修正、候选缺 motivation 修复、伏笔缺 recoveryMethod 修复，并保留修复失败路径。Targeted tests：`AGENT_TEST_FILTER=generate_volume_outline_preview` 与 `AGENT_TEST_FILTER="VCC volume outline preview"` 均通过。
 
 ### SOR-P4：接入章节细纲与 craftBrief 工具
 
 | ID | 状态 | 任务 | 影响文件 | 验收 |
 |---|---|---|---|---|
-| SOR-P4-001 | [ ] | 给 `generate_chapter_outline_preview` 加 repair profile。 | `chapter-outline-preview-tools.tool.ts` | `craftBrief` 局部缺字段、cast/scene 轻微不一致可修。 |
-| SOR-P4-002 | [ ] | 给 `generate_outline_preview` 批量章节输出加 repair profile。 | `generate-outline-preview.tool.ts` | 单批章节数量不足仍失败；局部结构错可修。 |
-| SOR-P4-003 | [ ] | 给 `generate_chapter_craft_brief_preview` 加 repair profile。 | `chapter-craft-brief-tools.tool.ts` | 缺执行卡字段可由 LLM 修复，不能 deterministic 补卡。 |
-| SOR-P4-004 | [ ] | 章节工具修复提示词必须带当前章号、目标卷号、现有角色和卷级候选。 | 相关工具 | 修复不会凭空创造重要角色。 |
+| SOR-P4-001 | [x] | 给 `generate_chapter_outline_preview` 加 repair profile。 | `chapter-outline-preview-tools.tool.ts` | `craftBrief` 局部缺字段、cast/scene 轻微不一致可修。 |
+| SOR-P4-002 | [x] | 给 `generate_outline_preview` 批量章节输出加 repair profile。 | `generate-outline-preview.tool.ts` | 单批章节数量不足仍失败；局部结构错可修。 |
+| SOR-P4-003 | [x] | 给 `generate_chapter_craft_brief_preview` 加 repair profile。 | `chapter-craft-brief-tools.tool.ts` | 缺执行卡字段可由 LLM 修复，不能 deterministic 补卡。 |
+| SOR-P4-004 | [x] | 章节工具修复提示词必须带当前章号、目标卷号、现有角色和卷级候选。 | 相关工具 | 修复不会凭空创造重要角色。 |
+
+完成记录：`generate_chapter_outline_preview`、`generate_outline_preview` 与 `generate_chapter_craft_brief_preview` 已接入通用 helper。章节细纲 repair 白名单限定为 `craftBrief` 局部字段、角色执行来源/参与者一致性、目标章号/卷号轻微错配；缺整章、缺整张 `craftBrief`、缺 `storyUnit`、重要新角色未进入卷级候选仍失败。批量细纲单批章节数量不足仍失败，只修已有单章候选的局部结构。独立 `generate_chapter_craft_brief_preview` 显式拒绝候选数量不足，缺整张执行卡或整块 `storyUnit` 不修复，只允许已有候选内的执行卡字段/数组/子字段由 LLM 修复。Targeted tests：`AGENT_TEST_FILTER=generate_chapter_outline_preview`、`AGENT_TEST_FILTER=generate_outline_preview`、`AGENT_TEST_FILTER=generate_chapter_craft_brief_preview` 均通过。
 
 ### SOR-P5：导入预览与通用 JSON 修复
 
 | ID | 状态 | 任务 | 影响文件 | 验收 |
 |---|---|---|---|---|
-| SOR-P5-001 | [ ] | 评估是否为 `LlmJsonInvalidError` 增加 raw JSON 修复入口。 | `structured-output-repair.ts`、`llm-gateway.service.ts` 调用方 | 仅修 JSON 语法，不补小说内容。 |
-| SOR-P5-002 | [ ] | 接入导入 outline/characters/worldbuilding/writingRules/projectProfile 预览。 | `generate-import-*.tool.ts` | 结构包装错误可修，目标资产范围扩大必须失败。 |
-| SOR-P5-003 | [ ] | 接入 `build_import_preview` 和 `build_import_brief`。 | `build-import-preview.tool.ts`、`build-import-brief.tool.ts` | 导入目标不被 LLM repair 扩范围。 |
+| SOR-P5-001 | [x] | 评估是否为 `LlmJsonInvalidError` 增加 raw JSON 修复入口。 | `structured-output-repair.ts`、`llm-gateway.service.ts` 调用方 | 仅修 JSON 语法，不补小说内容。 |
+| SOR-P5-002 | [x] | 接入导入 outline/characters/worldbuilding/writingRules/projectProfile 预览。 | `generate-import-*.tool.ts` | 结构包装错误可修，目标资产范围扩大必须失败。 |
+| SOR-P5-003 | [x] | 接入 `build_import_preview` 和 `build_import_brief`。 | `build-import-preview.tool.ts`、`build-import-brief.tool.ts` | 导入目标不被 LLM repair 扩范围。 |
+
+阶段记录：`generate_import_characters_preview` 已接入通用 helper；`roleType` 这类局部结构字段可由 LLM 修复，混入 `lorebookEntries` 等未请求目标直接失败且不修复。Targeted test：`AGENT_TEST_FILTER=generate_import_characters_preview` 通过。
+
+阶段记录：`generate_import_worldbuilding_preview` 已接入通用 helper；`entryType` 局部缺失可由 LLM 修复，混入 `characters` 等未请求目标直接失败且不修复。Targeted test：`AGENT_TEST_FILTER=generate_import_worldbuilding_preview` 通过。
+
+阶段记录：`generate_import_writing_rules_preview` 已接入通用 helper；`severity` 局部缺失可由 LLM 修复，混入 `lorebookEntries` 等未请求目标直接失败且不修复。Targeted test：`AGENT_TEST_FILTER=generate_import_writing_rules_preview` 通过。
+
+阶段记录：`generate_import_project_profile_preview` 已接入通用 helper；顶层包装错误可由 LLM 修复，`projectProfile.outline` 等未请求目标直接失败且不修复。Targeted test：`AGENT_TEST_FILTER=generate_import_project_profile_preview` 通过。
+
+阶段记录：`generate_import_outline_preview` 已接入通用 helper；顶层 `outline` 包装错误可由 LLM 修复，章节数量不足直接失败且不修复。Targeted test：`AGENT_TEST_FILTER=generate_import_outline_preview` 通过。
+
+阶段记录：`build_import_brief` 已接入通用 helper；只读简报的 `mainline` 包装错误可由 LLM 修复，若输出 `chapters` 等可写入资产则直接失败且不修复。Targeted test：`AGENT_TEST_FILTER=build_import_brief` 通过。
+
+阶段记录：`build_import_preview` 已接入通用 helper；`risks` 包装错误可由 LLM 修复，未请求资产不再静默过滤为成功，而是直接失败且不修复。Targeted test：`AGENT_TEST_FILTER=build_import_preview` 通过。
+
+完成记录：P5 暂不为 `LlmJsonInvalidError` 增加 raw JSON repair 入口。原因是该错误发生在 `chatJson` 解析阶段，尚未形成工具 JSON 产物，若在通用 structured output repair 中处理会混淆“语法修复”和“工具产物 normalize/assert 修复”的边界；现阶段保持 fail-fast，并沿用 `LlmGatewayService chatJson keeps malformed JSON fail-fast` 覆盖 raw candidate 日志。导入预览类工具已统一接入 helper，repair 仅用于包装字段、枚举/局部结构错误，资产数量不足、关键内容缺失和目标范围扩大仍失败。
 
 ### SOR-P6：Agent 运行态与 UI 可见性
 
 | ID | 状态 | 任务 | 影响文件 | 验收 |
 |---|---|---|---|---|
-| SOR-P6-001 | [ ] | 在 Agent audit 中记录修复尝试摘要。 | `agent-runtime.service.ts` 或 tool output metadata | 用户能看到该步骤经历过自动修复。 |
-| SOR-P6-002 | [ ] | Artifact 展示 `repairDiagnostics`，提示“已由 LLM 修复结构错误并重新校验”。 | `apps/web/components/agent/AgentArtifactPanel.tsx` | 前端不只显示成功产物，也能看到修复痕迹。 |
-| SOR-P6-003 | [ ] | 失败时将“首轮错误”和“修复轮错误”都写入 observation/audit。 | `agent-executor.service.ts`、helper | 排查日志能定位修复失败原因。 |
+| SOR-P6-001 | [x] | 在 Agent audit 中记录修复尝试摘要。 | `agent-executor.service.ts`、tool output metadata | 用户能看到该步骤经历过自动修复。 |
+| SOR-P6-002 | [x] | Artifact 展示 `repairDiagnostics`，提示“已由 LLM 修复结构错误并重新校验”。 | `apps/web/components/agent/AgentArtifactPanel.tsx` | 前端不只显示成功产物，也能看到修复痕迹。 |
+| SOR-P6-003 | [x] | 失败时将“首轮错误”和“修复轮错误”都写入 observation/audit。 | `agent-executor.service.ts`、helper | 排查日志能定位修复失败原因。 |
+
+完成记录：`ToolContext` 新增 `recordRepairDiagnostic`，helper 在修复成功和修复失败时记录首轮错误、尝试次数、模型和修复轮错误；`AgentExecutorService` 将 diagnostics 写入 step metadata、成功/失败日志和失败 observation。前端 `AgentArtifactPanel` 会按产物来源工具显示“结构修复：已由 LLM 修复 X 次并重新校验”的提示。Targeted tests：`AGENT_TEST_FILTER="repair diagnostics" pnpm --dir apps/api run test:agent` 通过；因触及 `apps/web`，`pnpm --dir apps/web exec tsc --noEmit --incremental false -p tsconfig.json` 通过。
 
 ### SOR-P7：测试、Eval 与 CI
 
 | ID | 状态 | 任务 | 影响文件 | 验收 |
 |---|---|---|---|---|
-| SOR-P7-001 | [ ] | 为 helper 写独立单测：可修成功、不可修直接失败、修复仍失败、usage 记录。 | `agent-services.spec.ts` 或独立 spec | 所有核心路径可回归。 |
-| SOR-P7-002 | [ ] | 为每个接入工具增加至少 2 个测试：修复成功、修复失败。 | `agent-services.spec.ts` | 不允许只有 happy path。 |
-| SOR-P7-003 | [ ] | Agent eval 增加结构修复案例。 | `apps/api/test/fixtures/agent-eval-cases.json`、`scripts/dev/eval_agent_planner.ts` 如适用 | repair 不改变计划工具边界。 |
-| SOR-P7-004 | [ ] | CI 或本地 gate 增加 repair 相关测试。 | `apps/api/package.json` 或 CI 配置 | `pnpm --dir apps/api run test:agent` 覆盖 repair。 |
+| SOR-P7-001 | [x] | 为 helper 写独立单测：可修成功、不可修直接失败、修复仍失败、usage 记录。 | `agent-services.spec.ts` 或独立 spec | 所有核心路径可回归。 |
+| SOR-P7-002 | [x] | 为每个接入工具增加至少 2 个测试：修复成功、修复失败。 | `agent-services.spec.ts` | 不允许只有 happy path。 |
+| SOR-P7-003 | [x] | Agent eval 增加结构修复案例。 | `apps/api/test/fixtures/agent-eval-cases.json`、`scripts/dev/eval_agent_planner.ts` 如适用 | repair 不改变计划工具边界。 |
+| SOR-P7-004 | [x] | CI 或本地 gate 增加 repair 相关测试。 | `apps/api/package.json` 或 CI 配置 | `pnpm --dir apps/api run test:agent` 覆盖 repair。 |
+
+完成记录：helper、story units、volume outline、chapter outline、batch outline、craftBrief、导入预览和导入构建工具均已补充修复成功与失败/拒修路径测试，并纳入现有 `pnpm --dir apps/api run test:agent` gate。Agent eval 新增 `structured_output_repair_craft_brief_025`，要求 Planner 只选择 craftBrief 结构预览/校验链路，不越界调用 `auto_repair_chapter`、正文写作、润色或持久化工具；`eval_agent_planner.ts` 的 mock planner 同步支持该用例。
 
 ## 8. 推荐实施顺序
 
@@ -390,7 +431,7 @@ docker compose up -d --build
 
 ## 12. 当前原型记录
 
-当前 `generate_story_units_preview` 已经具备内联原型能力：
+迁移前 `generate_story_units_preview` 的内联原型能力记录：
 
 - 首轮生成失败于 `chapterAllocation` 结构时可触发一次 LLM 修复。
 - 修复提示词要求 `chapterRoles.length === chapterRange.end - chapterRange.start + 1`。
@@ -398,4 +439,4 @@ docker compose up -d --build
 - 修复失败继续抛错。
 - 已有测试覆盖 `chapterRoles` 数量不匹配修复成功、修复后仍失败。
 
-后续 SOR-P1/SOR-P2 的目标不是改变行为，而是把这套能力抽成通用 runner，并让更多工具以 profile 方式接入。
+SOR-P1/SOR-P2 已将这套能力抽成通用 runner，并让更多工具以 profile 方式接入；本节保留原型验收语义，便于后续回归对照。

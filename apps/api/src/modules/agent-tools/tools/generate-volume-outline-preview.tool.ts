@@ -8,8 +8,10 @@ import { OutlinePreviewOutput } from './generate-outline-preview.tool';
 import { recordToolLlmUsage } from './import-preview-llm-usage';
 import { VOLUME_CHARACTER_ROLE_TYPES, type CharacterReferenceCatalog } from './outline-character-contracts';
 import { assertVolumeNarrativePlan } from './outline-narrative-contracts';
+import { normalizeWithLlmRepair } from './structured-output-repair';
 
 const VOLUME_OUTLINE_PREVIEW_LLM_TIMEOUT_MS = DEFAULT_LLM_TIMEOUT_MS;
+const VOLUME_OUTLINE_PREVIEW_REPAIR_TIMEOUT_MS = DEFAULT_LLM_TIMEOUT_MS;
 
 interface GenerateVolumeOutlinePreviewInput {
   context?: Record<string, unknown>;
@@ -49,7 +51,7 @@ export class GenerateVolumeOutlinePreviewTool implements BaseTool<GenerateVolume
   riskLevel: 'low' = 'low';
   requiresApproval = false;
   sideEffects: string[] = [];
-  executionTimeoutMs = VOLUME_OUTLINE_PREVIEW_LLM_TIMEOUT_MS + 30_000;
+  executionTimeoutMs = VOLUME_OUTLINE_PREVIEW_LLM_TIMEOUT_MS + VOLUME_OUTLINE_PREVIEW_REPAIR_TIMEOUT_MS + 30_000;
   manifest: ToolManifestV2 = {
     name: this.name,
     displayName: '生成卷大纲预览',
@@ -121,6 +123,7 @@ export class GenerateVolumeOutlinePreviewTool implements BaseTool<GenerateVolume
       totalMessageChars: messages.reduce((sum, message) => sum + message.content.length, 0),
     };
     const startedAt = Date.now();
+    const characterCatalog = this.extractCharacterCatalog(args.context);
     this.logger.log('volume_outline_preview.llm_request.started', logContext);
     try {
       const response = await this.llm.chatJson<unknown>(
@@ -136,7 +139,29 @@ export class GenerateVolumeOutlinePreviewTool implements BaseTool<GenerateVolume
         rawPayloadSummary: response.result.rawPayloadSummary,
         rawResponse: this.rawLlmResponseLog(response.data),
       });
-      const normalized = this.normalize(response.data, volumeNo, chapterCount, this.extractCharacterCatalog(args.context));
+      const normalized = await normalizeWithLlmRepair({
+        toolName: this.name,
+        loggerEventPrefix: 'volume_outline_preview',
+        llm: this.llm,
+        context,
+        data: response.data,
+        normalize: (data) => this.normalize(data, volumeNo, chapterCount, characterCatalog),
+        shouldRepair: ({ error, data }) => this.shouldRepairVolumeOutlineOutput(data, error),
+        buildRepairMessages: ({ invalidOutput, validationError }) =>
+          this.buildRepairMessages(invalidOutput, validationError, volumeNo, chapterCount, characterCatalog),
+        progress: {
+          phaseMessage: `正在修复第 ${volumeNo} 卷卷大纲结构`,
+          timeoutMs: VOLUME_OUTLINE_PREVIEW_REPAIR_TIMEOUT_MS,
+        },
+        llmOptions: {
+          appStep: 'planner',
+          timeoutMs: VOLUME_OUTLINE_PREVIEW_REPAIR_TIMEOUT_MS,
+          temperature: 0.1,
+        },
+        maxRepairAttempts: 1,
+        initialModel: response.result.model,
+        logger: this.logger,
+      });
       this.logger.log('volume_outline_preview.llm_request.completed', {
         ...logContext,
         elapsedMs: Date.now() - startedAt,
@@ -151,6 +176,94 @@ export class GenerateVolumeOutlinePreviewTool implements BaseTool<GenerateVolume
       });
       throw error;
     }
+  }
+
+  private shouldRepairVolumeOutlineOutput(data: unknown, error: unknown): boolean {
+    const message = this.errorMessage(error);
+    const output = this.asRecord(data);
+    const volume = this.asRecord(output.volume);
+    const narrativePlan = this.asRecord(volume.narrativePlan);
+    const characterPlan = this.asRecord(narrativePlan.characterPlan);
+    const hasCharacterPlan = Object.keys(characterPlan).length > 0;
+    const foreshadowPlan = narrativePlan.foreshadowPlan;
+    if (/volume\.chapterCount 与目标章节数/.test(message)) return Object.keys(volume).length > 0;
+    if (/未知既有角色|existingCharacterArcs/.test(message)) {
+      return hasCharacterPlan && Array.isArray(characterPlan.existingCharacterArcs);
+    }
+    if (/newCharacterCandidates/.test(message)) {
+      return hasCharacterPlan && Array.isArray(characterPlan.newCharacterCandidates);
+    }
+    if (/foreshadowPlan.*(appearRange|setupRange|recoverRange|recoveryRange|payoffRange|recoveryMethod|payoffMethod|缺失)/.test(message)) {
+      return Array.isArray(foreshadowPlan) && foreshadowPlan.length > 0;
+    }
+    return false;
+  }
+
+  private buildRepairMessages(
+    invalidOutput: unknown,
+    validationError: string,
+    volumeNo: number,
+    chapterCount: number,
+    characterCatalog: CharacterReferenceCatalog,
+  ): Array<{ role: 'system' | 'user'; content: string }> {
+    return [
+      {
+        role: 'system',
+        content: [
+          '你是小说卷大纲 JSON 结构修复器。只输出严格 JSON，不要 Markdown、解释或代码块。',
+          '只修复结构校验错误，尽量保留原有卷主线、支线、角色弧、伏笔和卷末交接；不要重写成新的卷大纲。',
+          '不得输出占位角色、占位伏笔或模板化剧情；如果原始内容不足以修复，保持失败，不要编造低质量内容。',
+          'existingCharacterArcs 只能引用既有角色白名单中的 name 或 aliases；未知人物若确实是本卷重要新人物，必须移入 newCharacterCandidates 并补齐候选字段。',
+          'newCharacterCandidates 只能补齐已有候选的结构字段，不能扩大导入范围或把临时功能人物升级为重要角色。',
+          'foreshadowPlan 只能补齐局部结构字段，例如 appearRange、recoverRange、recoveryMethod；补充内容必须基于原伏笔名称、出现章节和回收意图。',
+          '修复后必须返回完整对象，只包含 volume 和 risks。',
+        ].join('\n'),
+      },
+      {
+        role: 'user',
+        content: JSON.stringify(
+          {
+            targetVolumeNo: volumeNo,
+            targetChapterCount: chapterCount,
+            validationError,
+            existingCharacterNames: characterCatalog.existingCharacterNames ?? [],
+            existingCharacterAliases: characterCatalog.existingCharacterAliases ?? {},
+            allowedNewCharacterRoleTypes: VOLUME_CHARACTER_ROLE_TYPES,
+            invalidOutput,
+            outputContract: {
+              volume: {
+                volumeNo,
+                title: 'string',
+                synopsis: 'structured markdown volume outline, preserve original content',
+                objective: 'string',
+                chapterCount,
+                narrativePlan: {
+                  globalMainlineStage: 'string',
+                  volumeMainline: 'string',
+                  dramaticQuestion: 'string',
+                  startState: 'string',
+                  endState: 'string',
+                  mainlineMilestones: ['string'],
+                  subStoryLines: 'preserve at least 2 rich sub story lines',
+                  characterPlan: {
+                    existingCharacterArcs: 'only known existing names or aliases',
+                    newCharacterCandidates: 'complete candidate fields when important new characters are present',
+                    relationshipArcs: 'participants must be known existing names or new candidate names',
+                    roleCoverage: 'all referenced names must be known existing names or new candidate names',
+                  },
+                  foreshadowPlan: 'items need name, appearRange/setupRange, recoverRange/recoveryRange/payoffRange, recoveryMethod/payoffMethod',
+                  endingHook: 'string',
+                  handoffToNextVolume: 'string',
+                },
+              },
+              risks: ['string'],
+            },
+          },
+          null,
+          2,
+        ),
+      },
+    ];
   }
 
   private normalize(data: unknown, volumeNo: number, chapterCount: number, characterCatalog: CharacterReferenceCatalog = {}): VolumeOutlinePreviewOutput {
@@ -264,6 +377,10 @@ export class GenerateVolumeOutlinePreviewTool implements BaseTool<GenerateVolume
     const text = this.text(value);
     if (!text.trim()) throw new Error(`generate_volume_outline_preview 返回缺少 ${label}，未生成完整卷大纲。`);
     return text;
+  }
+
+  private errorMessage(error: unknown): string {
+    return error instanceof Error ? error.message : String(error);
   }
 
   private positiveInt(value: unknown, label: string): number | undefined {

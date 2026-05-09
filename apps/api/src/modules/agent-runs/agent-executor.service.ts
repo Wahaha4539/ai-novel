@@ -1,7 +1,7 @@
 import { BadRequestException, Injectable, NotFoundException } from '@nestjs/common';
 import { PrismaService } from '../../prisma/prisma.service';
 import { StructuredLogger } from '../../common/logging/structured-logger';
-import { ToolContext, ToolJsonSchema, ToolLlmUsage, ToolProgressPatch, ToolSchemaType } from '../agent-tools/base-tool';
+import { ToolContext, ToolJsonSchema, ToolLlmUsage, ToolProgressPatch, ToolRepairDiagnostic, ToolSchemaType } from '../agent-tools/base-tool';
 import { ToolRegistryService } from '../agent-tools/tool-registry.service';
 import { AgentContextV2 } from './agent-context-builder.service';
 import { AgentExecutionObservationError, AgentObservation, AgentObservationErrorCode } from './agent-observation.types';
@@ -66,6 +66,11 @@ interface AgentStepExecutionCost {
     elapsedMs: number | null;
     rawPayloadSummary?: Record<string, unknown>;
   }>;
+}
+
+interface AgentStepMetadata {
+  executionCost: AgentStepExecutionCost;
+  repairDiagnostics?: ToolRepairDiagnostic[];
 }
 
 interface RuntimeReferenceState {
@@ -150,6 +155,7 @@ export class AgentExecutorService {
       await this.trace.startStep(agentRunId, step.stepNo, { stepType: 'tool', name: step.name, toolName: step.tool, mode, planVersion, input: resolvedArgs, deadlineMs: stepDeadlineMs });
       const stepStartedAt = Date.now();
       const llmCalls: ToolLlmUsage[] = [];
+      const repairDiagnostics: ToolRepairDiagnostic[] = [];
       this.logger.log('agent.step.started', { agentRunId, mode, planVersion, stepNo: step.stepNo, stepName: step.name, tool: step.tool, approved: stepApproved, args: this.summarizeValue(resolvedArgs) });
       try {
         const context: ToolContext = {
@@ -162,6 +168,7 @@ export class AgentExecutorService {
           stepTools,
           policy: { confirmation: options.confirmation },
           recordLlmUsage: (usage: ToolLlmUsage) => llmCalls.push(this.normalizeToolLlmUsage(usage)),
+          recordRepairDiagnostic: (diagnostic: ToolRepairDiagnostic) => repairDiagnostics.push(this.normalizeRepairDiagnostic(diagnostic)),
           updateProgress: (patch: ToolProgressPatch) => this.trace.updateStepPhase(agentRunId, step.stepNo, patch, mode, planVersion),
           heartbeat: (patch?: ToolProgressPatch) => this.trace.heartbeatStep(agentRunId, step.stepNo, patch, mode, planVersion),
         };
@@ -175,8 +182,9 @@ export class AgentExecutorService {
         this.updateRuntimeState(runtimeState, output);
         const elapsedMs = Date.now() - stepStartedAt;
         const executionCost = this.buildStepExecutionCost(step.tool, step.stepNo, mode, planVersion, elapsedMs, llmCalls);
-        await this.trace.finishStep(agentRunId, step.stepNo, output, mode, planVersion, { executionCost });
-        this.logger.log('agent.step.succeeded', { agentRunId, mode, planVersion, stepNo: step.stepNo, tool: step.tool, elapsedMs, model: executionCost.model, tokenUsage: executionCost.tokenUsage, llmCallCount: executionCost.llmCallCount, executionCost, output: this.summarizeValue(output), runtimeState });
+        const metadata = this.buildStepMetadata(executionCost, repairDiagnostics);
+        await this.trace.finishStep(agentRunId, step.stepNo, output, mode, planVersion, metadata);
+        this.logger.log('agent.step.succeeded', { agentRunId, mode, planVersion, stepNo: step.stepNo, tool: step.tool, elapsedMs, model: executionCost.model, tokenUsage: executionCost.tokenUsage, llmCallCount: executionCost.llmCallCount, executionCost, repairDiagnostics, output: this.summarizeValue(output), runtimeState });
       } catch (error) {
         if (error instanceof AgentCancelledError || error instanceof AgentRunStateChangedError) {
           this.logger.warn('agent.step.aborted_after_run_state_change', { agentRunId, mode, planVersion, stepNo: step.stepNo, tool: tool.name, message: error.message });
@@ -185,15 +193,16 @@ export class AgentExecutorService {
         if (error instanceof AgentSecondConfirmationRequiredError) {
           // 二次确认缺失是“等待用户复核”的暂停点，不应被记录成业务执行失败。
           const elapsedMs = Date.now() - stepStartedAt;
-          await this.trace.reviewStep(agentRunId, step.stepNo, this.formatStepError(step.stepNo, tool.name, mode, error), mode, planVersion, { executionCost: this.buildStepExecutionCost(step.tool, step.stepNo, mode, planVersion, elapsedMs, llmCalls) });
+          const executionCost = this.buildStepExecutionCost(step.tool, step.stepNo, mode, planVersion, elapsedMs, llmCalls);
+          await this.trace.reviewStep(agentRunId, step.stepNo, this.formatStepError(step.stepNo, tool.name, mode, error), mode, planVersion, this.buildStepMetadata(executionCost, repairDiagnostics));
           this.logger.warn('agent.step.waiting_review.second_confirmation_required', { agentRunId, mode, planVersion, stepNo: step.stepNo, tool: tool.name, elapsedMs, riskIds: error.riskIds });
           throw new AgentWaitingReviewError(error.message);
         }
-        const observation = this.createObservation(step, tool.name, mode, resolvedArgs, outputs, error);
+        const observation = this.createObservation(step, tool.name, mode, resolvedArgs, outputs, error, repairDiagnostics);
         const elapsedMs = Date.now() - stepStartedAt;
         const executionCost = this.buildStepExecutionCost(step.tool, step.stepNo, mode, planVersion, elapsedMs, llmCalls);
-        await this.trace.failStep(agentRunId, step.stepNo, observation, mode, planVersion, { executionCost });
-        this.logger.error('agent.step.failed', error, { agentRunId, mode, planVersion, stepNo: step.stepNo, tool: tool.name, elapsedMs, model: executionCost.model, tokenUsage: executionCost.tokenUsage, llmCallCount: executionCost.llmCallCount, observation: this.summarizeValue(observation) });
+        await this.trace.failStep(agentRunId, step.stepNo, observation, mode, planVersion, this.buildStepMetadata(executionCost, repairDiagnostics));
+        this.logger.error('agent.step.failed', error, { agentRunId, mode, planVersion, stepNo: step.stepNo, tool: tool.name, elapsedMs, model: executionCost.model, tokenUsage: executionCost.tokenUsage, llmCallCount: executionCost.llmCallCount, repairDiagnostics, observation: this.summarizeValue(observation) });
         throw new AgentExecutionObservationError(observation);
       }
     }
@@ -264,7 +273,7 @@ export class AgentExecutorService {
    * 把 Tool/Schema/Policy 异常转换为 AgentObservation，供 Runtime 写入诊断并触发有界 Replan。
    * 这里只做错误归类和缺参提取，不在 Executor 内直接修改计划，避免绕过审批边界。
    */
-  private createObservation(step: AgentPlanStepSpec, toolName: string, mode: 'plan' | 'act', args: Record<string, unknown>, outputs: Record<number, unknown>, error: unknown): AgentObservation {
+  private createObservation(step: AgentPlanStepSpec, toolName: string, mode: 'plan' | 'act', args: Record<string, unknown>, outputs: Record<number, unknown>, error: unknown, repairDiagnostics: ToolRepairDiagnostic[] = []): AgentObservation {
     const message = error instanceof Error ? error.message : String(error);
     const code = this.classifyObservationCode(message, error);
     return {
@@ -281,6 +290,7 @@ export class AgentExecutorService {
         retryable: this.isRetryableObservation(code),
       },
       previousOutputs: { ...outputs },
+      ...(repairDiagnostics.length ? { repairDiagnostics } : {}),
     };
   }
 
@@ -339,6 +349,24 @@ export class AgentExecutorService {
       ...(usage.usage ? { usage: this.sumTokenUsage([usage]) ?? undefined } : {}),
       ...(usage.rawPayloadSummary ? { rawPayloadSummary: this.toJsonCompatible(usage.rawPayloadSummary) as Record<string, unknown> } : {}),
       ...(typeof usage.elapsedMs === 'number' && Number.isFinite(usage.elapsedMs) ? { elapsedMs: Math.max(0, Math.round(usage.elapsedMs)) } : {}),
+    };
+  }
+
+  private normalizeRepairDiagnostic(diagnostic: ToolRepairDiagnostic): ToolRepairDiagnostic {
+    return {
+      toolName: diagnostic.toolName,
+      attempted: true,
+      attempts: Math.max(1, Math.round(Number(diagnostic.attempts) || 1)),
+      repairedFromErrors: [...new Set((diagnostic.repairedFromErrors ?? []).map((item) => String(item)).filter(Boolean))].slice(0, 5),
+      ...(diagnostic.model ? { model: diagnostic.model } : {}),
+      ...(diagnostic.failedError ? { failedError: diagnostic.failedError } : {}),
+    };
+  }
+
+  private buildStepMetadata(executionCost: AgentStepExecutionCost, repairDiagnostics: ToolRepairDiagnostic[]): AgentStepMetadata {
+    return {
+      executionCost,
+      ...(repairDiagnostics.length ? { repairDiagnostics } : {}),
     };
   }
 

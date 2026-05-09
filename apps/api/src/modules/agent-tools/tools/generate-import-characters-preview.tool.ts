@@ -1,4 +1,5 @@
 import { Injectable } from '@nestjs/common';
+import { StructuredLogger } from '../../../common/logging/structured-logger';
 import { LlmGatewayService } from '../../llm/llm-gateway.service';
 import { DEFAULT_LLM_TIMEOUT_MS } from '../../llm/llm-timeout.constants';
 import { BaseTool, ToolContext } from '../base-tool';
@@ -6,7 +7,9 @@ import type { ToolManifestV2 } from '../tool-manifest.types';
 import { SourceTextAnalysisOutput } from './analyze-source-text.tool';
 import type { ImportBriefOutput } from './build-import-brief.tool';
 import { recordToolLlmUsage } from './import-preview-llm-usage';
+import { assertNoUnexpectedImportTargets, assertRisksArray, buildImportPreviewRepairMessages, requiredImportArray, requiredImportText, shouldRepairImportPreviewOutput } from './import-preview-repair';
 import { ImportPreviewOutput } from './import-preview.types';
+import { normalizeWithLlmRepair } from './structured-output-repair';
 
 interface GenerateImportCharactersPreviewInput {
   analysis: SourceTextAnalysisOutput;
@@ -16,6 +19,7 @@ interface GenerateImportCharactersPreviewInput {
 }
 
 const IMPORT_CHARACTERS_PREVIEW_LLM_TIMEOUT_MS = DEFAULT_LLM_TIMEOUT_MS;
+const IMPORT_CHARACTERS_PREVIEW_REPAIR_TIMEOUT_MS = DEFAULT_LLM_TIMEOUT_MS;
 const IMPORT_CHARACTERS_PREVIEW_LLM_RETRIES = 1;
 const IMPORT_CHARACTERS_PREVIEW_PHASE_TIMEOUT_MS = IMPORT_CHARACTERS_PREVIEW_LLM_TIMEOUT_MS * (IMPORT_CHARACTERS_PREVIEW_LLM_RETRIES + 1) + 5_000;
 
@@ -30,6 +34,7 @@ export interface GenerateImportCharactersPreviewOutput {
  */
 @Injectable()
 export class GenerateImportCharactersPreviewTool implements BaseTool<GenerateImportCharactersPreviewInput, GenerateImportCharactersPreviewOutput> {
+  private readonly logger = new StructuredLogger(GenerateImportCharactersPreviewTool.name);
   name = 'generate_import_characters_preview';
   description = '根据文档分析生成导入用角色与人设预览，只输出 characters，不写库。';
   inputSchema = {
@@ -75,7 +80,7 @@ export class GenerateImportCharactersPreviewTool implements BaseTool<GenerateImp
   riskLevel: 'low' = 'low';
   requiresApproval = false;
   sideEffects: string[] = [];
-  executionTimeoutMs = IMPORT_CHARACTERS_PREVIEW_PHASE_TIMEOUT_MS + 60_000;
+  executionTimeoutMs = IMPORT_CHARACTERS_PREVIEW_PHASE_TIMEOUT_MS + IMPORT_CHARACTERS_PREVIEW_REPAIR_TIMEOUT_MS + 60_000;
 
   constructor(private readonly llm: LlmGatewayService) {}
 
@@ -117,22 +122,62 @@ export class GenerateImportCharactersPreviewTool implements BaseTool<GenerateImp
 
     recordToolLlmUsage(context, 'agent_import_characters_preview', response.result);
     await context.updateProgress?.({ phase: 'validating', phaseMessage: '正在校验导入角色预览', progressCurrent: 1, progressTotal: 1 });
-    return this.normalize(response.data);
+    return normalizeWithLlmRepair({
+      toolName: this.name,
+      loggerEventPrefix: 'import_characters_preview',
+      llm: this.llm,
+      context,
+      data: response.data,
+      normalize: (data) => this.normalize(data),
+      shouldRepair: ({ data, error }) => shouldRepairImportPreviewOutput({
+        data,
+        error,
+        toolName: this.name,
+        targetKeys: ['characters'],
+        repairableAliases: ['characterCandidates', 'roles', 'items'],
+        localFieldPattern: /characters\[\d+\]\.roleType/,
+      }),
+      buildRepairMessages: ({ invalidOutput, validationError }) => buildImportPreviewRepairMessages({
+        toolName: this.name,
+        targetDescription: 'characters and risks only',
+        validationError,
+        invalidOutput,
+        instruction: args.instruction,
+        sourceText: analysis.sourceText,
+        allowedTopLevelKeys: ['characters', 'risks'],
+        repairableAliases: ['characterCandidates', 'roles', 'items'],
+      }),
+      progress: {
+        phaseMessage: '正在修复导入角色预览结构',
+        timeoutMs: IMPORT_CHARACTERS_PREVIEW_REPAIR_TIMEOUT_MS,
+      },
+      llmOptions: {
+        appStep: 'agent_import_characters_preview',
+        maxTokens: 7000,
+        timeoutMs: IMPORT_CHARACTERS_PREVIEW_REPAIR_TIMEOUT_MS,
+        temperature: 0.1,
+      },
+      maxRepairAttempts: 1,
+      initialModel: response.result.model,
+      logger: this.logger,
+    });
   }
 
   private normalize(data: unknown): GenerateImportCharactersPreviewOutput {
+    assertNoUnexpectedImportTargets(data, ['characters'], this.name);
     const record = this.asRecord(data);
+    assertRisksArray(record.risks);
     return {
-      characters: this.arrayValue(record.characters).slice(0, 40).map((item) => {
+      characters: requiredImportArray(record.characters, 'characters').slice(0, 40).map((item, index) => {
         const character = this.asRecord(item);
         return {
-          name: this.scalarText(character.name),
-          roleType: this.optionalScalarText(character.roleType),
-          personalityCore: this.optionalScalarText(character.personalityCore),
-          motivation: this.optionalScalarText(character.motivation),
-          backstory: this.optionalScalarText(character.backstory),
+          name: requiredImportText(character.name, `characters[${index}].name`, (value) => this.optionalScalarText(value)),
+          roleType: requiredImportText(character.roleType, `characters[${index}].roleType`, (value) => this.optionalScalarText(value)),
+          personalityCore: requiredImportText(character.personalityCore, `characters[${index}].personalityCore`, (value) => this.optionalScalarText(value)),
+          motivation: requiredImportText(character.motivation, `characters[${index}].motivation`, (value) => this.optionalScalarText(value)),
+          backstory: requiredImportText(character.backstory, `characters[${index}].backstory`, (value) => this.optionalScalarText(value)),
         };
-      }).filter((item) => item.name),
+      }),
       risks: this.stringArray(record.risks),
     };
   }

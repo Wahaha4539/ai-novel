@@ -37,6 +37,15 @@ export interface ToolLlmUsage {
   elapsedMs?: number;
 }
 
+export interface ToolRepairDiagnostic {
+  toolName: string;
+  attempted: true;
+  attempts: number;
+  repairedFromErrors: string[];
+  model?: string;
+  failedError?: string;
+}
+
 export interface ToolProgressPatch {
   phase?: string;
   phaseMessage?: string;
@@ -57,6 +66,7 @@ export interface ToolContext {
   stepTools?: Record<number, string>;
   policy: Record<string, unknown>;
   recordLlmUsage?: (usage: ToolLlmUsage) => void;
+  recordRepairDiagnostic?: (diagnostic: ToolRepairDiagnostic) => void;
   updateProgress?: (patch: ToolProgressPatch) => Promise<void>;
   heartbeat?: (patch?: ToolProgressPatch) => Promise<void>;
   signal?: AbortSignal;

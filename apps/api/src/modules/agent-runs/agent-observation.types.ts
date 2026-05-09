@@ -29,6 +29,14 @@ export interface AgentObservation {
     retryable: boolean;
   };
   previousOutputs: Record<string, unknown>;
+  repairDiagnostics?: Array<{
+    toolName: string;
+    attempted: true;
+    attempts: number;
+    repairedFromErrors: string[];
+    model?: string;
+    failedError?: string;
+  }>;
 }
 
 /**

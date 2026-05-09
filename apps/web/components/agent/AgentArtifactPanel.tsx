@@ -170,6 +170,14 @@ interface ArtifactSourceInfo {
   assetType?: ProjectImportAssetType;
 }
 
+interface RepairDiagnosticView {
+  toolName?: string;
+  attempts?: number;
+  model?: string;
+  failedError?: string;
+  repairedFromErrors?: string[];
+}
+
 function artifactSourceInfo(artifactType: string | undefined, targetSources: ProjectImportTargetSource[], projectImportAssetLabels: string[]): ArtifactSourceInfo | undefined {
   const targetSource = targetSources.find((source) => source.artifactType === artifactType);
   if (targetSource) return { label: targetSource.label, tool: targetSource.tool, verb: '生成', assetType: targetSource.assetType };
@@ -192,6 +200,53 @@ function artifactSourceInfo(artifactType: string | undefined, targetSources: Pro
   return undefined;
 }
 
+function buildRepairDiagnosticsByTool(run: AgentRun | null): Map<string, RepairDiagnosticView[]> {
+  const byTool = new Map<string, RepairDiagnosticView[]>();
+  for (const step of run?.steps ?? []) {
+    const stepTool = step.tool ?? step.toolName;
+    for (const diagnostic of step.metadata?.repairDiagnostics ?? []) {
+      const toolName = diagnostic.toolName ?? stepTool;
+      if (!toolName) continue;
+      const list = byTool.get(toolName) ?? [];
+      list.push(diagnostic);
+      byTool.set(toolName, list);
+    }
+  }
+  return byTool;
+}
+
+function repairDiagnosticsForArtifact(
+  artifactType: string | undefined,
+  sourceInfo: ArtifactSourceInfo | undefined,
+  byTool: Map<string, RepairDiagnosticView[]>,
+): RepairDiagnosticView[] {
+  const tools = new Set<string>();
+  if (sourceInfo?.tool) tools.add(sourceInfo.tool);
+  for (const tool of artifactToolCandidates(artifactType)) tools.add(tool);
+  return [...tools].flatMap((tool) => byTool.get(tool) ?? []);
+}
+
+function artifactToolCandidates(artifactType: string | undefined): string[] {
+  switch (artifactType) {
+    case 'outline_preview':
+      return ['merge_chapter_outline_previews', 'generate_outline_preview', 'generate_chapter_outline_preview', 'generate_volume_outline_preview'];
+    case 'story_units_preview':
+      return ['generate_story_units_preview'];
+    case 'chapter_craft_brief_preview':
+      return ['generate_chapter_craft_brief_preview'];
+    case 'project_profile_preview':
+      return ['generate_import_project_profile_preview'];
+    case 'characters_preview':
+      return ['generate_import_characters_preview'];
+    case 'lorebook_preview':
+      return ['generate_import_worldbuilding_preview'];
+    case 'writing_rules_preview':
+      return ['generate_import_writing_rules_preview'];
+    default:
+      return [];
+  }
+}
+
 // ────────────────────────────────────────────
 // ArtifactPanel 主体
 // ────────────────────────────────────────────
@@ -210,6 +265,7 @@ export function AgentArtifactPanel({ run, query, onQueryChange, onRequestWorldbu
   const plan = latestPlan(run);
   const targetSources = useMemo(() => projectImportTargetSources(plan), [plan]);
   const writeInfo = useMemo(() => planWriteInfo(plan), [plan]);
+  const repairDiagnosticsByTool = useMemo(() => buildRepairDiagnosticsByTool(run), [run]);
   const artifacts = dedupeArtifacts(enrichArtifactsFromPlanSteps(run));
   const selectedTargetArtifactTypes = new Set(targetSources.map((source) => source.artifactType));
   const visibleArtifacts = targetSources.length
@@ -233,18 +289,22 @@ export function AgentArtifactPanel({ run, query, onQueryChange, onRequestWorldbu
       </div>
       {filteredArtifacts.length ? (
         <div className="space-y-3">
-          {filteredArtifacts.map((artifact) => (
-            <ArtifactCard
-              key={artifact.id}
-              artifactType={artifact.artifactType}
-              title={artifact.title}
-              content={artifact.content}
-              sourceInfo={artifactSourceInfo(artifact.artifactType, targetSources, writeInfo.projectImportAssetLabels)}
-              onRequestWorldbuildingPersistSelection={onRequestWorldbuildingPersistSelection}
-              onRequestImportTargetRegeneration={onRequestImportTargetRegeneration}
-              actionDisabled={actionDisabled}
-            />
-          ))}
+          {filteredArtifacts.map((artifact) => {
+            const sourceInfo = artifactSourceInfo(artifact.artifactType, targetSources, writeInfo.projectImportAssetLabels);
+            return (
+              <ArtifactCard
+                key={artifact.id}
+                artifactType={artifact.artifactType}
+                title={artifact.title}
+                content={artifact.content}
+                sourceInfo={sourceInfo}
+                repairDiagnostics={repairDiagnosticsForArtifact(artifact.artifactType, sourceInfo, repairDiagnosticsByTool)}
+                onRequestWorldbuildingPersistSelection={onRequestWorldbuildingPersistSelection}
+                onRequestImportTargetRegeneration={onRequestImportTargetRegeneration}
+                actionDisabled={actionDisabled}
+              />
+            );
+          })}
         </div>
       ) : (
         <EmptyText text={visibleArtifacts.length ? '没有匹配的产物。' : '计划产物和预览会在这里展开。'} />
@@ -282,6 +342,7 @@ function ArtifactCard({
   title,
   content,
   sourceInfo,
+  repairDiagnostics,
   onRequestWorldbuildingPersistSelection,
   onRequestImportTargetRegeneration,
   actionDisabled,
@@ -290,6 +351,7 @@ function ArtifactCard({
   title?: string;
   content?: unknown;
   sourceInfo?: ArtifactSourceInfo;
+  repairDiagnostics?: RepairDiagnosticView[];
   onRequestWorldbuildingPersistSelection?: (titles: string[]) => void | Promise<void>;
   onRequestImportTargetRegeneration?: (assetType: ProjectImportAssetType) => void | Promise<void>;
   actionDisabled?: boolean;
@@ -304,6 +366,7 @@ function ArtifactCard({
       </summary>
       <div className="agent-artifact-card__body">
         {sourceInfo && <ArtifactSourceLine sourceInfo={sourceInfo} onRequestImportTargetRegeneration={onRequestImportTargetRegeneration} actionDisabled={actionDisabled} />}
+        <RepairDiagnosticsLine diagnostics={repairDiagnostics} />
         <TypedArtifactPreview
           artifactType={artifactType}
           content={content}
@@ -316,6 +379,27 @@ function ArtifactCard({
         </details>
       </div>
     </details>
+  );
+}
+
+function RepairDiagnosticsLine({ diagnostics }: { diagnostics?: RepairDiagnosticView[] }) {
+  if (!diagnostics?.length) return null;
+  const attempts = diagnostics.reduce((sum, item) => sum + (numberValue(item.attempts) ?? 0), 0);
+  const failed = diagnostics.find((item) => textValue(item.failedError));
+  const model = diagnostics.map((item) => textValue(item.model, '')).find(Boolean);
+  return (
+    <div
+      className="mb-3 rounded-md border px-3 py-2 text-xs"
+      style={{
+        borderColor: failed ? 'rgba(248,113,113,0.32)' : 'rgba(20,184,166,0.30)',
+        background: failed ? 'rgba(127,29,29,0.12)' : 'rgba(20,184,166,0.08)',
+        color: failed ? '#fecaca' : '#99f6e4',
+      }}
+    >
+      结构修复：{failed ? `尝试 ${attempts || diagnostics.length} 次后仍失败` : `已由 LLM 修复 ${attempts || diagnostics.length} 次并重新校验`}
+      {model ? <span style={{ color: 'var(--text-muted)' }}> · {model}</span> : null}
+      {failed?.failedError ? <div className="mt-1" style={{ color: 'var(--text-muted)' }}>{failed.failedError}</div> : null}
+    </div>
   );
 }
 

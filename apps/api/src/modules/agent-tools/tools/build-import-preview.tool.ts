@@ -1,11 +1,14 @@
 import { Injectable } from '@nestjs/common';
+import { StructuredLogger } from '../../../common/logging/structured-logger';
 import { LlmGatewayService } from '../../llm/llm-gateway.service';
 import { DEFAULT_LLM_TIMEOUT_MS } from '../../llm/llm-timeout.constants';
 import { BaseTool, ToolContext } from '../base-tool';
 import type { ToolManifestV2 } from '../tool-manifest.types';
 import { SourceTextAnalysisOutput } from './analyze-source-text.tool';
 import { recordToolLlmUsage } from './import-preview-llm-usage';
+import { assertNoUnexpectedImportTargets, assertRisksArray, buildImportPreviewRepairMessages, requiredImportText, shouldRepairImportPreviewOutput } from './import-preview-repair';
 import { filterImportPreviewByAssetTypes, ImportAssetType, IMPORT_ASSET_TYPES, ImportPreviewOutput, normalizeImportAssetTypes } from './import-preview.types';
+import { normalizeWithLlmRepair } from './structured-output-repair';
 
 interface BuildImportPreviewInput {
   analysis?: SourceTextAnalysisOutput;
@@ -14,11 +17,13 @@ interface BuildImportPreviewInput {
 }
 
 const BUILD_IMPORT_PREVIEW_LLM_TIMEOUT_MS = DEFAULT_LLM_TIMEOUT_MS;
+const BUILD_IMPORT_PREVIEW_REPAIR_TIMEOUT_MS = DEFAULT_LLM_TIMEOUT_MS;
 const BUILD_IMPORT_PREVIEW_LLM_RETRIES = 1;
 const BUILD_IMPORT_PREVIEW_PHASE_TIMEOUT_MS = BUILD_IMPORT_PREVIEW_LLM_TIMEOUT_MS * (BUILD_IMPORT_PREVIEW_LLM_RETRIES + 1) + 5_000;
 
 @Injectable()
 export class BuildImportPreviewTool implements BaseTool<BuildImportPreviewInput, ImportPreviewOutput> {
+  private readonly logger = new StructuredLogger(BuildImportPreviewTool.name);
   name = 'build_import_preview';
   description = '根据文档分析结果和用户指定范围生成导入预览；导入只是输入来源，不代表固定生成全套资产。';
   inputSchema = {
@@ -68,7 +73,7 @@ export class BuildImportPreviewTool implements BaseTool<BuildImportPreviewInput,
   riskLevel: 'low' = 'low';
   requiresApproval = false;
   sideEffects: string[] = [];
-  executionTimeoutMs = BUILD_IMPORT_PREVIEW_PHASE_TIMEOUT_MS + 60_000;
+  executionTimeoutMs = BUILD_IMPORT_PREVIEW_PHASE_TIMEOUT_MS + BUILD_IMPORT_PREVIEW_REPAIR_TIMEOUT_MS + 60_000;
 
   constructor(private readonly llm: LlmGatewayService) {}
 
@@ -108,10 +113,51 @@ export class BuildImportPreviewTool implements BaseTool<BuildImportPreviewInput,
     );
     recordToolLlmUsage(context, 'planner', response.result);
     await context.updateProgress?.({ phase: 'validating', phaseMessage: '正在校验导入预览', progressCurrent: Math.max(1, requestedAssetTypes.length), progressTotal: Math.max(1, requestedAssetTypes.length) });
-    return this.normalize(response.data, sourceText, requestedAssetTypes);
+    return normalizeWithLlmRepair({
+      toolName: this.name,
+      loggerEventPrefix: 'import_preview',
+      llm: this.llm,
+      context,
+      data: response.data,
+      normalize: (data) => this.normalize(data as ImportPreviewOutput, requestedAssetTypes),
+      shouldRepair: ({ data, error }) => shouldRepairImportPreviewOutput({
+        data,
+        error,
+        toolName: this.name,
+        targetKeys: this.allowedPreviewKeys(requestedAssetTypes),
+        repairableAliases: ['profile', 'outline', 'rules', 'worldbuilding', 'entries'],
+        localFieldPattern: /(writingRules\[\d+\]\.(severity|ruleType)|risks)/,
+      }),
+      buildRepairMessages: ({ invalidOutput, validationError }) => buildImportPreviewRepairMessages({
+        toolName: this.name,
+        targetDescription: 'unified import preview, limited to requestedAssetTypes',
+        validationError,
+        invalidOutput,
+        instruction: args.instruction,
+        sourceText,
+        allowedTopLevelKeys: [...this.allowedPreviewKeys(requestedAssetTypes), 'requestedAssetTypes', 'risks'],
+        repairableAliases: ['profile', 'outline', 'rules', 'worldbuilding', 'entries'],
+        requestedAssetTypes,
+      }),
+      progress: {
+        phaseMessage: '正在修复导入预览结构',
+        timeoutMs: BUILD_IMPORT_PREVIEW_REPAIR_TIMEOUT_MS,
+      },
+      llmOptions: {
+        appStep: 'planner',
+        maxTokens: 8000,
+        timeoutMs: BUILD_IMPORT_PREVIEW_REPAIR_TIMEOUT_MS,
+        temperature: 0.1,
+      },
+      maxRepairAttempts: 1,
+      initialModel: response.result.model,
+      logger: this.logger,
+    });
   }
 
-  private normalize(data: ImportPreviewOutput, sourceText: string, requestedAssetTypes: ImportAssetType[]): ImportPreviewOutput {
+  private normalize(data: ImportPreviewOutput, requestedAssetTypes: ImportAssetType[]): ImportPreviewOutput {
+    this.assertRequestedScope(data, requestedAssetTypes);
+    assertRisksArray(data.risks);
     const characters = (data.characters ?? [])
       .slice(0, 30)
       .map((item) => {
@@ -158,8 +204,8 @@ export class BuildImportPreviewTool implements BaseTool<BuildImportPreviewInput,
     const volumes = (data.volumes ?? []).slice(0, 12).map((item, index) => {
       const record = item as Record<string, unknown>;
       return {
-        volumeNo: Number(record.volumeNo) || index + 1,
-        title: this.scalarText(record.title, `第 ${index + 1} 卷`),
+        volumeNo: this.requiredNumber(record.volumeNo, `volumes[${index}].volumeNo`),
+        title: requiredImportText(record.title, `volumes[${index}].title`, (value) => this.optionalScalarText(value)),
         synopsis: this.optionalScalarText(record.synopsis),
         objective: this.optionalScalarText(record.objective),
         chapterCount: this.optionalNumber(record.chapterCount),
@@ -168,18 +214,17 @@ export class BuildImportPreviewTool implements BaseTool<BuildImportPreviewInput,
     const chapters = (data.chapters ?? []).slice(0, 200).map((item, index) => {
       const record = item as Record<string, unknown>;
       return {
-        chapterNo: Number(record.chapterNo) || index + 1,
+        chapterNo: this.requiredNumber(record.chapterNo, `chapters[${index}].chapterNo`),
         volumeNo: this.optionalNumber(record.volumeNo),
-        title: this.scalarText(record.title, `第 ${index + 1} 章`),
+        title: requiredImportText(record.title, `chapters[${index}].title`, (value) => this.optionalScalarText(value)),
         objective: this.optionalScalarText(record.objective),
         conflict: this.optionalScalarText(record.conflict),
         hook: this.optionalScalarText(record.hook),
         outline: this.optionalScalarText(record.outline),
-        expectedWordCount: this.optionalNumber(record.expectedWordCount) ?? 2500,
+        expectedWordCount: this.optionalNumber(record.expectedWordCount),
       };
     });
-    const projectProfile = this.normalizeProjectProfile(data.projectProfile, sourceText);
-    if (!projectProfile.outline) projectProfile.outline = this.composeProjectOutline(volumes, chapters) || undefined;
+    const projectProfile = this.normalizeProjectProfile(data.projectProfile);
 
     return filterImportPreviewByAssetTypes({
       requestedAssetTypes,
@@ -193,23 +238,46 @@ export class BuildImportPreviewTool implements BaseTool<BuildImportPreviewInput,
     });
   }
 
-  private normalizeProjectProfile(profile: ImportPreviewOutput['projectProfile'] | undefined, sourceText: string): ImportPreviewOutput['projectProfile'] {
+  private normalizeProjectProfile(profile: ImportPreviewOutput['projectProfile'] | undefined): ImportPreviewOutput['projectProfile'] {
     const record = (profile ?? {}) as Record<string, unknown>;
-    const synopsis = this.scalarText(record.synopsis, sourceText.slice(0, 800));
     return {
       title: this.optionalScalarText(record.title),
       genre: this.optionalScalarText(record.genre),
       theme: this.optionalScalarText(record.theme),
       tone: this.optionalScalarText(record.tone),
       logline: this.optionalScalarText(record.logline),
-      synopsis: synopsis || undefined,
+      synopsis: this.optionalScalarText(record.synopsis),
       outline: this.optionalScalarText(record.outline),
     };
+  }
+
+  private assertRequestedScope(data: ImportPreviewOutput, requestedAssetTypes: ImportAssetType[]): void {
+    const allowedKeys = this.allowedPreviewKeys(requestedAssetTypes);
+    const forbiddenProjectProfileFields: string[] = [];
+    if (!requestedAssetTypes.includes('projectProfile')) forbiddenProjectProfileFields.push('title', 'genre', 'theme', 'tone', 'logline', 'synopsis');
+    if (!requestedAssetTypes.includes('outline')) forbiddenProjectProfileFields.push('outline');
+    assertNoUnexpectedImportTargets(data, allowedKeys, this.name, { forbiddenProjectProfileFields });
+  }
+
+  private allowedPreviewKeys(requestedAssetTypes: ImportAssetType[]): string[] {
+    const keys: string[] = [];
+    if (requestedAssetTypes.includes('projectProfile') || requestedAssetTypes.includes('outline')) keys.push('projectProfile');
+    if (requestedAssetTypes.includes('characters')) keys.push('characters');
+    if (requestedAssetTypes.includes('worldbuilding')) keys.push('lorebookEntries');
+    if (requestedAssetTypes.includes('writingRules')) keys.push('writingRules');
+    if (requestedAssetTypes.includes('outline')) keys.push('volumes', 'chapters');
+    return keys;
   }
 
   private optionalNumber(value: unknown): number | undefined {
     const parsed = Number(value);
     return Number.isFinite(parsed) && parsed > 0 ? parsed : undefined;
+  }
+
+  private requiredNumber(value: unknown, label: string): number {
+    const parsed = this.optionalNumber(value);
+    if (!parsed) throw new Error(`${label} is required.`);
+    return parsed;
   }
 
   private optionalScalarText(value: unknown): string | undefined {
@@ -221,12 +289,6 @@ export class BuildImportPreviewTool implements BaseTool<BuildImportPreviewInput,
     if (text === 'info' || text === 'warning' || text === 'error') return text;
     if (text === 'warn') return 'warning';
     return undefined;
-  }
-
-  private composeProjectOutline(volumes: ImportPreviewOutput['volumes'], chapters: ImportPreviewOutput['chapters']) {
-    const volumeLines = volumes.map((volume) => [`## 第 ${volume.volumeNo} 卷：${volume.title}`, volume.synopsis, volume.objective ? `目标：${volume.objective}` : ''].filter(Boolean).join('\n'));
-    const chapterLines = chapters.slice(0, 80).map((chapter) => [`- 第 ${chapter.chapterNo} 章：${chapter.title}`, chapter.objective ? `目标：${chapter.objective}` : '', chapter.outline ? `梗概：${chapter.outline}` : ''].filter(Boolean).join('；'));
-    return [...volumeLines, ...chapterLines].filter(Boolean).join('\n\n');
   }
 
   private scalarText(value: unknown, fallback = ''): string {

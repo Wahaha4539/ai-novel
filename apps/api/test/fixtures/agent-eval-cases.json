@@ -256,5 +256,18 @@
       "mustRequireApproval": true,
       "forbidInventedIds": true
     }
+  },
+  {
+    "id": "structured_output_repair_craft_brief_025",
+    "message": "Structured output repair eval: regenerate only the Chapter.craftBrief structured preview for the current chapter when local fields are invalid; do not write prose, do not use chapter auto repair, and do not persist.",
+    "context": { "session": { "currentProjectId": "project_1", "currentChapterId": "chapter_12" } },
+    "expected": {
+      "taskType": "chapter_craft_brief",
+      "mustUseTools": ["resolve_chapter", "collect_chapter_context", "generate_chapter_craft_brief_preview", "validate_chapter_craft_brief"],
+      "mustNotUseTools": ["auto_repair_chapter", "write_chapter", "polish_chapter", "persist_chapter_craft_brief"],
+      "mustContainInstruction": ["Chapter.craftBrief", "structured preview", "do not persist"],
+      "mustRequireApproval": false,
+      "forbidInventedIds": true
+    }
   }
 ]

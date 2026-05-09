@@ -7,6 +7,7 @@ import { DEFAULT_LLM_TIMEOUT_MS } from '../../llm/llm-timeout.constants';
 import { BaseTool, ToolContext } from '../base-tool';
 import type { ToolManifestV2 } from '../tool-manifest.types';
 import { recordToolLlmUsage } from './import-preview-llm-usage';
+import { normalizeWithLlmRepair } from './structured-output-repair';
 import {
   STORY_UNIT_MAINLINE_RELATIONS,
   STORY_UNIT_PURPOSES,
@@ -156,7 +157,29 @@ export class GenerateStoryUnitsPreviewTool implements BaseTool<GenerateStoryUnit
         { appStep: 'planner', timeoutMs: STORY_UNITS_PREVIEW_LLM_TIMEOUT_MS, retries: 0, jsonMode: true },
       );
       recordToolLlmUsage(context, 'planner', response.result);
-      const normalized = await this.normalizeOrRepair(response.data, volumeNo, chapterCount, context, logContext, response.result.model);
+      const normalized = await normalizeWithLlmRepair({
+        toolName: this.name,
+        loggerEventPrefix: 'story_units_preview',
+        llm: this.llm,
+        context,
+        data: response.data,
+        normalize: (data) => this.normalize(data, volumeNo, chapterCount),
+        shouldRepair: ({ error, data }) => this.shouldRepairChapterAllocation(data, error),
+        buildRepairMessages: ({ invalidOutput, validationError }) =>
+          this.buildRepairMessages(invalidOutput, validationError, volumeNo, chapterCount),
+        progress: {
+          phaseMessage: `正在修复第 ${volumeNo} 卷单元故事章节分配`,
+          timeoutMs: STORY_UNITS_PREVIEW_REPAIR_TIMEOUT_MS,
+        },
+        llmOptions: {
+          appStep: 'planner',
+          timeoutMs: STORY_UNITS_PREVIEW_REPAIR_TIMEOUT_MS,
+          temperature: 0.1,
+        },
+        maxRepairAttempts: 1,
+        initialModel: response.result.model,
+        logger: this.logger,
+      });
       this.logger.log('story_units_preview.llm_request.completed', {
         ...logContext,
         elapsedMs: Date.now() - startedAt,
@@ -167,69 +190,6 @@ export class GenerateStoryUnitsPreviewTool implements BaseTool<GenerateStoryUnit
     } catch (error) {
       this.logger.error('story_units_preview.llm_request.failed', error, {
         ...logContext,
-        elapsedMs: Date.now() - startedAt,
-      });
-      throw error;
-    }
-  }
-
-  private async normalizeOrRepair(
-    data: unknown,
-    volumeNo: number,
-    chapterCount: number | undefined,
-    context: ToolContext,
-    logContext: Record<string, unknown>,
-    initialModel?: string,
-  ): Promise<StoryUnitsPreviewOutput> {
-    try {
-      return this.normalize(data, volumeNo, chapterCount);
-    } catch (error) {
-      if (!this.shouldRepairChapterAllocation(data, error)) throw error;
-      return this.repairInvalidStoryUnitOutput(data, this.errorMessage(error), volumeNo, chapterCount, context, logContext, initialModel);
-    }
-  }
-
-  private async repairInvalidStoryUnitOutput(
-    invalidOutput: unknown,
-    validationError: string,
-    volumeNo: number,
-    chapterCount: number | undefined,
-    context: ToolContext,
-    logContext: Record<string, unknown>,
-    initialModel?: string,
-  ): Promise<StoryUnitsPreviewOutput> {
-    await context.updateProgress?.({
-      phase: 'calling_llm',
-      phaseMessage: `正在修复第 ${volumeNo} 卷单元故事章节分配`,
-      timeoutMs: STORY_UNITS_PREVIEW_REPAIR_TIMEOUT_MS,
-    });
-    const messages = this.buildRepairMessages(invalidOutput, validationError, volumeNo, chapterCount);
-    const repairLogContext = {
-      ...logContext,
-      initialModel: initialModel ?? null,
-      validationError,
-      messageCount: messages.length,
-      totalMessageChars: messages.reduce((sum, message) => sum + message.content.length, 0),
-    };
-    const startedAt = Date.now();
-    this.logger.log('story_units_preview.llm_repair.started', repairLogContext);
-    try {
-      const response = await this.llm.chatJson<unknown>(
-        messages,
-        { appStep: 'planner', timeoutMs: STORY_UNITS_PREVIEW_REPAIR_TIMEOUT_MS, retries: 0, jsonMode: true, temperature: 0.1 },
-      );
-      recordToolLlmUsage(context, 'planner', response.result);
-      const normalized = this.normalize(response.data, volumeNo, chapterCount);
-      this.logger.log('story_units_preview.llm_repair.completed', {
-        ...repairLogContext,
-        elapsedMs: Date.now() - startedAt,
-        model: response.result.model,
-        tokenUsage: response.result.usage,
-      });
-      return normalized;
-    } catch (error) {
-      this.logger.error('story_units_preview.llm_repair.failed', error, {
-        ...repairLogContext,
         elapsedMs: Date.now() - startedAt,
       });
       throw error;

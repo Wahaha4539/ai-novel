@@ -8,8 +8,10 @@ import { ChapterContinuityState, ChapterCraftBrief, ChapterSceneBeat, ChapterSto
 import { recordToolLlmUsage } from './import-preview-llm-usage';
 import { assertChapterCharacterExecution, assertVolumeCharacterPlan, type CharacterReferenceCatalog } from './outline-character-contracts';
 import { assertVolumeStoryUnitPlan, storyUnitForChapter, storyUnitServiceFunctions, type VolumeStoryUnitPlan } from './story-unit-contracts';
+import { normalizeWithLlmRepair } from './structured-output-repair';
 
 const CHAPTER_OUTLINE_PREVIEW_LLM_TIMEOUT_MS = DEFAULT_LLM_TIMEOUT_MS;
+const CHAPTER_OUTLINE_PREVIEW_REPAIR_TIMEOUT_MS = DEFAULT_LLM_TIMEOUT_MS;
 
 interface GenerateChapterOutlinePreviewInput {
   context?: Record<string, unknown>;
@@ -70,7 +72,7 @@ export class GenerateChapterOutlinePreviewTool implements BaseTool<GenerateChapt
   riskLevel: 'low' = 'low';
   requiresApproval = false;
   sideEffects: string[] = [];
-  executionTimeoutMs = CHAPTER_OUTLINE_PREVIEW_LLM_TIMEOUT_MS + 30_000;
+  executionTimeoutMs = CHAPTER_OUTLINE_PREVIEW_LLM_TIMEOUT_MS + CHAPTER_OUTLINE_PREVIEW_REPAIR_TIMEOUT_MS + 30_000;
   manifest: ToolManifestV2 = {
     name: this.name,
     displayName: '生成单章细纲与执行卡预览',
@@ -154,6 +156,7 @@ export class GenerateChapterOutlinePreviewTool implements BaseTool<GenerateChapt
       totalMessageChars: messages.reduce((sum, message) => sum + message.content.length, 0),
     };
     const startedAt = Date.now();
+    const characterCatalog = this.extractCharacterCatalog(args.context);
     this.logger.log('chapter_outline_preview.llm_request.started', logContext);
     try {
       const response = await this.llm.chatJson<unknown>(
@@ -161,7 +164,29 @@ export class GenerateChapterOutlinePreviewTool implements BaseTool<GenerateChapt
         { appStep: 'planner', timeoutMs: CHAPTER_OUTLINE_PREVIEW_LLM_TIMEOUT_MS, retries: 0, jsonMode: true },
       );
       recordToolLlmUsage(context, 'planner', response.result);
-      const normalized = this.normalize(response.data, volumeNo, chapterNo, chapterCount, args.volumeOutline, args.storyUnitPlan, this.extractCharacterCatalog(args.context));
+      const normalized = await normalizeWithLlmRepair({
+        toolName: this.name,
+        loggerEventPrefix: 'chapter_outline_preview',
+        llm: this.llm,
+        context,
+        data: response.data,
+        normalize: (data) => this.normalize(data, volumeNo, chapterNo, chapterCount, args.volumeOutline, args.storyUnitPlan, characterCatalog),
+        shouldRepair: ({ error, data }) => this.shouldRepairChapterOutlineOutput(data, error),
+        buildRepairMessages: ({ invalidOutput, validationError }) =>
+          this.buildRepairMessages(invalidOutput, validationError, args, volumeNo, chapterNo, chapterCount, characterCatalog),
+        progress: {
+          phaseMessage: `正在修复第 ${chapterNo} 章细纲结构`,
+          timeoutMs: CHAPTER_OUTLINE_PREVIEW_REPAIR_TIMEOUT_MS,
+        },
+        llmOptions: {
+          appStep: 'planner',
+          timeoutMs: CHAPTER_OUTLINE_PREVIEW_REPAIR_TIMEOUT_MS,
+          temperature: 0.1,
+        },
+        maxRepairAttempts: 1,
+        initialModel: response.result.model,
+        logger: this.logger,
+      });
       this.logger.log('chapter_outline_preview.llm_request.completed', {
         ...logContext,
         elapsedMs: Date.now() - startedAt,
@@ -176,6 +201,75 @@ export class GenerateChapterOutlinePreviewTool implements BaseTool<GenerateChapt
       });
       throw error;
     }
+  }
+
+  private shouldRepairChapterOutlineOutput(data: unknown, error: unknown): boolean {
+    const message = this.errorMessage(error);
+    const output = this.asRecord(data);
+    const topLevelChapter = this.asRecord(output.chapter);
+    const rawChapters = Object.keys(topLevelChapter).length ? [topLevelChapter] : (Array.isArray(output.chapters) ? output.chapters : []);
+    if (rawChapters.length !== 1) return false;
+    const chapterRecord = this.asRecord(rawChapters[0]);
+    const craftBrief = this.asRecord(chapterRecord.craftBrief);
+    if (/chapterNo 不匹配|volumeNo 不匹配/.test(message)) return Object.keys(chapterRecord).length > 0;
+    if (!Object.keys(craftBrief).length) return false;
+    if (/临时角色承担了重要或长期角色功能|未进入卷级角色候选/.test(message)) return false;
+    if (/craftBrief\.storyUnit (is required|缺少)|缺少 craftBrief\.storyUnit/.test(message)) return false;
+    if (/craftBrief\.(visibleGoal|hiddenEmotion|coreConflict|mainlineTask|subplotTasks|actionBeats|sceneBeats|concreteClues|dialogueSubtext|characterShift|irreversibleConsequence|progressTypes|entryState|exitState|openLoops|closedLoops|handoffToNextChapter|continuityState)/.test(message)) return true;
+    if (/characterExecution|sceneBeats\[\d+\]\.participants|participants 未被 characterExecution\.cast 覆盖|povCharacter 未出现在 cast|sceneBeatRefs|actionBeatRefs/.test(message)) return true;
+    return false;
+  }
+
+  private buildRepairMessages(
+    invalidOutput: unknown,
+    validationError: string,
+    args: GenerateChapterOutlinePreviewInput,
+    volumeNo: number,
+    chapterNo: number,
+    chapterCount: number,
+    characterCatalog: CharacterReferenceCatalog,
+  ): Array<{ role: 'system' | 'user'; content: string }> {
+    const volumeCandidateNames = this.extractVolumeCandidateNames(args.volumeOutline);
+    return [
+      {
+        role: 'system',
+        content: [
+          '你是小说单章细纲 JSON 结构修复器。只输出严格 JSON，不要 Markdown、解释或代码块。',
+          '只修复结构校验错误，尽量保留原章节目标、冲突、场景、行动链、线索、人物关系和交接压力；不要重写成新章节。',
+          '不得输出占位 craftBrief、模板行动链或模板后果；缺整章、缺整张 craftBrief、重要新角色未进入卷级候选时应保持失败。',
+          'characterExecution.cast 的 source 必须与角色来源一致：既有角色用 existing；卷级候选用 volume_candidate；一次性临时角色用 minor_temporary 并列入 newMinorCharacters。',
+          'sceneBeats.participants、relationshipBeats.participants 必须都出现在 characterExecution.cast.characterName 中。',
+          '修复后必须返回完整对象，只包含 volume、chapter、risks。',
+        ].join('\n'),
+      },
+      {
+        role: 'user',
+        content: JSON.stringify(
+          {
+            targetVolumeNo: volumeNo,
+            targetChapterNo: chapterNo,
+            targetChapterCount: chapterCount,
+            validationError,
+            existingCharacterNames: characterCatalog.existingCharacterNames ?? [],
+            existingCharacterAliases: characterCatalog.existingCharacterAliases ?? {},
+            volumeCandidateNames,
+            previousChapter: args.previousChapter ?? null,
+            storyUnitPlan: args.storyUnitPlan ?? null,
+            invalidOutput,
+            repairContract: {
+              chapter: {
+                chapterNo,
+                volumeNo,
+                craftBrief: 'complete local missing fields only; preserve concrete action and consequence content',
+                characterExecution: 'cast/source/participants must match known existing characters, volume candidates, or declared minor temporaries',
+              },
+            },
+          },
+          null,
+          2,
+        ),
+      },
+    ];
   }
 
   private normalize(data: unknown, volumeNo: number, chapterNo: number, chapterCount: number, volumeOutline?: Record<string, unknown>, storyUnitPlanInput?: Record<string, unknown>, characterCatalog: CharacterReferenceCatalog = {}): ChapterOutlinePreviewOutput {
@@ -564,6 +658,20 @@ export class GenerateChapterOutlinePreviewTool implements BaseTool<GenerateChapt
   private safeJson(value: unknown, limit: number): string {
     const text = JSON.stringify(value ?? {}, null, 2);
     return text.length > limit ? `${text.slice(0, limit)}...` : text;
+  }
+
+  private extractVolumeCandidateNames(volumeOutlineValue: unknown): string[] {
+    const volumeOutline = this.asRecord(volumeOutlineValue);
+    const narrativePlan = this.asRecord(volumeOutline.narrativePlan);
+    const characterPlan = this.asRecord(narrativePlan.characterPlan);
+    const candidates = Array.isArray(characterPlan.newCharacterCandidates) ? characterPlan.newCharacterCandidates : [];
+    return candidates
+      .map((candidate) => this.text(this.asRecord(candidate).name, ''))
+      .filter(Boolean);
+  }
+
+  private errorMessage(error: unknown): string {
+    return error instanceof Error ? error.message : String(error);
   }
 
   private extractCharacterCatalog(contextValue: unknown): CharacterReferenceCatalog {

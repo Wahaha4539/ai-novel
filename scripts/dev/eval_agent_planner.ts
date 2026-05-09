@@ -1291,6 +1291,14 @@ function createMockPlannerOutput(goal: string, agentContext: Record<string, unkn
       step(4, 'persist_timeline_events', { preview: '{{steps.align_chapter_timeline_preview.output}}', validation: '{{steps.validate_timeline_preview.output}}' }),
     ]);
   }
+  if (goal.includes('Structured output repair eval') && goal.includes('Chapter.craftBrief')) {
+    return plan('chapter_craft_brief', goal, false, [
+      step(1, 'resolve_chapter', { projectId: '{{context.session.currentProjectId}}', chapterRef: 'current chapter', currentChapterId }),
+      step(2, 'collect_chapter_context', { chapterId: '{{steps.resolve_chapter.output.chapterId}}', focus: ['outline', 'storyUnit', 'craftBrief'] }),
+      step(3, 'generate_chapter_craft_brief_preview', { chapterId: '{{steps.resolve_chapter.output.chapterId}}', context: '{{steps.collect_chapter_context.output}}', instruction: goal }),
+      step(4, 'validate_chapter_craft_brief', { preview: '{{steps.generate_chapter_craft_brief_preview.output}}', taskContext: '{{steps.collect_chapter_context.output}}' }),
+    ]);
+  }
   if (goal.includes('第十二章')) {
     return plan('chapter_write', goal, true, [
       step(1, 'resolve_chapter', { projectId: '{{context.session.currentProjectId}}', chapterRef: '第十二章', currentChapterId }),

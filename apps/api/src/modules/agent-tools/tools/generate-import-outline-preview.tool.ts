@@ -1,4 +1,5 @@
 import { Injectable } from '@nestjs/common';
+import { StructuredLogger } from '../../../common/logging/structured-logger';
 import { LlmGatewayService } from '../../llm/llm-gateway.service';
 import { DEFAULT_LLM_TIMEOUT_MS } from '../../llm/llm-timeout.constants';
 import { BaseTool, ToolContext } from '../base-tool';
@@ -6,7 +7,9 @@ import type { ToolManifestV2 } from '../tool-manifest.types';
 import { SourceTextAnalysisOutput } from './analyze-source-text.tool';
 import type { ImportBriefOutput } from './build-import-brief.tool';
 import { recordToolLlmUsage } from './import-preview-llm-usage';
+import { assertNoUnexpectedImportTargets, assertRisksArray, buildImportPreviewRepairMessages, requiredImportArray, requiredImportObject, requiredImportText, shouldRepairImportPreviewOutput } from './import-preview-repair';
 import { ImportPreviewOutput } from './import-preview.types';
+import { normalizeWithLlmRepair } from './structured-output-repair';
 
 interface GenerateImportOutlinePreviewInput {
   analysis: SourceTextAnalysisOutput;
@@ -17,6 +20,7 @@ interface GenerateImportOutlinePreviewInput {
 }
 
 const IMPORT_OUTLINE_PREVIEW_LLM_TIMEOUT_MS = DEFAULT_LLM_TIMEOUT_MS;
+const IMPORT_OUTLINE_PREVIEW_REPAIR_TIMEOUT_MS = DEFAULT_LLM_TIMEOUT_MS;
 const IMPORT_OUTLINE_PREVIEW_LLM_RETRIES = 1;
 const IMPORT_OUTLINE_PREVIEW_PHASE_TIMEOUT_MS = IMPORT_OUTLINE_PREVIEW_LLM_TIMEOUT_MS * (IMPORT_OUTLINE_PREVIEW_LLM_RETRIES + 1) + 5_000;
 
@@ -33,6 +37,7 @@ export interface GenerateImportOutlinePreviewOutput {
  */
 @Injectable()
 export class GenerateImportOutlinePreviewTool implements BaseTool<GenerateImportOutlinePreviewInput, GenerateImportOutlinePreviewOutput> {
+  private readonly logger = new StructuredLogger(GenerateImportOutlinePreviewTool.name);
   name = 'generate_import_outline_preview';
   description = '根据文档分析和项目上下文生成导入用剧情大纲预览，只输出主线、卷和章节，不写库。';
   inputSchema = {
@@ -82,7 +87,7 @@ export class GenerateImportOutlinePreviewTool implements BaseTool<GenerateImport
   riskLevel: 'low' = 'low';
   requiresApproval = false;
   sideEffects: string[] = [];
-  executionTimeoutMs = IMPORT_OUTLINE_PREVIEW_PHASE_TIMEOUT_MS + 60_000;
+  executionTimeoutMs = IMPORT_OUTLINE_PREVIEW_PHASE_TIMEOUT_MS + IMPORT_OUTLINE_PREVIEW_REPAIR_TIMEOUT_MS + 60_000;
 
   constructor(private readonly llm: LlmGatewayService) {}
 
@@ -126,13 +131,55 @@ export class GenerateImportOutlinePreviewTool implements BaseTool<GenerateImport
 
     recordToolLlmUsage(context, 'agent_import_outline_preview', response.result);
     await context.updateProgress?.({ phase: 'validating', phaseMessage: '正在校验导入大纲预览', progressCurrent: chapterCount, progressTotal: chapterCount });
-    return this.normalize(response.data, chapterCount, analysis.sourceText);
+    return normalizeWithLlmRepair({
+      toolName: this.name,
+      loggerEventPrefix: 'import_outline_preview',
+      llm: this.llm,
+      context,
+      data: response.data,
+      normalize: (data) => this.normalize(data, chapterCount),
+      shouldRepair: ({ data, error }) => shouldRepairImportPreviewOutput({
+        data,
+        error,
+        toolName: this.name,
+        targetKeys: ['projectProfile', 'volumes', 'chapters'],
+        repairableAliases: ['outline', 'volume', 'chapterOutline', 'items'],
+        localFieldPattern: /(volumes|chapters)\[\d+\]\.(volumeNo|chapterNo|expectedWordCount)/,
+      }),
+      buildRepairMessages: ({ invalidOutput, validationError }) => buildImportPreviewRepairMessages({
+        toolName: this.name,
+        targetDescription: 'projectProfile.outline, volumes, chapters, and risks only',
+        validationError,
+        invalidOutput,
+        instruction: args.instruction,
+        sourceText: analysis.sourceText,
+        allowedTopLevelKeys: ['projectProfile', 'volumes', 'chapters', 'risks'],
+        repairableAliases: ['outline', 'volume', 'chapterOutline', 'items'],
+      }),
+      progress: {
+        phaseMessage: '正在修复导入大纲预览结构',
+        timeoutMs: IMPORT_OUTLINE_PREVIEW_REPAIR_TIMEOUT_MS,
+      },
+      llmOptions: {
+        appStep: 'agent_import_outline_preview',
+        maxTokens: Math.min(9000, chapterCount * 360 + 1800),
+        timeoutMs: IMPORT_OUTLINE_PREVIEW_REPAIR_TIMEOUT_MS,
+        temperature: 0.1,
+      },
+      maxRepairAttempts: 1,
+      initialModel: response.result.model,
+      logger: this.logger,
+    });
   }
 
-  private normalize(data: unknown, chapterCount: number, sourceText: string): GenerateImportOutlinePreviewOutput {
+  private normalize(data: unknown, chapterCount: number): GenerateImportOutlinePreviewOutput {
+    assertNoUnexpectedImportTargets(data, ['projectProfile', 'volumes', 'chapters'], this.name, {
+      forbiddenProjectProfileFields: ['title', 'genre', 'theme', 'tone', 'logline', 'synopsis'],
+    });
     const record = this.asRecord(data);
-    const projectProfile = this.asRecord(record.projectProfile);
-    const outline = this.optionalScalarText(projectProfile.outline) ?? this.optionalScalarText(record.outline) ?? this.fallbackOutline(sourceText);
+    assertRisksArray(record.risks);
+    const projectProfile = requiredImportObject(record.projectProfile, 'projectProfile');
+    const outline = requiredImportText(projectProfile.outline, 'projectProfile.outline', (value) => this.optionalScalarText(value));
     const volumes = this.normalizeVolumes(record.volumes ?? record.volume, chapterCount);
     const chapters = this.normalizeChapters(record.chapters, chapterCount, volumes[0]?.volumeNo);
     return {
@@ -163,31 +210,34 @@ export class GenerateImportOutlinePreviewTool implements BaseTool<GenerateImport
   }
 
   private normalizeVolumes(value: unknown, chapterCount: number): ImportPreviewOutput['volumes'] {
-    const rawItems = Array.isArray(value) ? value : Object.keys(this.asRecord(value)).length ? [value] : [];
+    const rawItems = requiredImportArray(value, 'volumes');
+    if (!rawItems.length) throw new Error('volumes must contain at least 1 item.');
     const volumes = rawItems.slice(0, 12).map((item, index) => {
       const record = this.asRecord(item);
       return {
-        volumeNo: this.positiveInteger(record.volumeNo, index + 1),
-        title: this.scalarText(record.title, `第 ${index + 1} 卷`),
+        volumeNo: this.requiredPositiveInteger(record.volumeNo, `volumes[${index}].volumeNo`),
+        title: requiredImportText(record.title, `volumes[${index}].title`, (value) => this.optionalScalarText(value)),
         synopsis: this.optionalScalarText(record.synopsis),
         objective: this.optionalScalarText(record.objective),
         chapterCount: this.optionalPositiveInteger(record.chapterCount),
       };
     });
-    return volumes.length ? volumes : [{ volumeNo: 1, title: '第 1 卷', synopsis: undefined, objective: undefined, chapterCount }];
+    return volumes;
   }
 
   private normalizeChapters(value: unknown, chapterCount: number, fallbackVolumeNo?: number): ImportPreviewOutput['chapters'] {
-    return this.arrayValue(value).slice(0, chapterCount).map((item, index) => {
+    const rawItems = requiredImportArray(value, 'chapters');
+    if (rawItems.length !== chapterCount) throw new Error(`generate_import_outline_preview returned chapters ${rawItems.length}/${chapterCount}; asset count is not auto-filled.`);
+    return rawItems.map((item, index) => {
       const record = this.asRecord(item);
       return {
-        chapterNo: this.positiveInteger(record.chapterNo, index + 1),
+        chapterNo: this.requiredPositiveInteger(record.chapterNo, `chapters[${index}].chapterNo`),
         volumeNo: this.optionalPositiveInteger(record.volumeNo) ?? fallbackVolumeNo,
-        title: this.scalarText(record.title, `第 ${index + 1} 章`),
-        objective: this.optionalScalarText(record.objective),
-        conflict: this.optionalScalarText(record.conflict),
-        hook: this.optionalScalarText(record.hook),
-        outline: this.optionalScalarText(record.outline) ?? this.optionalScalarText(record.objective),
+        title: requiredImportText(record.title, `chapters[${index}].title`, (itemValue) => this.optionalScalarText(itemValue)),
+        objective: requiredImportText(record.objective, `chapters[${index}].objective`, (itemValue) => this.optionalScalarText(itemValue)),
+        conflict: requiredImportText(record.conflict, `chapters[${index}].conflict`, (itemValue) => this.optionalScalarText(itemValue)),
+        hook: requiredImportText(record.hook, `chapters[${index}].hook`, (itemValue) => this.optionalScalarText(itemValue)),
+        outline: requiredImportText(record.outline, `chapters[${index}].outline`, (itemValue) => this.optionalScalarText(itemValue)),
         expectedWordCount: this.optionalPositiveInteger(record.expectedWordCount),
       };
     });
@@ -200,14 +250,6 @@ export class GenerateImportOutlinePreviewTool implements BaseTool<GenerateImport
       counts.set(volumeNo, (counts.get(volumeNo) ?? 0) + 1);
     });
     return volumes.map((volume) => ({ ...volume, chapterCount: volume.chapterCount ?? counts.get(volume.volumeNo) ?? 0 }));
-  }
-
-  private fallbackOutline(sourceText: string): string {
-    return sourceText.slice(0, 500).trim() || '根据导入文档整理主线推进、卷章结构与章节钩子。';
-  }
-
-  private arrayValue(value: unknown): unknown[] {
-    return Array.isArray(value) ? value : [];
   }
 
   private asRecord(value: unknown): Record<string, unknown> {
@@ -239,13 +281,15 @@ export class GenerateImportOutlinePreviewTool implements BaseTool<GenerateImport
     return undefined;
   }
 
-  private positiveInteger(value: unknown, fallback: number): number {
-    return this.optionalPositiveInteger(value) ?? fallback;
-  }
-
   private optionalPositiveInteger(value: unknown): number | undefined {
     if (typeof value !== 'number' || !Number.isFinite(value)) return undefined;
     const normalized = Math.round(value);
     return normalized > 0 ? normalized : undefined;
+  }
+
+  private requiredPositiveInteger(value: unknown, label: string): number {
+    const normalized = this.optionalPositiveInteger(value);
+    if (!normalized) throw new Error(`${label} is required.`);
+    return normalized;
   }
 }

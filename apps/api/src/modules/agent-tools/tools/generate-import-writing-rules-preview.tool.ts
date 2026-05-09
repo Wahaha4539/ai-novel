@@ -1,4 +1,5 @@
 import { Injectable } from '@nestjs/common';
+import { StructuredLogger } from '../../../common/logging/structured-logger';
 import { LlmGatewayService } from '../../llm/llm-gateway.service';
 import { DEFAULT_LLM_TIMEOUT_MS } from '../../llm/llm-timeout.constants';
 import { BaseTool, ToolContext } from '../base-tool';
@@ -6,7 +7,9 @@ import type { ToolManifestV2 } from '../tool-manifest.types';
 import { SourceTextAnalysisOutput } from './analyze-source-text.tool';
 import type { ImportBriefOutput } from './build-import-brief.tool';
 import { recordToolLlmUsage } from './import-preview-llm-usage';
+import { assertNoUnexpectedImportTargets, assertRisksArray, buildImportPreviewRepairMessages, requiredImportArray, requiredImportText, shouldRepairImportPreviewOutput } from './import-preview-repair';
 import { ImportPreviewOutput } from './import-preview.types';
+import { normalizeWithLlmRepair } from './structured-output-repair';
 
 interface GenerateImportWritingRulesPreviewInput {
   analysis: SourceTextAnalysisOutput;
@@ -17,6 +20,7 @@ interface GenerateImportWritingRulesPreviewInput {
 }
 
 const IMPORT_WRITING_RULES_PREVIEW_LLM_TIMEOUT_MS = DEFAULT_LLM_TIMEOUT_MS;
+const IMPORT_WRITING_RULES_PREVIEW_REPAIR_TIMEOUT_MS = DEFAULT_LLM_TIMEOUT_MS;
 const IMPORT_WRITING_RULES_PREVIEW_LLM_RETRIES = 1;
 const IMPORT_WRITING_RULES_PREVIEW_PHASE_TIMEOUT_MS = IMPORT_WRITING_RULES_PREVIEW_LLM_TIMEOUT_MS * (IMPORT_WRITING_RULES_PREVIEW_LLM_RETRIES + 1) + 5_000;
 
@@ -31,6 +35,7 @@ export interface GenerateImportWritingRulesPreviewOutput {
  */
 @Injectable()
 export class GenerateImportWritingRulesPreviewTool implements BaseTool<GenerateImportWritingRulesPreviewInput, GenerateImportWritingRulesPreviewOutput> {
+  private readonly logger = new StructuredLogger(GenerateImportWritingRulesPreviewTool.name);
   name = 'generate_import_writing_rules_preview';
   description = '根据文档分析生成导入用写作规则预览，只输出 writingRules，不写库。';
   inputSchema = {
@@ -78,7 +83,7 @@ export class GenerateImportWritingRulesPreviewTool implements BaseTool<GenerateI
   riskLevel: 'low' = 'low';
   requiresApproval = false;
   sideEffects: string[] = [];
-  executionTimeoutMs = IMPORT_WRITING_RULES_PREVIEW_PHASE_TIMEOUT_MS + 60_000;
+  executionTimeoutMs = IMPORT_WRITING_RULES_PREVIEW_PHASE_TIMEOUT_MS + IMPORT_WRITING_RULES_PREVIEW_REPAIR_TIMEOUT_MS + 60_000;
 
   constructor(private readonly llm: LlmGatewayService) {}
 
@@ -123,26 +128,66 @@ export class GenerateImportWritingRulesPreviewTool implements BaseTool<GenerateI
 
     recordToolLlmUsage(context, 'agent_import_writing_rules_preview', response.result);
     await context.updateProgress?.({ phase: 'validating', phaseMessage: '正在校验导入写作规则预览', progressCurrent: maxRules, progressTotal: maxRules });
-    return this.normalize(response.data, maxRules);
+    return normalizeWithLlmRepair({
+      toolName: this.name,
+      loggerEventPrefix: 'import_writing_rules_preview',
+      llm: this.llm,
+      context,
+      data: response.data,
+      normalize: (data) => this.normalize(data, maxRules),
+      shouldRepair: ({ data, error }) => shouldRepairImportPreviewOutput({
+        data,
+        error,
+        toolName: this.name,
+        targetKeys: ['writingRules'],
+        repairableAliases: ['rules', 'styleRules', 'items'],
+        localFieldPattern: /writingRules\[\d+\]\.(ruleType|severity|status)/,
+      }),
+      buildRepairMessages: ({ invalidOutput, validationError }) => buildImportPreviewRepairMessages({
+        toolName: this.name,
+        targetDescription: 'writingRules and risks only',
+        validationError,
+        invalidOutput,
+        instruction: args.instruction,
+        sourceText: analysis.sourceText,
+        allowedTopLevelKeys: ['writingRules', 'risks'],
+        repairableAliases: ['rules', 'styleRules', 'items'],
+      }),
+      progress: {
+        phaseMessage: '正在修复导入写作规则预览结构',
+        timeoutMs: IMPORT_WRITING_RULES_PREVIEW_REPAIR_TIMEOUT_MS,
+      },
+      llmOptions: {
+        appStep: 'agent_import_writing_rules_preview',
+        maxTokens: Math.min(8000, maxRules * 440 + 1600),
+        timeoutMs: IMPORT_WRITING_RULES_PREVIEW_REPAIR_TIMEOUT_MS,
+        temperature: 0.1,
+      },
+      maxRepairAttempts: 1,
+      initialModel: response.result.model,
+      logger: this.logger,
+    });
   }
 
   private normalize(data: unknown, maxRules: number): GenerateImportWritingRulesPreviewOutput {
+    assertNoUnexpectedImportTargets(data, ['writingRules'], this.name);
     const record = this.asRecord(data);
+    assertRisksArray(record.risks);
     return {
-      writingRules: this.arrayValue(record.writingRules).slice(0, maxRules).map((item, index) => {
+      writingRules: requiredImportArray(record.writingRules, 'writingRules').slice(0, maxRules).map((item, index) => {
         const rule = this.asRecord(item);
         return {
-          title: this.scalarText(rule.title, `写作规则 ${index + 1}`),
-          ruleType: this.scalarText(rule.ruleType, 'style'),
-          content: this.scalarText(rule.content, '待补充写作约束'),
-          severity: this.normalizeSeverity(rule.severity),
+          title: requiredImportText(rule.title, `writingRules[${index}].title`, (value) => this.optionalScalarText(value)),
+          ruleType: requiredImportText(rule.ruleType, `writingRules[${index}].ruleType`, (value) => this.optionalScalarText(value)),
+          content: requiredImportText(rule.content, `writingRules[${index}].content`, (value) => this.optionalScalarText(value)),
+          severity: this.normalizeSeverity(requiredImportText(rule.severity, `writingRules[${index}].severity`, (value) => this.optionalScalarText(value))),
           appliesFromChapterNo: this.optionalPositiveInteger(rule.appliesFromChapterNo),
           appliesToChapterNo: this.optionalPositiveInteger(rule.appliesToChapterNo),
           entityType: this.optionalScalarText(rule.entityType),
           entityRef: this.optionalScalarText(rule.entityRef),
           status: this.optionalScalarText(rule.status) ?? 'active',
         };
-      }).filter((item) => item.title && item.content),
+      }),
       risks: this.stringArray(record.risks),
     };
   }

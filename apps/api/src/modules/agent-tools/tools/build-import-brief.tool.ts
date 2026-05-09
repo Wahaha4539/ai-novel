@@ -1,11 +1,14 @@
 import { Injectable } from '@nestjs/common';
+import { StructuredLogger } from '../../../common/logging/structured-logger';
 import { LlmGatewayService } from '../../llm/llm-gateway.service';
 import { DEFAULT_LLM_TIMEOUT_MS } from '../../llm/llm-timeout.constants';
 import { BaseTool, ToolContext } from '../base-tool';
 import type { ToolManifestV2 } from '../tool-manifest.types';
 import { SourceTextAnalysisOutput } from './analyze-source-text.tool';
 import { recordToolLlmUsage } from './import-preview-llm-usage';
+import { assertNoUnexpectedImportTargets, assertRisksArray, buildImportPreviewRepairMessages, requiredImportText, shouldRepairImportPreviewOutput } from './import-preview-repair';
 import { IMPORT_ASSET_TYPES, ImportAssetType, normalizeImportAssetTypes } from './import-preview.types';
+import { normalizeWithLlmRepair } from './structured-output-repair';
 
 export interface ImportBriefOutput {
   requestedAssetTypes: ImportAssetType[];
@@ -31,6 +34,7 @@ interface BuildImportBriefInput {
  */
 @Injectable()
 export class BuildImportBriefTool implements BaseTool<BuildImportBriefInput, ImportBriefOutput> {
+  private readonly logger = new StructuredLogger(BuildImportBriefTool.name);
   name = 'build_import_brief';
   description = '在分目标导入预览前生成全局只读导入简报，提炼核心设定、主线、主题、关键人物、世界规则、语气和风险。';
   inputSchema = {
@@ -82,7 +86,7 @@ export class BuildImportBriefTool implements BaseTool<BuildImportBriefInput, Imp
   riskLevel: 'low' = 'low';
   requiresApproval = false;
   sideEffects: string[] = [];
-  executionTimeoutMs = DEFAULT_LLM_TIMEOUT_MS * 2 + 65_000;
+  executionTimeoutMs = DEFAULT_LLM_TIMEOUT_MS * 3 + 65_000;
 
   constructor(private readonly llm: LlmGatewayService) {}
 
@@ -124,15 +128,56 @@ export class BuildImportBriefTool implements BaseTool<BuildImportBriefInput, Imp
 
     recordToolLlmUsage(context, 'agent_import_brief', response.result);
     await context.updateProgress?.({ phase: 'validating', phaseMessage: '正在校验导入简报', progressCurrent: 1, progressTotal: 1 });
-    return this.normalize(response.data, analysis, requestedAssetTypes);
+    return normalizeWithLlmRepair({
+      toolName: this.name,
+      loggerEventPrefix: 'import_brief',
+      llm: this.llm,
+      context,
+      data: response.data,
+      normalize: (data) => this.normalize(data, requestedAssetTypes),
+      shouldRepair: ({ data, error }) => shouldRepairImportPreviewOutput({
+        data,
+        error,
+        toolName: this.name,
+        targetKeys: ['coreSettings', 'mainline', 'theme', 'keyCharacters', 'worldRules', 'tone', 'risks'],
+        repairableAliases: ['settings', 'summary', 'characters', 'rules'],
+        localFieldPattern: /mainline/,
+      }),
+      buildRepairMessages: ({ invalidOutput, validationError }) => buildImportPreviewRepairMessages({
+        toolName: this.name,
+        targetDescription: 'read-only import brief fields only; no import assets',
+        validationError,
+        invalidOutput,
+        instruction: args.instruction,
+        sourceText: analysis.sourceText,
+        allowedTopLevelKeys: ['requestedAssetTypes', 'coreSettings', 'mainline', 'theme', 'keyCharacters', 'worldRules', 'tone', 'risks'],
+        repairableAliases: ['settings', 'summary', 'characters', 'rules'],
+        requestedAssetTypes,
+      }),
+      progress: {
+        phaseMessage: '正在修复导入简报结构',
+        timeoutMs: DEFAULT_LLM_TIMEOUT_MS,
+      },
+      llmOptions: {
+        appStep: 'agent_import_brief',
+        maxTokens: 3500,
+        timeoutMs: DEFAULT_LLM_TIMEOUT_MS,
+        temperature: 0.1,
+      },
+      maxRepairAttempts: 1,
+      initialModel: response.result.model,
+      logger: this.logger,
+    });
   }
 
-  private normalize(data: unknown, analysis: SourceTextAnalysisOutput, requestedAssetTypes: ImportAssetType[]): ImportBriefOutput {
+  private normalize(data: unknown, requestedAssetTypes: ImportAssetType[]): ImportBriefOutput {
+    assertNoUnexpectedImportTargets(data, ['characters'], this.name);
     const record = this.asRecord(data);
+    assertRisksArray(record.risks);
     return {
       requestedAssetTypes,
       coreSettings: this.stringArray(record.coreSettings ?? record.settings).slice(0, 16),
-      mainline: this.scalarText(record.mainline, this.fallbackMainline(analysis)),
+      mainline: requiredImportText(record.mainline, 'mainline', (value) => this.optionalScalarText(value)),
       theme: this.optionalScalarText(record.theme),
       keyCharacters: this.stringArray(record.keyCharacters ?? record.characters).slice(0, 20),
       worldRules: this.stringArray(record.worldRules ?? record.rules).slice(0, 20),
@@ -152,10 +197,6 @@ export class BuildImportBriefTool implements BaseTool<BuildImportBriefInput, Imp
       paragraphs: paragraphs.length ? paragraphs : sourceText.split(/\n{1,}|。|；|;/).map((item) => item.trim()).filter(Boolean).slice(0, 100),
       keywords,
     };
-  }
-
-  private fallbackMainline(analysis: SourceTextAnalysisOutput) {
-    return analysis.paragraphs.slice(0, 3).join('；') || analysis.sourceText.slice(0, 500).trim() || '根据导入文档整理主线和共同上下文。';
   }
 
   private asRecord(value: unknown): Record<string, unknown> {
