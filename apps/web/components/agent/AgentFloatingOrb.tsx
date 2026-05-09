@@ -53,8 +53,18 @@ export function AgentFloatingOrb({ projectId, selectedChapterId, pageContext, on
   const dragStart = useRef({ x: 0, y: 0 });
   const posStart = useRef({ x: 0, y: 0 });
   const totalDragDist = useRef(0);
+  const refreshedRunKeyRef = useRef<string | null>(null);
 
   const status = agentHook.currentRun?.status;
+
+  useEffect(() => {
+    const run = agentHook.currentRun;
+    if (!run || run.status !== 'succeeded') return;
+    const refreshKey = `${run.id}:${run.updatedAt ?? ''}`;
+    if (refreshedRunKeyRef.current === refreshKey) return;
+    refreshedRunKeyRef.current = refreshKey;
+    void onRefresh?.();
+  }, [agentHook.currentRun?.id, agentHook.currentRun?.status, agentHook.currentRun?.updatedAt, onRefresh]);
 
   // 初始化位置：右下角偏移 2rem
   useEffect(() => {

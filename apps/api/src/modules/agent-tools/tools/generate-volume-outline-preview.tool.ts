@@ -192,7 +192,10 @@ export class GenerateVolumeOutlinePreviewTool implements BaseTool<GenerateVolume
       '本工具只生成 volume 卷大纲与 risks，不生成 chapters、chapter、正文或章节细纲。',
       '卷大纲必须先定盘整卷主线、卷内支线、伏笔分配、角色规划和卷末交接，供后续单元故事 Agent 承接。',
       '卷大纲还必须生成本卷角色规划 characterPlan：既有角色本卷弧线、重要新增角色候选、关系弧和角色功能覆盖。',
+      'existingCharacterArcs 只能写上下文“既有角色白名单”中的角色名或别名；任何不在白名单中的人物，即使是本卷重要管事、反派、工匠、亲属或势力代理人，也必须写入 newCharacterCandidates，不能伪装成既有角色。',
+      '遇到白名单外人物时，先判断它是否只是一次性功能角色，还是本卷需要承载登场、反派压力、人物情感、背景故事、支线推进或关系变化的重要新人物；重要新人物必须新增为 newCharacterCandidates。',
       '重要新增角色只能作为 narrativePlan.characterPlan.newCharacterCandidates 候选进入预览，不能在章节细纲里临时发明 supporting/protagonist/antagonist 等重要角色。',
+      'newCharacterCandidates.name 可以被 subStoryLines.relatedCharacters、relationshipArcs.participants、roleCoverage 和后续单元故事引用，但不得同时出现在 existingCharacterArcs。',
       '角色内容失败即失败：不要生成占位角色、未命名角色或模板角色；如果缺上下文，把风险写入 risks，但仍必须返回完整合法 characterPlan。',
       'synopsis 必须写成结构化 Markdown 卷纲，至少包含：## 全书主线阶段、## 本卷主线、## 本卷戏剧问题、## 卷内支线、## 角色与势力功能、## 伏笔分配、## 支线交叉点、## 卷末交接。',
       '故事性要求：每条主线/支线都要有“欲望目标 -> 阻力升级 -> 选择代价 -> 阶段反转/回收 -> 状态变化”，不能只写功能标签。',
@@ -220,6 +223,13 @@ export class GenerateVolumeOutlinePreviewTool implements BaseTool<GenerateVolume
     const relationships = Array.isArray(context.relationships) ? context.relationships.slice(0, 60) : [];
     const characterStates = Array.isArray(context.characterStates) ? context.characterStates.slice(0, 60) : [];
     const lorebookEntries = Array.isArray(context.lorebookEntries) ? context.lorebookEntries.slice(0, 30) : [];
+    const characterCatalog = this.extractCharacterCatalog(context);
+    const existingCharacterNames = characterCatalog.existingCharacterNames ?? [];
+    const existingCharacterAliases = characterCatalog.existingCharacterAliases ?? {};
+    const existingCharacterWhitelist = existingCharacterNames.map((name) => ({
+      name,
+      aliases: existingCharacterAliases[name] ?? [],
+    }));
     return [
       `用户目标：${args.instruction ?? '生成卷大纲'}`,
       `目标卷：第 ${volumeNo} 卷`,
@@ -233,6 +243,9 @@ export class GenerateVolumeOutlinePreviewTool implements BaseTool<GenerateVolume
       '',
       '已有角色摘要（名称、别名、scope、状态和关系锚点；优先规划既有角色，不要重复造人）：',
       this.safeJson(characters, 4000),
+      '',
+      '既有角色白名单（existingCharacterArcs.characterName 只能使用这些 name 或 aliases；未列入白名单且需要承担本卷功能的新人物，必须先作为 newCharacterCandidates 新增候选）：',
+      this.safeJson(existingCharacterWhitelist, 2000),
       '',
       '既有关系边摘要（只能承接或推进这些关系；新增长期关系应先进入卷级 characterPlan.relationshipArcs）：',
       this.safeJson(relationships, 4000),

@@ -42,6 +42,7 @@ export class PersistVolumeOutlineTool implements BaseTool<PersistVolumeOutlineIn
       volumeNo: { type: 'number' as const, minimum: 1 },
       chapterCount: { type: 'number' as const, minimum: 1 },
       updatedVolumeOnly: { type: 'boolean' as const },
+      preservedStoryUnitPlan: { type: 'boolean' as const },
     },
   };
   allowedModes: Array<'act'> = ['act'];
@@ -95,6 +96,10 @@ export class PersistVolumeOutlineTool implements BaseTool<PersistVolumeOutlineIn
       label: 'volume.narrativePlan',
     });
 
+    const existingNarrativePlan = await this.loadExistingNarrativePlan(context.projectId, volumeNo);
+    const narrativePlanForUpdate = this.preserveExistingStoryUnitPlan(narrativePlan, existingNarrativePlan);
+    const preservedStoryUnitPlan = !this.hasOwn(narrativePlan, 'storyUnitPlan') && this.hasOwn(existingNarrativePlan, 'storyUnitPlan');
+
     const saved = await this.prisma.volume.upsert({
       where: { projectId_volumeNo: { projectId: context.projectId, volumeNo } },
       update: {
@@ -102,7 +107,7 @@ export class PersistVolumeOutlineTool implements BaseTool<PersistVolumeOutlineIn
         synopsis: this.requiredText(volume.synopsis, 'volume.synopsis'),
         objective: this.requiredText(volume.objective, 'volume.objective'),
         chapterCount,
-        narrativePlan: narrativePlan as Prisma.InputJsonObject,
+        narrativePlan: narrativePlanForUpdate,
       },
       create: {
         projectId: context.projectId,
@@ -120,8 +125,38 @@ export class PersistVolumeOutlineTool implements BaseTool<PersistVolumeOutlineIn
       volumeNo,
       chapterCount,
       updatedVolumeOnly: true,
+      preservedStoryUnitPlan,
       risks: preview.risks ?? [],
     };
+  }
+
+  private async loadExistingNarrativePlan(projectId: string, volumeNo: number): Promise<Record<string, unknown>> {
+    const volumeModel = (this.prisma as unknown as {
+      volume?: {
+        findUnique?: (args: unknown) => Promise<{ narrativePlan?: unknown } | null>;
+      };
+    }).volume;
+    if (!volumeModel?.findUnique) return {};
+
+    const existing = await volumeModel.findUnique({
+      where: { projectId_volumeNo: { projectId, volumeNo } },
+      select: { narrativePlan: true },
+    });
+    return this.asRecord(existing?.narrativePlan);
+  }
+
+  private preserveExistingStoryUnitPlan(narrativePlan: Record<string, unknown>, existingNarrativePlan: Record<string, unknown>): Prisma.InputJsonObject {
+    if (this.hasOwn(narrativePlan, 'storyUnitPlan') || !this.hasOwn(existingNarrativePlan, 'storyUnitPlan')) {
+      return narrativePlan as Prisma.InputJsonObject;
+    }
+    return {
+      ...narrativePlan,
+      storyUnitPlan: existingNarrativePlan.storyUnitPlan as Prisma.InputJsonValue,
+    } as Prisma.InputJsonObject;
+  }
+
+  private hasOwn(record: Record<string, unknown>, key: string): boolean {
+    return Object.prototype.hasOwnProperty.call(record, key);
   }
 
   private requiredText(value: unknown, label: string): string {
@@ -134,6 +169,10 @@ export class PersistVolumeOutlineTool implements BaseTool<PersistVolumeOutlineIn
     if (typeof value === 'string') return value.trim();
     if (typeof value === 'number' || typeof value === 'boolean') return String(value);
     return '';
+  }
+
+  private asRecord(value: unknown): Record<string, unknown> {
+    return value && typeof value === 'object' && !Array.isArray(value) ? value as Record<string, unknown> : {};
   }
 
   private async loadCharacterCatalog(projectId: string): Promise<CharacterCatalog> {

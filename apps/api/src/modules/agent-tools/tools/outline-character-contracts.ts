@@ -101,6 +101,7 @@ export interface AssertChapterCharacterExecutionOptions extends CharacterReferen
 const VOLUME_ROLE_TYPES = new Set<VolumeCharacterRoleType>(VOLUME_CHARACTER_ROLE_TYPES);
 const CHAPTER_CHARACTER_SOURCES = new Set<ChapterCharacterSource>(['existing', 'volume_candidate', 'minor_temporary']);
 const MINOR_IMPORTANCE_PATTERN = /主线|核心|反派|长期|长线|人物弧|弧线|贯穿|主压力|最终对手|关键配角|重要配角|protagonist|antagonist|supporting|mainline|long[-_ ]?term/i;
+const NEW_CHARACTER_CANDIDATE_HINT = '如果这是本卷需要的新人物，请先写入 newCharacterCandidates，不要伪装成既有角色。';
 
 export function assertVolumeCharacterPlan(value: unknown, options: AssertVolumeCharacterPlanOptions): VolumeCharacterPlan {
   const label = options.label ?? 'characterPlan';
@@ -125,7 +126,7 @@ export function assertVolumeCharacterPlan(value: unknown, options: AssertVolumeC
     }
     const characterName = requiredText(arc.characterName, `${arcLabel}.characterName`);
     if (shouldValidateExistingCharacters && !resolveExistingCharacterName(characterName, options)) {
-      throw new Error(`${arcLabel}.characterName 引用未知既有角色：${characterName}`);
+      throw new Error(`${arcLabel}.characterName 引用未知既有角色：${characterName}。${NEW_CHARACTER_CANDIDATE_HINT}`);
     }
     return {
       characterId: optionalText(arc.characterId),
@@ -185,7 +186,7 @@ export function assertVolumeCharacterPlan(value: unknown, options: AssertVolumeC
     const participants = requiredStringArray(arc.participants, `${arcLabel}.participants`);
     for (const participant of participants) {
       if (!knownRelationshipNames.has(normalizeName(participant))) {
-        throw new Error(`${arcLabel}.participants 引用未知角色：${participant}`);
+        throw new Error(`${arcLabel}.participants 引用未知角色：${participant}。${NEW_CHARACTER_CANDIDATE_HINT}`);
       }
     }
     const turnChapterNos = requiredPositiveIntArray(arc.turnChapterNos, `${arcLabel}.turnChapterNos`);
@@ -273,10 +274,10 @@ export function assertChapterCharacterExecution(value: unknown, options: AssertC
     const characterName = requiredText(member.characterName, `${memberLabel}.characterName`);
     const source = requiredEnum(member.source, CHAPTER_CHARACTER_SOURCES, `${memberLabel}.source`);
     if (source === 'existing' && !resolveExistingCharacterName(characterName, options)) {
-      throw new Error(`${memberLabel}.characterName 引用未知既有角色：${characterName}`);
+      throw new Error(`${memberLabel}.characterName 引用未知既有角色：${characterName}。${NEW_CHARACTER_CANDIDATE_HINT}`);
     }
     if (source === 'volume_candidate' && !normalizeNameList(options.volumeCandidateNames ?? []).has(normalizeName(characterName))) {
-      throw new Error(`${memberLabel}.characterName 未进入卷级角色候选：${characterName}`);
+      throw new Error(`${memberLabel}.characterName 未进入卷级角色候选：${characterName}。${NEW_CHARACTER_CANDIDATE_HINT}`);
     }
     if (source === 'minor_temporary') {
       if (!minorNames.has(normalizeName(characterName))) {
@@ -371,7 +372,7 @@ function assertParticipantsInCast(participants: string[], castNames: Set<string>
 function assertKnownCharacterReferences(names: string[], knownNames: Set<string>, label: string): void {
   for (const name of names) {
     if (!knownNames.has(normalizeName(name))) {
-      throw new Error(`${label} 引用未知角色：${name}`);
+      throw new Error(`${label} 引用未知角色：${name}。${NEW_CHARACTER_CANDIDATE_HINT}`);
     }
   }
 }

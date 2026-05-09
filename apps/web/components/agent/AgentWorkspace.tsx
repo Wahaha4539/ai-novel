@@ -30,6 +30,7 @@ export function AgentWorkspace({ projectId, selectedChapterId, onRefresh }: Agen
   /** 聊天消息历史 */
   const [chatHistory, setChatHistory] = useState<ChatMessage[]>([]);
   const [creativeDocumentAttachments, setCreativeDocumentAttachments] = useState<CreativeDocumentAttachmentItem[]>([]);
+  const refreshedRunKeyRef = useRef<string | null>(null);
   const msgIdCounter = useRef(0);
   const attachmentIdCounter = useRef(0);
   const plan = useMemo(() => latestPlan(currentRun), [currentRun]);
@@ -56,6 +57,14 @@ export function AgentWorkspace({ projectId, selectedChapterId, onRefresh }: Agen
   useEffect(() => {
     setApprovedStepNos((current) => (areSameStepNos(current, approvalStepNos) ? current : approvalStepNos));
   }, [approvalStepNos]);
+
+  useEffect(() => {
+    if (!currentRun || currentRun.status !== 'succeeded') return;
+    const refreshKey = `${currentRun.id}:${currentRun.updatedAt ?? ''}`;
+    if (refreshedRunKeyRef.current === refreshKey) return;
+    refreshedRunKeyRef.current = refreshKey;
+    void onRefresh?.();
+  }, [currentRun?.id, currentRun?.status, currentRun?.updatedAt, onRefresh]);
 
   const handleAct = useCallback(async () => { if (!currentRun) return; await act(currentRun.id, approvedScope); await onRefresh?.(); }, [currentRun, act, approvedScope, onRefresh]);
 

@@ -1,5 +1,6 @@
 export const STORY_UNIT_PURPOSES = [
   'mainline_progress',
+  'survival_disaster',
   'character_intro',
   'character_depth',
   'relationship_emotion',
@@ -28,12 +29,26 @@ export const STORY_UNIT_MAINLINE_RELATIONS = [
 
 export type StoryUnitMainlineRelation = typeof STORY_UNIT_MAINLINE_RELATIONS[number];
 
+export interface VolumeMainlineSegment {
+  segmentId: string;
+  sequence: number;
+  title: string;
+  narrativeFunction: string;
+  mainGoal: string;
+  mainConflict: string;
+  turningPoint: string;
+  stateChange: string;
+  requiredDeliveries: string[];
+}
+
 export interface VolumeStoryUnit {
   unitId: string;
   title: string;
   primaryPurpose: StoryUnitPurpose;
   secondaryPurposes: StoryUnitPurpose[];
   relationToMainline: StoryUnitMainlineRelation;
+  mainlineSegmentIds: string[];
+  serviceToMainline: string;
   suggestedChapterMin: number;
   suggestedChapterMax: number;
   narrativePurpose: string;
@@ -58,6 +73,7 @@ export interface StoryUnitChapterAllocation {
 export interface VolumeStoryUnitPlan {
   planningPrinciple: string;
   purposeMix: Record<string, unknown> | Array<Record<string, unknown>>;
+  mainlineSegments: VolumeMainlineSegment[];
   units: VolumeStoryUnit[];
   chapterAllocation?: StoryUnitChapterAllocation[];
 }
@@ -80,10 +96,15 @@ export function assertVolumeStoryUnitPlan(value: unknown, options: AssertVolumeS
 
   const planningPrinciple = requiredText(record.planningPrinciple, `${label}.planningPrinciple`);
   const purposeMix = normalizePurposeMix(record.purposeMix, `${label}.purposeMix`);
-  const units = requiredRecordArray(record.units, `${label}.units`).map((unit, index) => normalizeStoryUnit(unit, `${label}.units[${index}]`));
+  const mainlineSegments = requiredRecordArray(record.mainlineSegments, `${label}.mainlineSegments`).map((segment, index) => normalizeMainlineSegment(segment, `${label}.mainlineSegments[${index}]`));
+  assertUniqueSegmentIds(mainlineSegments, label);
+  assertContinuousSegmentSequence(mainlineSegments, label);
+  const mainlineSegmentIds = new Set(mainlineSegments.map((segment) => segment.segmentId));
+  const units = requiredRecordArray(record.units, `${label}.units`).map((unit, index) => normalizeStoryUnit(unit, `${label}.units[${index}]`, mainlineSegmentIds));
   assertUniqueUnitIds(units, label);
+  assertMainlineSegmentCoverage(mainlineSegments, units, label);
 
-  const normalized: VolumeStoryUnitPlan = { planningPrinciple, purposeMix, units };
+  const normalized: VolumeStoryUnitPlan = { planningPrinciple, purposeMix, mainlineSegments, units };
   if (record.chapterAllocation !== undefined && record.chapterAllocation !== null) {
     normalized.chapterAllocation = normalizeChapterAllocation(record.chapterAllocation, units, options, `${label}.chapterAllocation`);
   } else if (options.chapterCount !== undefined) {
@@ -92,24 +113,45 @@ export function assertVolumeStoryUnitPlan(value: unknown, options: AssertVolumeS
   return normalized;
 }
 
-export function storyUnitForChapter(plan: VolumeStoryUnitPlan, chapterNo: number): (VolumeStoryUnit & StoryUnitChapterAllocation) | undefined {
+export function storyUnitForChapter(plan: VolumeStoryUnitPlan, chapterNo: number): (VolumeStoryUnit & StoryUnitChapterAllocation & { mainlineSegments: VolumeMainlineSegment[] }) | undefined {
   const allocation = plan.chapterAllocation?.find((item) => item.chapterRange.start <= chapterNo && chapterNo <= item.chapterRange.end);
   if (!allocation) return undefined;
   const unit = plan.units.find((item) => item.unitId === allocation.unitId);
-  return unit ? { ...unit, ...allocation } : undefined;
+  const mainlineSegments = unit ? plan.mainlineSegments.filter((segment) => unit.mainlineSegmentIds.includes(segment.segmentId)) : [];
+  return unit ? { ...unit, ...allocation, mainlineSegments } : undefined;
 }
 
 export function storyUnitServiceFunctions(unit: Pick<VolumeStoryUnit, 'primaryPurpose' | 'secondaryPurposes'>): string[] {
   return [unit.primaryPurpose, ...unit.secondaryPurposes];
 }
 
-function normalizeStoryUnit(record: Record<string, unknown>, label: string): VolumeStoryUnit {
+function normalizeMainlineSegment(record: Record<string, unknown>, label: string): VolumeMainlineSegment {
+  return {
+    segmentId: requiredText(record.segmentId, `${label}.segmentId`),
+    sequence: requiredPositiveInt(record.sequence, `${label}.sequence`),
+    title: requiredText(record.title, `${label}.title`),
+    narrativeFunction: requiredText(record.narrativeFunction, `${label}.narrativeFunction`),
+    mainGoal: requiredText(record.mainGoal, `${label}.mainGoal`),
+    mainConflict: requiredText(record.mainConflict, `${label}.mainConflict`),
+    turningPoint: requiredText(record.turningPoint, `${label}.turningPoint`),
+    stateChange: requiredText(record.stateChange, `${label}.stateChange`),
+    requiredDeliveries: requiredTextArray(record.requiredDeliveries, `${label}.requiredDeliveries`, 2),
+  };
+}
+
+function normalizeStoryUnit(record: Record<string, unknown>, label: string, mainlineSegmentIds: Set<string>): VolumeStoryUnit {
   const primaryPurpose = requiredEnum(record.primaryPurpose, PURPOSE_SET, `${label}.primaryPurpose`) as StoryUnitPurpose;
   const secondaryPurposes = requiredEnumArray(record.secondaryPurposes, PURPOSE_SET, `${label}.secondaryPurposes`) as StoryUnitPurpose[];
   if (secondaryPurposes.length < 2) {
     throw new Error(`${label}.secondaryPurposes 至少需要 2 项，未生成足够丰富的单元故事功能。`);
   }
   const relationToMainline = requiredEnum(record.relationToMainline, MAINLINE_RELATION_SET, `${label}.relationToMainline`) as StoryUnitMainlineRelation;
+  const referencedSegmentIds = requiredTextArray(record.mainlineSegmentIds, `${label}.mainlineSegmentIds`, 1);
+  for (const segmentId of referencedSegmentIds) {
+    if (!mainlineSegmentIds.has(segmentId)) {
+      throw new Error(`${label}.mainlineSegmentIds 引用了不存在的主线段 ${segmentId}，未生成可承接卷主线的单元故事。`);
+    }
+  }
   const suggestedChapterMin = requiredPositiveInt(record.suggestedChapterMin, `${label}.suggestedChapterMin`);
   const suggestedChapterMax = requiredPositiveInt(record.suggestedChapterMax, `${label}.suggestedChapterMax`);
   if (suggestedChapterMax < suggestedChapterMin) {
@@ -122,6 +164,8 @@ function normalizeStoryUnit(record: Record<string, unknown>, label: string): Vol
     primaryPurpose,
     secondaryPurposes,
     relationToMainline,
+    mainlineSegmentIds: referencedSegmentIds,
+    serviceToMainline: requiredText(record.serviceToMainline, `${label}.serviceToMainline`),
     suggestedChapterMin,
     suggestedChapterMax,
     narrativePurpose: requiredText(record.narrativePurpose, `${label}.narrativePurpose`),
@@ -141,6 +185,30 @@ function normalizeStoryUnit(record: Record<string, unknown>, label: string): Vol
     throw new Error(`${label} 缺少人物、关系、世界观或线索贡献，未生成有效单元故事。`);
   }
   return unit;
+}
+
+function assertUniqueSegmentIds(segments: VolumeMainlineSegment[], label: string): void {
+  const ids = segments.map((segment) => segment.segmentId);
+  if (new Set(ids).size !== ids.length) {
+    throw new Error(`${label}.mainlineSegments 存在重复 segmentId，未生成完整主线段落计划。`);
+  }
+}
+
+function assertContinuousSegmentSequence(segments: VolumeMainlineSegment[], label: string): void {
+  const sorted = [...segments].sort((left, right) => left.sequence - right.sequence);
+  for (const [index, segment] of sorted.entries()) {
+    if (segment.sequence !== index + 1) {
+      throw new Error(`${label}.mainlineSegments.sequence 未从 1 连续递增，未生成完整主线段落计划。`);
+    }
+  }
+}
+
+function assertMainlineSegmentCoverage(segments: VolumeMainlineSegment[], units: VolumeStoryUnit[], label: string): void {
+  const covered = new Set(units.flatMap((unit) => unit.mainlineSegmentIds));
+  const missing = segments.filter((segment) => !covered.has(segment.segmentId));
+  if (missing.length) {
+    throw new Error(`${label}.mainlineSegments 未被单元故事覆盖：${missing.map((segment) => segment.segmentId).join(', ')}。`);
+  }
 }
 
 function normalizeChapterAllocation(value: unknown, units: VolumeStoryUnit[], options: AssertVolumeStoryUnitPlanOptions, label: string): StoryUnitChapterAllocation[] {

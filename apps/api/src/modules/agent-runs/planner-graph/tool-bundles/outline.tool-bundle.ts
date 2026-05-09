@@ -5,7 +5,7 @@ export const outlineToolBundles: ToolBundleDefinition[] = [
     name: 'outline.volume',
     domain: 'outline',
     intents: ['generate_volume_outline', 'rewrite_volume_outline', 'volume_outline'],
-    strictToolNames: ['inspect_project_context', 'generate_volume_outline_preview', 'persist_volume_outline'],
+    strictToolNames: ['inspect_project_context', 'generate_volume_outline_preview', 'persist_volume_outline', 'persist_volume_character_candidates'],
     optionalToolNames: [],
     deniedToolNames: ['generate_chapter_outline_preview', 'merge_chapter_outline_previews', 'persist_outline', 'write_chapter', 'write_chapter_series'],
     plannerGuidance: [
@@ -18,7 +18,7 @@ export const outlineToolBundles: ToolBundleDefinition[] = [
     domain: 'outline',
     intents: ['generate_chapter_outline', 'split_volume_to_chapters', 'chapter_outline', 'volume_chapter_outline'],
     strictToolNames: ['inspect_project_context', 'generate_volume_outline_preview', 'generate_story_units_preview', 'generate_chapter_outline_preview', 'merge_chapter_outline_previews', 'validate_outline', 'persist_outline'],
-    optionalToolNames: ['generate_outline_preview', 'generate_timeline_preview', 'validate_timeline_preview'],
+    optionalToolNames: ['generate_outline_preview', 'persist_volume_character_candidates', 'generate_timeline_preview', 'validate_timeline_preview'],
     deniedToolNames: ['write_chapter', 'write_chapter_series', 'persist_volume_outline'],
     plannerGuidance: [
       'Generate independent story units before chapter outlines.',
@@ -30,9 +30,9 @@ export const outlineToolBundles: ToolBundleDefinition[] = [
     name: 'outline.story_units',
     domain: 'outline',
     intents: ['story_units', 'generate_story_units', 'rewrite_story_units'],
-    strictToolNames: ['inspect_project_context', 'generate_volume_outline_preview', 'generate_story_units_preview', 'persist_story_units'],
-    optionalToolNames: ['persist_volume_outline'],
-    deniedToolNames: ['generate_chapter_outline_preview', 'merge_chapter_outline_previews', 'persist_outline', 'write_chapter', 'write_chapter_series'],
+    strictToolNames: ['inspect_project_context', 'generate_story_units_preview', 'persist_story_units'],
+    optionalToolNames: [],
+    deniedToolNames: ['generate_volume_outline_preview', 'persist_volume_outline', 'persist_volume_character_candidates', 'generate_chapter_outline_preview', 'merge_chapter_outline_previews', 'persist_outline', 'write_chapter', 'write_chapter_series'],
     plannerGuidance: [
       'Generate or rewrite independent storyUnitPlan for a volume.',
       'Persist with persist_story_units only after user approval.',

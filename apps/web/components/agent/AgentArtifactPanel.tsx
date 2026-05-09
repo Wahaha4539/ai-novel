@@ -1717,6 +1717,7 @@ function OutlinePersistSummary({ content }: { content: unknown }) {
 function StoryUnitsPreviewSummary({ content }: { content: unknown }) {
   const data = asRecord(content) ?? {};
   const plan = asRecord(data?.storyUnitPlan) ?? {};
+  const mainlineSegments = recordList(plan?.mainlineSegments);
   const units = recordList(plan?.units);
   const allocations = recordList(plan?.chapterAllocation);
   const purposeMix = asRecord(plan?.purposeMix) ?? {};
@@ -1727,8 +1728,8 @@ function StoryUnitsPreviewSummary({ content }: { content: unknown }) {
       <div className="grid gap-2 md:grid-cols-4">
         <Metric label="目标卷" value={numberValue(data?.volumeNo) ? `第 ${numberValue(data?.volumeNo)} 卷` : '—'} />
         <Metric label="目标章数" value={chapterCount || '—'} />
+        <Metric label="主线段" value={mainlineSegments.length} tone={mainlineSegments.length ? 'ok' : 'warn'} />
         <Metric label="单元故事" value={units.length} tone={units.length ? 'ok' : 'warn'} />
-        <Metric label="章节分配" value={allocations.length} tone={allocations.length ? 'ok' : undefined} />
       </div>
       {textValue(plan?.planningPrinciple, '') && (
         <div className="text-xs leading-5" style={{ color: 'var(--text-muted)' }}>{textValue(plan?.planningPrinciple)}</div>
@@ -1747,10 +1748,12 @@ function StoryUnitsPreviewSummary({ content }: { content: unknown }) {
             ? `第 ${numberValue(range?.start)}-${numberValue(range?.end)} 章`
             : `${numberValue(unit.suggestedChapterMin) || '?'}-${numberValue(unit.suggestedChapterMax) || '?'} 章`;
           const purposes = [textValue(unit.primaryPurpose, ''), ...stringList(unit.secondaryPurposes)].filter(Boolean);
+          const segmentIds = stringList(unit.mainlineSegmentIds);
           return (
             <div key={unitId} className="rounded-lg border px-3 py-2 text-xs leading-5" style={{ borderColor: 'var(--border-dim)', background: 'rgba(15,23,42,0.18)', color: 'var(--text-muted)' }}>
               <div className="font-semibold" style={{ color: 'var(--text-main)' }}>{textValue(unit.title, unitId)} · {rangeText}</div>
               {purposes.length > 0 && <div style={{ color: '#5eead4' }}>{purposes.slice(0, 4).join(' / ')}</div>}
+              {segmentIds.length > 0 && <div>主线段：{segmentIds.join(' / ')}</div>}
               {textValue(unit.narrativePurpose, '') && <div>{textValue(unit.narrativePurpose)}</div>}
               {textValue(unit.payoff, '') && <div>回收：{textValue(unit.payoff)}</div>}
             </div>

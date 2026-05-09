@@ -62,6 +62,9 @@ export interface ChapterStoryUnit {
   localGoal?: string;
   localConflict?: string;
   serviceFunctions?: string[];
+  mainlineSegmentIds?: string[];
+  mainlineSegments?: Array<Record<string, unknown>>;
+  serviceToMainline?: string;
   mainlineContribution?: string;
   characterContribution?: string;
   relationshipContribution?: string;

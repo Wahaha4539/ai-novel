@@ -6,10 +6,12 @@ import { BatchGeneratePanel } from './BatchGeneratePanel';
 interface Props {
   selectedProject?: ProjectSummary;
   selectedProjectId: string;
+  selectedVolumeId?: string;
   chapters?: ChapterSummary[];
+  refreshSignal?: number;
 }
 
-export function VolumePanel({ selectedProject, selectedProjectId, chapters = [] }: Props) {
+export function VolumePanel({ selectedProject, selectedProjectId, selectedVolumeId = '', chapters = [], refreshSignal = 0 }: Props) {
   const {
     volumes,
     loading,
@@ -24,6 +26,8 @@ export function VolumePanel({ selectedProject, selectedProjectId, chapters = [] 
   const [editingVolume, setEditingVolume] = useState<VolumeSummary | null>(null);
   const [showCreateForm, setShowCreateForm] = useState(false);
   const [showBatchPanel, setShowBatchPanel] = useState(false);
+  const selectedVolume = selectedVolumeId ? volumes.find((volume) => volume.id === selectedVolumeId) : undefined;
+  const visibleVolumes = selectedVolume ? [selectedVolume] : volumes;
   const chaptersByVolume = useMemo(() => {
     const map = new Map<string, ChapterSummary[]>();
     for (const chapter of chapters) {
@@ -42,7 +46,7 @@ export function VolumePanel({ selectedProject, selectedProjectId, chapters = [] 
     if (selectedProjectId) {
       loadVolumes();
     }
-  }, [selectedProjectId, loadVolumes, chapters.length]);
+  }, [selectedProjectId, loadVolumes, chapters.length, refreshSignal]);
 
   const handleCreate = async (data: VolumeFormData) => {
     const ok = await createVolume(data);
@@ -189,9 +193,11 @@ export function VolumePanel({ selectedProject, selectedProjectId, chapters = [] 
             {/* Volume list */}
             {volumes.length === 0 && !showCreateForm ? (
               <EmptyState message="尚未创建任何卷。点击「新增卷」开始规划你的故事结构。" />
+            ) : visibleVolumes.length === 0 && !showCreateForm ? (
+              <EmptyState message="当前选中的卷不在列表中。请在左侧选择全书范围或刷新卷列表。" />
             ) : (
               <div className="grid gap-4" style={{ gridTemplateColumns: 'repeat(auto-fill, minmax(22rem, 1fr))' }}>
-                {volumes.map((volume) => (
+                {visibleVolumes.map((volume) => (
                   <VolumeCard
                     key={volume.id}
                     volume={volume}
@@ -314,7 +320,11 @@ function VolumeCard({
 }) {
   const [synopsis, setSynopsis] = useState(volume.synopsis ?? '');
   const [showChapterOutlines, setShowChapterOutlines] = useState(false);
-  const chapterCount = volume._count?.chapters ?? chapters.length;
+  const actualChapterCount = volume._count?.chapters ?? chapters.length;
+  const plannedChapterCount = positiveInt(volume.chapterCount)
+    ?? inferChapterCountFromText(volume.objective)
+    ?? inferChapterCountFromText(volume.synopsis)
+    ?? actualChapterCount;
   const storyUnits = storyUnitsFromPlan(volume.narrativePlan);
 
   useEffect(() => {
@@ -357,8 +367,13 @@ function VolumeCard({
         </div>
         <div className="flex items-center gap-1">
           <span className="text-xs" style={{ color: 'var(--text-dim)' }}>
-            {chapterCount} 章
+            {plannedChapterCount} 章
           </span>
+          {actualChapterCount !== plannedChapterCount && (
+            <span className="text-[0.65rem]" style={{ color: 'var(--text-muted)' }}>
+              已建 {actualChapterCount}
+            </span>
+          )}
         </div>
       </div>
 
@@ -400,31 +415,11 @@ function VolumeCard({
         </>
       )}
 
-      {!isEditing && storyUnits.length > 0 && (
-        <div className="mb-3 space-y-1">
-          <div className="text-[0.68rem] font-semibold" style={{ color: '#14b8a6' }}>单元故事</div>
-          {storyUnits.slice(0, 4).map((unit, index) => {
-            const range = asObjectRecord(unit.chapterRange);
-            const rangeText = typeof range?.start === 'number' && typeof range?.end === 'number'
-              ? `第${range.start}-${range.end}章`
-              : '';
-            const functions = Array.isArray(unit.serviceFunctions)
-              ? unit.serviceFunctions.filter((item): item is string => typeof item === 'string' && item.trim().length > 0)
-              : [];
-            return (
-              <div key={textValue(unit.unitId) || index} className="text-[0.68rem] leading-5" style={{ color: 'var(--text-muted)' }}>
-                <b style={{ color: 'var(--text-main)' }}>{textValue(unit.title, '未命名单元')}</b>
-                {rangeText ? ` · ${rangeText}` : ''}
-                {functions.length ? ` · ${functions.slice(0, 3).join(' / ')}` : ''}
-              </div>
-            );
-          })}
-        </div>
-      )}
+      {!isEditing && storyUnits.length > 0 && <StoryUnitList storyUnits={storyUnits} />}
 
       <ChapterOutlineSection
         chapters={chapters}
-        expectedCount={chapterCount}
+        expectedCount={plannedChapterCount}
         expanded={showChapterOutlines}
         onToggle={() => setShowChapterOutlines((prev) => !prev)}
       />
@@ -442,6 +437,63 @@ function VolumeCard({
           </button>
         </div>
       )}
+    </div>
+  );
+}
+
+function StoryUnitList({ storyUnits }: { storyUnits: Record<string, unknown>[] }) {
+  return (
+    <section className="mb-3">
+      <div className="mb-1 text-[0.68rem] font-semibold" style={{ color: '#14b8a6' }}>单元故事</div>
+      <div className="space-y-2 pr-1" style={{ maxHeight: '20rem', overflowY: 'auto' }}>
+        {storyUnits.map((unit, index) => {
+          const range = asObjectRecord(unit.chapterRange);
+          const rangeText = typeof range?.start === 'number' && typeof range?.end === 'number'
+            ? `第${range.start}-${range.end}章`
+            : '';
+          const functions = stringList(unit.serviceFunctions);
+          const segmentIds = stringList(unit.mainlineSegmentIds);
+          const deliveries = stringList(unit.requiredDeliveries);
+          const characterFocus = stringList(unit.characterFocus);
+          const relationshipChanges = stringList(unit.relationshipChanges);
+          const worldbuildingReveals = stringList(unit.worldbuildingReveals);
+          const clueProgression = stringList(unit.clueProgression);
+          return (
+            <article
+              key={textValue(unit.unitId) || index}
+              className="pb-2 text-[0.68rem] leading-5"
+              style={{ color: 'var(--text-muted)', borderBottom: '1px solid var(--border-dim)' }}
+            >
+              <div>
+                <b style={{ color: 'var(--text-main)' }}>{textValue(unit.title, '未命名单元')}</b>
+                {rangeText ? ` · ${rangeText}` : ''}
+                {functions.length ? ` · ${functions.slice(0, 4).join(' / ')}` : ''}
+                {segmentIds.length ? ` · ${segmentIds.slice(0, 3).join('/')}` : ''}
+              </div>
+              <StoryUnitDetail label="目的" value={textValue(unit.narrativePurpose)} />
+              <StoryUnitDetail label="目标" value={textValue(unit.localGoal)} />
+              <StoryUnitDetail label="冲突" value={textValue(unit.localConflict)} />
+              <StoryUnitDetail label="交付" value={deliveries.join('、')} />
+              <StoryUnitDetail label="人物" value={characterFocus.join('、')} />
+              <StoryUnitDetail label="关系" value={relationshipChanges.join('、')} />
+              <StoryUnitDetail label="设定" value={worldbuildingReveals.join('、')} />
+              <StoryUnitDetail label="线索" value={clueProgression.join('、')} />
+              <StoryUnitDetail label="收束" value={textValue(unit.payoff)} />
+              <StoryUnitDetail label="变化" value={textValue(unit.stateChangeAfterUnit)} />
+            </article>
+          );
+        })}
+      </div>
+    </section>
+  );
+}
+
+function StoryUnitDetail({ label, value }: { label: string; value: string }) {
+  if (!value) return null;
+  return (
+    <div>
+      <span style={{ color: 'var(--text-dim)', fontWeight: 600 }}>{label}：</span>
+      <span>{value}</span>
     </div>
   );
 }
@@ -470,7 +522,7 @@ function ChapterOutlineSection({
             {hasChapters
               ? `已写入 ${chapters.length} 章，执行卡 ${craftBriefCount}/${chapters.length}，可展开查看目标、冲突、行动链和线索。`
               : expectedCount > 0
-                ? `本卷记录 ${expectedCount} 章，但当前列表尚未加载章节明细。`
+                ? `本卷计划 ${expectedCount} 章，当前还没有章节细纲。`
                 : '本卷还没有章节细纲。'}
           </div>
         </div>
@@ -654,6 +706,7 @@ function storyUnitsFromPlan(value: VolumeSummary['narrativePlan']): Record<strin
         ...unit,
         chapterRange: asObjectRecord(allocation?.chapterRange),
         serviceFunctions: [textValue(unit.primaryPurpose), ...stringList(unit.secondaryPurposes)].filter(Boolean),
+        mainlineSegmentIds: stringList(unit.mainlineSegmentIds),
       };
     });
   }
@@ -682,6 +735,24 @@ function stringList(value: unknown): string[] {
 
 function textValue(value: unknown, fallback = '') {
   return typeof value === 'string' && value.trim() ? value.trim() : fallback;
+}
+
+function positiveInt(value: unknown): number | undefined {
+  const numeric = Number(value);
+  return Number.isInteger(numeric) && numeric > 0 ? numeric : undefined;
+}
+
+function inferChapterCountFromText(value: unknown): number | undefined {
+  if (typeof value !== 'string' || !value.trim()) return undefined;
+  const patterns = [
+    /(?:全卷|本卷|目标|计划|规划|篇幅|章节数|总章数|共|在|按|拆成|拆为|细分为)[^\d]{0,12}(\d{1,4})\s*章/u,
+    /(\d{1,4})\s*章(?:篇幅|内|左右|上下|细纲|章节规划|单元分配)/u,
+  ];
+  for (const pattern of patterns) {
+    const count = positiveInt(value.match(pattern)?.[1]);
+    if (count) return count;
+  }
+  return undefined;
 }
 
 function buildCharacterExecutionSummary(value: unknown): CharacterExecutionSummary | null {

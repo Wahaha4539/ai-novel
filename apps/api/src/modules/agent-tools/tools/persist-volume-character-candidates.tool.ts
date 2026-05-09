@@ -141,17 +141,7 @@ export class PersistVolumeCharacterCandidatesTool implements BaseTool<PersistVol
           continue;
         }
 
-        if (existing.source === 'agent_outline') {
-          const updated = await tx.character.update({
-            where: { id: existing.id },
-            data: this.buildCharacterUpdateData(candidate, args.preview!, context, existing),
-          });
-          const saved = { id: updated.id, name: updated.name, alias: updated.alias, source: updated.source, metadata: updated.metadata };
-          this.addCharacterToCatalog(saved, catalog);
-          characterResults.push({ candidateId: candidate.candidateId, name: candidate.name, action: 'updated', characterId: updated.id });
-        } else {
-          characterResults.push({ candidateId: candidate.candidateId, name: candidate.name, action: 'skipped', characterId: existing.id, reason: 'existing_non_agent_character' });
-        }
+        characterResults.push({ candidateId: candidate.candidateId, name: candidate.name, action: 'skipped', characterId: existing.id, reason: 'existing_character' });
       }
 
       const relationshipResults = args.includeRelationshipArcs
@@ -263,7 +253,7 @@ export class PersistVolumeCharacterCandidatesTool implements BaseTool<PersistVol
       relationshipSkippedCount,
       characterResults,
       relationshipResults,
-      approvalMessage: `Approved ${createdCount + updatedCount} volume-level character writes to Character; skipped ${skippedCount}. Outline JSON remains in Volume.narrativePlan and Chapter.craftBrief, and chapter minor_temporary characters are not written as Character records.`,
+      approvalMessage: `Approved ${createdCount} new volume-level character writes to Character; skipped ${skippedCount} candidates that already exist in Character. Outline JSON remains in Volume.narrativePlan and Chapter.craftBrief, and chapter minor_temporary characters are not written as Character records.`,
     };
   }
 
@@ -280,20 +270,6 @@ export class PersistVolumeCharacterCandidatesTool implements BaseTool<PersistVol
       activeFromChapter: candidate.firstAppearChapter,
       source: 'agent_outline',
       metadata: this.buildCharacterMetadata(candidate, preview, context),
-    };
-  }
-
-  private buildCharacterUpdateData(candidate: VolumeCharacterPlan['newCharacterCandidates'][number], preview: OutlinePreviewOutput, context: ToolContext, existing: ExistingCharacter): Prisma.CharacterUpdateInput {
-    return {
-      roleType: candidate.roleType,
-      personalityCore: candidate.personalityCore,
-      motivation: candidate.motivation,
-      backstory: candidate.backstorySeed,
-      growthArc: candidate.expectedArc,
-      scope: 'volume',
-      activeFromChapter: candidate.firstAppearChapter,
-      source: 'agent_outline',
-      metadata: { ...this.asRecord(existing.metadata), ...this.buildCharacterMetadata(candidate, preview, context) } as Prisma.InputJsonValue,
     };
   }
 

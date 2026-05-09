@@ -70,6 +70,7 @@ export default function HomePage() {
   const [autoStartGuided, setAutoStartGuided] = useState(false);
   const [guidedAgentContext, setGuidedAgentContext] = useState<AgentPageContext | undefined>();
   const [isToastVisible, setIsToastVisible] = useState(false);
+  const [volumeRefreshSignal, setVolumeRefreshSignal] = useState(0);
   const [workspaceStateRestored, setWorkspaceStateRestored] = useState(false);
   const loadProjectDataRef = useRef(data.loadProjectData);
 
@@ -257,6 +258,7 @@ export default function HomePage() {
       data.loadProjects(),
       data.loadProjectData(data.selectedProjectId, data.selectedChapterId),
     ]);
+    setVolumeRefreshSignal((value) => value + 1);
   }, [data]);
 
   const handleGuidedCreate = useCallback((projectId: string) => {
@@ -366,7 +368,7 @@ export default function HomePage() {
             onSaved={() => data.loadProjectData(data.selectedProjectId, data.selectedChapterId)}
           />
         ) : activeView === 'volumes' ? (
-          <VolumePanel selectedProject={selectedProject} selectedProjectId={data.selectedProjectId} chapters={chapters} />
+          <VolumePanel selectedProject={selectedProject} selectedProjectId={data.selectedProjectId} selectedVolumeId={selectedVolumeId} chapters={chapters} refreshSignal={volumeRefreshSignal} />
         ) : activeView === 'guided' ? (
           <GuidedWizard
             selectedProject={selectedProject}

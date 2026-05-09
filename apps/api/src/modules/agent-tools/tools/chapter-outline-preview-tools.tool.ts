@@ -262,7 +262,7 @@ export class GenerateChapterOutlinePreviewTool implements BaseTool<GenerateChapt
       '本工具只生成一个指定 chapterNo 的章节细纲与 Chapter.craftBrief，不写正文。',
       'LLM 输出字段只包含 volume、chapter、risks；不要输出章节数组，工具会在解析通过后自动构造下游合并所需数组。',
       '如果用户提示中提供上游卷大纲 volumeOutline，必须把它作为唯一卷级结构来源；不要重新发明卷大纲、卷内支线或角色规划。',
-      '如果用户提示中提供 storyUnitPlan，craftBrief.storyUnit 必须从 storyUnitPlan.chapterAllocation 中选择覆盖本章章号的单元故事，并沿用 unitId、title、chapterRange、localGoal、localConflict、serviceFunctions、unitPayoff/stateChangeAfterUnit，只补本章 chapterRole 和各类 contribution。',
+      '如果用户提示中提供 storyUnitPlan，craftBrief.storyUnit 必须从 storyUnitPlan.chapterAllocation 中选择覆盖本章章号的单元故事，并沿用 unitId、title、chapterRange、localGoal、localConflict、serviceFunctions、mainlineSegmentIds、serviceToMainline、unitPayoff/stateChangeAfterUnit，只补本章 chapterRole 和各类 contribution。',
       '兼容旧数据：只有在没有 storyUnitPlan 时，才允许从 volumeOutline.narrativePlan.storyUnits 中选择覆盖本章章号的单元故事。',
       'chapterNo 必须使用用户指定的全卷绝对章号；volume.chapterCount 必须等于目标全卷章节数。',
       '每章必须包含 chapterNo、volumeNo、title、objective、conflict、hook、outline、expectedWordCount、craftBrief。',
@@ -273,7 +273,7 @@ export class GenerateChapterOutlinePreviewTool implements BaseTool<GenerateChapt
       'sceneBeats.participants 和 relationshipBeats.participants 必须全部被 characterExecution.cast.characterName 覆盖。',
       'minor_temporary 只能承担一次性功能角色，不得承担本卷主线核心功能、反派主压力或长期人物弧；重要新角色必须先进入上游卷级候选。',
       'craftBrief.actionBeats 至少 3 个节点；sceneBeats 至少 3 个场景段；concreteClues 至少 1 个且包含 name、sensoryDetail、laterUse。',
-      'craftBrief.storyUnit 必须包含 unitId、title、chapterRange、chapterRole、localGoal、localConflict、serviceFunctions、mainlineContribution、characterContribution、relationshipContribution、worldOrThemeContribution、unitPayoff、stateChangeAfterUnit；serviceFunctions 至少 3 项。',
+      'craftBrief.storyUnit 必须包含 unitId、title、chapterRange、chapterRole、localGoal、localConflict、serviceFunctions、mainlineContribution、characterContribution、relationshipContribution、worldOrThemeContribution、unitPayoff、stateChangeAfterUnit；若上游单元故事含 mainlineSegmentIds/serviceToMainline，必须承接到 mainlineContribution；serviceFunctions 至少 3 项。',
       'craftBrief.continuityState 必须包含角色位置、仍在生效的威胁、已持有线索/资源、关系变化和 nextImmediatePressure。',
       '如果提供 previousChapter，必须承接 previousChapter.craftBrief.exitState、handoffToNextChapter、openLoops、continuityState.nextImmediatePressure；不能让压力凭空消失。',
       '禁止只写推进、建立、完成、探索、揭示、面对、选择、升级、铺垫、承接等抽象词；必须绑定具体地点、人物、动作、物件和后果。',
@@ -330,7 +330,7 @@ export class GenerateChapterOutlinePreviewTool implements BaseTool<GenerateChapt
       this.safeJson(Array.isArray(context.lorebookEntries) ? context.lorebookEntries.slice(0, 30) : [], 4000),
       '',
       `请严格只返回第 ${chapterNo} 章，不要输出章节数组；chapterNo 必须是 ${chapterNo}，volumeNo 必须是 ${volumeNo}，volume.chapterCount 必须是 ${chapterCount}。`,
-      '本章 craftBrief.storyUnit 必须使用上方“本章应承接的单元故事”的 unitId 和 chapterRange；不要在章节细纲里创造新的单元故事。',
+      '本章 craftBrief.storyUnit 必须使用上方“本章应承接的单元故事”的 unitId、chapterRange 和主线段服务关系；不要在章节细纲里创造新的单元故事或新的主线段。',
       '若上下文不足，把风险写入 risks，但仍输出完整单章细纲和 craftBrief。',
     ].join('\n');
   }
@@ -384,6 +384,9 @@ export class GenerateChapterOutlinePreviewTool implements BaseTool<GenerateChapt
         localGoal: unit.localGoal,
         localConflict: unit.localConflict,
         serviceFunctions: storyUnitServiceFunctions(unit),
+        mainlineSegmentIds: unit.mainlineSegmentIds,
+        mainlineSegments: unit.mainlineSegments,
+        serviceToMainline: unit.serviceToMainline,
         mainlineContribution: unit.narrativePurpose,
         characterContribution: unit.characterFocus.join('；'),
         relationshipContribution: unit.relationshipChanges.join('；'),
@@ -451,6 +454,9 @@ export class GenerateChapterOutlinePreviewTool implements BaseTool<GenerateChapt
     if (chapterRange.end < chapterRange.start) throw new Error(`generate_chapter_outline_preview ${label} craftBrief.storyUnit.chapterRange 无效，未生成完整单章细纲。`);
     const serviceFunctions = this.requiredStringArray(record.serviceFunctions, `${label}.craftBrief.storyUnit.serviceFunctions`);
     if (serviceFunctions.length < 3) throw new Error(`generate_chapter_outline_preview ${label} craftBrief.storyUnit.serviceFunctions 少于 3 项，未生成完整单章细纲。`);
+    const mainlineSegmentIds = this.stringArray(record.mainlineSegmentIds, []);
+    const mainlineSegments = this.asRecordArray(record.mainlineSegments);
+    const serviceToMainline = this.text(record.serviceToMainline, '');
     return {
       unitId: this.requiredText(record.unitId, `${label}.craftBrief.storyUnit.unitId`),
       title: this.requiredText(record.title, `${label}.craftBrief.storyUnit.title`),
@@ -459,6 +465,9 @@ export class GenerateChapterOutlinePreviewTool implements BaseTool<GenerateChapt
       localGoal: this.requiredText(record.localGoal, `${label}.craftBrief.storyUnit.localGoal`),
       localConflict: this.requiredText(record.localConflict, `${label}.craftBrief.storyUnit.localConflict`),
       serviceFunctions,
+      ...(mainlineSegmentIds.length ? { mainlineSegmentIds } : {}),
+      ...(mainlineSegments.length ? { mainlineSegments } : {}),
+      ...(serviceToMainline ? { serviceToMainline } : {}),
       mainlineContribution: this.requiredText(record.mainlineContribution, `${label}.craftBrief.storyUnit.mainlineContribution`),
       characterContribution: this.requiredText(record.characterContribution, `${label}.craftBrief.storyUnit.characterContribution`),
       relationshipContribution: this.requiredText(record.relationshipContribution, `${label}.craftBrief.storyUnit.relationshipContribution`),
