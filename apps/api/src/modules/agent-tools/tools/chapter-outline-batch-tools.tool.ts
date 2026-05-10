@@ -19,7 +19,7 @@ import {
 } from './chapter-outline-batch-contracts';
 import { ChapterContinuityState, ChapterCraftBrief, ChapterSceneBeat, ChapterStoryUnit, OutlinePreviewOutput } from './generate-outline-preview.tool';
 import { recordToolLlmUsage } from './import-preview-llm-usage';
-import { assertChapterCharacterExecution, type CharacterReferenceCatalog } from './outline-character-contracts';
+import { assertChapterCharacterExecution, assertVolumeCharacterPlan, type CharacterReferenceCatalog } from './outline-character-contracts';
 import { assertVolumeStoryUnitPlan, type VolumeStoryUnitPlan } from './story-unit-contracts';
 import { normalizeWithLlmRepair } from './structured-output-repair';
 
@@ -866,5 +866,253 @@ export class GenerateChapterOutlineBatchPreviewTool implements BaseTool<Generate
 
   private errorMessage(error: unknown): string {
     return error instanceof Error ? error.message : String(error);
+  }
+}
+
+interface MergeChapterOutlineBatchPreviewsInput {
+  context?: Record<string, unknown>;
+  volumeOutline?: Record<string, unknown>;
+  volumeNo?: number;
+  chapterCount?: number;
+  batchPreviews?: ChapterOutlineBatchPreviewOutput[];
+}
+
+@Injectable()
+export class MergeChapterOutlineBatchPreviewsTool implements BaseTool<MergeChapterOutlineBatchPreviewsInput, OutlinePreviewOutput> {
+  name = 'merge_chapter_outline_batch_previews';
+  description = 'Merge validated chapter outline batch previews into a standard OutlinePreviewOutput without filling missing chapters or craftBrief data.';
+  inputSchema = {
+    type: 'object' as const,
+    required: ['batchPreviews', 'volumeNo', 'chapterCount'],
+    properties: {
+      context: { type: 'object' as const },
+      volumeOutline: { type: 'object' as const },
+      volumeNo: { type: 'number' as const },
+      chapterCount: { type: 'number' as const },
+      batchPreviews: { type: 'array' as const, items: { type: 'object' as const } },
+    },
+  };
+  outputSchema = {
+    type: 'object' as const,
+    required: ['volume', 'chapters', 'risks'],
+    properties: {
+      volume: { type: 'object' as const },
+      chapters: { type: 'array' as const },
+      risks: { type: 'array' as const, items: { type: 'string' as const } },
+    },
+  };
+  allowedModes: Array<'plan' | 'act'> = ['plan', 'act'];
+  riskLevel: 'low' = 'low';
+  requiresApproval = false;
+  sideEffects: string[] = [];
+  manifest: ToolManifestV2 = {
+    name: this.name,
+    displayName: 'Merge chapter outline batch previews',
+    description: 'Combines generate_chapter_outline_batch_preview outputs into standard outline_preview; fails on missing chapters, duplicate chapters, overlapping batches, incomplete craftBrief, or invalid characterExecution sources.',
+    whenToUse: [
+      'After every generate_chapter_outline_batch_preview step has succeeded for a whole-volume chapter outline plan.',
+      'Before validate_outline and approval-gated persist_outline.',
+    ],
+    whenNotToUse: [
+      'Do not use before every target chapter has a batch preview.',
+      'Do not use for single-chapter preview merges; use merge_chapter_outline_previews.',
+    ],
+    inputSchema: this.inputSchema,
+    outputSchema: this.outputSchema,
+    parameterHints: {
+      batchPreviews: { source: 'previous_step', description: 'All generate_chapter_outline_batch_preview outputs in chapter order.' },
+      context: { source: 'previous_step', description: 'inspect_project_context.output for target volume metadata and existing character whitelist.' },
+      volumeOutline: { source: 'previous_step', description: 'Optional generate_volume_outline_preview.output.volume when this run rebuilt the volume outline.' },
+      volumeNo: { source: 'user_message', description: 'Target volume number.' },
+      chapterCount: { source: 'user_message', description: 'Target full-volume chapter count.' },
+    },
+    failureHints: [
+      { code: 'BATCH_MERGE_COVERAGE_INVALID', meaning: 'Batch previews do not cover 1..chapterCount exactly.', suggestedRepair: 'Regenerate or repair the missing/overlapping batch; do not synthesize chapters.' },
+      { code: 'BATCH_MERGE_CRAFT_BRIEF_INVALID', meaning: 'A merged chapter has incomplete craftBrief or invalid characterExecution.', suggestedRepair: 'Regenerate the offending batch preview.' },
+    ],
+    allowedModes: this.allowedModes,
+    riskLevel: this.riskLevel,
+    requiresApproval: this.requiresApproval,
+    sideEffects: this.sideEffects,
+  };
+
+  async run(args: MergeChapterOutlineBatchPreviewsInput, _context: ToolContext): Promise<OutlinePreviewOutput> {
+    const batchPreviews = Array.isArray(args.batchPreviews) ? args.batchPreviews : [];
+    const volumeNo = positiveInt(args.volumeNo);
+    const chapterCount = positiveInt(args.chapterCount);
+    if (!volumeNo) throw new Error('merge_chapter_outline_batch_previews requires a valid volumeNo.');
+    if (!chapterCount) throw new Error('merge_chapter_outline_batch_previews requires a valid chapterCount.');
+    if (!batchPreviews.length) throw new Error('merge_chapter_outline_batch_previews requires batchPreviews.');
+
+    const normalizedBatches = batchPreviews.map((preview, index) => this.normalizeBatchPreview(preview, index + 1, volumeNo));
+    assertChapterRangeCoverage({
+      chapterCount,
+      ranges: normalizedBatches.map((preview) => ({ chapterRange: preview.batch.chapterRange, label: `batch ${preview.batch.batchNo}` })),
+      label: 'merge_chapter_outline_batch_previews batch coverage',
+    });
+
+    const volume = this.resolveVolume(args.context, args.volumeOutline, volumeNo, chapterCount);
+    const characterCatalog = this.extractCharacterCatalog(args.context, volume, chapterCount);
+    const chapters = normalizedBatches
+      .flatMap((batch) => batch.chapters.map((chapter) => ({ chapter, batchRange: batch.batch.chapterRange })))
+      .sort((left, right) => Number(left.chapter.chapterNo) - Number(right.chapter.chapterNo));
+
+    assertChapterRangeCoverage({
+      chapterCount,
+      ranges: chapters.map(({ chapter }) => ({ chapterRange: { start: Number(chapter.chapterNo), end: Number(chapter.chapterNo) }, label: `chapter ${chapter.chapterNo}` })),
+      label: 'merge_chapter_outline_batch_previews chapter coverage',
+    });
+
+    for (const { chapter, batchRange } of chapters) {
+      if (Number(chapter.volumeNo) !== volumeNo) throw new Error(`merge_chapter_outline_batch_previews chapter ${chapter.chapterNo} volumeNo mismatch.`);
+      if (Number(chapter.chapterNo) < batchRange.start || Number(chapter.chapterNo) > batchRange.end) {
+        throw new Error(`merge_chapter_outline_batch_previews chapter ${chapter.chapterNo} is outside its batch range ${batchRange.start}-${batchRange.end}.`);
+      }
+      this.assertCompleteChapter(chapter, characterCatalog);
+    }
+    this.assertBatchContinuity(normalizedBatches);
+
+    return {
+      volume,
+      chapters: chapters.map((item) => item.chapter),
+      risks: [
+        `Merged ${normalizedBatches.length} chapter-outline batches into ${chapterCount} chapters; no missing chapter content was synthesized.`,
+        ...normalizedBatches.flatMap((batch) => batch.risks.map((risk) => `batch ${batch.batch.batchNo}: ${risk}`)),
+      ],
+    };
+  }
+
+  private normalizeBatchPreview(value: unknown, fallbackBatchNo: number, volumeNo: number): ChapterOutlineBatchPreviewOutput & { batch: ChapterOutlineBatchPreviewOutput['batch'] & { batchNo: number } } {
+    const record = asRecord(value);
+    const batch = asRecord(record.batch);
+    const chapterRange = this.normalizeInputRange(batch.chapterRange);
+    if (!chapterRange) throw new Error(`merge_chapter_outline_batch_previews batch ${fallbackBatchNo} missing valid chapterRange.`);
+    if (positiveInt(batch.volumeNo) !== volumeNo) throw new Error(`merge_chapter_outline_batch_previews batch ${fallbackBatchNo} volumeNo mismatch.`);
+    const chapters = asRecordArray(record.chapters) as unknown as OutlinePreviewOutput['chapters'];
+    if (!chapters.length) throw new Error(`merge_chapter_outline_batch_previews batch ${fallbackBatchNo} has no chapters.`);
+    return {
+      batch: {
+        batchNo: fallbackBatchNo,
+        volumeNo,
+        chapterRange,
+        storyUnitIds: stringArray(batch.storyUnitIds),
+        continuityBridgeIn: this.requiredText(batch.continuityBridgeIn, `batch ${fallbackBatchNo}.continuityBridgeIn`),
+        continuityBridgeOut: this.requiredText(batch.continuityBridgeOut, `batch ${fallbackBatchNo}.continuityBridgeOut`),
+      },
+      chapters,
+      risks: stringArray(record.risks),
+      repairDiagnostics: Array.isArray(record.repairDiagnostics) ? record.repairDiagnostics as ChapterOutlineBatchPreviewOutput['repairDiagnostics'] : undefined,
+    };
+  }
+
+  private assertCompleteChapter(chapter: OutlinePreviewOutput['chapters'][number], characterCatalog: CharacterReferenceCatalog & { volumeCandidateNames: string[] }): void {
+    const chapterNo = positiveInt(chapter.chapterNo);
+    if (!chapterNo) throw new Error('merge_chapter_outline_batch_previews encountered chapter without chapterNo.');
+    this.requiredText(chapter.title, `chapter ${chapterNo}.title`);
+    this.requiredText(chapter.objective, `chapter ${chapterNo}.objective`);
+    this.requiredText(chapter.conflict, `chapter ${chapterNo}.conflict`);
+    this.requiredText(chapter.hook, `chapter ${chapterNo}.hook`);
+    this.requiredText(chapter.outline, `chapter ${chapterNo}.outline`);
+    if (!positiveInt(chapter.expectedWordCount)) throw new Error(`merge_chapter_outline_batch_previews chapter ${chapterNo} expectedWordCount is invalid.`);
+    const craftBrief = asRecord(chapter.craftBrief);
+    if (!Object.keys(craftBrief).length) throw new Error(`merge_chapter_outline_batch_previews chapter ${chapterNo} missing craftBrief.`);
+    for (const field of ['visibleGoal', 'hiddenEmotion', 'coreConflict', 'mainlineTask', 'dialogueSubtext', 'characterShift', 'irreversibleConsequence', 'entryState', 'exitState', 'handoffToNextChapter']) {
+      this.requiredText(craftBrief[field], `chapter ${chapterNo}.craftBrief.${field}`);
+    }
+    for (const field of ['subplotTasks', 'actionBeats', 'progressTypes', 'openLoops', 'closedLoops']) {
+      if (!stringArray(craftBrief[field]).length) throw new Error(`merge_chapter_outline_batch_previews chapter ${chapterNo} craftBrief.${field} is required.`);
+    }
+    const storyUnit = asRecord(craftBrief.storyUnit);
+    if (!text(storyUnit.unitId)) throw new Error(`merge_chapter_outline_batch_previews chapter ${chapterNo} craftBrief.storyUnit.unitId is required.`);
+    const actionBeats = stringArray(craftBrief.actionBeats);
+    const sceneBeats = asRecordArray(craftBrief.sceneBeats);
+    if (actionBeats.length < 3 || sceneBeats.length < 3) {
+      throw new Error(`merge_chapter_outline_batch_previews chapter ${chapterNo} craftBrief actionBeats/sceneBeats are incomplete.`);
+    }
+    const continuityState = asRecord(craftBrief.continuityState);
+    this.requiredText(continuityState.nextImmediatePressure, `chapter ${chapterNo}.craftBrief.continuityState.nextImmediatePressure`);
+    assertChapterCharacterExecution(craftBrief.characterExecution, {
+      existingCharacterNames: characterCatalog.existingCharacterNames,
+      existingCharacterAliases: characterCatalog.existingCharacterAliases,
+      volumeCandidateNames: characterCatalog.volumeCandidateNames,
+      actionBeatCount: actionBeats.length,
+      sceneBeats,
+      label: `chapter ${chapterNo}.craftBrief.characterExecution`,
+    });
+  }
+
+  private assertBatchContinuity(batches: Array<ChapterOutlineBatchPreviewOutput & { batch: ChapterOutlineBatchPreviewOutput['batch'] & { batchNo: number } }>): void {
+    const ordered = [...batches].sort((left, right) => left.batch.chapterRange.start - right.batch.chapterRange.start);
+    for (let index = 1; index < ordered.length; index += 1) {
+      const previous = ordered[index - 1];
+      const next = ordered[index];
+      const previousLast = [...previous.chapters].sort((left, right) => Number(right.chapterNo) - Number(left.chapterNo))[0];
+      const nextFirst = [...next.chapters].sort((left, right) => Number(left.chapterNo) - Number(right.chapterNo))[0];
+      const previousBrief = asRecord(previousLast?.craftBrief);
+      const nextBrief = asRecord(nextFirst?.craftBrief);
+      this.requiredText(previousBrief.handoffToNextChapter, `batch ${previous.batch.batchNo} final handoffToNextChapter`);
+      this.requiredText(asRecord(previousBrief.continuityState).nextImmediatePressure, `batch ${previous.batch.batchNo} final nextImmediatePressure`);
+      this.requiredText(nextBrief.entryState, `batch ${next.batch.batchNo} first entryState`);
+      if (!stringArray(nextBrief.openLoops).length) throw new Error(`merge_chapter_outline_batch_previews batch ${next.batch.batchNo} first chapter openLoops is required.`);
+    }
+  }
+
+  private resolveVolume(contextValue: unknown, volumeOutlineValue: unknown, volumeNo: number, chapterCount: number): OutlinePreviewOutput['volume'] {
+    const volume = this.findTargetVolume(contextValue, volumeOutlineValue, volumeNo);
+    if (!Object.keys(volume).length) throw new Error(`merge_chapter_outline_batch_previews cannot resolve volume ${volumeNo}.`);
+    if (positiveInt(volume.volumeNo) !== volumeNo) throw new Error('merge_chapter_outline_batch_previews volumeNo mismatch.');
+    if (positiveInt(volume.chapterCount) !== chapterCount) throw new Error('merge_chapter_outline_batch_previews volume.chapterCount mismatch.');
+    return {
+      volumeNo,
+      title: this.requiredText(volume.title, 'volume.title'),
+      synopsis: this.requiredText(volume.synopsis, 'volume.synopsis'),
+      objective: this.requiredText(volume.objective, 'volume.objective'),
+      chapterCount,
+      ...(Object.keys(asRecord(volume.narrativePlan)).length ? { narrativePlan: asRecord(volume.narrativePlan) } : {}),
+    };
+  }
+
+  private extractCharacterCatalog(contextValue: unknown, volume: OutlinePreviewOutput['volume'], chapterCount: number): CharacterReferenceCatalog & { volumeCandidateNames: string[] } {
+    const context = asRecord(contextValue);
+    const existingCharacterNames: string[] = [];
+    const existingCharacterAliases: Record<string, string[]> = {};
+    for (const item of asRecordArray(context.characters)) {
+      const name = text(item.name);
+      if (!name) continue;
+      existingCharacterNames.push(name);
+      const aliases = stringArray(item.aliases).length ? stringArray(item.aliases) : stringArray(item.alias);
+      if (aliases.length) existingCharacterAliases[name] = aliases;
+    }
+    const narrativePlan = asRecord(volume.narrativePlan);
+    const characterPlan = assertVolumeCharacterPlan(narrativePlan.characterPlan, {
+      chapterCount,
+      existingCharacterNames,
+      existingCharacterAliases,
+      label: 'merge_chapter_outline_batch_previews.volume.characterPlan',
+    });
+    return {
+      existingCharacterNames,
+      existingCharacterAliases,
+      volumeCandidateNames: characterPlan.newCharacterCandidates.map((candidate) => candidate.name),
+    };
+  }
+
+  private findTargetVolume(contextValue: unknown, volumeOutlineValue: unknown, volumeNo: number): Record<string, unknown> {
+    const volumeOutline = asRecord(volumeOutlineValue);
+    if (Object.keys(volumeOutline).length) return volumeOutline;
+    return asRecordArray(asRecord(contextValue).volumes).find((volume) => Number(volume.volumeNo) === volumeNo) ?? {};
+  }
+
+  private normalizeInputRange(value: unknown): ChapterRange | undefined {
+    const range = asRecord(value);
+    const start = positiveInt(range.start);
+    const end = positiveInt(range.end);
+    return start && end && end >= start ? { start, end } : undefined;
+  }
+
+  private requiredText(value: unknown, label: string): string {
+    const item = text(value);
+    if (!item) throw new Error(`merge_chapter_outline_batch_previews missing ${label}.`);
+    return item;
   }
 }

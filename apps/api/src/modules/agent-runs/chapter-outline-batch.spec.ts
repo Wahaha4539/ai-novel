@@ -4,7 +4,7 @@ import {
   assertChapterRangeCoverage,
   type ChapterOutlineBatchPlan,
 } from '../agent-tools/tools/chapter-outline-batch-contracts';
-import { GenerateChapterOutlineBatchPreviewTool, SegmentChapterOutlineBatchesTool } from '../agent-tools/tools/chapter-outline-batch-tools.tool';
+import { GenerateChapterOutlineBatchPreviewTool, MergeChapterOutlineBatchPreviewsTool, SegmentChapterOutlineBatchesTool } from '../agent-tools/tools/chapter-outline-batch-tools.tool';
 
 type TestCase = { name: string; run: () => void | Promise<void> };
 
@@ -175,7 +175,7 @@ function createBatchCraftBrief(chapterNo: number, unitId = 'u1', overrides: Reco
       cast: [
         {
           characterName: 'Lin',
-          source: 'existing',
+          source: 'existing' as const,
           functionInChapter: 'drives the investigation',
           visibleGoal: 'confirm the clue',
           pressure: 'official surveillance',
@@ -186,7 +186,7 @@ function createBatchCraftBrief(chapterNo: number, unitId = 'u1', overrides: Reco
         },
         {
           characterName: 'Shao',
-          source: 'volume_candidate',
+          source: 'volume_candidate' as const,
           functionInChapter: 'applies institutional pressure',
           visibleGoal: 'control access to evidence',
           pressure: 'must hide a record',
@@ -255,6 +255,44 @@ function createBatchOutput(chapterNos = [1, 2, 3, 4], overrides: Record<string, 
     risks: [],
     ...overrides,
   };
+}
+
+function createBatchOutputForRange(start: number, end: number, unitId: string) {
+  const chapterRange = { start, end };
+  return createBatchOutput(
+    Array.from({ length: end - start + 1 }, (_item, index) => start + index),
+    {
+      batch: {
+        volumeNo: 1,
+        chapterRange,
+        storyUnitIds: [unitId],
+        continuityBridgeIn: `bridge in ${start}`,
+        continuityBridgeOut: `bridge out ${end}`,
+      },
+      chapters: Array.from({ length: end - start + 1 }, (_item, index) => {
+        const chapterNo = start + index;
+        return createBatchChapter(chapterNo, {
+          craftBrief: createBatchCraftBrief(chapterNo, unitId, {
+            storyUnit: {
+              unitId,
+              title: `Unit ${unitId}`,
+              chapterRange,
+              chapterRole: `role ${chapterNo}`,
+              localGoal: 'local unit goal',
+              localConflict: 'local unit conflict',
+              serviceFunctions: ['mainline', 'relationship_shift', 'foreshadow'],
+              mainlineContribution: 'advances the mainline with evidence',
+              characterContribution: 'pressures Lin into a harder choice',
+              relationshipContribution: 'moves Lin and Shao into sharper conflict',
+              worldOrThemeContribution: 'shows the institution through procedure',
+              unitPayoff: 'sets up the next handoff',
+              stateChangeAfterUnit: 'the cast exits with more danger',
+            },
+          }),
+        });
+      }),
+    },
+  );
 }
 
 function createToolContext() {
@@ -513,6 +551,102 @@ test('COB-P2 batch preview repairs character source mistakes through LLM only', 
   assert.equal(calls.length, 2);
   assert.match(calls[1].messages[1].content, /volume_candidate/);
   assert.equal(result.chapters[0].craftBrief?.characterExecution?.cast?.some((member) => member.characterName === 'Shao' && member.source === 'volume_candidate'), true);
+});
+
+test('COB-P3 merge batch previews returns standard outline preview', async () => {
+  const storyUnitPlan = createStoryUnitPlan([
+    { unitId: 'u1', start: 1, end: 4 },
+    { unitId: 'u2', start: 5, end: 8 },
+  ]);
+  const tool = new MergeChapterOutlineBatchPreviewsTool();
+
+  const result = await tool.run(
+    {
+      context: createSegmentContext(storyUnitPlan, 8),
+      volumeNo: 1,
+      chapterCount: 8,
+      batchPreviews: [
+        createBatchOutputForRange(1, 4, 'u1'),
+        createBatchOutputForRange(5, 8, 'u2'),
+      ],
+    },
+    createToolContext().context,
+  );
+
+  assert.equal(result.volume.volumeNo, 1);
+  assert.equal(result.volume.chapterCount, 8);
+  assert.equal(result.chapters.length, 8);
+  assert.deepEqual(result.chapters.map((chapter) => chapter.chapterNo), [1, 2, 3, 4, 5, 6, 7, 8]);
+  assert.equal(result.chapters.every((chapter) => chapter.craftBrief?.characterExecution?.cast?.length === 2), true);
+});
+
+test('COB-P3 merge batch previews rejects missing batch coverage', async () => {
+  const storyUnitPlan = createStoryUnitPlan([
+    { unitId: 'u1', start: 1, end: 4 },
+    { unitId: 'u2', start: 5, end: 8 },
+  ]);
+  const tool = new MergeChapterOutlineBatchPreviewsTool();
+
+  await assert.rejects(
+    () => tool.run(
+      {
+        context: createSegmentContext(storyUnitPlan, 8),
+        volumeNo: 1,
+        chapterCount: 8,
+        batchPreviews: [createBatchOutputForRange(1, 4, 'u1')],
+      },
+      createToolContext().context,
+    ),
+    /missing chapters|not continuous|coverage/,
+  );
+});
+
+test('COB-P3 merge batch previews rejects overlapping batches', async () => {
+  const storyUnitPlan = createStoryUnitPlan([
+    { unitId: 'u1', start: 1, end: 4 },
+    { unitId: 'u2', start: 5, end: 8 },
+  ]);
+  const tool = new MergeChapterOutlineBatchPreviewsTool();
+
+  await assert.rejects(
+    () => tool.run(
+      {
+        context: createSegmentContext(storyUnitPlan, 8),
+        volumeNo: 1,
+        chapterCount: 8,
+        batchPreviews: [
+          createBatchOutputForRange(1, 4, 'u1'),
+          createBatchOutputForRange(4, 8, 'u2'),
+        ],
+      },
+      createToolContext().context,
+    ),
+    /expected chapter 5|overlaps|not continuous/,
+  );
+});
+
+test('COB-P3 merge batch previews rejects invalid characterExecution sources', async () => {
+  const storyUnitPlan = createStoryUnitPlan([
+    { unitId: 'u1', start: 1, end: 4 },
+    { unitId: 'u2', start: 5, end: 8 },
+  ]);
+  const badFirstBatch = createBatchOutputForRange(1, 4, 'u1');
+  const firstChapter = (badFirstBatch.chapters as Array<Record<string, any>>)[0];
+  firstChapter.craftBrief.characterExecution.cast[1].source = 'existing';
+  const tool = new MergeChapterOutlineBatchPreviewsTool();
+
+  await assert.rejects(
+    () => tool.run(
+      {
+        context: createSegmentContext(storyUnitPlan, 8),
+        volumeNo: 1,
+        chapterCount: 8,
+        batchPreviews: [badFirstBatch, createBatchOutputForRange(5, 8, 'u2')],
+      },
+      createToolContext().context,
+    ),
+    /unknown|未知|existing|Shao|characterExecution/,
+  );
 });
 
 async function main() {
