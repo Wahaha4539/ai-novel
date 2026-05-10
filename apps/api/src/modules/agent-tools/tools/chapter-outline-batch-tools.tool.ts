@@ -658,7 +658,7 @@ export class GenerateChapterOutlineBatchPreviewTool implements BaseTool<Generate
             minor_temporary: 'Declare in characterExecution.newMinorCharacters with firstAndOnlyUse=true and approvalPolicy=preview_only.',
           },
           volume: this.volumeRepairSummary(volume),
-          storyUnitSlice: args.storyUnitSlice ?? this.storyUnitSliceFromPlan(args.storyUnitPlan ?? asRecord(volume.narrativePlan).storyUnitPlan, allowedStoryUnitIds),
+          storyUnitSlice: args.storyUnitSlice ?? this.storyUnitSliceFromPlan(this.storyUnitPlanForPrompt(args, volume), allowedStoryUnitIds),
           previousBatchTail: args.previousBatchTail ?? null,
           invalidOutput,
         }, 60000),
@@ -686,6 +686,7 @@ export class GenerateChapterOutlineBatchPreviewTool implements BaseTool<Generate
     allowedStoryUnitIds: string[],
   ): string {
     const context = asRecord(args.context);
+    const storyUnitPlan = this.storyUnitPlanForPrompt(args, volume);
     return [
       `User instruction: ${args.instruction ?? ''}`,
       `Target volumeNo: ${volumeNo}`,
@@ -704,7 +705,7 @@ export class GenerateChapterOutlineBatchPreviewTool implements BaseTool<Generate
       this.safeJson(volume, 8000),
       '',
       'Story unit slice for this batch:',
-      this.safeJson(args.storyUnitSlice ?? this.storyUnitSliceFromPlan(args.storyUnitPlan, allowedStoryUnitIds), 5000),
+      this.safeJson(args.storyUnitSlice ?? this.storyUnitSliceFromPlan(storyUnitPlan, allowedStoryUnitIds), 5000),
       '',
       'Previous batch tail:',
       this.safeJson(args.previousBatchTail ?? null, 2500),
@@ -755,6 +756,12 @@ export class GenerateChapterOutlineBatchPreviewTool implements BaseTool<Generate
       if (allocation) ids.add(allocation.unitId);
     }
     return [...ids];
+  }
+
+  private storyUnitPlanForPrompt(args: GenerateChapterOutlineBatchPreviewInput, volume: Record<string, unknown>): unknown {
+    const provided = asRecord(args.storyUnitPlan);
+    if (Object.keys(provided).length) return provided;
+    return asRecord(volume.narrativePlan).storyUnitPlan;
   }
 
   private storyUnitSliceFromPlan(storyUnitPlanValue: unknown, allowedStoryUnitIds: string[]): unknown {

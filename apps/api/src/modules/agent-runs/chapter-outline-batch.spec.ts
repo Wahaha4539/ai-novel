@@ -584,6 +584,35 @@ test('COB-P2 batch preview generates continuous chapters with source whitelist i
   assert.match(calls[0].messages[1].content, /"sceneBeats":\[\{"sceneArcId":"scene_1".*"sceneArcId":"scene_2".*"sceneArcId":"scene_3"/);
 });
 
+test('COB-OPT batch preview prompt uses persisted storyUnit slice when plan passes only batchPlan', async () => {
+  const storyUnitPlan = createStoryUnitPlan([{ unitId: 'u1', start: 1, end: 4 }]);
+  const calls: Array<{ messages: Array<{ role: string; content: string }>; options: Record<string, unknown> }> = [];
+  const tool = new GenerateChapterOutlineBatchPreviewTool({
+    async chatJson(messages: Array<{ role: string; content: string }>, options: Record<string, unknown>) {
+      calls.push({ messages, options });
+      return { data: createBatchOutput(), result: { model: 'mock-persisted-story-unit-slice' } };
+    },
+  } as never);
+  const { context } = createToolContext();
+
+  await tool.run(
+    {
+      context: createValidatedSegmentContext(storyUnitPlan, 4),
+      batchPlan: createBatchPlan([{ batchNo: 1, chapterRange: { start: 1, end: 4 }, storyUnitIds: ['u1'], reason: 'unit u1' }], 4),
+      volumeNo: 1,
+      chapterCount: 4,
+      chapterRange: { start: 1, end: 4 },
+    },
+    context,
+  );
+
+  const prompt = calls[0].messages[1].content;
+  const sliceSection = prompt.split('Story unit slice for this batch:\n')[1]?.split('\n\nPrevious batch tail:')[0] ?? '';
+  assert.notEqual(sliceSection, '{}');
+  assert.match(sliceSection, /"unitId":"u1"/);
+  assert.match(sliceSection, /"chapterRange":\{"start":1,"end":4\}/);
+});
+
 test('COB-P2 batch preview rejects missing whole chapter without repair', async () => {
   const storyUnitPlan = createStoryUnitPlan([{ unitId: 'u1', start: 1, end: 4 }]);
   let calls = 0;
