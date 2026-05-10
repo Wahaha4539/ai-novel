@@ -4,7 +4,7 @@ import {
   assertChapterRangeCoverage,
   type ChapterOutlineBatchPlan,
 } from '../agent-tools/tools/chapter-outline-batch-contracts';
-import { SegmentChapterOutlineBatchesTool } from '../agent-tools/tools/chapter-outline-batch-tools.tool';
+import { GenerateChapterOutlineBatchPreviewTool, SegmentChapterOutlineBatchesTool } from '../agent-tools/tools/chapter-outline-batch-tools.tool';
 
 type TestCase = { name: string; run: () => void | Promise<void> };
 
@@ -82,8 +82,178 @@ function createSegmentContext(storyUnitPlan: Record<string, unknown>, chapterCou
       synopsis: 'Synopsis',
       objective: 'Objective',
       chapterCount,
-      narrativePlan: { storyUnitPlan },
+      narrativePlan: { storyUnitPlan, characterPlan: createVolumeCharacterPlan(chapterCount) },
     }],
+    characters: [{ name: 'Lin', aliases: ['L'] }],
+    relationships: [],
+    existingChapters: [],
+  };
+}
+
+function createVolumeCharacterPlan(chapterCount = 8) {
+  return {
+    existingCharacterArcs: [{
+      characterName: 'Lin',
+      roleInVolume: 'protagonist',
+      entryState: 'already investigating',
+      volumeGoal: 'solve the bridge case',
+      pressure: 'official pressure',
+      keyChoices: ['protect evidence'],
+      firstActiveChapter: 1,
+      lastActiveChapter: chapterCount,
+      endState: 'changed by the case',
+    }],
+    newCharacterCandidates: [{
+      candidateId: 'cand_shao',
+      name: 'Shao',
+      roleType: 'supporting',
+      scope: 'volume',
+      narrativeFunction: 'adds institutional pressure',
+      personalityCore: 'controlled and observant',
+      motivation: 'protect a buried record',
+      conflictWith: ['Lin'],
+      relationshipAnchors: ['Lin'],
+      firstAppearChapter: 1,
+      expectedArc: 'from opponent to uneasy ally',
+      approvalStatus: 'candidate',
+    }],
+    relationshipArcs: [{
+      participants: ['Lin', 'Shao'],
+      startState: 'mutual suspicion',
+      turnChapterNos: [1],
+      endState: 'uneasy cooperation',
+    }],
+    roleCoverage: {
+      mainlineDrivers: ['Lin'],
+      antagonistPressure: ['Shao'],
+      emotionalCounterweights: ['Lin'],
+      expositionCarriers: ['Shao'],
+    },
+  };
+}
+
+function createBatchCraftBrief(chapterNo: number, unitId = 'u1', overrides: Record<string, unknown> = {}) {
+  const sceneBeats = [1, 2, 3].map((index) => ({
+    sceneArcId: `scene_${chapterNo}_${index}`,
+    scenePart: `${index}/3`,
+    continuesFromChapterNo: null,
+    continuesToChapterNo: null,
+    location: `Location ${chapterNo}-${index}`,
+    participants: ['Lin', 'Shao'],
+    localGoal: 'secure concrete evidence',
+    visibleAction: 'Lin tests the clue under pressure',
+    obstacle: 'Shao blocks the route',
+    turningPoint: 'the clue changes meaning',
+    partResult: 'the batch pressure escalates',
+    sensoryAnchor: 'wet iron smell',
+  }));
+  const craftBrief = {
+    visibleGoal: `visible goal ${chapterNo}`,
+    hiddenEmotion: `hidden emotion ${chapterNo}`,
+    coreConflict: `core conflict ${chapterNo}`,
+    mainlineTask: `mainline task ${chapterNo}`,
+    subplotTasks: [`subplot ${chapterNo}`],
+    storyUnit: {
+      unitId,
+      title: 'Unit 1',
+      chapterRange: { start: 1, end: 4 },
+      chapterRole: `role ${chapterNo}`,
+      localGoal: 'local unit goal',
+      localConflict: 'local unit conflict',
+      serviceFunctions: ['mainline', 'relationship_shift', 'foreshadow'],
+      mainlineContribution: 'advances the mainline with evidence',
+      characterContribution: 'pressures Lin into a harder choice',
+      relationshipContribution: 'moves Lin and Shao into sharper conflict',
+      worldOrThemeContribution: 'shows the institution through procedure',
+      unitPayoff: 'sets up the next handoff',
+      stateChangeAfterUnit: 'the cast exits with more danger',
+    },
+    actionBeats: [`act ${chapterNo}-1`, `act ${chapterNo}-2`, `act ${chapterNo}-3`],
+    sceneBeats,
+    characterExecution: {
+      povCharacter: 'Lin',
+      cast: [
+        {
+          characterName: 'Lin',
+          source: 'existing',
+          functionInChapter: 'drives the investigation',
+          visibleGoal: 'confirm the clue',
+          pressure: 'official surveillance',
+          actionBeatRefs: [1, 2],
+          sceneBeatRefs: sceneBeats.map((beat) => beat.sceneArcId),
+          entryState: 'carrying prior pressure',
+          exitState: 'leaves with a sharper threat',
+        },
+        {
+          characterName: 'Shao',
+          source: 'volume_candidate',
+          functionInChapter: 'applies institutional pressure',
+          visibleGoal: 'control access to evidence',
+          pressure: 'must hide a record',
+          actionBeatRefs: [2, 3],
+          sceneBeatRefs: sceneBeats.map((beat) => beat.sceneArcId),
+          entryState: 'watching Lin',
+          exitState: 'forced to reveal a limit',
+        },
+      ],
+      relationshipBeats: [{
+        participants: ['Lin', 'Shao'],
+        publicStateBefore: 'mutual suspicion',
+        trigger: 'Shao lets one clue remain visible',
+        shift: 'Lin sees a possible ally',
+        publicStateAfter: 'open conflict with a private gap',
+      }],
+      newMinorCharacters: [],
+    },
+    concreteClues: [{ name: `clue ${chapterNo}`, sensoryDetail: 'salt on the hinge', laterUse: 'used in the next turn' }],
+    dialogueSubtext: `subtext ${chapterNo}`,
+    characterShift: `shift ${chapterNo}`,
+    irreversibleConsequence: `consequence ${chapterNo}`,
+    progressTypes: ['info'],
+    entryState: `entry ${chapterNo}`,
+    exitState: `exit ${chapterNo}`,
+    openLoops: [`open loop ${chapterNo}`],
+    closedLoops: [`closed loop ${chapterNo}`],
+    handoffToNextChapter: `handoff ${chapterNo}`,
+    continuityState: {
+      characterPositions: [`position ${chapterNo}`],
+      activeThreats: [`threat ${chapterNo}`],
+      ownedClues: [`clue ${chapterNo}`],
+      relationshipChanges: [`relationship ${chapterNo}`],
+      nextImmediatePressure: `next pressure ${chapterNo}`,
+    },
+    ...overrides,
+  };
+  return craftBrief;
+}
+
+function createBatchChapter(chapterNo: number, overrides: Record<string, unknown> = {}) {
+  return {
+    chapterNo,
+    volumeNo: 1,
+    title: `Chapter ${chapterNo}`,
+    objective: `Objective ${chapterNo}`,
+    conflict: `Conflict ${chapterNo}`,
+    hook: `Hook ${chapterNo}`,
+    outline: `Scene outline ${chapterNo}`,
+    expectedWordCount: 2600,
+    craftBrief: createBatchCraftBrief(chapterNo),
+    ...overrides,
+  };
+}
+
+function createBatchOutput(chapterNos = [1, 2, 3, 4], overrides: Record<string, unknown> = {}) {
+  return {
+    batch: {
+      volumeNo: 1,
+      chapterRange: { start: chapterNos[0], end: chapterNos[chapterNos.length - 1] },
+      storyUnitIds: ['u1'],
+      continuityBridgeIn: 'enters from previous pressure',
+      continuityBridgeOut: 'hands off to next batch',
+    },
+    chapters: chapterNos.map((chapterNo) => createBatchChapter(chapterNo)),
+    risks: [],
+    ...overrides,
   };
 }
 
@@ -220,6 +390,129 @@ test('COB-P1 segment tool refuses blind batches without storyUnitPlan', async ()
     () => tool.run({ context: createSegmentContext({}, 8), volumeNo: 1, chapterCount: 8 }, context),
     /no storyUnitPlan\.chapterAllocation|storyUnitPlan/,
   );
+});
+
+test('COB-P2 batch preview generates continuous chapters with source whitelist in prompt', async () => {
+  const storyUnitPlan = createStoryUnitPlan([{ unitId: 'u1', start: 1, end: 4 }]);
+  const calls: Array<{ messages: Array<{ role: string; content: string }>; options: Record<string, unknown> }> = [];
+  const tool = new GenerateChapterOutlineBatchPreviewTool({
+    async chatJson(messages: Array<{ role: string; content: string }>, options: Record<string, unknown>) {
+      calls.push({ messages, options });
+      return { data: createBatchOutput(), result: { model: 'mock-batch-preview' } };
+    },
+  } as never);
+  const { context } = createToolContext();
+
+  const result = await tool.run(
+    {
+      context: createSegmentContext(storyUnitPlan, 4),
+      storyUnitPlan,
+      volumeNo: 1,
+      chapterCount: 4,
+      chapterRange: { start: 1, end: 4 },
+      instruction: 'generate volume one chapter outlines',
+    },
+    context,
+  );
+
+  assert.equal(result.chapters.length, 4);
+  assert.deepEqual(result.chapters.map((chapter) => chapter.chapterNo), [1, 2, 3, 4]);
+  assert.equal(result.chapters.every((chapter) => chapter.craftBrief?.characterExecution?.cast?.length === 2), true);
+  assert.match(calls[0].messages[1].content, /characterExecution\.cast source whitelist/);
+  assert.match(calls[0].messages[1].content, /existing/);
+  assert.match(calls[0].messages[1].content, /volume_candidate/);
+  assert.match(calls[0].messages[1].content, /minor_temporary/);
+  assert.match(calls[0].messages[1].content, /Shao/);
+});
+
+test('COB-P2 batch preview rejects missing whole chapter without repair', async () => {
+  const storyUnitPlan = createStoryUnitPlan([{ unitId: 'u1', start: 1, end: 4 }]);
+  let calls = 0;
+  const tool = new GenerateChapterOutlineBatchPreviewTool({
+    async chatJson() {
+      calls += 1;
+      return { data: createBatchOutput([1, 2, 3]), result: { model: 'mock-missing-chapter' } };
+    },
+  } as never);
+  const { context } = createToolContext();
+
+  await assert.rejects(
+    () => tool.run({ context: createSegmentContext(storyUnitPlan, 4), storyUnitPlan, volumeNo: 1, chapterCount: 4, chapterRange: { start: 1, end: 4 } }, context),
+    /returned 3\/4 chapters/,
+  );
+  assert.equal(calls, 1);
+});
+
+test('COB-P2 batch preview rejects missing whole craftBrief without repair', async () => {
+  const storyUnitPlan = createStoryUnitPlan([{ unitId: 'u1', start: 1, end: 4 }]);
+  let calls = 0;
+  const tool = new GenerateChapterOutlineBatchPreviewTool({
+    async chatJson() {
+      calls += 1;
+      return {
+        data: createBatchOutput([1, 2, 3, 4], { chapters: [createBatchChapter(1), createBatchChapter(2, { craftBrief: undefined }), createBatchChapter(3), createBatchChapter(4)] }),
+        result: { model: 'mock-missing-craft-brief' },
+      };
+    },
+  } as never);
+  const { context } = createToolContext();
+
+  await assert.rejects(
+    () => tool.run({ context: createSegmentContext(storyUnitPlan, 4), storyUnitPlan, volumeNo: 1, chapterCount: 4, chapterRange: { start: 1, end: 4 } }, context),
+    /missing craftBrief/,
+  );
+  assert.equal(calls, 1);
+});
+
+test('COB-P2 batch preview repairs local craftBrief field omissions', async () => {
+  const storyUnitPlan = createStoryUnitPlan([{ unitId: 'u1', start: 1, end: 4 }]);
+  const badCraftBrief = createBatchCraftBrief(2);
+  delete (badCraftBrief as Record<string, unknown>).characterShift;
+  const calls: Array<{ messages: Array<{ role: string; content: string }>; options: Record<string, unknown> }> = [];
+  const tool = new GenerateChapterOutlineBatchPreviewTool({
+    async chatJson(messages: Array<{ role: string; content: string }>, options: Record<string, unknown>) {
+      calls.push({ messages, options });
+      const bad = createBatchOutput([1, 2, 3, 4], { chapters: [createBatchChapter(1), createBatchChapter(2, { craftBrief: badCraftBrief }), createBatchChapter(3), createBatchChapter(4)] });
+      return { data: calls.length === 1 ? bad : createBatchOutput(), result: { model: `mock-repair-${calls.length}` } };
+    },
+  } as never);
+  const { context } = createToolContext();
+
+  const result = await tool.run(
+    { context: createSegmentContext(storyUnitPlan, 4), storyUnitPlan, volumeNo: 1, chapterCount: 4, chapterRange: { start: 1, end: 4 } },
+    context,
+  );
+
+  assert.equal(calls.length, 2);
+  assert.match(calls[1].messages[1].content, /characterShift/);
+  assert.equal(result.chapters[1].craftBrief?.characterShift, 'shift 2');
+});
+
+test('COB-P2 batch preview repairs character source mistakes through LLM only', async () => {
+  const storyUnitPlan = createStoryUnitPlan([{ unitId: 'u1', start: 1, end: 4 }]);
+  const badCraftBrief = createBatchCraftBrief(1);
+  const characterExecution = badCraftBrief.characterExecution as Record<string, any>;
+  characterExecution.cast = characterExecution.cast.map((member: Record<string, unknown>) => (
+    member.characterName === 'Shao' ? { ...member, source: 'existing' } : member
+  ));
+  const calls: Array<{ messages: Array<{ role: string; content: string }>; options: Record<string, unknown> }> = [];
+  const tool = new GenerateChapterOutlineBatchPreviewTool({
+    async chatJson(messages: Array<{ role: string; content: string }>, options: Record<string, unknown>) {
+      calls.push({ messages, options });
+      const bad = createBatchOutput([1, 2, 3, 4], { chapters: [createBatchChapter(1, { craftBrief: badCraftBrief }), createBatchChapter(2), createBatchChapter(3), createBatchChapter(4)] });
+      return { data: calls.length === 1 ? bad : createBatchOutput(), result: { model: `mock-source-repair-${calls.length}` } };
+    },
+  } as never);
+  const { context } = createToolContext();
+
+  const result = await tool.run(
+    { context: createSegmentContext(storyUnitPlan, 4), storyUnitPlan, volumeNo: 1, chapterCount: 4, chapterRange: { start: 1, end: 4 } },
+    context,
+  );
+
+  assert.equal(calls.length, 2);
+  assert.match(calls[1].messages[1].content, /volume_candidate/);
+  assert.equal(result.chapters[0].craftBrief?.characterExecution?.cast?.some((member) => member.characterName === 'Shao' && member.source === 'volume_candidate'), true);
 });
 
 async function main() {

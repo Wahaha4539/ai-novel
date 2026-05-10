@@ -18,7 +18,7 @@ import { FactValidationTool } from './tools/fact-validation.tool';
 import { GenerateTimelinePreviewTool } from './tools/generate-timeline-preview.tool';
 import { GenerateGuidedStepPreviewTool } from './tools/generate-guided-step-preview.tool';
 import { GenerateChapterCraftBriefPreviewTool, PersistChapterCraftBriefTool, ValidateChapterCraftBriefTool } from './tools/chapter-craft-brief-tools.tool';
-import { SegmentChapterOutlineBatchesTool } from './tools/chapter-outline-batch-tools.tool';
+import { GenerateChapterOutlineBatchPreviewTool, SegmentChapterOutlineBatchesTool } from './tools/chapter-outline-batch-tools.tool';
 import { GenerateChapterOutlinePreviewTool, MergeChapterOutlinePreviewsTool } from './tools/chapter-outline-preview-tools.tool';
 import { GenerateImportCharactersPreviewTool } from './tools/generate-import-characters-preview.tool';
 import { GenerateImportOutlinePreviewTool } from './tools/generate-import-outline-preview.tool';
@@ -103,6 +103,7 @@ export class ToolRegistryService implements OnModuleInit {
     private readonly persistStoryUnitsTool: PersistStoryUnitsTool,
     private readonly generateOutlinePreviewTool: GenerateOutlinePreviewTool,
     private readonly segmentChapterOutlineBatchesTool: SegmentChapterOutlineBatchesTool,
+    private readonly generateChapterOutlineBatchPreviewTool: GenerateChapterOutlineBatchPreviewTool,
     private readonly generateChapterOutlinePreviewTool: GenerateChapterOutlinePreviewTool,
     private readonly mergeChapterOutlinePreviewsTool: MergeChapterOutlinePreviewsTool,
     private readonly generateWorldbuildingPreviewTool: GenerateWorldbuildingPreviewTool,
@@ -173,6 +174,7 @@ export class ToolRegistryService implements OnModuleInit {
     this.register(this.persistStoryUnitsTool);
     this.register(this.generateOutlinePreviewTool);
     this.register(this.segmentChapterOutlineBatchesTool);
+    this.register(this.generateChapterOutlineBatchPreviewTool);
     this.register(this.generateChapterOutlinePreviewTool);
     this.register(this.mergeChapterOutlinePreviewsTool);
     this.register(this.generateWorldbuildingPreviewTool);
