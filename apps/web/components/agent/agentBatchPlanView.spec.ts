@@ -30,4 +30,34 @@ assert.deepEqual(progress?.generatedChapters, [1, 2, 3, 4]);
 assert.equal(progress?.generatedCount, 4);
 assert.equal(progress ? formatChapterProgress(progress) : '', '4/8');
 
+const sixtyChapterSteps = [
+  { stepNo: 1, tool: 'inspect_project_context', args: {} },
+  { stepNo: 2, tool: 'segment_chapter_outline_batches', args: { volumeNo: 1, chapterCount: 60 } },
+  ...Array.from({ length: 15 }, (_item, index) => {
+    const start = index * 4 + 1;
+    return {
+      stepNo: index + 3,
+      tool: 'generate_chapter_outline_batch_preview',
+      args: { volumeNo: 1, chapterCount: 60, chapterRange: { start, end: start + 3 } },
+    };
+  }),
+  { stepNo: 18, tool: 'merge_chapter_outline_batch_previews', args: { volumeNo: 1, chapterCount: 60 } },
+];
+const sixtyCoverage = outlineChapterCoverage(sixtyChapterSteps);
+assert.equal(sixtyCoverage?.visibleChapters.length, 60);
+assert.equal(sixtyCoverage?.visibleChapters[0], 1);
+assert.equal(sixtyCoverage?.visibleChapters[59], 60);
+assert.equal(sixtyCoverage?.batchCount, 15);
+
+const sixtyProgress = outlineChapterProgress(
+  sixtyChapterSteps,
+  [
+    { id: 'b1', stepNo: 3, planVersion: 1, mode: 'act', status: 'succeeded' },
+    { id: 'b2', stepNo: 4, planVersion: 1, mode: 'act', status: 'succeeded' },
+    { id: 'b3', stepNo: 5, planVersion: 1, mode: 'act', status: 'succeeded' },
+  ],
+  1,
+);
+assert.equal(sixtyProgress ? formatChapterProgress(sixtyProgress) : '', '12/60');
+
 console.log('agentBatchPlanView tests passed');

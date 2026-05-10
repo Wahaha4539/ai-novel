@@ -4531,6 +4531,32 @@ test('AgentRuntime maps timeline persist artifact in act mode', () => {
   assert.deepEqual(artifacts.map((item) => item.content), [preview, validation, persist]);
 });
 
+test('COB-P6 AgentRuntime promotes batch merged outline preview artifacts', () => {
+  const runtime = new AgentRuntimeService({} as never, {} as never, {} as never, {} as never, {} as never, {} as never) as unknown as {
+    buildPreviewArtifacts: (taskType: string, outputs: Record<number, unknown>, steps: Array<{ stepNo: number; tool: string }>) => Array<{ artifactType: string; title: string; content: unknown }>;
+  };
+  const preview = {
+    volume: { volumeNo: 1, title: 'Volume 1', chapterCount: 60 },
+    chapters: Array.from({ length: 60 }, (_item, index) => ({ chapterNo: index + 1, title: `Chapter ${index + 1}` })),
+    risks: [],
+  };
+  const validation = { valid: true, stats: { chapterCount: 60 } };
+
+  const artifacts = runtime.buildPreviewArtifacts(
+    'outline_design',
+    { 18: preview, 19: validation },
+    [
+      { stepNo: 18, tool: 'merge_chapter_outline_batch_previews' },
+      { stepNo: 19, tool: 'validate_outline' },
+      { stepNo: 20, tool: 'persist_outline' },
+    ],
+  );
+
+  assert.deepEqual(artifacts.map((item) => item.artifactType), ['outline_preview', 'outline_validation_report']);
+  assert.equal(artifacts[0].content, preview);
+  assert.equal(artifacts[1].content, validation);
+});
+
 test('VCC AgentRuntime maps volume character candidate preview and filters existing characters', () => {
   const runtime = new AgentRuntimeService({} as never, {} as never, {} as never, {} as never, {} as never, {} as never) as unknown as {
     buildPreviewArtifacts: (taskType: string, outputs: Record<number, unknown>, steps: Array<{ stepNo: number; tool: string }>) => Array<{ artifactType: string; title: string; content: Record<string, unknown> }>;

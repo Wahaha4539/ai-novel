@@ -5,6 +5,7 @@ import {
   type ChapterOutlineBatchPlan,
 } from '../agent-tools/tools/chapter-outline-batch-contracts';
 import { GenerateChapterOutlineBatchPreviewTool, MergeChapterOutlineBatchPreviewsTool, SegmentChapterOutlineBatchesTool } from '../agent-tools/tools/chapter-outline-batch-tools.tool';
+import { ValidateOutlineTool } from '../agent-tools/tools/validate-outline.tool';
 import { PlanValidatorService } from './planner-graph/plan-validator.service';
 import type { AgentPlanSpec } from './agent-planner.service';
 
@@ -89,6 +90,55 @@ function createSegmentContext(storyUnitPlan: Record<string, unknown>, chapterCou
     characters: [{ name: 'Lin', aliases: ['L'] }],
     relationships: [],
     existingChapters: [],
+  };
+}
+
+function createValidatedSegmentContext(storyUnitPlan: Record<string, unknown>, chapterCount = 60) {
+  const context = createSegmentContext(storyUnitPlan, chapterCount);
+  context.volumes[0].narrativePlan = createValidatedNarrativePlan(storyUnitPlan, chapterCount);
+  return context;
+}
+
+function createValidatedNarrativePlan(storyUnitPlan: Record<string, unknown>, chapterCount: number) {
+  return {
+    globalMainlineStage: 'The volume turns the investigation from exile survival into public stakes.',
+    volumeMainline: 'Lin exposes the bridge case while building enough local trust to survive the counterpressure.',
+    dramaticQuestion: 'Can Lin turn scattered evidence into a public rescue before the institution buries the record?',
+    startState: 'Lin enters the volume isolated, watched, and short on leverage.',
+    endState: 'Lin exits with proof, allies, and a sharper enemy response.',
+    endingHook: 'The rescued record points toward the next hidden sponsor.',
+    handoffToNextVolume: 'The next volume inherits a public scandal and a private retaliation threat.',
+    mainlineMilestones: ['Chapters 1-12 establish the case.', 'Chapters 13-36 reverse the pressure.', 'Chapters 37-60 force the public rescue.'],
+    foreshadowPlan: [{
+      name: 'salt hinge clue',
+      appearRange: { start: 1, end: 4 },
+      recoverRange: { start: Math.max(1, chapterCount - 3), end: chapterCount },
+      recoveryMethod: 'The hinge residue proves which gate was opened during the rescue night.',
+    }],
+    subStoryLines: [
+      {
+        name: 'Lin trust arc',
+        type: 'character',
+        function: 'Turns isolation into earned local leadership.',
+        startState: 'Lin distrusts every official channel.',
+        progress: 'Each story unit forces a visible choice that costs Lin safety.',
+        endState: 'Lin accepts public responsibility for the rescue.',
+        relatedCharacters: ['Lin'],
+        chapterNodes: [1, Math.ceil(chapterCount / 2), chapterCount],
+      },
+      {
+        name: 'Lin and Shao pressure arc',
+        type: 'relationship',
+        function: 'Converts institutional pressure into uneasy cooperation.',
+        startState: 'Lin and Shao block each other openly.',
+        progress: 'Shao repeatedly preserves one clue while denying another.',
+        endState: 'They cooperate under a threat neither can solve alone.',
+        relatedCharacters: ['Lin', 'Shao'],
+        chapterNodes: [4, Math.ceil(chapterCount / 2), chapterCount],
+      },
+    ],
+    storyUnitPlan,
+    characterPlan: createVolumeCharacterPlan(chapterCount),
   };
 }
 
@@ -295,6 +345,25 @@ function createBatchOutputForRange(start: number, end: number, unitId: string) {
       }),
     },
   );
+}
+
+function createValidatedBatchOutputForRange(start: number, end: number, unitId: string) {
+  const output = createBatchOutputForRange(start, end, unitId);
+  return {
+    ...output,
+    chapters: output.chapters.map((chapter) => ({
+      ...chapter,
+      outline: createConcreteOutline(chapter.chapterNo),
+    })),
+  };
+}
+
+function createConcreteOutline(chapterNo: number) {
+  return [
+    `Scene one: Lin enters Location ${chapterNo}-1 with the salt hinge clue, tests it against a visible scratch, and Shao blocks the doorway before Lin can leave.`,
+    `Scene two: the cast trades the clue under official pressure, a witness changes their statement, and Lin discovers which record was moved.`,
+    `Scene three: Lin chooses a costly public action, Shao preserves one private gap, and the next chapter inherits a sharper pursuit.`,
+  ].join(' ');
 }
 
 function createToolContext() {
@@ -751,6 +820,106 @@ test('COB-P4 PlanValidator requires persist_outline approval', () => {
     }),
     /write tools without approval: persist_outline/,
   );
+});
+
+test('COB-P6 end-to-end batch outline pipeline covers 1..60 and validates standard output', async () => {
+  const allocations = Array.from({ length: 15 }, (_item, index) => ({
+    unitId: `u${index + 1}`,
+    start: index * 4 + 1,
+    end: index * 4 + 4,
+  }));
+  const storyUnitPlan = createStoryUnitPlan(allocations);
+  const context = createValidatedSegmentContext(storyUnitPlan, 60);
+  const toolContext = createToolContext().context;
+  const segmentTool = new SegmentChapterOutlineBatchesTool();
+
+  const batchPlan = await segmentTool.run(
+    { context, volumeNo: 1, chapterCount: 60, preferredBatchSize: 4, maxBatchSize: 5 },
+    toolContext,
+  );
+
+  assert.equal(batchPlan.batches.length, 15);
+  assert.deepEqual(batchPlan.batches[0].chapterRange, { start: 1, end: 4 });
+  assert.deepEqual(batchPlan.batches[14].chapterRange, { start: 57, end: 60 });
+  assertBatchPlanCoverage(batchPlan);
+
+  const calls: Array<{ start: number; end: number; prompt: string }> = [];
+  const previewTool = new GenerateChapterOutlineBatchPreviewTool({
+    async chatJson(messages: Array<{ role: string; content: string }>) {
+      const prompt = messages[1]?.content ?? '';
+      const match = prompt.match(/Target batch chapterRange: (\d+)-(\d+)/);
+      assert.ok(match, 'batch preview prompt should expose the concrete chapter range');
+      const start = Number(match[1]);
+      const end = Number(match[2]);
+      const allocation = allocations.find((item) => item.start <= start && end <= item.end);
+      assert.ok(allocation, `range ${start}-${end} should map to a story unit allocation`);
+      calls.push({ start, end, prompt });
+      return {
+        data: createValidatedBatchOutputForRange(start, end, allocation.unitId),
+        result: { model: 'mock-batch-e2e' },
+      };
+    },
+  } as never);
+
+  const previews = [];
+  for (const batch of batchPlan.batches) {
+    const previous = previews.at(-1)?.chapters.at(-1);
+    const previousBatchTail = previous
+      ? {
+          chapterNo: previous.chapterNo,
+          title: previous.title,
+          hook: previous.hook,
+          craftBrief: previous.craftBrief
+            ? {
+                exitState: previous.craftBrief.exitState,
+                handoffToNextChapter: previous.craftBrief.handoffToNextChapter,
+                openLoops: previous.craftBrief.openLoops,
+                continuityState: previous.craftBrief.continuityState as Record<string, unknown> | undefined,
+              }
+            : undefined,
+        }
+      : undefined;
+    const preview = await previewTool.run(
+      {
+        context,
+        storyUnitPlan,
+        batchPlan,
+        volumeNo: 1,
+        chapterCount: 60,
+        chapterRange: batch.chapterRange,
+        instruction: '帮我生成第一卷的章节细纲',
+        ...(previousBatchTail ? { previousBatchTail } : {}),
+      },
+      toolContext,
+    );
+    previews.push(preview);
+  }
+
+  assert.equal(calls.length, 15);
+  assert.equal(calls.every((call) => call.end - call.start + 1 <= 5), true);
+  assert.equal(calls.every((call) => /existing/.test(call.prompt) && /volume_candidate/.test(call.prompt) && /minor_temporary/.test(call.prompt)), true);
+
+  const merged = await new MergeChapterOutlineBatchPreviewsTool().run(
+    { context, volumeNo: 1, chapterCount: 60, batchPreviews: previews },
+    toolContext,
+  );
+
+  assert.equal(merged.volume.volumeNo, 1);
+  assert.equal(merged.volume.chapterCount, 60);
+  assert.deepEqual(merged.chapters.map((chapter) => chapter.chapterNo), Array.from({ length: 60 }, (_item, index) => index + 1));
+  assert.equal(merged.chapters.every((chapter) => chapter.craftBrief?.characterExecution?.cast?.length === 2), true);
+
+  const validation = await new ValidateOutlineTool({
+    character: { async findMany() { return [{ name: 'Lin', alias: ['L'] }]; } },
+    volume: { async findUnique() { return null; } },
+    chapter: { async findMany() { return []; } },
+  } as never).run({ preview: merged }, toolContext);
+
+  assert.equal(validation.valid, true, JSON.stringify(validation.issues));
+  assert.equal(validation.stats.chapterCount, 60);
+  assert.equal(validation.stats.craftBriefCount, 60);
+  assert.equal(validation.stats.chapterCharacterExecutionCount, 60);
+  assert.equal(validation.writePreview?.summary.createCount, 60);
 });
 
 async function main() {

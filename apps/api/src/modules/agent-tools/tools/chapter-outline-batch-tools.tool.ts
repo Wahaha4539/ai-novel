@@ -466,11 +466,9 @@ export class GenerateChapterOutlineBatchPreviewTool implements BaseTool<Generate
       expectedChapterNo: options.chapterRange.start + index,
       label: `chapter ${options.chapterRange.start + index}`,
     }));
-    assertChapterRangeCoverage({
-      chapterCount: options.chapterCount,
-      ranges: [{ chapterRange: options.chapterRange, label: 'batch chapters' }],
-      label: 'generate_chapter_outline_batch_preview target range',
-    });
+    if (options.chapterRange.start < 1 || options.chapterRange.end > options.chapterCount) {
+      throw new Error(`generate_chapter_outline_batch_preview target range ${options.chapterRange.start}-${options.chapterRange.end} exceeds chapterCount ${options.chapterCount}.`);
+    }
 
     const returnedNos = chapters.map((chapter) => Number(chapter.chapterNo));
     const duplicateNos = returnedNos.filter((chapterNo, index) => returnedNos.indexOf(chapterNo) !== index);

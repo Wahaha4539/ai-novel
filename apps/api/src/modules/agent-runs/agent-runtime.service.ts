@@ -1012,7 +1012,7 @@ export class AgentRuntimeService {
   /** Plan 阶段执行只读预览步骤后，把可展示内容提前提升为 Artifact。 */
   private buildPreviewArtifacts(taskType: string, outputs: Record<number, unknown>, steps: Pick<AgentPlanSpec, 'steps'>['steps'] = []): AgentArtifactDraft[] {
     if (taskType === 'outline_design') {
-      const preview = this.latestOutputByTools(outputs, steps, ['merge_chapter_outline_previews', 'generate_outline_preview', 'generate_volume_outline_preview']);
+      const preview = this.latestOutputByTools(outputs, steps, ['merge_chapter_outline_batch_previews', 'merge_chapter_outline_previews', 'generate_outline_preview', 'generate_volume_outline_preview']);
       const storyUnitsPreview = this.latestOutputByTools(outputs, steps, ['generate_story_units_preview']);
       const validation = this.latestOutputByTools(outputs, steps, ['validate_outline']);
       const inspectContext = this.latestOutputByTools(outputs, steps, ['inspect_project_context']);
