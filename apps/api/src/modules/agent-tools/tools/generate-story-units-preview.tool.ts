@@ -129,7 +129,10 @@ export class GenerateStoryUnitsPreviewTool implements BaseTool<GenerateStoryUnit
     const volumeNo = this.positiveInt(args.volumeNo, 'volumeNo')
       ?? this.positiveInt(volumeOutline.volumeNo, 'volumeOutline.volumeNo')
       ?? initialVolumeNo;
-    const chapterCount = resolveStoryUnitChapterCount(args.chapterCount, volumeOutline, args.instruction);
+    const chapterCount = resolveStoryUnitChapterCount(args.chapterCount, volumeOutline);
+    if (!chapterCount) {
+      throw new Error('generate_story_units_preview requires structured chapterCount from args.chapterCount or volumeOutline.chapterCount; natural-language instruction/objective/synopsis is not parsed.');
+    }
 
     await context.updateProgress?.({
       phase: 'calling_llm',
@@ -483,12 +486,13 @@ export class PersistStoryUnitsTool implements BaseTool<PersistStoryUnitsInput, R
   }
 }
 
-function resolveStoryUnitChapterCount(rawChapterCount: unknown, volumeOutline: Record<string, unknown>, instruction = ''): number | undefined {
-  return positiveIntValue(rawChapterCount)
-    ?? positiveIntValue(volumeOutline.chapterCount)
-    ?? inferChapterCountFromText(instruction)
-    ?? inferChapterCountFromText(text(volumeOutline.objective))
-    ?? inferChapterCountFromText(text(volumeOutline.synopsis));
+function resolveStoryUnitChapterCount(rawChapterCount: unknown, volumeOutline: Record<string, unknown>): number | undefined {
+  const explicitChapterCount = positiveIntValue(rawChapterCount);
+  const volumeChapterCount = positiveIntValue(volumeOutline.chapterCount);
+  if (explicitChapterCount && volumeChapterCount && explicitChapterCount !== volumeChapterCount) {
+    throw new Error(`generate_story_units_preview chapterCount ${explicitChapterCount} does not match volumeOutline.chapterCount ${volumeChapterCount}; rebuild or pass a matching volumeOutline.`);
+  }
+  return explicitChapterCount ?? volumeChapterCount;
 }
 
 function positiveIntValue(value: unknown): number | undefined {
@@ -496,22 +500,3 @@ function positiveIntValue(value: unknown): number | undefined {
   return Number.isInteger(numeric) && numeric > 0 ? numeric : undefined;
 }
 
-function inferChapterCountFromText(value: string): number | undefined {
-  if (!value) return undefined;
-  const patterns = [
-    /(?:全卷|本卷|目标|计划|规划|篇幅|章节数|总章数|共|在|按|拆成|拆为|细分为)[^\d]{0,12}(\d{1,4})\s*章/u,
-    /(\d{1,4})\s*章(?:篇幅|内|左右|上下|细纲|章节规划|单元分配)/u,
-  ];
-  for (const pattern of patterns) {
-    const match = value.match(pattern);
-    const count = positiveIntValue(match?.[1]);
-    if (count) return count;
-  }
-  return undefined;
-}
-
-function text(value: unknown): string {
-  if (typeof value === 'string') return value.trim();
-  if (typeof value === 'number' || typeof value === 'boolean') return String(value);
-  return '';
-}

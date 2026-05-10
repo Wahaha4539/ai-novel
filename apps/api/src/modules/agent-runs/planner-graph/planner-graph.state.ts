@@ -23,6 +23,13 @@ export interface RouteDecision {
   reasons: string[];
   volumeNo?: number;
   chapterNo?: number;
+  chapterCountSource?: OutlineChapterCountSource;
+  routeHints?: {
+    contextChapterCount?: number;
+    fallbackChapterCount?: number;
+    chapterCountSource?: OutlineChapterCountSource;
+  };
+  /** @deprecated Chapter count from route classification is only a non-authoritative hint. */
   chapterCount?: number;
   needsApproval?: boolean;
   needsPersistence?: boolean;
@@ -31,6 +38,12 @@ export interface RouteDecision {
     questions: string[];
   };
 }
+
+export type OutlineChapterCountSource =
+  | 'context_volume'
+  | 'generated_volume'
+  | 'user_explicit'
+  | 'planner_unspecified';
 
 export interface SelectedToolBundle {
   bundleName: string;

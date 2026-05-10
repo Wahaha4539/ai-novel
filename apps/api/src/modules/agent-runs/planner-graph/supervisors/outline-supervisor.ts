@@ -19,7 +19,10 @@ export class OutlineSupervisor {
     const normalized = normalizeGoal(goal);
     const volumeNo = extractNumberBefore(goal, /[卷卷部]/);
     const chapterNo = extractNumberBefore(goal, /[章章节]/);
-    const chapterCount = inferVolumeChapterCount(input.context, volumeNo);
+    const contextChapterCount = inferVolumeChapterCount(input.context, volumeNo);
+    const routeHints = contextChapterCount
+      ? { contextChapterCount, chapterCountSource: 'context_volume' as const }
+      : { chapterCountSource: 'planner_unspecified' as const };
 
     if (includesAny(normalized, ['推进卡', '执行卡', 'craftbrief', 'craft brief', '行动链'])) {
       return route('craft_brief', 'chapter_craft_brief', 0.88, ['目标是章节推进卡或 Chapter.craftBrief。'], { chapterNo, needsApproval: true, needsPersistence: true });
@@ -30,15 +33,15 @@ export class OutlineSupervisor {
     }
 
     if (isStoryUnitsGoal(normalized)) {
-      return route('story_units', 'story_units', 0.88, ['目标是生成或丰富卷级单元故事/支线故事计划。'], { volumeNo, chapterCount, needsApproval: true, needsPersistence: true });
+      return route('story_units', 'story_units', 0.88, ['目标是生成或丰富卷级单元故事/支线故事计划。'], { volumeNo, routeHints, needsApproval: true, needsPersistence: true });
     }
 
     if (isChapterOutlineGoal(normalized)) {
-      return route('chapter_outline', 'split_volume_to_chapters', 0.9, ['目标明确要求章节细纲、卷细纲或拆分成多章。'], { volumeNo, chapterCount, needsApproval: true, needsPersistence: true });
+      return route('chapter_outline', 'split_volume_to_chapters', 0.9, ['目标明确要求章节细纲、卷细纲或拆分成多章。'], { volumeNo, routeHints, needsApproval: true, needsPersistence: true });
     }
 
     if (isVolumeOutlineGoal(normalized)) {
-      return route('volume_outline', 'generate_volume_outline', 0.9, ['目标只要求卷级大纲，没有要求章节细纲或正文。'], { volumeNo, chapterCount, needsApproval: true, needsPersistence: true });
+      return route('volume_outline', 'generate_volume_outline', 0.9, ['目标只要求卷级大纲，没有要求章节细纲或正文。'], { volumeNo, routeHints, needsApproval: true, needsPersistence: true });
     }
 
     return {

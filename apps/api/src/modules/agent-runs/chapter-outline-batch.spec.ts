@@ -990,6 +990,48 @@ test('COB-P3 merge batch previews returns standard outline preview', async () =>
   assert.equal(result.chapters.every((chapter) => chapter.craftBrief?.characterExecution?.cast?.length === 2), true);
 });
 
+test('COCF-P0 merge batch previews carries regenerated storyUnitPlan into merged volume', async () => {
+  const storyUnitPlan = createStoryUnitPlan([
+    { unitId: 'u1', start: 1, end: 4 },
+    { unitId: 'u2', start: 5, end: 8 },
+  ]);
+  const tool = new MergeChapterOutlineBatchPreviewsTool();
+
+  const result = await tool.run(
+    {
+      context: {
+        ...createSegmentContext(storyUnitPlan, 8),
+        volumes: [{
+          volumeNo: 1,
+          title: 'Volume One',
+          synopsis: 'Synopsis',
+          objective: 'Objective',
+          chapterCount: 8,
+          narrativePlan: { characterPlan: createVolumeCharacterPlan(8) },
+        }],
+      },
+      volumeOutline: {
+        volumeNo: 1,
+        title: 'Volume One',
+        synopsis: 'Synopsis',
+        objective: 'Objective',
+        chapterCount: 8,
+        narrativePlan: { characterPlan: createVolumeCharacterPlan(8) },
+      },
+      storyUnitPlan,
+      volumeNo: 1,
+      chapterCount: 8,
+      batchPreviews: [
+        createBatchOutputForRange(1, 4, 'u1'),
+        createBatchOutputForRange(5, 8, 'u2'),
+      ],
+    },
+    createToolContext().context,
+  );
+
+  assert.deepEqual((result.volume.narrativePlan as Record<string, unknown>).storyUnitPlan, storyUnitPlan);
+});
+
 test('COB-P3 merge batch previews rejects missing batch coverage', async () => {
   const storyUnitPlan = createStoryUnitPlan([
     { unitId: 'u1', start: 1, end: 4 },
@@ -1163,6 +1205,7 @@ test('COB-P4 PlanValidator accepts target chapterCount changes when rebuilt volu
         args: {
           batchPreviews: batchSteps.map((_step, index) => `{{steps.${index + 5}.output}}`),
           volumeOutline: '{{steps.2.output.volume}}',
+          storyUnitPlan: '{{steps.3.output.storyUnitPlan}}',
           volumeNo: 1,
           chapterCount: 60,
         },
@@ -1171,6 +1214,59 @@ test('COB-P4 PlanValidator accepts target chapterCount changes when rebuilt volu
     ]),
     context: context as never,
     route: { domain: 'outline', intent: 'split_volume_to_chapters', confidence: 0.9, reasons: ['test'], volumeNo: 1, chapterCount: 60 },
+  }));
+});
+
+test('COCF-P0 PlanValidator uses context Volume.chapterCount when plan omits an explicit count', () => {
+  const validator = new PlanValidatorService();
+  const context = {
+    volumes: [{ id: 'v1', volumeNo: 1, chapterCount: 8, hasNarrativePlan: true, hasStoryUnitPlan: true, hasLegacyStoryUnits: false }],
+  };
+  const batchSteps = [
+    { tool: 'generate_chapter_outline_batch_preview', args: { context: '{{steps.1.output}}', batchPlan: '{{steps.2.output}}', volumeNo: 1, chapterCount: 8, chapterRange: { start: 1, end: 4 } } },
+    { tool: 'generate_chapter_outline_batch_preview', args: { context: '{{steps.1.output}}', batchPlan: '{{steps.2.output}}', volumeNo: 1, chapterCount: 8, chapterRange: { start: 5, end: 8 } } },
+  ];
+
+  assert.doesNotThrow(() => validator.validate({
+    plan: createPlanValidatorPlan([
+      { tool: 'inspect_project_context' },
+      { tool: 'segment_chapter_outline_batches', args: { context: '{{steps.1.output}}', volumeNo: 1, chapterCount: 8 } },
+      ...batchSteps,
+      { tool: 'merge_chapter_outline_batch_previews', args: { batchPreviews: ['{{steps.3.output}}', '{{steps.4.output}}'], volumeNo: 1, chapterCount: 8 } },
+    ]),
+    context: context as never,
+    route: { domain: 'outline', intent: 'split_volume_to_chapters', confidence: 0.9, reasons: ['test'], volumeNo: 1 },
+  }));
+});
+
+test('COCF-P0 PlanValidator rejects chapter outline plans with no structured or context chapterCount', () => {
+  const validator = new PlanValidatorService();
+
+  assert.throws(
+    () => validator.validate({
+      plan: createPlanValidatorPlan([
+        { tool: 'inspect_project_context' },
+        { tool: 'generate_chapter_outline_preview', args: { context: '{{steps.1.output}}', volumeNo: 1, chapterNo: 1 } },
+      ]),
+      route: { domain: 'outline', intent: 'split_volume_to_chapters', confidence: 0.9, reasons: ['test'], volumeNo: 1, chapterNo: 1 },
+    }),
+    /without a structured chapterCount or target Volume\.chapterCount/,
+  );
+});
+
+test('COCF-P0 PlanValidator accepts single chapter target from structured plan args', () => {
+  const validator = new PlanValidatorService();
+  const context = {
+    volumes: [{ id: 'v1', volumeNo: 1, chapterCount: 60, hasNarrativePlan: true, hasStoryUnitPlan: true, hasLegacyStoryUnits: false }],
+  };
+
+  assert.doesNotThrow(() => validator.validate({
+    plan: createPlanValidatorPlan([
+      { tool: 'inspect_project_context' },
+      { tool: 'generate_chapter_outline_preview', args: { context: '{{steps.1.output}}', volumeNo: 1, chapterNo: 3, chapterCount: 60 } },
+    ]),
+    context: context as never,
+    route: { domain: 'outline', intent: 'split_volume_to_chapters', confidence: 0.9, reasons: ['test'], volumeNo: 1 },
   }));
 });
 

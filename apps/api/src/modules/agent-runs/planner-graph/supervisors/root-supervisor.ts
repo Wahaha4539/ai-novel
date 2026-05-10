@@ -44,7 +44,7 @@ export class RootSupervisor {
     }
 
     if (isOutlineGoal(normalized)) {
-      return route('outline', 'outline', 0.9, ['目标属于 outline 领域，交由 OutlineSupervisor 判断子意图。'], { volumeNo, chapterNo, needsApproval: true, needsPersistence: true });
+      return route('outline', 'outline', 0.9, ['目标属于 outline 领域，交由 OutlineSupervisor 判断子意图。'], { volumeNo, needsApproval: true, needsPersistence: true });
     }
 
     if (includesAny(normalized, ['世界观', 'story bible', '设定', '宗门', '灵脉', '规则体系'])) {

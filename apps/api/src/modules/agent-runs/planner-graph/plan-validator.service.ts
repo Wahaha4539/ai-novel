@@ -139,9 +139,12 @@ export class PlanValidatorService {
   private assertOutlineChapterSplitCompleteness(plan: AgentPlanSpec, route: RouteDecision, context?: AgentContextV2): void {
     const chapterSteps = plan.steps.filter((step) => step.tool === GENERATE_CHAPTER_OUTLINE_PREVIEW_TOOL);
     const batchSteps = plan.steps.filter((step) => step.tool === GENERATE_CHAPTER_OUTLINE_BATCH_PREVIEW_TOOL);
-    const chapterCount = this.positiveInt(route.chapterCount) ?? this.inferOutlineChapterCount(plan);
-    const targetChapterNo = this.positiveInt(route.chapterNo);
+    const chapterCount = this.resolveOutlineChapterCount(plan, route, context);
+    const targetChapterNo = this.positiveInt(route.chapterNo) ?? this.inferSingleChapterTargetFromPlan(plan, chapterSteps, batchSteps);
     if (chapterCount) this.assertContextChapterCountAlignment(plan, route, context, chapterCount);
+    if (!chapterCount) {
+      throw new Error('PlanValidator blocked outline.chapter plan without a structured chapterCount or target Volume.chapterCount.');
+    }
     if (targetChapterNo && chapterSteps.length === 1) {
       const stepChapterNo = this.positiveInt(chapterSteps[0].args.chapterNo);
       if (stepChapterNo !== targetChapterNo) {
@@ -152,7 +155,6 @@ export class PlanValidatorService {
       }
       return;
     }
-    if (!chapterCount) return;
     if (plan.steps.some((step) => step.tool === 'generate_outline_preview')) {
       throw new Error(`PlanValidator blocked outline.chapter route using aggregate generate_outline_preview for ${chapterCount} chapters; use explicit chapter steps or chapter-outline batches.`);
     }
@@ -269,6 +271,20 @@ export class PlanValidatorService {
     }
   }
 
+  private resolveOutlineChapterCount(plan: AgentPlanSpec, route: RouteDecision, context?: AgentContextV2): number | undefined {
+    const planChapterCount = this.inferOutlineChapterCount(plan);
+    if (planChapterCount) return planChapterCount;
+    const contextChapterCount = this.positiveInt(this.contextVolumeForRoute(route, context)?.chapterCount);
+    if (contextChapterCount) return contextChapterCount;
+    return undefined;
+  }
+
+  private inferSingleChapterTargetFromPlan(plan: AgentPlanSpec, chapterSteps: AgentPlanSpec['steps'], batchSteps: AgentPlanSpec['steps']): number | undefined {
+    if (batchSteps.length || chapterSteps.length !== 1) return undefined;
+    if (plan.steps.some((step) => step.tool === MERGE_CHAPTER_OUTLINE_PREVIEWS_TOOL)) return undefined;
+    return this.positiveInt(chapterSteps[0].args.chapterNo);
+  }
+
   private inferOutlineChapterCount(plan: AgentPlanSpec): number | undefined {
     const candidates = plan.steps
       .filter((step) => [
@@ -363,6 +379,7 @@ export class PlanValidatorService {
       SEGMENT_CHAPTER_OUTLINE_BATCHES_TOOL,
       GENERATE_CHAPTER_OUTLINE_PREVIEW_TOOL,
       GENERATE_CHAPTER_OUTLINE_BATCH_PREVIEW_TOOL,
+      MERGE_CHAPTER_OUTLINE_BATCH_PREVIEWS_TOOL,
     ].includes(tool);
   }
 

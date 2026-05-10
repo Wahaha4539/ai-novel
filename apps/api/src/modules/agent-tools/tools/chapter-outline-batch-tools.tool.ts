@@ -1576,6 +1576,7 @@ export class GenerateChapterOutlineBatchPreviewTool implements BaseTool<Generate
 interface MergeChapterOutlineBatchPreviewsInput {
   context?: Record<string, unknown>;
   volumeOutline?: Record<string, unknown>;
+  storyUnitPlan?: Record<string, unknown>;
   volumeNo?: number;
   chapterCount?: number;
   batchPreviews?: ChapterOutlineBatchPreviewOutput[];
@@ -1591,6 +1592,7 @@ export class MergeChapterOutlineBatchPreviewsTool implements BaseTool<MergeChapt
     properties: {
       context: { type: 'object' as const },
       volumeOutline: { type: 'object' as const },
+      storyUnitPlan: { type: 'object' as const },
       volumeNo: { type: 'number' as const },
       chapterCount: { type: 'number' as const },
       batchPreviews: { type: 'array' as const, items: { type: 'object' as const } },
@@ -1627,6 +1629,7 @@ export class MergeChapterOutlineBatchPreviewsTool implements BaseTool<MergeChapt
       batchPreviews: { source: 'previous_step', description: 'All generate_chapter_outline_batch_preview outputs in chapter order.' },
       context: { source: 'previous_step', description: 'inspect_project_context.output for target volume metadata and existing character whitelist.' },
       volumeOutline: { source: 'previous_step', description: 'Optional generate_volume_outline_preview.output.volume when this run rebuilt the volume outline.' },
+      storyUnitPlan: { source: 'previous_step', description: 'Optional generate_story_units_preview.output.storyUnitPlan when this run rebuilt story units; copied into volume.narrativePlan before persist_outline.' },
       volumeNo: { source: 'user_message', description: 'Target volume number.' },
       chapterCount: { source: 'user_message', description: 'Target full-volume chapter count.' },
     },
@@ -1655,7 +1658,7 @@ export class MergeChapterOutlineBatchPreviewsTool implements BaseTool<MergeChapt
       label: 'merge_chapter_outline_batch_previews batch coverage',
     });
 
-    const volume = this.resolveVolume(args.context, args.volumeOutline, volumeNo, chapterCount);
+    const volume = this.resolveVolume(args.context, args.volumeOutline, args.storyUnitPlan, volumeNo, chapterCount);
     const characterCatalog = this.extractCharacterCatalog(args.context, volume, chapterCount);
     const chapters = normalizedBatches
       .flatMap((batch) => batch.chapters.map((chapter) => ({ chapter, batchRange: batch.batch.chapterRange })))
@@ -1761,18 +1764,27 @@ export class MergeChapterOutlineBatchPreviewsTool implements BaseTool<MergeChapt
     }
   }
 
-  private resolveVolume(contextValue: unknown, volumeOutlineValue: unknown, volumeNo: number, chapterCount: number): OutlinePreviewOutput['volume'] {
+  private resolveVolume(contextValue: unknown, volumeOutlineValue: unknown, storyUnitPlanValue: unknown, volumeNo: number, chapterCount: number): OutlinePreviewOutput['volume'] {
     const volume = this.findTargetVolume(contextValue, volumeOutlineValue, volumeNo);
     if (!Object.keys(volume).length) throw new Error(`merge_chapter_outline_batch_previews cannot resolve volume ${volumeNo}.`);
     if (positiveInt(volume.volumeNo) !== volumeNo) throw new Error('merge_chapter_outline_batch_previews volumeNo mismatch.');
     if (positiveInt(volume.chapterCount) !== chapterCount) throw new Error('merge_chapter_outline_batch_previews volume.chapterCount mismatch.');
+    const narrativePlan = { ...asRecord(volume.narrativePlan) };
+    const storyUnitPlan = asRecord(storyUnitPlanValue);
+    if (Object.keys(storyUnitPlan).length) {
+      narrativePlan.storyUnitPlan = assertVolumeStoryUnitPlan(storyUnitPlan, {
+        volumeNo,
+        chapterCount,
+        label: 'merge_chapter_outline_batch_previews.storyUnitPlan',
+      }) as unknown as Record<string, unknown>;
+    }
     return {
       volumeNo,
       title: this.requiredText(volume.title, 'volume.title'),
       synopsis: this.requiredText(volume.synopsis, 'volume.synopsis'),
       objective: this.requiredText(volume.objective, 'volume.objective'),
       chapterCount,
-      ...(Object.keys(asRecord(volume.narrativePlan)).length ? { narrativePlan: asRecord(volume.narrativePlan) } : {}),
+      ...(Object.keys(narrativePlan).length ? { narrativePlan } : {}),
     };
   }
 
