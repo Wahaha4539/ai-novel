@@ -4,6 +4,12 @@ import { ChangeEvent, FormEvent, KeyboardEvent, useEffect, useMemo, useRef, useS
 import type { AgentImportAssetType, AgentImportPreviewMode, AgentPlanPayload, AgentRunStepRecord } from '../../hooks/useAgentRun';
 import { CREATIVE_DOCUMENT_ACCEPT } from '../../lib/uploadCreativeDocument';
 import type { AgentCreativeDocumentAttachment, AgentCreativeDocumentExtension } from '../../types/agent-attachment';
+import {
+  chapterNosFromPlanStep,
+  chapterRangeLabel,
+  formatChapterProgress,
+  outlineChapterProgress,
+} from './agentBatchPlanView';
 
 /** 输入字符数达到此阈值时显示计数器 */
 const CHAR_COUNT_THRESHOLD = 20;
@@ -456,27 +462,46 @@ function AgentChatStepList({
       return !isChatStepDone(record?.status) && !isChatStepFailed(record?.status);
     })?.stepNo;
   }, [activePlanVersion, executing, planSteps, runSteps]);
+  const chapterProgress = useMemo(
+    () => outlineChapterProgress(planSteps, runSteps, activePlanVersion),
+    [activePlanVersion, planSteps, runSteps],
+  );
 
   return (
-    <ol className="agent-chat-plan__steps agent-chat-plan__steps--status">
-      {planSteps.map((step) => {
-        const record = findChatStepRecord(runSteps, step.stepNo, activePlanVersion);
-        const state = chatStepState(record, step, step.stepNo === optimisticActiveStepNo);
-        const toolName = step.tool ?? record?.tool ?? record?.toolName;
-        return (
-          <li key={step.stepNo} className={`agent-chat-plan-step agent-chat-plan-step--${state}`}>
-            <span className={`agent-chat-step-status agent-chat-step-status--${state}`} aria-hidden="true">
-              {state === 'active' ? <span className="agent-chat-step-status__spinner" /> : state === 'done' ? '✓' : state === 'failed' ? '!' : step.stepNo}
-            </span>
-            <span className="agent-chat-plan-step__main">
-              <span className="agent-chat-plan-step__title">{step.name || step.tool || '未命名步骤'}</span>
-              {toolName && <span className="agent-chat-plan-step__tool">{toolName}</span>}
-            </span>
-            <span className="agent-chat-plan-step__state">{chatStepStatusText(state, step)}</span>
-          </li>
-        );
-      })}
-    </ol>
+    <>
+      {chapterProgress && (
+        <div className="agent-chat-plan__chapter-progress">
+          <span>章节 {formatChapterProgress(chapterProgress)}</span>
+          <em>{chapterProgress.batchCount ? `${chapterProgress.batchCount} 个批次` : `${chapterProgress.singleChapterCount} 个章节步骤`}</em>
+        </div>
+      )}
+      <ol className="agent-chat-plan__steps agent-chat-plan__steps--status">
+        {planSteps.map((step) => {
+          const record = findChatStepRecord(runSteps, step.stepNo, activePlanVersion);
+          const state = chatStepState(record, step, step.stepNo === optimisticActiveStepNo);
+          const toolName = step.tool ?? record?.tool ?? record?.toolName;
+          const chapterNos = chapterNosFromPlanStep(step);
+          const rangeLabel = chapterRangeLabel(step);
+          return (
+            <li key={step.stepNo} className={`agent-chat-plan-step agent-chat-plan-step--${state}`}>
+              <span className={`agent-chat-step-status agent-chat-step-status--${state}`} aria-hidden="true">
+                {state === 'active' ? <span className="agent-chat-step-status__spinner" /> : state === 'done' ? '✓' : state === 'failed' ? '!' : step.stepNo}
+              </span>
+              <span className="agent-chat-plan-step__main">
+                <span className="agent-chat-plan-step__title">{step.name || step.tool || '未命名步骤'}</span>
+                {toolName && <span className="agent-chat-plan-step__tool">{toolName}</span>}
+                {chapterNos.length > 0 && (
+                  <span className="agent-chat-chapter-row" aria-label={`${rangeLabel}目标章节`}>
+                    {chapterNos.map((chapterNo) => <span key={chapterNo}>第 {chapterNo} 章</span>)}
+                  </span>
+                )}
+              </span>
+              <span className="agent-chat-plan-step__state">{chatStepStatusText(state, step)}</span>
+            </li>
+          );
+        })}
+      </ol>
+    </>
   );
 }
 

@@ -73,6 +73,7 @@ function latestSucceededPlanStep(run: AgentRun, toolName: string) {
 
 function buildVolumeCharacterCandidatesPreviewFromRun(run: AgentRun): NonNullable<AgentRun['artifacts']>[number] | undefined {
   const previewStep = latestSucceededPlanStep(run, 'generate_volume_outline_preview')
+    ?? latestSucceededPlanStep(run, 'merge_chapter_outline_batch_previews')
     ?? latestSucceededPlanStep(run, 'merge_chapter_outline_previews')
     ?? latestSucceededPlanStep(run, 'generate_outline_preview');
   if (!previewStep?.output) return undefined;
@@ -229,7 +230,7 @@ function repairDiagnosticsForArtifact(
 function artifactToolCandidates(artifactType: string | undefined): string[] {
   switch (artifactType) {
     case 'outline_preview':
-      return ['merge_chapter_outline_previews', 'generate_outline_preview', 'generate_chapter_outline_preview', 'generate_volume_outline_preview'];
+      return ['merge_chapter_outline_batch_previews', 'merge_chapter_outline_previews', 'generate_outline_preview', 'generate_chapter_outline_batch_preview', 'generate_chapter_outline_preview', 'generate_volume_outline_preview'];
     case 'story_units_preview':
       return ['generate_story_units_preview'];
     case 'chapter_craft_brief_preview':

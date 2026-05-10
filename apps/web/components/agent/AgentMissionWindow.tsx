@@ -1,6 +1,6 @@
 'use client';
 
-import { useEffect, useState } from 'react';
+import { useEffect, useMemo, useState } from 'react';
 import type {
   AgentAuditEvent,
   AgentRunArtifact,
@@ -24,6 +24,12 @@ import {
   safeJson,
   type ProjectImportAssetType,
 } from './AgentSharedWidgets';
+import {
+  chapterNosFromPlanStep,
+  chapterRangeLabel,
+  formatChapterProgress,
+  outlineChapterProgress,
+} from './agentBatchPlanView';
 
 type PhaseKey = 'plan' | 'todo' | 'execute' | 'summary';
 type PhaseState = 'pending' | 'active' | 'done' | 'blocked';
@@ -326,6 +332,10 @@ function AgentTodoListPanel({
 }) {
   const completedCount = planSteps.filter((step) => isFinishedStatus(findTodoStepRecord(runSteps, step.stepNo, activePlanVersion, runStatus)?.status)).length;
   const totalCount = planSteps.length;
+  const chapterProgress = useMemo(
+    () => outlineChapterProgress(planSteps, runSteps, activePlanVersion),
+    [activePlanVersion, planSteps, runSteps],
+  );
   const [isOpen, setIsOpen] = useState(totalCount > 0);
 
   useEffect(() => {
@@ -336,9 +346,19 @@ function AgentTodoListPanel({
     <details className="agent-todo-list" open={isOpen} onToggle={(event) => setIsOpen(event.currentTarget.open)}>
       <summary className="agent-todo-list__summary">
         <span className="agent-todo-list__title">Agent&apos;s todo List</span>
-        <span className="agent-todo-list__count">{completedCount}/{totalCount || 0}</span>
+        <span className="agent-todo-list__count">
+          {chapterProgress ? `章节 ${formatChapterProgress(chapterProgress)}` : `${completedCount}/${totalCount || 0}`}
+        </span>
         <span className="agent-todo-list__chevron">⌄</span>
       </summary>
+
+      {chapterProgress && (
+        <div className="agent-outline-progress">
+          <span>已生成章节</span>
+          <strong>{formatChapterProgress(chapterProgress)}</strong>
+          <em>{chapterProgress.batchCount ? `${chapterProgress.batchCount} 个批次` : `${chapterProgress.singleChapterCount} 个章节步骤`}</em>
+        </div>
+      )}
 
       {planSteps.length ? (
         <ol className="agent-todo-list__items">
@@ -348,6 +368,8 @@ function AgentTodoListPanel({
             const state = todoItemState(record, Boolean(step.requiresApproval), approved);
             const canToggleApproval = Boolean(step.requiresApproval && !isFinishedStatus(record?.status) && !isActiveStatus(record?.status) && !isFailedStatus(record?.status));
             const explanation = agentToolUiExplanation(step.tool);
+            const chapterNos = chapterNosFromPlanStep(step);
+            const rangeLabel = chapterRangeLabel(step);
             return (
               <li key={step.stepNo} className={`agent-todo-list__item agent-todo-list__item--${state}`}>
                 {step.requiresApproval ? (
@@ -368,6 +390,11 @@ function AgentTodoListPanel({
                   <strong>步骤 {step.stepNo}: {step.name ?? step.tool ?? '未命名步骤'}</strong>
                   <small>{step.tool ?? '未绑定工具'}</small>
                   {explanation && <small className="agent-todo-list__hint">产出：{explanation.output}；前端：{explanation.frontendSurface}</small>}
+                  {chapterNos.length > 0 && (
+                    <span className="agent-chapter-chip-row" aria-label={`${rangeLabel}目标章节`}>
+                      {chapterNos.map((chapterNo) => <span key={chapterNo}>第 {chapterNo} 章</span>)}
+                    </span>
+                  )}
                 </span>
                 <span className="agent-todo-list__status">{stepStatusText(record, Boolean(step.requiresApproval), approved)}</span>
               </li>
@@ -485,13 +512,17 @@ export function AgentMissionWindow({
   const phaseStates = buildPhaseStates(currentRun, plan);
   const progress = progressPercent(currentRun, plan, activePlanVersion);
   const completedSteps = planSteps.filter((step) => isFinishedStatus(findStepRecord(runSteps, step.stepNo, activePlanVersion)?.status)).length;
+  const missionChapterProgress = useMemo(
+    () => outlineChapterProgress(planSteps, runSteps, activePlanVersion),
+    [activePlanVersion, planSteps, runSteps],
+  );
   const failedStepRecord = findLatestFailedStepRecord(runSteps, activePlanVersion);
   const failedStep = planSteps.find((step) => step.stepNo === failedStepRecord?.stepNo)
     ?? planSteps.find((step) => isFailedStatus(findStepRecord(runSteps, step.stepNo, activePlanVersion)?.status));
   const failedStepLabel = failedStep ? `步骤 ${failedStep.stepNo}: ${failedStep.name ?? failedStep.tool ?? '未命名步骤'}` : undefined;
   const outputRows = resultRows(currentRun?.output);
   const status = currentRun?.status ?? 'idle';
-  const shouldShowApproval = Boolean(currentRun && currentRun.status !== 'succeeded' && currentRun.status !== 'cancelled');
+  const shouldShowApproval = Boolean(currentRun && canAct);
 
   return (
     <section className="agent-mission-window" aria-label="Agent 任务执行窗口">
@@ -557,6 +588,12 @@ export function AgentMissionWindow({
                   <span>风险</span>
                   <strong>{plan.riskReview?.riskLevel ?? '—'}</strong>
                 </div>
+                {missionChapterProgress && (
+                  <div>
+                    <span>章节进度</span>
+                    <strong>{formatChapterProgress(missionChapterProgress)}</strong>
+                  </div>
+                )}
               </div>
               {(plan.assumptions?.length || plan.riskReview?.reasons?.length || plan.risks?.length) && (
                 <div className="agent-mission-note-list">
