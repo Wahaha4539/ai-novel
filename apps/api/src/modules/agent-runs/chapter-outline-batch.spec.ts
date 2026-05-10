@@ -681,6 +681,36 @@ test('COB-OPT batch preview repair prompt names complete relationshipBeats field
   assert.equal(result.chapters[0].craftBrief?.characterExecution?.relationshipBeats?.[0]?.publicStateBefore, 'mutual suspicion');
 });
 
+test('COB-OPT batch preview repair prompt names required sceneBeat fields', async () => {
+  const storyUnitPlan = createStoryUnitPlan([{ unitId: 'u1', start: 1, end: 4 }]);
+  const badCraftBrief = createBatchCraftBrief(1);
+  (badCraftBrief as Record<string, any>).sceneBeats = badCraftBrief.sceneBeats.map((beat: Record<string, unknown>, index: number) => {
+    if (index !== 0) return beat;
+    const incomplete = { ...beat };
+    delete incomplete.scenePart;
+    return incomplete;
+  });
+  const calls: Array<{ messages: Array<{ role: string; content: string }>; options: Record<string, unknown> }> = [];
+  const tool = new GenerateChapterOutlineBatchPreviewTool({
+    async chatJson(messages: Array<{ role: string; content: string }>, options: Record<string, unknown>) {
+      calls.push({ messages, options });
+      const bad = createBatchOutput([1, 2, 3, 4], { chapters: [createBatchChapter(1, { craftBrief: badCraftBrief }), createBatchChapter(2), createBatchChapter(3), createBatchChapter(4)] });
+      return { data: calls.length === 1 ? bad : createBatchOutput(), result: { model: `mock-scene-repair-${calls.length}` } };
+    },
+  } as never);
+  const { context } = createToolContext();
+
+  const result = await tool.run(
+    { context: createSegmentContext(storyUnitPlan, 4), storyUnitPlan, volumeNo: 1, chapterCount: 4, chapterRange: { start: 1, end: 4 } },
+    context,
+  );
+
+  assert.equal(calls.length, 2);
+  assert.match(calls[1].messages[0].content, /sceneArcId.*scenePart.*location.*participants.*localGoal.*visibleAction.*obstacle.*turningPoint.*partResult.*sensoryAnchor/s);
+  assert.match(calls[1].messages[1].content, /Each sceneBeats object must include sceneArcId, scenePart, location, participants, localGoal, visibleAction, obstacle, turningPoint, partResult, and sensoryAnchor/);
+  assert.equal(result.chapters[0].craftBrief?.sceneBeats?.[0]?.scenePart, '1/3');
+});
+
 test('COB-P2 batch preview repairs character source mistakes through LLM only', async () => {
   const storyUnitPlan = createStoryUnitPlan([{ unitId: 'u1', start: 1, end: 4 }]);
   const badCraftBrief = createBatchCraftBrief(1);
