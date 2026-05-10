@@ -25,6 +25,16 @@
 
 关键词或启发式规则只可用于不影响小说内容审批/写入的低风险场景，例如日志分类、诊断提示、检索候选排序、UI 展示标签或测试断言；若可能影响审批、写入、持久化或后续生成输入，必须改为 LLM 语义判断 + 显式结构字段 + 后端结构校验。
 
+## 长章节细纲批次校验位置
+
+长章节细纲、卷细纲或 60 章级别的批次生成链路，不得把全量 `validate_outline` 作为所有批次完成后的末尾兜底闸门。章节数、`chapterCount`、`chapterRange` 覆盖、批次是否连续、merge 引用是否完整、写入步骤是否审批等确定性问题，必须在 PlanValidator 或批次切分步骤中前置失败；不要让用户跑完整个批次后才在最后一关发现计划形状错误。
+
+目标 `chapterCount` 与上下文里目标卷的 `Volume.chapterCount` 不一致时，属于确定性的 Plan 内容一致性问题，应在 PlanValidator 阶段失败。正确计划必须先重建 `generate_volume_outline_preview(chapterCount=N)` 和匹配的 `generate_story_units_preview`，并把上游 `volumeOutline` / `storyUnitPlan` 明确传给后续 `segment_chapter_outline_batches`、每个 `generate_chapter_outline_batch_preview` 和 merge 步骤；不得等到执行到末尾才由写入或最终校验报错。
+
+每个 `generate_chapter_outline_batch_preview` 必须在本批次内完成结构校验、LLM rubric 质量判断和必要的一次重生；`merge_chapter_outline_batch_previews` 只负责合并已经通过的批次，并做章节覆盖、重复编号、craftBrief 完整性、角色引用等确定性结构保护。若每个批次都已通过，且 merge 通过，则后续应直接进入审批写入，不要再追加终局 `validate_outline` 造成不可局部修复的失败点。
+
+如果未来确实需要全卷级质量判断，必须设计为可定位到章节/批次并能只重跑受影响批次的显式流程，不能以“最终 validate 失败”为代价让用户重跑整卷。
+
 ## 启动方式
 
 项目使用 Docker Compose 启动：

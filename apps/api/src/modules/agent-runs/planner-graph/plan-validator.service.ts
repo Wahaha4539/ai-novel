@@ -41,6 +41,8 @@ const WRITE_TOOL_NAMES = new Set([
   'ai_quality_review',
 ]);
 
+const GENERATE_VOLUME_OUTLINE_PREVIEW_TOOL = 'generate_volume_outline_preview';
+const GENERATE_STORY_UNITS_PREVIEW_TOOL = 'generate_story_units_preview';
 const GENERATE_CHAPTER_OUTLINE_PREVIEW_TOOL = 'generate_chapter_outline_preview';
 const MERGE_CHAPTER_OUTLINE_PREVIEWS_TOOL = 'merge_chapter_outline_previews';
 const SEGMENT_CHAPTER_OUTLINE_BATCHES_TOOL = 'segment_chapter_outline_batches';
@@ -139,6 +141,7 @@ export class PlanValidatorService {
     const batchSteps = plan.steps.filter((step) => step.tool === GENERATE_CHAPTER_OUTLINE_BATCH_PREVIEW_TOOL);
     const chapterCount = this.positiveInt(route.chapterCount) ?? this.inferOutlineChapterCount(plan);
     const targetChapterNo = this.positiveInt(route.chapterNo);
+    if (chapterCount) this.assertContextChapterCountAlignment(plan, route, context, chapterCount);
     if (targetChapterNo && chapterSteps.length === 1) {
       const stepChapterNo = this.positiveInt(chapterSteps[0].args.chapterNo);
       if (stepChapterNo !== targetChapterNo) {
@@ -269,8 +272,8 @@ export class PlanValidatorService {
   private inferOutlineChapterCount(plan: AgentPlanSpec): number | undefined {
     const candidates = plan.steps
       .filter((step) => [
-        'generate_volume_outline_preview',
-        'generate_story_units_preview',
+        GENERATE_VOLUME_OUTLINE_PREVIEW_TOOL,
+        GENERATE_STORY_UNITS_PREVIEW_TOOL,
         GENERATE_CHAPTER_OUTLINE_PREVIEW_TOOL,
         MERGE_CHAPTER_OUTLINE_PREVIEWS_TOOL,
         SEGMENT_CHAPTER_OUTLINE_BATCHES_TOOL,
@@ -285,6 +288,90 @@ export class PlanValidatorService {
       throw new Error(`PlanValidator blocked outline.chapter plan with mismatched chapterCount values: ${unique.join(', ')}.`);
     }
     return unique[0];
+  }
+
+  private assertContextChapterCountAlignment(plan: AgentPlanSpec, route: RouteDecision, context: AgentContextV2 | undefined, chapterCount: number): void {
+    const contextVolume = this.contextVolumeForRoute(route, context);
+    const contextChapterCount = this.positiveInt(contextVolume?.chapterCount);
+    if (!contextVolume || !contextChapterCount || contextChapterCount === chapterCount) return;
+
+    const routeVolumeNo = this.positiveInt(route.volumeNo);
+    const rebuildStep = plan.steps.find((step) => {
+      if (step.tool !== GENERATE_VOLUME_OUTLINE_PREVIEW_TOOL) return false;
+      if (this.positiveInt(step.args.chapterCount) !== chapterCount) return false;
+      return !routeVolumeNo || this.positiveInt(step.args.volumeNo) === routeVolumeNo;
+    });
+    const volumeLabel = routeVolumeNo ? `volume ${routeVolumeNo}` : 'target volume';
+    if (!rebuildStep) {
+      throw new Error(`PlanValidator blocked outline.chapter plan because target chapterCount ${chapterCount} does not match context ${volumeLabel} chapterCount ${contextChapterCount}; include ${GENERATE_VOLUME_OUTLINE_PREVIEW_TOOL}.args.chapterCount=${chapterCount} before chapter splitting.`);
+    }
+
+    const prematureConsumers = plan.steps.filter((step) => step.stepNo < rebuildStep.stepNo && (this.requiresRebuiltVolumeOutline(step.tool) || this.requiresRebuiltStoryUnitPlan(step.tool)));
+    if (prematureConsumers.length) {
+      throw new Error(`PlanValidator blocked outline.chapter plan because ${prematureConsumers.map((step) => step.tool).join(', ')} runs before the rebuilt ${GENERATE_VOLUME_OUTLINE_PREVIEW_TOOL} for target chapterCount ${chapterCount}.`);
+    }
+
+    const volumeOutlineConsumers = plan.steps.filter((step) => step.stepNo > rebuildStep.stepNo && this.requiresRebuiltVolumeOutline(step.tool));
+    const missingVolumeOutline = volumeOutlineConsumers.filter((step) => !this.referencesStepOutputField(step.args.volumeOutline, rebuildStep, 'volume'));
+    if (missingVolumeOutline.length) {
+      throw new Error(`PlanValidator blocked outline.chapter plan because target chapterCount ${chapterCount} rebuilds context ${volumeLabel} chapterCount ${contextChapterCount}, but these steps do not pass ${GENERATE_VOLUME_OUTLINE_PREVIEW_TOOL}.output.volume as args.volumeOutline: ${missingVolumeOutline.map((step) => step.tool).join(', ')}.`);
+    }
+
+    const storyUnitConsumers = plan.steps.filter((step) => step.stepNo > rebuildStep.stepNo && this.requiresRebuiltStoryUnitPlan(step.tool));
+    if (!storyUnitConsumers.length) return;
+    const firstStoryUnitConsumerStepNo = Math.min(...storyUnitConsumers.map((step) => step.stepNo));
+    const storyUnitStep = plan.steps.find((step) => (
+      step.tool === GENERATE_STORY_UNITS_PREVIEW_TOOL
+      && step.stepNo > rebuildStep.stepNo
+      && step.stepNo < firstStoryUnitConsumerStepNo
+      && this.positiveInt(step.args.chapterCount) === chapterCount
+      && (!routeVolumeNo || this.positiveInt(step.args.volumeNo) === routeVolumeNo)
+      && this.referencesStepOutputField(step.args.volumeOutline, rebuildStep, 'volume')
+    ));
+    if (!storyUnitStep) {
+      throw new Error(`PlanValidator blocked outline.chapter plan because target chapterCount ${chapterCount} differs from context ${volumeLabel} chapterCount ${contextChapterCount}; generate a matching ${GENERATE_STORY_UNITS_PREVIEW_TOOL} from the rebuilt volume before chapter splitting.`);
+    }
+
+    const missingStoryUnitPlan = storyUnitConsumers.filter((step) => !this.referencesStepOutputField(step.args.storyUnitPlan, storyUnitStep, 'storyUnitPlan'));
+    if (missingStoryUnitPlan.length) {
+      throw new Error(`PlanValidator blocked outline.chapter plan because rebuilt ${GENERATE_STORY_UNITS_PREVIEW_TOOL}.output.storyUnitPlan is not passed to: ${missingStoryUnitPlan.map((step) => step.tool).join(', ')}.`);
+    }
+  }
+
+  private contextVolumeForRoute(route: RouteDecision, context?: AgentContextV2): NonNullable<AgentContextV2['volumes']>[number] | undefined {
+    const volumes = context?.volumes ?? [];
+    if (!volumes.length) return undefined;
+    const routeVolumeNo = this.positiveInt(route.volumeNo);
+    if (routeVolumeNo) return volumes.find((volume) => volume.volumeNo === routeVolumeNo);
+    const currentVolumeId = context?.session?.currentVolumeId;
+    if (currentVolumeId) return volumes.find((volume) => volume.id === currentVolumeId);
+    return volumes.length === 1 ? volumes[0] : undefined;
+  }
+
+  private requiresRebuiltVolumeOutline(tool: string): boolean {
+    return [
+      GENERATE_STORY_UNITS_PREVIEW_TOOL,
+      SEGMENT_CHAPTER_OUTLINE_BATCHES_TOOL,
+      GENERATE_CHAPTER_OUTLINE_PREVIEW_TOOL,
+      GENERATE_CHAPTER_OUTLINE_BATCH_PREVIEW_TOOL,
+      MERGE_CHAPTER_OUTLINE_BATCH_PREVIEWS_TOOL,
+    ].includes(tool);
+  }
+
+  private requiresRebuiltStoryUnitPlan(tool: string): boolean {
+    return [
+      SEGMENT_CHAPTER_OUTLINE_BATCHES_TOOL,
+      GENERATE_CHAPTER_OUTLINE_PREVIEW_TOOL,
+      GENERATE_CHAPTER_OUTLINE_BATCH_PREVIEW_TOOL,
+    ].includes(tool);
+  }
+
+  private referencesStepOutputField(value: unknown, step: AgentPlanSpec['steps'][number], field: string): boolean {
+    if (typeof value !== 'string') return false;
+    const normalized = value.replace(/\s+/g, '');
+    const refs = [`{{steps.${step.stepNo}.output.${field}}}`];
+    if (step.id) refs.push(`{{steps.${step.id}.output.${field}}}`);
+    return refs.includes(normalized);
   }
 
   private assertStepChapterCount(step: AgentPlanSpec['steps'][number], chapterCount: number, tool: string): void {

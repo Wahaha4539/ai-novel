@@ -1615,7 +1615,7 @@ export class MergeChapterOutlineBatchPreviewsTool implements BaseTool<MergeChapt
     description: 'Combines generate_chapter_outline_batch_preview outputs into standard outline_preview; fails on missing chapters, duplicate chapters, overlapping batches, incomplete craftBrief, or invalid characterExecution sources.',
     whenToUse: [
       'After every generate_chapter_outline_batch_preview step has succeeded for a whole-volume chapter outline plan.',
-      'Before validate_outline and approval-gated persist_outline.',
+      'Before approval-gated persist_outline; do not append a terminal validate_outline for batch chapter outlines.',
     ],
     whenNotToUse: [
       'Do not use before every target chapter has a batch preview.',

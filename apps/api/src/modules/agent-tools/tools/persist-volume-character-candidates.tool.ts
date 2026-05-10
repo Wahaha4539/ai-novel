@@ -87,7 +87,7 @@ export class PersistVolumeCharacterCandidatesTool implements BaseTool<PersistVol
     name: this.name,
     displayName: 'Persist Volume Character Candidates',
     description: 'After explicit approval, writes explicitly selected volume-level character candidates into the official Character table. Set approvedCandidateIds/approvedCandidateNames, or approveAll=true only when the user approved every candidate. It does not persist chapter-only temporary characters and does not overwrite manual characters.',
-    whenToUse: ['Use after validate_outline when the user explicitly approves turning selected volume character candidates into official characters.'],
+    whenToUse: ['Use after the outline preview/merge has succeeded and the user explicitly approves turning selected volume character candidates into official characters.'],
     whenNotToUse: ['Do not use for chapter minor_temporary characters.', 'Do not use for drafting chapter prose or persisting outline JSON.'],
     inputSchema: this.inputSchema,
     outputSchema: this.outputSchema,

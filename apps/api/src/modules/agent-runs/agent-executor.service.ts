@@ -178,6 +178,7 @@ export class AgentExecutorService {
         const output = await tool.run(resolvedArgs, context);
         await this.assertRunNotTerminal(agentRunId);
         this.assertSchema(tool.outputSchema, output, `${tool.name}.output`);
+        this.assertValidationGate(tool.name, output);
         outputs[step.stepNo] = output;
         this.updateRuntimeState(runtimeState, output);
         const elapsedMs = Date.now() - stepStartedAt;
@@ -336,6 +337,31 @@ export class AgentExecutorService {
     if (!error || typeof error !== 'object') return undefined;
     const record = error as Record<string, unknown>;
     return Array.isArray(record.candidates) ? record.candidates : undefined;
+  }
+
+  private assertValidationGate(toolName: string, output: unknown): void {
+    if (!toolName.startsWith('validate_')) return;
+    const record = output && typeof output === 'object' && !Array.isArray(output) ? output as Record<string, unknown> : {};
+    if (record.valid !== false) return;
+    const summary = this.validationIssueSummary(record.issues);
+    throw new BadRequestException(`${toolName} returned valid=false; blocked before write${summary ? `: ${summary}` : '.'}`);
+  }
+
+  private validationIssueSummary(issues: unknown): string {
+    if (!Array.isArray(issues)) return '';
+    const messages = issues
+      .map((issue) => {
+        const record = issue && typeof issue === 'object' && !Array.isArray(issue) ? issue as Record<string, unknown> : {};
+        const message = typeof record.message === 'string' ? record.message.trim() : '';
+        if (!message) return '';
+        const severity = typeof record.severity === 'string' && record.severity.trim() ? `[${record.severity.trim()}] ` : '';
+        return `${severity}${message}`;
+      })
+      .filter(Boolean)
+      .slice(0, 5);
+    if (!messages.length) return '';
+    const remaining = issues.length - messages.length;
+    return `${messages.join('; ')}${remaining > 0 ? `; ... +${remaining} more` : ''}`;
   }
 
   private isRetryableObservation(code: AgentObservationErrorCode): boolean {

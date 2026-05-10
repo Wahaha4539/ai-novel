@@ -17,14 +17,15 @@ export const outlineToolBundles: ToolBundleDefinition[] = [
     name: 'outline.chapter',
     domain: 'outline',
     intents: ['generate_chapter_outline', 'split_volume_to_chapters', 'chapter_outline', 'volume_chapter_outline'],
-    strictToolNames: ['inspect_project_context', 'generate_volume_outline_preview', 'generate_story_units_preview', 'segment_chapter_outline_batches', 'generate_chapter_outline_batch_preview', 'merge_chapter_outline_batch_previews', 'generate_chapter_outline_preview', 'merge_chapter_outline_previews', 'validate_outline', 'persist_outline'],
+    strictToolNames: ['inspect_project_context', 'generate_volume_outline_preview', 'generate_story_units_preview', 'segment_chapter_outline_batches', 'generate_chapter_outline_batch_preview', 'merge_chapter_outline_batch_previews', 'generate_chapter_outline_preview', 'merge_chapter_outline_previews', 'persist_outline'],
     optionalToolNames: ['generate_outline_preview', 'persist_volume_character_candidates', 'generate_timeline_preview', 'validate_timeline_preview'],
     deniedToolNames: ['write_chapter', 'write_chapter_series', 'persist_volume_outline'],
     plannerGuidance: [
       'Generate or reuse independent story units before chapter outlines.',
       'For chapterCount greater than 12, prefer segment_chapter_outline_batches followed by visible generate_chapter_outline_batch_preview steps covering every chapter range, then merge_chapter_outline_batch_previews.',
+      'If target chapterCount differs from the target volume chapterCount in context, rebuild generate_volume_outline_preview and generate_story_units_preview first, then pass volumeOutline and storyUnitPlan through segment, batch preview, and merge steps.',
       'For a single chapter or short ranges, use one generate_chapter_outline_preview step per target chapter, then merge_chapter_outline_previews.',
-      'Merge and validate chapter previews before any approved persist_outline step.',
+      'Do not append a terminal validate_outline step for chapter splitting; PlanValidator must catch count/range/reference issues up front, and each chapter/batch plus merge tool validates generated structure before approved persist_outline.',
     ],
   },
   {

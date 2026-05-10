@@ -4588,21 +4588,18 @@ test('COB-P6 AgentRuntime promotes batch merged outline preview artifacts', () =
     chapters: Array.from({ length: 60 }, (_item, index) => ({ chapterNo: index + 1, title: `Chapter ${index + 1}` })),
     risks: [],
   };
-  const validation = { valid: true, stats: { chapterCount: 60 } };
 
   const artifacts = runtime.buildPreviewArtifacts(
     'outline_design',
-    { 18: preview, 19: validation },
+    { 18: preview },
     [
       { stepNo: 18, tool: 'merge_chapter_outline_batch_previews' },
-      { stepNo: 19, tool: 'validate_outline' },
-      { stepNo: 20, tool: 'persist_outline' },
+      { stepNo: 19, tool: 'persist_outline' },
     ],
   );
 
-  assert.deepEqual(artifacts.map((item) => item.artifactType), ['outline_preview', 'outline_validation_report']);
+  assert.deepEqual(artifacts.map((item) => item.artifactType), ['outline_preview']);
   assert.equal(artifacts[0].content, preview);
-  assert.equal(artifacts[1].content, validation);
 });
 
 test('VCC AgentRuntime maps volume character candidate preview and filters existing characters', () => {
@@ -7281,7 +7278,7 @@ test('VCC persist_outline rejects invalid character planning validation', async 
       { preview: createVccOutlinePreview(1), validation: { valid: false } },
       { agentRunId: 'run-vcc-persist-invalid-validation', projectId: 'p1', mode: 'act', approved: true, outputs: {}, policy: {} },
     ),
-    /validate_outline.*valid=true/,
+    /validation\.valid=false/,
   );
 });
 
@@ -9642,8 +9639,7 @@ test('Planner prompt 将长章节细纲引导到 outline_design 而非正文写�
             { stepNo: 2, name: '切分章节细纲批次', tool: 'segment_chapter_outline_batches', mode: 'act', requiresApproval: false, args: { context: '{{steps.1.output}}', volumeNo: 1, chapterCount: 60 } },
             ...batchSteps,
             { stepNo: 18, name: '合并 60 章批次细纲', tool: 'merge_chapter_outline_batch_previews', mode: 'act', requiresApproval: false, args: { batchPreviews: batchSteps.map((step) => `{{steps.${step.stepNo}.output}}`), volumeNo: 1, chapterCount: 60 } },
-            { stepNo: 19, name: '校验细纲', tool: 'validate_outline', mode: 'act', requiresApproval: false, args: { preview: '{{steps.18.output}}' } },
-            { stepNo: 20, name: '审批后写入细纲', tool: 'persist_outline', mode: 'act', requiresApproval: true, args: { preview: '{{steps.18.output}}', validation: '{{steps.19.output}}' } },
+            { stepNo: 19, name: '审批后写入细纲', tool: 'persist_outline', mode: 'act', requiresApproval: true, args: { preview: '{{steps.18.output}}' } },
           ],
         },
         result: { model: 'planner-mock' },
@@ -9664,9 +9660,9 @@ test('Planner prompt 将长章节细纲引导到 outline_design 而非正文写�
   assert.deepEqual(plan.steps[16].args.chapterRange, { start: 57, end: 60 });
   assert.equal(plan.steps[17].tool, 'merge_chapter_outline_batch_previews');
   assert.equal((plan.steps[17].args.batchPreviews as unknown[]).length, 15);
+  assert.equal(plan.steps[18].tool, 'persist_outline');
   assert.deepEqual(plan.steps[18].args, { preview: '{{steps.18.output}}' });
-  assert.deepEqual(plan.steps[19].args, { preview: '{{steps.18.output}}', validation: '{{steps.19.output}}' });
-  assert.equal(plan.steps[19].requiresApproval, true);
+  assert.equal(plan.steps[18].requiresApproval, true);
   assert.equal(capturedOptions?.timeoutMs, DEFAULT_LLM_TIMEOUT_MS);
   assert.match(capturedMessages[0].content, /章节细纲 \/ 第 N 卷章节细纲/);
   assert.match(capturedMessages[0].content, /卷细纲 \/ 60 章细纲/);
@@ -9676,6 +9672,7 @@ test('Planner prompt 将长章节细纲引导到 outline_design 而非正文写�
   assert.match(promptPayload.taskTypeGuidance.outline_design, /60章细纲/);
   assert.match(promptPayload.taskTypeGuidance.outline_chapter_batching, /segment_chapter_outline_batches/);
   assert.match(promptPayload.taskTypeGuidance.outline_chapter_batching, /merge_chapter_outline_batch_previews/);
+  assert.doesNotMatch(promptPayload.taskTypeGuidance.outline_chapter_batching, /merge_chapter_outline_batch_previews -> validate_outline/);
   assert.match(promptPayload.taskTypeGuidance.outline_chapter_batching, /chapterOutlineBatchHints/);
   assert.match(JSON.stringify(promptPayload.availableTools), /generate_chapter_outline_batch_preview/);
 });
@@ -13448,6 +13445,76 @@ test('Executor 将润色缺少草稿识别为业务对象缺失而非内部错�
   const observation = failed[0] as { error: { code: string; retryable: boolean } };
   assert.equal(observation.error.code, 'ENTITY_NOT_FOUND');
   assert.equal(observation.error.retryable, true);
+});
+
+test('Executor 在 validate_outline 返回 valid=false 时停在校验步骤且不继续 persist_outline', async () => {
+  const failed: unknown[] = [];
+  const finished: number[] = [];
+  const runOrder: string[] = [];
+  const prisma = {
+    agentRun: {
+      async findUnique(args: { select?: { status?: boolean } }) {
+        return args.select?.status ? { status: 'acting' } : { id: 'run1', projectId: 'p1', chapterId: null, status: 'acting' };
+      },
+    },
+  };
+  const tools = {
+    get(name: string) {
+      if (name === 'validate_outline') {
+        return createTool({
+          name,
+          requiresApproval: false,
+          riskLevel: 'low',
+          sideEffects: [],
+          async run() {
+            runOrder.push(name);
+            return { valid: false, issues: [{ severity: 'error', message: '第 50 章关系参与者未被 cast 覆盖。' }] };
+          },
+        });
+      }
+      if (name === 'persist_outline') {
+        return createTool({
+          name,
+          requiresApproval: false,
+          riskLevel: 'low',
+          sideEffects: [],
+          async run() {
+            runOrder.push(name);
+            return { persisted: true };
+          },
+        });
+      }
+      return undefined;
+    },
+  };
+  const policy = { assertPlanExecutable() {}, assertAllowed() {} };
+  const trace = {
+    startStep() {},
+    finishStep(_runId: string, stepNo: number) { finished.push(stepNo); },
+    failStep(_runId: string, _stepNo: number, error: unknown) { failed.push(error); },
+  };
+  const executor = new AgentExecutorService(prisma as never, tools as never, policy as never, trace as never);
+
+  await assert.rejects(
+    () => executor.execute(
+      'run1',
+      [
+        { stepNo: 1, id: 'validate', name: '校验细纲', tool: 'validate_outline', mode: 'act', requiresApproval: false, args: {} },
+        { stepNo: 2, id: 'persist', name: '写入细纲', tool: 'persist_outline', mode: 'act', requiresApproval: false, args: { validation: '{{steps.1.output}}' } },
+      ],
+      { mode: 'act', approved: true },
+    ),
+    AgentExecutionObservationError,
+  );
+
+  const observation = failed[0] as { stepNo: number; tool: string; error: { code: string; message: string } };
+  assert.deepEqual(runOrder, ['validate_outline']);
+  assert.deepEqual(finished, []);
+  assert.equal(observation.stepNo, 1);
+  assert.equal(observation.tool, 'validate_outline');
+  assert.equal(observation.error.code, 'VALIDATION_FAILED');
+  assert.match(observation.error.message, /validate_outline returned valid=false/);
+  assert.match(observation.error.message, /第 50 章关系参与者未被 cast 覆盖/);
 });
 
 test('Replanner 针对缺 chapterId 生成插入 resolve_chapter 的最小 patch', () => {

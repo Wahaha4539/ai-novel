@@ -46,7 +46,7 @@ export class PersistOutlineTool implements BaseTool<PersistOutlineInput, Record<
   async run(args: PersistOutlineInput, context: ToolContext) {
     if (!args.preview?.chapters?.length) throw new BadRequestException('persist_outline 需要 outline preview');
     if (args.validation && args.validation.valid !== true) {
-      throw new BadRequestException('persist_outline requires validate_outline to return valid=true before writing.');
+      throw new BadRequestException('persist_outline received validation.valid=false before writing.');
     }
     const preview = args.preview;
     const characterCatalog = await this.loadCharacterCatalog(context.projectId);
@@ -100,7 +100,7 @@ export class PersistOutlineTool implements BaseTool<PersistOutlineInput, Record<
     return { ...result, chapterCount: preview.chapters.length, risks: preview.risks };
   }
 
-  /** 写入前做一次确定性保护，防止绕过 validate_outline 的重复编号预览进入持久化。 */
+  /** 写入前做一次确定性保护，防止重复编号或结构不完整的预览进入持久化。 */
   private assertSafePreview(preview: OutlinePreviewOutput, characterCatalog: CharacterCatalog) {
     const chapterNos = preview.chapters.map((chapter) => Number(chapter.chapterNo));
     if (!Number.isFinite(Number(preview.volume.volumeNo)) || Number(preview.volume.volumeNo) <= 0) throw new BadRequestException('卷号必须是正数');

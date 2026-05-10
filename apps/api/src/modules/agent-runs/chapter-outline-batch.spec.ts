@@ -1090,9 +1090,86 @@ test('COB-P4 PlanValidator accepts segmented batch outline plans covering 1..60'
           chapterCount: 60,
         },
       },
-      { tool: 'validate_outline', args: { preview: '{{steps.18.output}}' } },
-      { tool: 'persist_outline', requiresApproval: true, args: { preview: '{{steps.18.output}}', validation: '{{steps.19.output}}' } },
+      { tool: 'persist_outline', requiresApproval: true, args: { preview: '{{steps.18.output}}' } },
     ]),
+    route: { domain: 'outline', intent: 'split_volume_to_chapters', confidence: 0.9, reasons: ['test'], volumeNo: 1, chapterCount: 60 },
+  }));
+});
+
+test('COB-P4 PlanValidator rejects target chapterCount mismatch without rebuilt volume outline', () => {
+  const validator = new PlanValidatorService();
+  const context = {
+    volumes: [{ id: 'v1', volumeNo: 1, chapterCount: 40, hasNarrativePlan: true, hasStoryUnitPlan: true, hasLegacyStoryUnits: false }],
+  };
+  const batchSteps = Array.from({ length: 15 }, (_item, index) => {
+    const start = index * 4 + 1;
+    return {
+      tool: 'generate_chapter_outline_batch_preview',
+      args: {
+        context: '{{steps.1.output}}',
+        batchPlan: '{{steps.2.output}}',
+        volumeNo: 1,
+        chapterCount: 60,
+        chapterRange: { start, end: start + 3 },
+      },
+    };
+  });
+
+  assert.throws(
+    () => validator.validate({
+      plan: createPlanValidatorPlan([
+        { tool: 'inspect_project_context' },
+        { tool: 'segment_chapter_outline_batches', args: { context: '{{steps.1.output}}', volumeNo: 1, chapterCount: 60 } },
+        ...batchSteps,
+        { tool: 'merge_chapter_outline_batch_previews', args: { batchPreviews: batchSteps.map((_step, index) => `{{steps.${index + 3}.output}}`), volumeNo: 1, chapterCount: 60 } },
+      ]),
+      context: context as never,
+      route: { domain: 'outline', intent: 'split_volume_to_chapters', confidence: 0.9, reasons: ['test'], volumeNo: 1, chapterCount: 60 },
+    }),
+    /target chapterCount 60.*context volume 1 chapterCount 40.*generate_volume_outline_preview/,
+  );
+});
+
+test('COB-P4 PlanValidator accepts target chapterCount changes when rebuilt volume and story units feed batches', () => {
+  const validator = new PlanValidatorService();
+  const context = {
+    volumes: [{ id: 'v1', volumeNo: 1, chapterCount: 40, hasNarrativePlan: true, hasStoryUnitPlan: true, hasLegacyStoryUnits: false }],
+  };
+  const batchSteps = Array.from({ length: 15 }, (_item, index) => {
+    const start = index * 4 + 1;
+    return {
+      tool: 'generate_chapter_outline_batch_preview',
+      args: {
+        context: '{{steps.1.output}}',
+        volumeOutline: '{{steps.2.output.volume}}',
+        storyUnitPlan: '{{steps.3.output.storyUnitPlan}}',
+        batchPlan: '{{steps.4.output}}',
+        volumeNo: 1,
+        chapterCount: 60,
+        chapterRange: { start, end: start + 3 },
+      },
+    };
+  });
+
+  assert.doesNotThrow(() => validator.validate({
+    plan: createPlanValidatorPlan([
+      { tool: 'inspect_project_context' },
+      { tool: 'generate_volume_outline_preview', args: { context: '{{steps.1.output}}', volumeNo: 1, chapterCount: 60 } },
+      { tool: 'generate_story_units_preview', args: { context: '{{steps.1.output}}', volumeOutline: '{{steps.2.output.volume}}', volumeNo: 1, chapterCount: 60 } },
+      { tool: 'segment_chapter_outline_batches', args: { context: '{{steps.1.output}}', volumeOutline: '{{steps.2.output.volume}}', storyUnitPlan: '{{steps.3.output.storyUnitPlan}}', volumeNo: 1, chapterCount: 60 } },
+      ...batchSteps,
+      {
+        tool: 'merge_chapter_outline_batch_previews',
+        args: {
+          batchPreviews: batchSteps.map((_step, index) => `{{steps.${index + 5}.output}}`),
+          volumeOutline: '{{steps.2.output.volume}}',
+          volumeNo: 1,
+          chapterCount: 60,
+        },
+      },
+      { tool: 'persist_outline', requiresApproval: true, args: { preview: '{{steps.20.output}}' } },
+    ]),
+    context: context as never,
     route: { domain: 'outline', intent: 'split_volume_to_chapters', confidence: 0.9, reasons: ['test'], volumeNo: 1, chapterCount: 60 },
   }));
 });

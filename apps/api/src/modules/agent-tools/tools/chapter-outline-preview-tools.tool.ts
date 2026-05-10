@@ -721,7 +721,7 @@ export class GenerateChapterOutlinePreviewTool implements BaseTool<GenerateChapt
 @Injectable()
 export class MergeChapterOutlinePreviewsTool implements BaseTool<MergeChapterOutlinePreviewsInput, OutlinePreviewOutput> {
   name = 'merge_chapter_outline_previews';
-  description = '合并多个单章细纲预览为完整 outline_preview，供 validate_outline 和 persist_outline 使用。';
+  description = '合并多个单章细纲预览为完整 outline_preview，供 persist_outline 使用。';
   inputSchema = {
     type: 'object' as const,
     required: ['previews', 'chapterCount'],
@@ -746,7 +746,7 @@ export class MergeChapterOutlinePreviewsTool implements BaseTool<MergeChapterOut
     name: this.name,
     displayName: '合并单章细纲预览',
     description: '把 generate_chapter_outline_preview 的多章输出合并为完整 outline_preview；严格校验章节数量、编号连续、volumeNo 和 craftBrief 完整性。',
-    whenToUse: ['多个 generate_chapter_outline_preview 步骤完成后，需要合并为 validate_outline 可读取的完整大纲预览'],
+    whenToUse: ['多个 generate_chapter_outline_preview 步骤完成后，需要合并为可写入的完整大纲预览'],
     whenNotToUse: ['只有一个整卷 generate_outline_preview 输出时无需使用'],
     inputSchema: this.inputSchema,
     outputSchema: this.outputSchema,
