@@ -2,6 +2,7 @@ import assert from 'node:assert/strict';
 import type { ToolContext, ToolProgressPatch } from '../agent-tools/base-tool';
 import {
   assertChapterRangeCoverage,
+  buildChapterOutlineBatchesFromStoryUnitPlan,
   type ChapterOutlineBatchPlan,
 } from '../agent-tools/tools/chapter-outline-batch-contracts';
 import { GenerateChapterOutlineBatchPreviewTool, MergeChapterOutlineBatchPreviewsTool, SegmentChapterOutlineBatchesTool } from '../agent-tools/tools/chapter-outline-batch-tools.tool';
@@ -481,6 +482,35 @@ test('COB-P1 segment tool splits overlong story units inside unit boundaries', a
   assertBatchPlanCoverage(result);
 });
 
+test('COB-OPT shared batch splitter matches segment tool story-unit-aware ranges', async () => {
+  const storyUnitPlan = createStoryUnitPlan([
+    { unitId: 'u1', start: 1, end: 4 },
+    { unitId: 'u2', start: 5, end: 14 },
+    { unitId: 'u3', start: 15, end: 18 },
+  ]);
+  const tool = new SegmentChapterOutlineBatchesTool();
+  const { context } = createToolContext();
+
+  const helperBatches = buildChapterOutlineBatchesFromStoryUnitPlan(storyUnitPlan, {
+    preferredBatchSize: 4,
+    maxBatchSize: 5,
+    label: 'test splitter',
+  });
+  const toolPlan = await tool.run(
+    { context: createSegmentContext(storyUnitPlan, 18), volumeNo: 1, chapterCount: 18, preferredBatchSize: 4, maxBatchSize: 5 },
+    context,
+  );
+
+  assert.deepEqual(helperBatches.map((batch) => batch.chapterRange), toolPlan.batches.map((batch) => batch.chapterRange));
+  assert.deepEqual(helperBatches.map((batch) => batch.chapterRange), [
+    { start: 1, end: 4 },
+    { start: 5, end: 8 },
+    { start: 9, end: 11 },
+    { start: 12, end: 14 },
+    { start: 15, end: 18 },
+  ]);
+});
+
 test('COB-P1 segment tool rejects missing chapter allocation coverage', async () => {
   const storyUnitPlan = createStoryUnitPlan([
     { unitId: 'u1', start: 1, end: 4 },
@@ -550,6 +580,8 @@ test('COB-P2 batch preview generates continuous chapters with source whitelist i
   assert.match(calls[0].messages[1].content, /volume_candidate/);
   assert.match(calls[0].messages[1].content, /minor_temporary/);
   assert.match(calls[0].messages[1].content, /Shao/);
+  assert.match(calls[0].messages[1].content, /sceneBeats array must contain at least 3 concrete scene segments/);
+  assert.match(calls[0].messages[1].content, /"sceneBeats":\[\{"sceneArcId":"scene_1".*"sceneArcId":"scene_2".*"sceneArcId":"scene_3"/);
 });
 
 test('COB-P2 batch preview rejects missing whole chapter without repair', async () => {
@@ -612,6 +644,9 @@ test('COB-P2 batch preview repairs local craftBrief field omissions', async () =
 
   assert.equal(calls.length, 2);
   assert.match(calls[1].messages[1].content, /characterShift/);
+  assert.match(calls[1].messages[0].content, /compact strict JSON/);
+  assert.match(calls[1].messages[1].content, /craftBrief\.actionBeats and craftBrief\.sceneBeats each need at least 3/);
+  assert.ok(calls[1].messages[1].content.length < 50000, 'repair payload should stay compact for local structural repair');
   assert.equal(result.chapters[1].craftBrief?.characterShift, 'shift 2');
 });
 
@@ -774,6 +809,74 @@ test('COB-P4 PlanValidator accepts segmented batch outline plans covering 1..60'
     ]),
     route: { domain: 'outline', intent: 'split_volume_to_chapters', confidence: 0.9, reasons: ['test'], volumeNo: 1, chapterCount: 60 },
   }));
+});
+
+test('COB-OPT PlanValidator enforces story-unit-aware batch hints when available', () => {
+  const validator = new PlanValidatorService();
+  const hintedRanges = [
+    { start: 1, end: 4 },
+    { start: 5, end: 8 },
+    { start: 9, end: 11 },
+    { start: 12, end: 14 },
+    { start: 15, end: 18 },
+  ];
+  const batchSteps = hintedRanges.map((chapterRange) => ({
+    tool: 'generate_chapter_outline_batch_preview',
+    args: { context: '{{steps.1.output}}', batchPlan: '{{steps.2.output}}', volumeNo: 1, chapterCount: 18, chapterRange },
+  }));
+  const context = {
+    volumes: [{
+      id: 'v1',
+      volumeNo: 1,
+      chapterCount: 18,
+      hasNarrativePlan: true,
+      hasStoryUnitPlan: true,
+      hasLegacyStoryUnits: false,
+      chapterOutlineBatchHints: hintedRanges.map((chapterRange, index) => ({
+        batchNo: index + 1,
+        chapterRange,
+        storyUnitIds: [`u${index + 1}`],
+        reason: 'test hint',
+      })),
+    }],
+  };
+
+  assert.doesNotThrow(() => validator.validate({
+    plan: createPlanValidatorPlan([
+      { tool: 'inspect_project_context' },
+      { tool: 'segment_chapter_outline_batches', args: { context: '{{steps.1.output}}', volumeNo: 1, chapterCount: 18 } },
+      ...batchSteps,
+      { tool: 'merge_chapter_outline_batch_previews', args: { batchPreviews: batchSteps.map((_step, index) => `{{steps.${index + 3}.output}}`), volumeNo: 1, chapterCount: 18 } },
+    ]),
+    context: context as never,
+    route: { domain: 'outline', intent: 'split_volume_to_chapters', confidence: 0.9, reasons: ['test'], volumeNo: 1, chapterCount: 18 },
+  }));
+
+  const uniformRanges = [
+    { start: 1, end: 4 },
+    { start: 5, end: 8 },
+    { start: 9, end: 12 },
+    { start: 13, end: 16 },
+    { start: 17, end: 18 },
+  ];
+  const uniformBatchSteps = uniformRanges.map((chapterRange) => ({
+    tool: 'generate_chapter_outline_batch_preview',
+    args: { context: '{{steps.1.output}}', batchPlan: '{{steps.2.output}}', volumeNo: 1, chapterCount: 18, chapterRange },
+  }));
+
+  assert.throws(
+    () => validator.validate({
+      plan: createPlanValidatorPlan([
+        { tool: 'inspect_project_context' },
+        { tool: 'segment_chapter_outline_batches', args: { context: '{{steps.1.output}}', volumeNo: 1, chapterCount: 18 } },
+        ...uniformBatchSteps,
+        { tool: 'merge_chapter_outline_batch_previews', args: { batchPreviews: uniformBatchSteps.map((_step, index) => `{{steps.${index + 3}.output}}`), volumeNo: 1, chapterCount: 18 } },
+      ]),
+      context: context as never,
+      route: { domain: 'outline', intent: 'split_volume_to_chapters', confidence: 0.9, reasons: ['test'], volumeNo: 1, chapterCount: 18 },
+    }),
+    /chapterOutlineBatchHints/,
+  );
 });
 
 test('COB-P4 PlanValidator rejects batch outline plans with missing chapter coverage', () => {

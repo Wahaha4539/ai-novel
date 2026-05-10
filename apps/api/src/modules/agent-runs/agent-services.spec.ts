@@ -9623,11 +9623,48 @@ test('Planner prompt 将长章节细纲引导到 outline_design 而非正文写�
   assert.match(capturedMessages[0].content, /章节细纲 \/ 第 N 卷章节细纲/);
   assert.match(capturedMessages[0].content, /卷细纲 \/ 60 章细纲/);
   assert.match(capturedMessages[0].content, /UPDATED chapter-outline batching rule/);
+  assert.match(capturedMessages[0].content, /chapterOutlineBatchHints/);
   assert.match(capturedMessages[0].content, /不要误判为 write_chapter/);
   assert.match(promptPayload.taskTypeGuidance.outline_design, /60章细纲/);
   assert.match(promptPayload.taskTypeGuidance.outline_chapter_batching, /segment_chapter_outline_batches/);
   assert.match(promptPayload.taskTypeGuidance.outline_chapter_batching, /merge_chapter_outline_batch_previews/);
+  assert.match(promptPayload.taskTypeGuidance.outline_chapter_batching, /chapterOutlineBatchHints/);
   assert.match(JSON.stringify(promptPayload.availableTools), /generate_chapter_outline_batch_preview/);
+});
+
+test('Planner lightweight context keeps chapterOutlineBatchHints visible', () => {
+  const planner = new AgentPlannerService(new SkillRegistryService(), { list: () => [], listManifestsForPlanner: () => [] } as never, new RuleEngineService(), {} as LlmGatewayService) as unknown as {
+    contextForPrompt: (context: AgentContextV2, options: { lightweight: boolean }) => { volumes?: AgentContextV2['volumes'] };
+  };
+  const hints = [
+    { batchNo: 1, chapterRange: { start: 1, end: 4 }, storyUnitIds: ['u1'], reason: 'unit u1' },
+    { batchNo: 2, chapterRange: { start: 5, end: 7 }, storyUnitIds: ['u1'], reason: 'unit u1 split' },
+  ];
+
+  const promptContext = planner.contextForPrompt({
+    schemaVersion: 2,
+    userMessage: '为第一卷生成章节细纲',
+    runtime: { mode: 'plan', locale: 'zh-CN', maxSteps: 80, maxLlmCalls: 20 },
+    session: {},
+    volumes: [{
+      id: 'v1',
+      volumeNo: 1,
+      chapterCount: 7,
+      hasNarrativePlan: true,
+      hasStoryUnitPlan: true,
+      hasLegacyStoryUnits: false,
+      chapterOutlineBatchHints: hints,
+    }],
+    recentChapters: [],
+    knownCharacters: [],
+    worldFacts: [],
+    memoryHints: [],
+    attachments: [],
+    constraints: { hardRules: [], styleRules: [], approvalRules: [], idPolicy: [] },
+    availableTools: [],
+  }, { lightweight: true });
+
+  assert.deepEqual(promptContext.volumes?.[0].chapterOutlineBatchHints, hints);
 });
 
 test('Planner 保留 LLM 返回的卷纲聚合计划', () => {
@@ -13645,6 +13682,46 @@ test('AgentContextBuilder 将多轮澄清状态注入 Planner session', async ()
   assert.deepEqual(context.session.clarification?.latestChoice?.payload, { characterId: 'char_1' });
   assert.deepEqual(context.session.requestedAssetTypes, ['outline', 'writingRules']);
   assert.equal(context.session.importPreviewMode, 'deep');
+});
+
+test('AgentContextBuilder exposes story-unit-aware chapter outline batch hints', async () => {
+  const prisma = {
+    project: { async findUnique() { return { id: 'p1', title: 'Batch Hint Project', genre: null, tone: null, synopsis: null, targetWordCount: 3000, status: 'active' }; } },
+    chapter: { async findFirst() { return null; }, async findMany() { return []; } },
+    volume: {
+      async findMany() {
+        return [{
+          id: 'v1',
+          volumeNo: 1,
+          title: 'Volume One',
+          objective: 'Test objective',
+          chapterCount: 10,
+          status: 'draft',
+          narrativePlan: { storyUnitPlan: createVccStoryUnitPlan(10) },
+        }];
+      },
+    },
+    character: { async findMany() { return []; } },
+    lorebookEntry: { async findMany() { return []; } },
+    memoryChunk: { async findMany() { return []; } },
+  };
+  const tools = { listManifestsForPlanner() { return []; } };
+  const builder = new (await import('./agent-context-builder.service')).AgentContextBuilderService(prisma as never, tools as never, new RuleEngineService());
+
+  const context = await builder.buildForPlan({
+    id: 'run-batch-hints',
+    projectId: 'p1',
+    chapterId: null,
+    goal: '为第一卷生成章节细纲',
+    input: {} as never,
+  });
+
+  assert.deepEqual(context.volumes?.[0].chapterOutlineBatchHints?.map((batch) => batch.chapterRange), [
+    { start: 1, end: 4 },
+    { start: 5, end: 7 },
+    { start: 8, end: 10 },
+  ]);
+  assert.equal(context.volumes?.[0].chapterOutlineBatchHints?.every((batch) => batch.storyUnitIds.length === 1), true);
 });
 
 test('WritingRulesService create update remove invalidate recall cache', async () => {

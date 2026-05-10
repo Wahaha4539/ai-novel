@@ -58,14 +58,14 @@ export class PlanValidatorService {
     const plan = this.rawPlan(input.data);
     if (!plan) return;
     this.assertBundleTools(plan, input.selectedBundle);
-    this.assertRouteBoundaries(plan, input.route);
+    this.assertRouteBoundaries(plan, input.route, input.context);
     this.assertImportScope(plan, input.route, input.context);
   }
 
   validate(input: PlanValidatorInput): void {
     this.assertBundleTools(input.plan, input.selectedBundle);
     this.assertWriteApproval(input.plan);
-    this.assertRouteBoundaries(input.plan, input.route);
+    this.assertRouteBoundaries(input.plan, input.route, input.context);
     this.assertImportScope(input.plan, input.route, input.context);
   }
 
@@ -83,7 +83,7 @@ export class PlanValidatorService {
     if (unsafe.length) throw new Error(`PlanValidator blocked write tools without approval: ${unsafe.map((step) => step.tool).join(', ')}`);
   }
 
-  private assertRouteBoundaries(plan: AgentPlanSpec, route?: RouteDecision): void {
+  private assertRouteBoundaries(plan: AgentPlanSpec, route?: RouteDecision, context?: AgentContextV2): void {
     if (!route) return;
     const tools = new Set(plan.steps.map((step) => step.tool));
     if (route.domain === 'outline' && route.intent === 'generate_volume_outline') {
@@ -93,7 +93,7 @@ export class PlanValidatorService {
       if (!tools.has(GENERATE_CHAPTER_OUTLINE_PREVIEW_TOOL) && !tools.has(GENERATE_CHAPTER_OUTLINE_BATCH_PREVIEW_TOOL)) {
         throw new Error('PlanValidator blocked outline.chapter route without generate_chapter_outline_preview or generate_chapter_outline_batch_preview');
       }
-      this.assertOutlineChapterSplitCompleteness(plan, route);
+      this.assertOutlineChapterSplitCompleteness(plan, route, context);
     }
     if (route.domain === 'guided') {
       this.rejectTools(tools, ['write_chapter', 'write_chapter_series', 'rewrite_chapter', 'polish_chapter', 'auto_repair_chapter', 'extract_chapter_facts', 'rebuild_memory'], 'guided route');
@@ -134,7 +134,7 @@ export class PlanValidatorService {
     if (found.length) throw new Error(`PlanValidator blocked ${label} tools: ${found.join(', ')}`);
   }
 
-  private assertOutlineChapterSplitCompleteness(plan: AgentPlanSpec, route: RouteDecision): void {
+  private assertOutlineChapterSplitCompleteness(plan: AgentPlanSpec, route: RouteDecision, context?: AgentContextV2): void {
     const chapterSteps = plan.steps.filter((step) => step.tool === GENERATE_CHAPTER_OUTLINE_PREVIEW_TOOL);
     const batchSteps = plan.steps.filter((step) => step.tool === GENERATE_CHAPTER_OUTLINE_BATCH_PREVIEW_TOOL);
     const chapterCount = this.positiveInt(route.chapterCount) ?? this.inferOutlineChapterCount(plan);
@@ -157,7 +157,7 @@ export class PlanValidatorService {
       throw new Error('PlanValidator blocked outline.chapter plan mixing single-chapter and batch chapter outline preview steps.');
     }
     if (batchSteps.length) {
-      this.assertBatchOutlineChapterSplitCompleteness(plan, route, chapterCount, batchSteps);
+      this.assertBatchOutlineChapterSplitCompleteness(plan, route, context, chapterCount, batchSteps);
       return;
     }
     this.assertSingleOutlineChapterSplitCompleteness(plan, route, chapterCount, chapterSteps);
@@ -215,7 +215,7 @@ export class PlanValidatorService {
     }
   }
 
-  private assertBatchOutlineChapterSplitCompleteness(plan: AgentPlanSpec, route: RouteDecision, chapterCount: number, batchSteps: AgentPlanSpec['steps']): void {
+  private assertBatchOutlineChapterSplitCompleteness(plan: AgentPlanSpec, route: RouteDecision, context: AgentContextV2 | undefined, chapterCount: number, batchSteps: AgentPlanSpec['steps']): void {
     const segmentSteps = plan.steps.filter((step) => step.tool === SEGMENT_CHAPTER_OUTLINE_BATCHES_TOOL);
     if (!segmentSteps.length) {
       throw new Error('PlanValidator blocked outline.chapter batch plan without segment_chapter_outline_batches.');
@@ -240,6 +240,7 @@ export class PlanValidatorService {
       return range;
     });
     this.assertRangeCoverage(ranges, chapterCount, 'outline.chapter batch plan');
+    this.assertBatchHints(ranges, route, context, chapterCount);
 
     const batchStepNos = new Set(batchSteps.map((step) => step.stepNo));
     const mergeSteps = plan.steps.filter((step) => step.tool === MERGE_CHAPTER_OUTLINE_BATCH_PREVIEWS_TOOL);
@@ -324,6 +325,33 @@ export class PlanValidatorService {
     if (duplicatesOrOverlaps.length || missing.length || outOfRange.length) {
       throw new Error(`PlanValidator blocked ${label} with invalid chapter coverage: missing [${missing.join(', ')}], overlaps [${duplicatesOrOverlaps.join(', ')}], outOfRange [${outOfRange.join(', ')}].`);
     }
+  }
+
+  private assertBatchHints(actualRanges: ChapterRange[], route: RouteDecision, context: AgentContextV2 | undefined, chapterCount: number): void {
+    const hintRanges = this.chapterOutlineBatchHintRanges(route, context, chapterCount);
+    if (!hintRanges.length) return;
+    const sameLength = actualRanges.length === hintRanges.length;
+    const sameRanges = sameLength && actualRanges.every((range, index) => range.start === hintRanges[index].start && range.end === hintRanges[index].end);
+    if (!sameRanges) {
+      throw new Error(`PlanValidator blocked outline.chapter batch plan that does not match story-unit-aware chapterOutlineBatchHints: expected ${this.formatRanges(hintRanges)}, got ${this.formatRanges(actualRanges)}.`);
+    }
+  }
+
+  private chapterOutlineBatchHintRanges(route: RouteDecision, context: AgentContextV2 | undefined, chapterCount: number): ChapterRange[] {
+    const volumes = context?.volumes ?? [];
+    if (!volumes.length) return [];
+    const routeVolumeNo = this.positiveInt(route.volumeNo);
+    const matchingVolumes = routeVolumeNo
+      ? volumes.filter((volume) => volume.volumeNo === routeVolumeNo)
+      : volumes.filter((volume) => this.positiveInt(volume.chapterCount) === chapterCount);
+    if (matchingVolumes.length !== 1) return [];
+    const hints = matchingVolumes[0].chapterOutlineBatchHints ?? [];
+    const ranges = hints.map((hint) => this.chapterRange(hint.chapterRange)).filter((range): range is ChapterRange => Boolean(range));
+    return ranges.length && this.positiveInt(matchingVolumes[0].chapterCount) === chapterCount ? ranges : [];
+  }
+
+  private formatRanges(ranges: ChapterRange[]): string {
+    return ranges.map((range) => `${range.start}-${range.end}`).join(', ');
   }
 
   private positiveInt(value: unknown): number | undefined {

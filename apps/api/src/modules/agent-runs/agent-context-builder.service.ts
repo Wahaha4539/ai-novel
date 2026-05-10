@@ -2,6 +2,8 @@ import { Injectable } from '@nestjs/common';
 import { Prisma } from '@prisma/client';
 import { PrismaService } from '../../prisma/prisma.service';
 import { RuleEngineService } from '../agent-rules/rule-engine.service';
+import { buildChapterOutlineBatchesFromStoryUnitPlan, type ChapterOutlineBatch } from '../agent-tools/tools/chapter-outline-batch-contracts';
+import { assertVolumeStoryUnitPlan } from '../agent-tools/tools/story-unit-contracts';
 import { ToolManifestForPlanner } from '../agent-tools/tool-manifest.types';
 import { ToolRegistryService } from '../agent-tools/tool-registry.service';
 import { ImportAssetTypeDto, ImportPreviewModeDto } from './dto/create-agent-plan.dto';
@@ -67,6 +69,18 @@ export interface AgentContextV2 {
     defaultWordCount?: number | null;
     status?: string;
   };
+  volumes?: Array<{
+    id: string;
+    volumeNo: number;
+    title?: string | null;
+    objective?: string | null;
+    chapterCount?: number | null;
+    status?: string | null;
+    hasNarrativePlan: boolean;
+    hasStoryUnitPlan: boolean;
+    hasLegacyStoryUnits: boolean;
+    chapterOutlineBatchHints?: ChapterOutlineBatch[];
+  }>;
   currentChapter?: {
     id: string;
     title?: string | null;
@@ -109,11 +123,12 @@ export class AgentContextBuilderService {
     const clarification = this.clarificationValue(input);
     const attachments = this.attachmentSummaries(input.attachments);
 
-    const [project, currentChapter, recentChapters, knownCharacters, worldFacts, memoryHints] = await Promise.all([
+    const [project, currentChapter, volumes, recentChapters, knownCharacters, worldFacts, memoryHints] = await Promise.all([
       this.prisma.project.findUnique({ where: { id: run.projectId } }),
       currentChapterId
         ? this.prisma.chapter.findFirst({ where: { id: currentChapterId, projectId: run.projectId }, include: { drafts: { where: { isCurrent: true }, orderBy: { versionNo: 'desc' }, take: 1 } } })
         : Promise.resolve(null),
+      this.loadVolumeSummaries(run.projectId),
       this.loadRecentChapters(run.projectId, currentChapterId),
       this.loadKnownCharacters(run.projectId),
       this.loadWorldFacts(run.projectId),
@@ -147,6 +162,7 @@ export class AgentContextBuilderService {
       project: project
         ? { id: project.id, title: project.title, genre: project.genre, style: project.tone, synopsis: project.synopsis, defaultWordCount: project.targetWordCount, status: project.status }
         : undefined,
+      volumes,
       currentChapter: currentChapter
         ? {
             id: currentChapter.id,
@@ -191,6 +207,65 @@ export class AgentContextBuilderService {
     const where = current ? { projectId, chapterNo: { lt: current.chapterNo } } : { projectId };
     const chapters = await this.prisma.chapter.findMany({ where, orderBy: { chapterNo: 'desc' }, take: 5 });
     return chapters.reverse().map((chapter) => ({ id: chapter.id, title: chapter.title, index: chapter.chapterNo, summary: chapter.objective ?? chapter.outline ?? chapter.conflict ?? '暂无摘要' }));
+  }
+
+  private async loadVolumeSummaries(projectId: string): Promise<NonNullable<AgentContextV2['volumes']>> {
+    type VolumeSummaryRow = {
+      id: string;
+      volumeNo: number;
+      title: string | null;
+      objective: string | null;
+      chapterCount: number | null;
+      status: string | null;
+      narrativePlan: Prisma.JsonValue | null;
+    };
+    const volumeDelegate = (this.prisma as unknown as { volume?: { findMany?: (args: unknown) => Promise<VolumeSummaryRow[]> } }).volume;
+    // Some unit tests pass minimal Prisma mocks; production PrismaService always exposes volume.
+    if (!volumeDelegate?.findMany) return [];
+    const volumes = await volumeDelegate.findMany({
+      where: { projectId },
+      orderBy: { volumeNo: 'asc' },
+      select: {
+        id: true,
+        volumeNo: true,
+        title: true,
+        objective: true,
+        chapterCount: true,
+        status: true,
+        narrativePlan: true,
+      },
+    });
+    return volumes.map((volume) => {
+      const narrativePlan = this.asRecord(volume.narrativePlan);
+      const chapterOutlineBatchHints = this.chapterOutlineBatchHints(narrativePlan.storyUnitPlan, volume.volumeNo, volume.chapterCount);
+      return {
+        id: volume.id,
+        volumeNo: volume.volumeNo,
+        title: volume.title,
+        objective: volume.objective,
+        chapterCount: volume.chapterCount,
+        status: volume.status,
+        hasNarrativePlan: Object.keys(narrativePlan).length > 0,
+        hasStoryUnitPlan: Object.keys(this.asRecord(narrativePlan.storyUnitPlan)).length > 0,
+        hasLegacyStoryUnits: Array.isArray(narrativePlan.storyUnits) && narrativePlan.storyUnits.length > 0,
+        ...(chapterOutlineBatchHints.length ? { chapterOutlineBatchHints } : {}),
+      };
+    });
+  }
+
+  private chapterOutlineBatchHints(storyUnitPlanValue: unknown, volumeNo: number, chapterCount: number | null): ChapterOutlineBatch[] {
+    const targetChapterCount = this.numberValue(chapterCount);
+    if (!targetChapterCount) return [];
+    try {
+      const storyUnitPlan = assertVolumeStoryUnitPlan(storyUnitPlanValue, {
+        volumeNo,
+        chapterCount: targetChapterCount,
+        label: 'AgentContextBuilder.volume.storyUnitPlan',
+      });
+      return buildChapterOutlineBatchesFromStoryUnitPlan(storyUnitPlan, { label: 'AgentContextBuilder.volume.chapterOutlineBatchHints' });
+    } catch {
+      return [];
+    }
   }
 
   private async loadKnownCharacters(projectId: string) {

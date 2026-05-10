@@ -8,11 +8,14 @@ import {
   asRecord,
   asRecordArray,
   assertChapterRangeCoverage,
+  buildChapterOutlineBatchesFromStoryUnitPlan,
   chapterCountForRange,
-  ChapterOutlineBatch,
   ChapterOutlineBatchPreviewOutput,
   ChapterOutlineBatchPlan,
   ChapterRange,
+  DEFAULT_CHAPTER_OUTLINE_MAX_BATCH_SIZE,
+  DEFAULT_CHAPTER_OUTLINE_PREFERRED_BATCH_SIZE,
+  normalizeChapterOutlineBatchSize,
   positiveInt,
   stringArray,
   text,
@@ -33,9 +36,6 @@ interface SegmentChapterOutlineBatchesInput {
   maxBatchSize?: number;
 }
 
-const DEFAULT_PREFERRED_BATCH_SIZE = 4;
-const DEFAULT_MAX_BATCH_SIZE = 5;
-const MIN_BATCH_SIZE = 3;
 const CHAPTER_OUTLINE_BATCH_PREVIEW_LLM_TIMEOUT_MS = DEFAULT_LLM_TIMEOUT_MS;
 const CHAPTER_OUTLINE_BATCH_PREVIEW_REPAIR_TIMEOUT_MS = DEFAULT_LLM_TIMEOUT_MS;
 
@@ -132,9 +132,13 @@ export class SegmentChapterOutlineBatchesTool implements BaseTool<SegmentChapter
     });
 
     const storyUnitPlan = this.resolveStoryUnitPlan(args.storyUnitPlan, volume, volumeNo, chapterCount);
-    const preferredBatchSize = this.clampBatchSize(args.preferredBatchSize, DEFAULT_PREFERRED_BATCH_SIZE);
-    const maxBatchSize = Math.max(preferredBatchSize, this.clampBatchSize(args.maxBatchSize, DEFAULT_MAX_BATCH_SIZE));
-    const batches = this.buildBatches(storyUnitPlan, preferredBatchSize, maxBatchSize);
+    const preferredBatchSize = normalizeChapterOutlineBatchSize(args.preferredBatchSize, DEFAULT_CHAPTER_OUTLINE_PREFERRED_BATCH_SIZE);
+    const maxBatchSize = Math.max(preferredBatchSize, normalizeChapterOutlineBatchSize(args.maxBatchSize, DEFAULT_CHAPTER_OUTLINE_MAX_BATCH_SIZE));
+    const batches = buildChapterOutlineBatchesFromStoryUnitPlan(storyUnitPlan, {
+      preferredBatchSize,
+      maxBatchSize,
+      label: 'segment_chapter_outline_batches',
+    });
 
     assertChapterRangeCoverage({
       chapterCount,
@@ -172,51 +176,6 @@ export class SegmentChapterOutlineBatchesTool implements BaseTool<SegmentChapter
     });
   }
 
-  private buildBatches(storyUnitPlan: VolumeStoryUnitPlan, preferredBatchSize: number, maxBatchSize: number): ChapterOutlineBatch[] {
-    const allocations = [...(storyUnitPlan.chapterAllocation ?? [])].sort((left, right) => left.chapterRange.start - right.chapterRange.start);
-    const batches: ChapterOutlineBatch[] = [];
-    for (const allocation of allocations) {
-      const unit = storyUnitPlan.units.find((item) => item.unitId === allocation.unitId);
-      const title = unit?.title ? ` (${unit.title})` : '';
-      for (const range of this.splitRange(allocation.chapterRange, preferredBatchSize, maxBatchSize)) {
-        batches.push({
-          batchNo: batches.length + 1,
-          chapterRange: range,
-          storyUnitIds: [allocation.unitId],
-          reason: range.start === allocation.chapterRange.start && range.end === allocation.chapterRange.end
-            ? `storyUnit ${allocation.unitId}${title} chapter allocation`
-            : `storyUnit ${allocation.unitId}${title} split because allocation exceeds max batch size ${maxBatchSize}`,
-        });
-      }
-    }
-    return batches;
-  }
-
-  private splitRange(range: ChapterRange, preferredBatchSize: number, maxBatchSize: number): ChapterRange[] {
-    const total = range.end - range.start + 1;
-    if (total <= 0) throw new Error('segment_chapter_outline_batches received an invalid storyUnit chapterRange.');
-    if (total <= maxBatchSize) return [{ start: range.start, end: range.end }];
-
-    let batchCount = Math.ceil(total / preferredBatchSize);
-    while (Math.ceil(total / batchCount) > maxBatchSize) batchCount += 1;
-    while (batchCount > 1 && Math.floor(total / batchCount) < MIN_BATCH_SIZE && Math.ceil(total / (batchCount - 1)) <= maxBatchSize) {
-      batchCount -= 1;
-    }
-
-    const baseSize = Math.floor(total / batchCount);
-    let extra = total % batchCount;
-    const ranges: ChapterRange[] = [];
-    let start = range.start;
-    for (let index = 0; index < batchCount; index += 1) {
-      const size = baseSize + (extra > 0 ? 1 : 0);
-      if (extra > 0) extra -= 1;
-      const end = start + size - 1;
-      ranges.push({ start, end });
-      start = end + 1;
-    }
-    return ranges;
-  }
-
   private findTargetVolume(contextValue: unknown, volumeOutlineValue: unknown, volumeNo: number): Record<string, unknown> {
     const volumeOutline = asRecord(volumeOutlineValue);
     if (Object.keys(volumeOutline).length) return volumeOutline;
@@ -230,11 +189,6 @@ export class SegmentChapterOutlineBatchesTool implements BaseTool<SegmentChapter
     return volumes.length === 1 ? positiveInt(volumes[0].volumeNo) : undefined;
   }
 
-  private clampBatchSize(value: unknown, fallback: number): number {
-    const numeric = positiveInt(value);
-    if (!numeric) return fallback;
-    return Math.max(1, Math.min(8, numeric));
-  }
 }
 
 interface GenerateChapterOutlineBatchPreviewInput {
@@ -353,7 +307,7 @@ export class GenerateChapterOutlineBatchPreviewTool implements BaseTool<Generate
     if (!chapterRange) throw new Error('generate_chapter_outline_batch_preview requires a valid chapterRange.');
     if (chapterRange.end > chapterCount) throw new Error('generate_chapter_outline_batch_preview chapterRange exceeds chapterCount.');
     const targetChapterCount = chapterCountForRange(chapterRange);
-    if (targetChapterCount > DEFAULT_MAX_BATCH_SIZE && !args.storyUnitSlice) {
+    if (targetChapterCount > DEFAULT_CHAPTER_OUTLINE_MAX_BATCH_SIZE && !args.storyUnitSlice) {
       throw new Error(`generate_chapter_outline_batch_preview range ${chapterRange.start}-${chapterRange.end} is too large without an explicit storyUnitSlice.`);
     }
 
@@ -677,25 +631,33 @@ export class GenerateChapterOutlineBatchPreviewTool implements BaseTool<Generate
           'You repair a novel chapter-outline batch JSON object.',
           'Repair only local structural errors in existing returned chapters. Do not invent missing chapters or add placeholder craftBrief content.',
           'If a whole chapter or whole craftBrief is missing, keep failure instead of fabricating content.',
-          'Return strict JSON only with batch, chapters, and risks.',
+          'Return compact strict JSON only with batch, chapters, and risks. No Markdown, comments, or prose.',
+          'Every existing chapter craftBrief.actionBeats and craftBrief.sceneBeats must each contain at least 3 concrete items.',
           'characterExecution.cast source must be exactly one of: existing, volume_candidate, minor_temporary.',
         ].join('\n'),
       },
       {
         role: 'user' as const,
-        content: JSON.stringify({
+        content: this.safeJson({
           target: { volumeNo, chapterCount, chapterRange, allowedStoryUnitIds },
           validationError,
+          repairRules: [
+            `Keep exactly chapters ${chapterRange.start}-${chapterRange.end}; do not add, remove, renumber, or reorder chapters.`,
+            'Repair only incomplete local fields in chapters that are already present.',
+            'Each chapter needs title, objective, conflict, hook, outline, expectedWordCount, complete craftBrief, and characterExecution.',
+            'craftBrief.actionBeats and craftBrief.sceneBeats each need at least 3 concrete items; concreteClues needs at least 1 item.',
+            'Return minified JSON so the parser receives one valid JSON object.',
+          ],
           characterSourceWhitelist: {
             existing: characterCatalog.existingCharacterNames ?? [],
             volume_candidate: characterCatalog.volumeCandidateNames ?? [],
             minor_temporary: 'Declare in characterExecution.newMinorCharacters with firstAndOnlyUse=true and approvalPolicy=preview_only.',
           },
-          volume,
-          storyUnitSlice: args.storyUnitSlice ?? null,
+          volume: this.volumeRepairSummary(volume),
+          storyUnitSlice: args.storyUnitSlice ?? this.storyUnitSliceFromPlan(args.storyUnitPlan ?? asRecord(volume.narrativePlan).storyUnitPlan, allowedStoryUnitIds),
           previousBatchTail: args.previousBatchTail ?? null,
           invalidOutput,
-        }, null, 2),
+        }, 60000),
       },
     ];
   }
@@ -706,7 +668,7 @@ export class GenerateChapterOutlineBatchPreviewTool implements BaseTool<Generate
       'Generate one continuous batch of chapter outlines. Every chapter must include a complete Chapter.craftBrief and characterExecution.',
       'Do not output deterministic placeholders, skeletal templates, or backend-fillable gaps.',
       'The backend will reject missing chapters, repeated chapters, non-continuous chapter numbers, missing craftBrief, incomplete characterExecution, or invalid character sources.',
-      'Return strict JSON only. No Markdown.',
+      'Return compact strict JSON only. No Markdown, comments, or prose.',
     ].join('\n');
   }
 
@@ -752,8 +714,16 @@ export class GenerateChapterOutlineBatchPreviewTool implements BaseTool<Generate
       'Existing chapter summaries:',
       this.safeJson(Array.isArray(context.existingChapters) ? context.existingChapters.slice(0, 160) : [], 6000),
       '',
+      'Hard output requirements:',
+      `- Return exactly ${chapterCountForRange(chapterRange)} chapters: chapterNo ${chapterRange.start} through ${chapterRange.end}, continuous and in order.`,
+      '- Every chapter must include title, objective, conflict, hook, outline, expectedWordCount, and a complete craftBrief.',
+      '- Every craftBrief.actionBeats array must contain at least 3 concrete action nodes.',
+      '- Every craftBrief.sceneBeats array must contain at least 3 concrete scene segments; each segment must include sceneArcId, scenePart, location, participants, localGoal, visibleAction, obstacle, turningPoint, partResult, and sensoryAnchor.',
+      '- Every craftBrief.characterExecution.cast member must use source exactly existing, volume_candidate, or minor_temporary.',
+      '- Keep JSON compact and valid; do not include Markdown fences or explanatory text.',
+      '',
       'Required JSON shape:',
-      '{"batch":{"volumeNo":1,"chapterRange":{"start":1,"end":4},"storyUnitIds":["v1_unit_01"],"continuityBridgeIn":"how this batch enters from prior pressure","continuityBridgeOut":"how the final chapter hands off"},"chapters":[{"chapterNo":1,"volumeNo":1,"title":"...","objective":"...","conflict":"...","hook":"...","outline":"...","expectedWordCount":2500,"craftBrief":{"visibleGoal":"...","hiddenEmotion":"...","coreConflict":"...","mainlineTask":"...","subplotTasks":["..."],"storyUnit":{"unitId":"v1_unit_01","title":"...","chapterRange":{"start":1,"end":4},"chapterRole":"...","localGoal":"...","localConflict":"...","serviceFunctions":["mainline","relationship_shift","foreshadow"],"mainlineContribution":"...","characterContribution":"...","relationshipContribution":"...","worldOrThemeContribution":"...","unitPayoff":"...","stateChangeAfterUnit":"..."},"actionBeats":["...","...","..."],"sceneBeats":[{"sceneArcId":"scene_1","scenePart":"1/3","continuesFromChapterNo":null,"continuesToChapterNo":null,"location":"...","participants":["..."],"localGoal":"...","visibleAction":"...","obstacle":"...","turningPoint":"...","partResult":"...","sensoryAnchor":"..."}],"characterExecution":{"povCharacter":"...","cast":[{"characterName":"...","source":"existing","functionInChapter":"...","visibleGoal":"...","pressure":"...","actionBeatRefs":[1],"sceneBeatRefs":["scene_1"],"entryState":"...","exitState":"..."}],"relationshipBeats":[],"newMinorCharacters":[]},"concreteClues":[{"name":"...","sensoryDetail":"...","laterUse":"..."}],"dialogueSubtext":"...","characterShift":"...","irreversibleConsequence":"...","progressTypes":["info"],"entryState":"...","exitState":"...","openLoops":["..."],"closedLoops":["..."],"handoffToNextChapter":"...","continuityState":{"characterPositions":["..."],"activeThreats":["..."],"ownedClues":["..."],"relationshipChanges":["..."],"nextImmediatePressure":"..."}}}],"risks":[]}',
+      '{"batch":{"volumeNo":1,"chapterRange":{"start":1,"end":4},"storyUnitIds":["v1_unit_01"],"continuityBridgeIn":"how this batch enters from prior pressure","continuityBridgeOut":"how the final chapter hands off"},"chapters":[{"chapterNo":1,"volumeNo":1,"title":"...","objective":"...","conflict":"...","hook":"...","outline":"...","expectedWordCount":2500,"craftBrief":{"visibleGoal":"...","hiddenEmotion":"...","coreConflict":"...","mainlineTask":"...","subplotTasks":["..."],"storyUnit":{"unitId":"v1_unit_01","title":"...","chapterRange":{"start":1,"end":4},"chapterRole":"...","localGoal":"...","localConflict":"...","serviceFunctions":["mainline","relationship_shift","foreshadow"],"mainlineContribution":"...","characterContribution":"...","relationshipContribution":"...","worldOrThemeContribution":"...","unitPayoff":"...","stateChangeAfterUnit":"..."},"actionBeats":["...","...","..."],"sceneBeats":[{"sceneArcId":"scene_1","scenePart":"1/3","continuesFromChapterNo":null,"continuesToChapterNo":null,"location":"...","participants":["..."],"localGoal":"...","visibleAction":"...","obstacle":"...","turningPoint":"...","partResult":"...","sensoryAnchor":"..."},{"sceneArcId":"scene_2","scenePart":"2/3","continuesFromChapterNo":null,"continuesToChapterNo":null,"location":"...","participants":["..."],"localGoal":"...","visibleAction":"...","obstacle":"...","turningPoint":"...","partResult":"...","sensoryAnchor":"..."},{"sceneArcId":"scene_3","scenePart":"3/3","continuesFromChapterNo":null,"continuesToChapterNo":null,"location":"...","participants":["..."],"localGoal":"...","visibleAction":"...","obstacle":"...","turningPoint":"...","partResult":"...","sensoryAnchor":"..."}],"characterExecution":{"povCharacter":"...","cast":[{"characterName":"...","source":"existing","functionInChapter":"...","visibleGoal":"...","pressure":"...","actionBeatRefs":[1],"sceneBeatRefs":["scene_1","scene_2","scene_3"],"entryState":"...","exitState":"..."}],"relationshipBeats":[],"newMinorCharacters":[]},"concreteClues":[{"name":"...","sensoryDetail":"...","laterUse":"..."}],"dialogueSubtext":"...","characterShift":"...","irreversibleConsequence":"...","progressTypes":["info"],"entryState":"...","exitState":"...","openLoops":["..."],"closedLoops":["..."],"handoffToNextChapter":"...","continuityState":{"characterPositions":["..."],"activeThreats":["..."],"ownedClues":["..."],"relationshipChanges":["..."],"nextImmediatePressure":"..."}}}],"risks":[]}',
     ].join('\n');
   }
 
@@ -857,8 +827,28 @@ export class GenerateChapterOutlineBatchPreviewTool implements BaseTool<Generate
     return Number.isInteger(numeric) && numeric >= 1 ? numeric : null;
   }
 
+  private volumeRepairSummary(volume: Record<string, unknown>): Record<string, unknown> {
+    const narrativePlan = asRecord(volume.narrativePlan);
+    return {
+      volumeNo: volume.volumeNo,
+      title: volume.title,
+      objective: volume.objective,
+      chapterCount: volume.chapterCount,
+      narrativePlan: {
+        globalMainlineStage: narrativePlan.globalMainlineStage,
+        volumeMainline: narrativePlan.volumeMainline,
+        dramaticQuestion: narrativePlan.dramaticQuestion,
+        startState: narrativePlan.startState,
+        endState: narrativePlan.endState,
+        endingHook: narrativePlan.endingHook,
+        storyUnits: Array.isArray(narrativePlan.storyUnits) ? narrativePlan.storyUnits : undefined,
+        characterPlan: narrativePlan.characterPlan,
+      },
+    };
+  }
+
   private safeJson(value: unknown, limit: number): string {
-    const json = JSON.stringify(value ?? {}, null, 2);
+    const json = JSON.stringify(value ?? {});
     return json.length > limit ? `${json.slice(0, limit)}...` : json;
   }
 
