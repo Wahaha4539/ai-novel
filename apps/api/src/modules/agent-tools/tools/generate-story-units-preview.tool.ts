@@ -7,6 +7,7 @@ import { DEFAULT_LLM_TIMEOUT_MS } from '../../llm/llm-timeout.constants';
 import { BaseTool, ToolContext } from '../base-tool';
 import type { ToolManifestV2 } from '../tool-manifest.types';
 import { recordToolLlmUsage } from './import-preview-llm-usage';
+import { buildToolStreamProgressHeartbeat, streamPhaseTimeoutMs } from './llm-streaming';
 import { normalizeWithLlmRepair } from './structured-output-repair';
 import {
   STORY_UNIT_MAINLINE_RELATIONS,
@@ -134,10 +135,11 @@ export class GenerateStoryUnitsPreviewTool implements BaseTool<GenerateStoryUnit
       throw new Error('generate_story_units_preview requires structured chapterCount from args.chapterCount or volumeOutline.chapterCount; natural-language instruction/objective/synopsis is not parsed.');
     }
 
+    const generationPhaseMessage = `Generating volume ${volumeNo} story unit plan`;
     await context.updateProgress?.({
       phase: 'calling_llm',
       phaseMessage: `正在生成第 ${volumeNo} 卷单元故事计划`,
-      timeoutMs: STORY_UNITS_PREVIEW_LLM_TIMEOUT_MS,
+      timeoutMs: streamPhaseTimeoutMs(STORY_UNITS_PREVIEW_LLM_TIMEOUT_MS),
     });
     const messages = [
       { role: 'system' as const, content: this.buildSystemPrompt(chapterCount) },
@@ -150,15 +152,34 @@ export class GenerateStoryUnitsPreviewTool implements BaseTool<GenerateStoryUnit
       volumeNo,
       chapterCount: chapterCount ?? null,
       timeoutMs: STORY_UNITS_PREVIEW_LLM_TIMEOUT_MS,
+      timeoutKind: 'stream_idle',
+      streamIdleTimeoutMs: STORY_UNITS_PREVIEW_LLM_TIMEOUT_MS,
+      streamPhaseTimeoutMs: streamPhaseTimeoutMs(STORY_UNITS_PREVIEW_LLM_TIMEOUT_MS),
       messageCount: messages.length,
       totalMessageChars: messages.reduce((sum, message) => sum + message.content.length, 0),
     };
     const startedAt = Date.now();
+    const onStreamProgress = buildToolStreamProgressHeartbeat({
+      context,
+      logger: this.logger,
+      loggerEvent: 'story_units_preview.stream_heartbeat_failed',
+      phaseMessage: generationPhaseMessage,
+      idleTimeoutMs: STORY_UNITS_PREVIEW_LLM_TIMEOUT_MS,
+      metadata: { volumeNo, chapterCount },
+    });
     this.logger.log('story_units_preview.llm_request.started', logContext);
     try {
       const response = await this.llm.chatJson<unknown>(
         messages,
-        { appStep: 'planner', timeoutMs: STORY_UNITS_PREVIEW_LLM_TIMEOUT_MS, retries: 0, jsonMode: true },
+        {
+          appStep: 'planner',
+          timeoutMs: STORY_UNITS_PREVIEW_LLM_TIMEOUT_MS,
+          stream: true,
+          streamIdleTimeoutMs: STORY_UNITS_PREVIEW_LLM_TIMEOUT_MS,
+          onStreamProgress,
+          retries: 0,
+          jsonMode: true,
+        },
       );
       recordToolLlmUsage(context, 'planner', response.result);
       const normalized = await normalizeWithLlmRepair({
@@ -173,11 +194,21 @@ export class GenerateStoryUnitsPreviewTool implements BaseTool<GenerateStoryUnit
           this.buildRepairMessages(invalidOutput, validationError, volumeNo, chapterCount),
         progress: {
           phaseMessage: `正在修复第 ${volumeNo} 卷单元故事章节分配`,
-          timeoutMs: STORY_UNITS_PREVIEW_REPAIR_TIMEOUT_MS,
+          timeoutMs: streamPhaseTimeoutMs(STORY_UNITS_PREVIEW_REPAIR_TIMEOUT_MS),
         },
         llmOptions: {
           appStep: 'planner',
           timeoutMs: STORY_UNITS_PREVIEW_REPAIR_TIMEOUT_MS,
+          stream: true,
+          streamIdleTimeoutMs: STORY_UNITS_PREVIEW_REPAIR_TIMEOUT_MS,
+          onStreamProgress: buildToolStreamProgressHeartbeat({
+            context,
+            logger: this.logger,
+            loggerEvent: 'story_units_preview.stream_heartbeat_failed',
+            phaseMessage: `Repairing volume ${volumeNo} story unit plan structure`,
+            idleTimeoutMs: STORY_UNITS_PREVIEW_REPAIR_TIMEOUT_MS,
+            metadata: { volumeNo, chapterCount },
+          }),
           temperature: 0.1,
         },
         maxRepairAttempts: 1,

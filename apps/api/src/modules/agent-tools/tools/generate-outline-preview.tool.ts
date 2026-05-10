@@ -5,6 +5,7 @@ import { DEFAULT_LLM_TIMEOUT_MS } from '../../llm/llm-timeout.constants';
 import { BaseTool, ToolContext } from '../base-tool';
 import type { ToolManifestV2 } from '../tool-manifest.types';
 import { recordToolLlmUsage } from './import-preview-llm-usage';
+import { buildToolStreamProgressHeartbeat, streamPhaseTimeoutMs } from './llm-streaming';
 import { assertChapterCharacterExecution, type ChapterCharacterExecution, type CharacterReferenceCatalog, type VolumeCharacterPlan } from './outline-character-contracts';
 import { assertVolumeNarrativePlan } from './outline-narrative-contracts';
 import { normalizeWithLlmRepair } from './structured-output-repair';
@@ -188,7 +189,7 @@ export class GenerateOutlinePreviewTool implements BaseTool<GenerateOutlinePrevi
     await context.updateProgress?.({
       phase: 'calling_llm',
       phaseMessage: '正在生成卷章节预览',
-      timeoutMs: OUTLINE_PREVIEW_LLM_TIMEOUT_MS,
+      timeoutMs: streamPhaseTimeoutMs(OUTLINE_PREVIEW_LLM_TIMEOUT_MS),
     });
     const response = await this.callOutlineLlm(args, context, volumeNo, chapterCount);
     recordToolLlmUsage(context, 'planner', response.result);
@@ -206,11 +207,21 @@ export class GenerateOutlinePreviewTool implements BaseTool<GenerateOutlinePrevi
         this.buildRepairMessages(invalidOutput, validationError, args, volumeNo, 1, chapterCount, chapterCount, characterCatalog),
       progress: {
         phaseMessage: '正在修复卷章节预览结构',
-        timeoutMs: OUTLINE_PREVIEW_REPAIR_TIMEOUT_MS,
+        timeoutMs: streamPhaseTimeoutMs(OUTLINE_PREVIEW_REPAIR_TIMEOUT_MS),
       },
       llmOptions: {
         appStep: 'planner',
         timeoutMs: OUTLINE_PREVIEW_REPAIR_TIMEOUT_MS,
+        stream: true,
+        streamIdleTimeoutMs: OUTLINE_PREVIEW_REPAIR_TIMEOUT_MS,
+        onStreamProgress: buildToolStreamProgressHeartbeat({
+          context,
+          logger: this.logger,
+          loggerEvent: 'outline_preview.stream_heartbeat_failed',
+          phaseMessage: 'Repairing outline preview structure',
+          idleTimeoutMs: OUTLINE_PREVIEW_REPAIR_TIMEOUT_MS,
+          metadata: { volumeNo, chapterCount, requestChapterStart: 1, requestChapterEnd: chapterCount },
+        }),
         temperature: 0.1,
       },
       maxRepairAttempts: 1,
@@ -236,7 +247,7 @@ export class GenerateOutlinePreviewTool implements BaseTool<GenerateOutlinePrevi
         phaseMessage: `正在生成第 ${batch.startChapterNo}-${batch.endChapterNo} 章细纲`,
         progressCurrent: batch.batchIndex,
         progressTotal: batch.batchCount,
-        timeoutMs: OUTLINE_PREVIEW_LLM_TIMEOUT_MS,
+        timeoutMs: streamPhaseTimeoutMs(OUTLINE_PREVIEW_LLM_TIMEOUT_MS),
       });
       const response = await this.callOutlineLlm(args, context, volumeNo, chapterCount, batch, chapters);
       recordToolLlmUsage(context, 'planner', response.result);
@@ -256,11 +267,28 @@ export class GenerateOutlinePreviewTool implements BaseTool<GenerateOutlinePrevi
           this.buildRepairMessages(invalidOutput, validationError, args, volumeNo, batch.startChapterNo, batch.endChapterNo, chapterCount, characterCatalog),
         progress: {
           phaseMessage: `正在修复第 ${batch.startChapterNo}-${batch.endChapterNo} 章细纲结构`,
-          timeoutMs: OUTLINE_PREVIEW_REPAIR_TIMEOUT_MS,
+          timeoutMs: streamPhaseTimeoutMs(OUTLINE_PREVIEW_REPAIR_TIMEOUT_MS),
         },
         llmOptions: {
           appStep: 'planner',
           timeoutMs: OUTLINE_PREVIEW_REPAIR_TIMEOUT_MS,
+          stream: true,
+          streamIdleTimeoutMs: OUTLINE_PREVIEW_REPAIR_TIMEOUT_MS,
+          onStreamProgress: buildToolStreamProgressHeartbeat({
+            context,
+            logger: this.logger,
+            loggerEvent: 'outline_preview.stream_heartbeat_failed',
+            phaseMessage: `Repairing chapter outline preview ${batch.startChapterNo}-${batch.endChapterNo}`,
+            idleTimeoutMs: OUTLINE_PREVIEW_REPAIR_TIMEOUT_MS,
+            progressCurrent: batch.batchIndex,
+            progressTotal: batch.batchCount,
+            metadata: {
+              volumeNo,
+              chapterCount,
+              requestChapterStart: batch.startChapterNo,
+              requestChapterEnd: batch.endChapterNo,
+            },
+          }),
           temperature: 0.1,
         },
         maxRepairAttempts: 1,
@@ -300,11 +328,36 @@ export class GenerateOutlinePreviewTool implements BaseTool<GenerateOutlinePrevi
     ];
     const logContext = this.buildLlmRequestLogContext(context, messages, volumeNo, chapterCount, batch, previousChapters);
     const startedAt = Date.now();
+    const onStreamProgress = buildToolStreamProgressHeartbeat({
+      context,
+      logger: this.logger,
+      loggerEvent: 'outline_preview.stream_heartbeat_failed',
+      phaseMessage: batch
+        ? `Generating chapter outline preview ${batch.startChapterNo}-${batch.endChapterNo}`
+        : 'Generating outline preview',
+      idleTimeoutMs: OUTLINE_PREVIEW_LLM_TIMEOUT_MS,
+      progressCurrent: batch?.batchIndex,
+      progressTotal: batch?.batchCount,
+      metadata: {
+        volumeNo,
+        chapterCount,
+        requestChapterStart: batch?.startChapterNo ?? 1,
+        requestChapterEnd: batch?.endChapterNo ?? chapterCount,
+      },
+    });
     this.logger.log('outline_preview.llm_request.started', logContext);
     try {
       const response = await this.llm.chatJson<OutlinePreviewOutput>(
         messages,
-        { appStep: 'planner', timeoutMs: OUTLINE_PREVIEW_LLM_TIMEOUT_MS, retries: 0, jsonMode: true },
+        {
+          appStep: 'planner',
+          timeoutMs: OUTLINE_PREVIEW_LLM_TIMEOUT_MS,
+          stream: true,
+          streamIdleTimeoutMs: OUTLINE_PREVIEW_LLM_TIMEOUT_MS,
+          onStreamProgress,
+          retries: 0,
+          jsonMode: true,
+        },
       );
       this.logger.log('outline_preview.llm_request.completed', {
         ...logContext,
@@ -345,6 +398,9 @@ export class GenerateOutlinePreviewTool implements BaseTool<GenerateOutlinePrevi
       previousChapterNo: previousChapter?.chapterNo ?? null,
       previousChaptersCount: previousChapters.length,
       timeoutMs: OUTLINE_PREVIEW_LLM_TIMEOUT_MS,
+      timeoutKind: 'stream_idle',
+      streamIdleTimeoutMs: OUTLINE_PREVIEW_LLM_TIMEOUT_MS,
+      streamPhaseTimeoutMs: streamPhaseTimeoutMs(OUTLINE_PREVIEW_LLM_TIMEOUT_MS),
       maxTokensSent: null,
       maxTokensOmitted: true,
       messageCount: messages.length,

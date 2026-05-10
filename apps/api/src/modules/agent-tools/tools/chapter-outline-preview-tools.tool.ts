@@ -14,6 +14,7 @@ import {
 } from './chapter-outline-quality-review';
 import { ChapterContinuityState, ChapterCraftBrief, ChapterSceneBeat, ChapterStoryUnit, OutlinePreviewOutput } from './generate-outline-preview.tool';
 import { recordToolLlmUsage } from './import-preview-llm-usage';
+import { buildToolStreamProgressHeartbeat, streamPhaseTimeoutMs } from './llm-streaming';
 import { assertChapterCharacterExecution, assertVolumeCharacterPlan, type CharacterReferenceCatalog } from './outline-character-contracts';
 import { assertVolumeStoryUnitPlan, storyUnitForChapter, storyUnitServiceFunctions, type VolumeStoryUnitPlan } from './story-unit-contracts';
 import { normalizeWithLlmRepair } from './structured-output-repair';
@@ -143,12 +144,13 @@ export class GenerateChapterOutlinePreviewTool implements BaseTool<GenerateChapt
     if (!chapterCount) throw new Error('generate_chapter_outline_preview 缺少有效 chapterCount，未生成单章细纲。');
     if (chapterNo > chapterCount) throw new Error(`generate_chapter_outline_preview chapterNo ${chapterNo} 超过 chapterCount ${chapterCount}，未生成单章细纲。`);
 
+    const generationPhaseMessage = `Generating chapter ${chapterNo} outline`;
     await context.updateProgress?.({
       phase: 'calling_llm',
       phaseMessage: `正在生成第 ${chapterNo} 章细纲`,
       progressCurrent: chapterNo,
       progressTotal: chapterCount,
-      timeoutMs: CHAPTER_OUTLINE_PREVIEW_LLM_TIMEOUT_MS,
+      timeoutMs: streamPhaseTimeoutMs(CHAPTER_OUTLINE_PREVIEW_LLM_TIMEOUT_MS),
     });
     const messages = [
       { role: 'system' as const, content: this.buildSystemPrompt() },
@@ -163,6 +165,9 @@ export class GenerateChapterOutlinePreviewTool implements BaseTool<GenerateChapt
       chapterCount,
       previousChapterNo: Number(this.asRecord(args.previousChapter).chapterNo) || null,
       timeoutMs: CHAPTER_OUTLINE_PREVIEW_LLM_TIMEOUT_MS,
+      timeoutKind: 'stream_idle',
+      streamIdleTimeoutMs: CHAPTER_OUTLINE_PREVIEW_LLM_TIMEOUT_MS,
+      streamPhaseTimeoutMs: streamPhaseTimeoutMs(CHAPTER_OUTLINE_PREVIEW_LLM_TIMEOUT_MS),
       maxTokensSent: null,
       maxTokensOmitted: true,
       messageCount: messages.length,
@@ -170,11 +175,29 @@ export class GenerateChapterOutlinePreviewTool implements BaseTool<GenerateChapt
     };
     const startedAt = Date.now();
     const characterCatalog = this.extractCharacterCatalog(args.context);
+    const onStreamProgress = buildToolStreamProgressHeartbeat({
+      context,
+      logger: this.logger,
+      loggerEvent: 'chapter_outline_preview.stream_heartbeat_failed',
+      phaseMessage: generationPhaseMessage,
+      idleTimeoutMs: CHAPTER_OUTLINE_PREVIEW_LLM_TIMEOUT_MS,
+      progressCurrent: chapterNo,
+      progressTotal: chapterCount,
+      metadata: { volumeNo, chapterNo, chapterCount },
+    });
     this.logger.log('chapter_outline_preview.llm_request.started', logContext);
     try {
       const response = await this.llm.chatJson<unknown>(
         messages,
-        { appStep: 'planner', timeoutMs: CHAPTER_OUTLINE_PREVIEW_LLM_TIMEOUT_MS, retries: 0, jsonMode: true },
+        {
+          appStep: 'planner',
+          timeoutMs: CHAPTER_OUTLINE_PREVIEW_LLM_TIMEOUT_MS,
+          stream: true,
+          streamIdleTimeoutMs: CHAPTER_OUTLINE_PREVIEW_LLM_TIMEOUT_MS,
+          onStreamProgress,
+          retries: 0,
+          jsonMode: true,
+        },
       );
       recordToolLlmUsage(context, 'planner', response.result);
       let normalized = await normalizeWithLlmRepair({
@@ -189,11 +212,23 @@ export class GenerateChapterOutlinePreviewTool implements BaseTool<GenerateChapt
           this.buildRepairMessages(invalidOutput, validationError, args, volumeNo, chapterNo, chapterCount, characterCatalog),
         progress: {
           phaseMessage: `正在修复第 ${chapterNo} 章细纲结构`,
-          timeoutMs: CHAPTER_OUTLINE_PREVIEW_REPAIR_TIMEOUT_MS,
+          timeoutMs: streamPhaseTimeoutMs(CHAPTER_OUTLINE_PREVIEW_REPAIR_TIMEOUT_MS),
         },
         llmOptions: {
           appStep: 'planner',
           timeoutMs: CHAPTER_OUTLINE_PREVIEW_REPAIR_TIMEOUT_MS,
+          stream: true,
+          streamIdleTimeoutMs: CHAPTER_OUTLINE_PREVIEW_REPAIR_TIMEOUT_MS,
+          onStreamProgress: buildToolStreamProgressHeartbeat({
+            context,
+            logger: this.logger,
+            loggerEvent: 'chapter_outline_preview.stream_heartbeat_failed',
+            phaseMessage: `Repairing chapter ${chapterNo} outline structure`,
+            idleTimeoutMs: CHAPTER_OUTLINE_PREVIEW_REPAIR_TIMEOUT_MS,
+            progressCurrent: chapterNo,
+            progressTotal: chapterCount,
+            metadata: { volumeNo, chapterNo, chapterCount },
+          }),
           temperature: 0.1,
         },
         maxRepairAttempts: 2,
@@ -209,8 +244,9 @@ export class GenerateChapterOutlinePreviewTool implements BaseTool<GenerateChapt
           phaseMessage: `Regenerating chapter ${chapterNo} outline from LLM quality issues`,
           progressCurrent: chapterNo,
           progressTotal: chapterCount,
-          timeoutMs: CHAPTER_OUTLINE_PREVIEW_LLM_TIMEOUT_MS,
+          timeoutMs: streamPhaseTimeoutMs(CHAPTER_OUTLINE_PREVIEW_LLM_TIMEOUT_MS),
         });
+        const qualityRegenerationPhaseMessage = `Regenerating chapter ${chapterNo} outline from LLM quality issues`;
         const regenerationResponse = await this.llm.chatJson<unknown>(
           this.buildQualityRegenerationMessages({
             args,
@@ -221,7 +257,25 @@ export class GenerateChapterOutlinePreviewTool implements BaseTool<GenerateChapt
             qualityReview,
             characterCatalog,
           }),
-          { appStep: 'planner', timeoutMs: CHAPTER_OUTLINE_PREVIEW_LLM_TIMEOUT_MS, retries: 0, jsonMode: true, temperature: 0.2 },
+          {
+            appStep: 'planner',
+            timeoutMs: CHAPTER_OUTLINE_PREVIEW_LLM_TIMEOUT_MS,
+            stream: true,
+            streamIdleTimeoutMs: CHAPTER_OUTLINE_PREVIEW_LLM_TIMEOUT_MS,
+            onStreamProgress: buildToolStreamProgressHeartbeat({
+              context,
+              logger: this.logger,
+              loggerEvent: 'chapter_outline_preview.stream_heartbeat_failed',
+              phaseMessage: qualityRegenerationPhaseMessage,
+              idleTimeoutMs: CHAPTER_OUTLINE_PREVIEW_LLM_TIMEOUT_MS,
+              progressCurrent: chapterNo,
+              progressTotal: chapterCount,
+              metadata: { volumeNo, chapterNo, chapterCount, phase: 'quality_regeneration' },
+            }),
+            retries: 0,
+            jsonMode: true,
+            temperature: 0.2,
+          },
         );
         recordToolLlmUsage(context, 'outline_chapter_quality_regeneration', regenerationResponse.result);
         normalized = await normalizeWithLlmRepair({
@@ -236,11 +290,23 @@ export class GenerateChapterOutlinePreviewTool implements BaseTool<GenerateChapt
             this.buildRepairMessages(invalidOutput, validationError, args, volumeNo, chapterNo, chapterCount, characterCatalog),
           progress: {
             phaseMessage: `正在修复第 ${chapterNo} 章质量重生后的结构`,
-            timeoutMs: CHAPTER_OUTLINE_PREVIEW_REPAIR_TIMEOUT_MS,
+            timeoutMs: streamPhaseTimeoutMs(CHAPTER_OUTLINE_PREVIEW_REPAIR_TIMEOUT_MS),
           },
           llmOptions: {
             appStep: 'planner',
             timeoutMs: CHAPTER_OUTLINE_PREVIEW_REPAIR_TIMEOUT_MS,
+            stream: true,
+            streamIdleTimeoutMs: CHAPTER_OUTLINE_PREVIEW_REPAIR_TIMEOUT_MS,
+            onStreamProgress: buildToolStreamProgressHeartbeat({
+              context,
+              logger: this.logger,
+              loggerEvent: 'chapter_outline_preview.stream_heartbeat_failed',
+              phaseMessage: `Repairing regenerated chapter ${chapterNo} outline structure`,
+              idleTimeoutMs: CHAPTER_OUTLINE_PREVIEW_REPAIR_TIMEOUT_MS,
+              progressCurrent: chapterNo,
+              progressTotal: chapterCount,
+              metadata: { volumeNo, chapterNo, chapterCount, phase: 'quality_regeneration_repair' },
+            }),
             temperature: 0.1,
           },
           maxRepairAttempts: 1,

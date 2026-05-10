@@ -1,11 +1,15 @@
+import { StructuredLogger } from '../../../common/logging/structured-logger';
 import { DEFAULT_LLM_TIMEOUT_MS } from '../../llm/llm-timeout.constants';
 import type { LlmGatewayService } from '../../llm/llm-gateway.service';
 import type { ToolContext } from '../base-tool';
 import { recordToolLlmUsage } from './import-preview-llm-usage';
 import type { ChapterOutlineBatchQualityReview, ChapterRange } from './chapter-outline-batch-contracts';
 import { asRecord, asRecordArray, positiveInt, text } from './chapter-outline-batch-contracts';
+import { buildToolStreamProgressHeartbeat, streamPhaseTimeoutMs } from './llm-streaming';
 
 export const CHAPTER_OUTLINE_QUALITY_REVIEW_TIMEOUT_MS = DEFAULT_LLM_TIMEOUT_MS;
+
+const qualityReviewLogger = new StructuredLogger('ChapterOutlineQualityReview');
 
 export interface ChapterOutlineQualityReviewOptions {
   task: string;
@@ -33,13 +37,25 @@ export async function reviewChapterOutlineQuality(
     phaseMessage: options.progressMessage,
     progressCurrent: options.progressCurrent,
     progressTotal: options.progressTotal,
-    timeoutMs: CHAPTER_OUTLINE_QUALITY_REVIEW_TIMEOUT_MS,
+    timeoutMs: streamPhaseTimeoutMs(CHAPTER_OUTLINE_QUALITY_REVIEW_TIMEOUT_MS),
   });
   const response = await llm.chatJson<unknown>(
     buildChapterOutlineQualityReviewMessages(options),
     {
       appStep: 'planner',
       timeoutMs: CHAPTER_OUTLINE_QUALITY_REVIEW_TIMEOUT_MS,
+      stream: true,
+      streamIdleTimeoutMs: CHAPTER_OUTLINE_QUALITY_REVIEW_TIMEOUT_MS,
+      onStreamProgress: buildToolStreamProgressHeartbeat({
+        context,
+        logger: qualityReviewLogger,
+        loggerEvent: 'chapter_outline_quality_review.stream_heartbeat_failed',
+        phaseMessage: options.progressMessage,
+        idleTimeoutMs: CHAPTER_OUTLINE_QUALITY_REVIEW_TIMEOUT_MS,
+        progressCurrent: options.progressCurrent,
+        progressTotal: options.progressTotal,
+        metadata: { usageStep: options.usageStep, target: options.target },
+      }),
       retries: 0,
       jsonMode: true,
       jsonSchema: buildChapterOutlineQualityReviewJsonSchema(options.schemaName, options.schemaDescription),

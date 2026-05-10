@@ -613,6 +613,9 @@ test('COB-P2 batch preview generates continuous chapters with source whitelist i
   assert.match(calls[1].messages[0].content, /Do not use keyword matching/);
   assert.match(calls[1].messages[1].content, /actor\/action\/object\/obstacle\/result|actor.*visible action.*object/s);
   assert.equal((calls[1].options.jsonSchema as Record<string, unknown>).name, 'chapter_outline_batch_quality_review');
+  assert.equal(calls[1].options.stream, true);
+  assert.equal(calls[1].options.streamIdleTimeoutMs, DEFAULT_LLM_TIMEOUT_MS);
+  assert.equal(typeof calls[1].options.onStreamProgress, 'function');
 });
 
 test('COB-OPT batch preview prompt uses persisted storyUnit slice when plan passes only batchPlan', async () => {

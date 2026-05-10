@@ -6,6 +6,7 @@ import { BaseTool, ToolContext } from '../base-tool';
 import type { ToolManifestV2 } from '../tool-manifest.types';
 import { OutlinePreviewOutput } from './generate-outline-preview.tool';
 import { recordToolLlmUsage } from './import-preview-llm-usage';
+import { buildToolStreamProgressHeartbeat, streamPhaseTimeoutMs } from './llm-streaming';
 import { VOLUME_CHARACTER_ROLE_TYPES, type CharacterReferenceCatalog } from './outline-character-contracts';
 import { assertVolumeNarrativePlan } from './outline-narrative-contracts';
 import { normalizeWithLlmRepair } from './structured-output-repair';
@@ -102,10 +103,11 @@ export class GenerateVolumeOutlinePreviewTool implements BaseTool<GenerateVolume
     if (!chapterCount) {
       throw new Error('generate_volume_outline_preview 缺少目标章节数，未生成完整卷大纲。');
     }
+    const generationPhaseMessage = `Generating volume ${volumeNo} outline`;
     await context.updateProgress?.({
       phase: 'calling_llm',
       phaseMessage: `正在生成第 ${volumeNo} 卷卷大纲`,
-      timeoutMs: VOLUME_OUTLINE_PREVIEW_LLM_TIMEOUT_MS,
+      timeoutMs: streamPhaseTimeoutMs(VOLUME_OUTLINE_PREVIEW_LLM_TIMEOUT_MS),
     });
     const messages = [
       { role: 'system' as const, content: this.buildSystemPrompt() },
@@ -118,6 +120,9 @@ export class GenerateVolumeOutlinePreviewTool implements BaseTool<GenerateVolume
       volumeNo,
       chapterCount,
       timeoutMs: VOLUME_OUTLINE_PREVIEW_LLM_TIMEOUT_MS,
+      timeoutKind: 'stream_idle',
+      streamIdleTimeoutMs: VOLUME_OUTLINE_PREVIEW_LLM_TIMEOUT_MS,
+      streamPhaseTimeoutMs: streamPhaseTimeoutMs(VOLUME_OUTLINE_PREVIEW_LLM_TIMEOUT_MS),
       maxTokensSent: null,
       maxTokensOmitted: true,
       messageCount: messages.length,
@@ -125,11 +130,27 @@ export class GenerateVolumeOutlinePreviewTool implements BaseTool<GenerateVolume
     };
     const startedAt = Date.now();
     const characterCatalog = this.extractCharacterCatalog(args.context);
+    const onStreamProgress = buildToolStreamProgressHeartbeat({
+      context,
+      logger: this.logger,
+      loggerEvent: 'volume_outline_preview.stream_heartbeat_failed',
+      phaseMessage: generationPhaseMessage,
+      idleTimeoutMs: VOLUME_OUTLINE_PREVIEW_LLM_TIMEOUT_MS,
+      metadata: { volumeNo, chapterCount },
+    });
     this.logger.log('volume_outline_preview.llm_request.started', logContext);
     try {
       const response = await this.llm.chatJson<unknown>(
         messages,
-        { appStep: 'planner', timeoutMs: VOLUME_OUTLINE_PREVIEW_LLM_TIMEOUT_MS, retries: 0, jsonMode: true },
+        {
+          appStep: 'planner',
+          timeoutMs: VOLUME_OUTLINE_PREVIEW_LLM_TIMEOUT_MS,
+          stream: true,
+          streamIdleTimeoutMs: VOLUME_OUTLINE_PREVIEW_LLM_TIMEOUT_MS,
+          onStreamProgress,
+          retries: 0,
+          jsonMode: true,
+        },
       );
       recordToolLlmUsage(context, 'planner', response.result);
       this.logger.log('volume_outline_preview.llm_response.received', {
@@ -152,11 +173,21 @@ export class GenerateVolumeOutlinePreviewTool implements BaseTool<GenerateVolume
           this.buildRepairMessages(invalidOutput, validationError, volumeNo, chapterCount, characterCatalog),
         progress: {
           phaseMessage: `正在修复第 ${volumeNo} 卷卷大纲结构`,
-          timeoutMs: VOLUME_OUTLINE_PREVIEW_REPAIR_TIMEOUT_MS,
+          timeoutMs: streamPhaseTimeoutMs(VOLUME_OUTLINE_PREVIEW_REPAIR_TIMEOUT_MS),
         },
         llmOptions: {
           appStep: 'planner',
           timeoutMs: VOLUME_OUTLINE_PREVIEW_REPAIR_TIMEOUT_MS,
+          stream: true,
+          streamIdleTimeoutMs: VOLUME_OUTLINE_PREVIEW_REPAIR_TIMEOUT_MS,
+          onStreamProgress: buildToolStreamProgressHeartbeat({
+            context,
+            logger: this.logger,
+            loggerEvent: 'volume_outline_preview.stream_heartbeat_failed',
+            phaseMessage: `Repairing volume ${volumeNo} outline structure`,
+            idleTimeoutMs: VOLUME_OUTLINE_PREVIEW_REPAIR_TIMEOUT_MS,
+            metadata: { volumeNo, chapterCount },
+          }),
           temperature: 0.1,
         },
         maxRepairAttempts: 1,

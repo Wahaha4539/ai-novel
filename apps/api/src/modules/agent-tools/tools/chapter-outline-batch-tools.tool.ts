@@ -1,6 +1,5 @@
 import { Injectable } from '@nestjs/common';
 import { StructuredLogger } from '../../../common/logging/structured-logger';
-import type { LlmChatStreamProgress } from '../../llm/dto/llm-chat.dto';
 import { LlmGatewayService } from '../../llm/llm-gateway.service';
 import { DEFAULT_LLM_TIMEOUT_MS } from '../../llm/llm-timeout.constants';
 import { BaseTool, ToolContext } from '../base-tool';
@@ -31,6 +30,7 @@ import {
 } from './chapter-outline-quality-review';
 import { ChapterContinuityState, ChapterCraftBrief, ChapterSceneBeat, ChapterStoryUnit, OutlinePreviewOutput } from './generate-outline-preview.tool';
 import { recordToolLlmUsage } from './import-preview-llm-usage';
+import { buildToolStreamProgressHeartbeat, streamPhaseTimeoutMs } from './llm-streaming';
 import { assertChapterCharacterExecution, assertVolumeCharacterPlan, type CharacterReferenceCatalog } from './outline-character-contracts';
 import { assertVolumeStoryUnitPlan, type VolumeStoryUnitPlan } from './story-unit-contracts';
 import { normalizeWithLlmRepair } from './structured-output-repair';
@@ -49,8 +49,6 @@ const CHAPTER_OUTLINE_BATCH_PREVIEW_LLM_TIMEOUT_MS = DEFAULT_LLM_TIMEOUT_MS;
 const CHAPTER_OUTLINE_BATCH_PREVIEW_REPAIR_TIMEOUT_MS = DEFAULT_LLM_TIMEOUT_MS;
 const CHAPTER_OUTLINE_BATCH_QUALITY_REVIEW_TIMEOUT_MS = CHAPTER_OUTLINE_QUALITY_REVIEW_TIMEOUT_MS;
 const CHAPTER_OUTLINE_BATCH_QUALITY_REGENERATION_ATTEMPTS = 1;
-const CHAPTER_OUTLINE_BATCH_STREAM_PHASE_TIMEOUT_GRACE_MS = 30_000;
-const CHAPTER_OUTLINE_BATCH_STREAM_HEARTBEAT_INTERVAL_MS = 30_000;
 
 @Injectable()
 export class SegmentChapterOutlineBatchesTool implements BaseTool<SegmentChapterOutlineBatchesInput, ChapterOutlineBatchPlan> {
@@ -336,7 +334,7 @@ export class GenerateChapterOutlineBatchPreviewTool implements BaseTool<Generate
       phaseMessage: `Generating chapter outline batch ${chapterRange.start}-${chapterRange.end}`,
       progressCurrent: chapterRange.start - 1,
       progressTotal: chapterCount,
-      timeoutMs: this.streamPhaseTimeoutMs(CHAPTER_OUTLINE_BATCH_PREVIEW_LLM_TIMEOUT_MS),
+      timeoutMs: streamPhaseTimeoutMs(CHAPTER_OUTLINE_BATCH_PREVIEW_LLM_TIMEOUT_MS),
     });
 
     const messages = [
@@ -355,7 +353,7 @@ export class GenerateChapterOutlineBatchPreviewTool implements BaseTool<Generate
       timeoutMs: CHAPTER_OUTLINE_BATCH_PREVIEW_LLM_TIMEOUT_MS,
       timeoutKind: 'stream_idle',
       streamIdleTimeoutMs: CHAPTER_OUTLINE_BATCH_PREVIEW_LLM_TIMEOUT_MS,
-      streamPhaseTimeoutMs: this.streamPhaseTimeoutMs(CHAPTER_OUTLINE_BATCH_PREVIEW_LLM_TIMEOUT_MS),
+      streamPhaseTimeoutMs: streamPhaseTimeoutMs(CHAPTER_OUTLINE_BATCH_PREVIEW_LLM_TIMEOUT_MS),
       messageCount: messages.length,
       totalMessageChars: messages.reduce((sum, message) => sum + message.content.length, 0),
       jsonSchemaChars: JSON.stringify(jsonSchema).length,
@@ -394,7 +392,7 @@ export class GenerateChapterOutlineBatchPreviewTool implements BaseTool<Generate
           phaseMessage: `Regenerating chapter outline batch ${chapterRange.start}-${chapterRange.end} from LLM quality issues`,
           progressCurrent: chapterRange.start - 1,
           progressTotal: chapterCount,
-          timeoutMs: this.streamPhaseTimeoutMs(CHAPTER_OUTLINE_BATCH_PREVIEW_LLM_TIMEOUT_MS),
+          timeoutMs: streamPhaseTimeoutMs(CHAPTER_OUTLINE_BATCH_PREVIEW_LLM_TIMEOUT_MS),
         });
         normalized = await this.generateAndNormalizeBatch(this.buildQualityRegenerationMessages({
           args,
@@ -480,12 +478,18 @@ export class GenerateChapterOutlineBatchPreviewTool implements BaseTool<Generate
       phaseMessage: string;
     },
   ): Promise<ChapterOutlineBatchPreviewOutput> {
-    const onStreamProgress = this.buildStreamProgressHeartbeat({
+    const onStreamProgress = buildToolStreamProgressHeartbeat({
       context: options.context,
-      chapterRange: options.chapterRange,
-      chapterCount: options.chapterCount,
+      logger: this.logger,
+      loggerEvent: 'chapter_outline_batch_preview.stream_heartbeat_failed',
       phaseMessage: `Generating chapter outline batch ${options.chapterRange.start}-${options.chapterRange.end}`,
       idleTimeoutMs: CHAPTER_OUTLINE_BATCH_PREVIEW_LLM_TIMEOUT_MS,
+      progressCurrent: options.chapterRange.start - 1,
+      progressTotal: options.chapterCount,
+      metadata: {
+        chapterStart: options.chapterRange.start,
+        chapterEnd: options.chapterRange.end,
+      },
     });
     const response = await this.llm.chatJson<unknown>(
       messages,
@@ -521,19 +525,25 @@ export class GenerateChapterOutlineBatchPreviewTool implements BaseTool<Generate
       buildRepairMessages: ({ invalidOutput, validationError }) => this.buildRepairMessages(invalidOutput, validationError, options.args, options.volume, options.volumeNo, options.chapterCount, options.chapterRange, options.characterCatalog, options.allowedStoryUnitIds),
       progress: {
         phaseMessage: options.phaseMessage,
-        timeoutMs: this.streamPhaseTimeoutMs(CHAPTER_OUTLINE_BATCH_PREVIEW_REPAIR_TIMEOUT_MS),
+        timeoutMs: streamPhaseTimeoutMs(CHAPTER_OUTLINE_BATCH_PREVIEW_REPAIR_TIMEOUT_MS),
       },
       llmOptions: {
         appStep: 'planner',
         timeoutMs: CHAPTER_OUTLINE_BATCH_PREVIEW_REPAIR_TIMEOUT_MS,
         stream: true,
         streamIdleTimeoutMs: CHAPTER_OUTLINE_BATCH_PREVIEW_REPAIR_TIMEOUT_MS,
-        onStreamProgress: this.buildStreamProgressHeartbeat({
+        onStreamProgress: buildToolStreamProgressHeartbeat({
           context: options.context,
-          chapterRange: options.chapterRange,
-          chapterCount: options.chapterCount,
+          logger: this.logger,
+          loggerEvent: 'chapter_outline_batch_preview.stream_heartbeat_failed',
           phaseMessage: options.phaseMessage,
           idleTimeoutMs: CHAPTER_OUTLINE_BATCH_PREVIEW_REPAIR_TIMEOUT_MS,
+          progressCurrent: options.chapterRange.start - 1,
+          progressTotal: options.chapterCount,
+          metadata: {
+            chapterStart: options.chapterRange.start,
+            chapterEnd: options.chapterRange.end,
+          },
         }),
         temperature: 0.1,
         jsonSchema: options.jsonSchema,
@@ -542,54 +552,6 @@ export class GenerateChapterOutlineBatchPreviewTool implements BaseTool<Generate
       initialModel: response.result.model,
       logger: this.logger,
     });
-  }
-
-  private streamPhaseTimeoutMs(idleTimeoutMs: number): number {
-    return idleTimeoutMs + CHAPTER_OUTLINE_BATCH_STREAM_PHASE_TIMEOUT_GRACE_MS;
-  }
-
-  private buildStreamProgressHeartbeat(options: {
-    context: ToolContext;
-    chapterRange: ChapterRange;
-    chapterCount: number;
-    phaseMessage: string;
-    idleTimeoutMs: number;
-  }): ((progress: LlmChatStreamProgress) => void) | undefined {
-    if (!options.context.heartbeat) return undefined;
-    let firstChunkSeen = false;
-    let lastHeartbeatAt = 0;
-    return (progress) => {
-      const now = Date.now();
-      const isFirstChunk = progress.event === 'chunk' && !firstChunkSeen;
-      if (isFirstChunk) firstChunkSeen = true;
-      const shouldHeartbeat = progress.event === 'headers'
-        || isFirstChunk
-        || progress.event === 'done'
-        || now - lastHeartbeatAt >= CHAPTER_OUTLINE_BATCH_STREAM_HEARTBEAT_INTERVAL_MS;
-      if (!shouldHeartbeat) return;
-      lastHeartbeatAt = now;
-      const streamState = progress.event === 'done'
-        ? 'stream completed'
-        : progress.streamedContentChars > 0
-          ? `streaming ${progress.streamedContentChars} chars`
-          : 'waiting for stream data';
-      void options.context.heartbeat?.({
-        phase: 'calling_llm',
-        phaseMessage: `${options.phaseMessage} (${streamState})`,
-        progressCurrent: options.chapterRange.start - 1,
-        progressTotal: options.chapterCount,
-        timeoutMs: this.streamPhaseTimeoutMs(options.idleTimeoutMs),
-      }).catch((error) => {
-        this.logger.warn('chapter_outline_batch_preview.stream_heartbeat_failed', {
-          agentRunId: options.context.agentRunId,
-          projectId: options.context.projectId,
-          chapterStart: options.chapterRange.start,
-          chapterEnd: options.chapterRange.end,
-          streamEvent: progress.event,
-          message: error instanceof Error ? error.message : String(error),
-        });
-      });
-    };
   }
 
   private async reviewBatchQuality(output: ChapterOutlineBatchPreviewOutput, options: {
