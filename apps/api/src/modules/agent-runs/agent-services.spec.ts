@@ -515,6 +515,15 @@ function createVccStoryUnitPlan(chapterCount = 4, overrides: Record<string, unkn
   };
 }
 
+function isChapterOutlineQualityReviewCall(options?: Record<string, unknown>) {
+  const schema = options?.jsonSchema as Record<string, unknown> | undefined;
+  return schema?.name === 'chapter_outline_quality_review';
+}
+
+function createPassingChapterOutlineQualityReview(overrides: Record<string, unknown> = {}) {
+  return { valid: true, summary: 'Chapter outline is draftable.', issues: [], ...overrides };
+}
+
 test('structured output repair helper 可修错误时调用 LLM 并重新 normalize', async () => {
   const logs: Array<{ event: string; payload: Record<string, unknown> }> = [];
   const errors: Array<{ event: string; error: unknown; payload: Record<string, unknown> }> = [];
@@ -667,6 +676,9 @@ test('generate_story_units_preview 生成丰富单元故事计划和章节分配
   const storyUnitPlan = createVccStoryUnitPlan(4);
   const llm = {
     async chatJson(messages: Array<{ role: string; content: string }>, options: Record<string, unknown>) {
+      if (isChapterOutlineQualityReviewCall(options)) {
+        return { data: createPassingChapterOutlineQualityReview(), result: { model: 'mock-chapter-outline-quality' } };
+      }
       receivedMessages = messages;
       receivedOptions = options;
       return {
@@ -1564,7 +1576,10 @@ test('VCC context injection prompts include character relationship and state sum
 
   let chapterPrompt = '';
   const chapterTool = new GenerateChapterOutlinePreviewTool({
-    async chatJson(messages: Array<{ role: string; content: string }>) {
+    async chatJson(messages: Array<{ role: string; content: string }>, options: Record<string, unknown>) {
+      if (isChapterOutlineQualityReviewCall(options)) {
+        return { data: createPassingChapterOutlineQualityReview(), result: { model: 'mock-chapter-context-quality' } };
+      }
       chapterPrompt = messages[1].content;
       return {
         data: { volume: aliasPreview.volume, chapter: aliasChapter, risks: [] },
@@ -2066,7 +2081,10 @@ test('VCC outline preview accepts volume narrativePlan without legacy storyUnits
 
 test('VCC chapter outline preview preserves characterExecution', async () => {
   const llm = {
-    async chatJson() {
+    async chatJson(_messages: unknown, options: Record<string, unknown>) {
+      if (isChapterOutlineQualityReviewCall(options)) {
+        return { data: createPassingChapterOutlineQualityReview(), result: { model: 'mock-chapter-character-quality' } };
+      }
       return {
         data: {
           chapter: createOutlineChapter(2, 1),
@@ -2276,6 +2294,7 @@ test('VCC merge chapter outline previews rejects missing characterExecution', as
             risks: [],
           },
         ],
+        context: { characters: [{ name: '林澈' }, { name: '沈栖' }] },
         volumeNo: 1,
         chapterCount: 1,
       },
@@ -7303,6 +7322,41 @@ test('VCC persist_outline rejects invalid character planning validation', async 
   );
 });
 
+test('COCF-P1 persist_outline requires act mode and approval internally', async () => {
+  const tool = new PersistOutlineTool({} as never);
+  await assert.rejects(
+    () => tool.run(
+      { preview: createVccOutlinePreview(1), validation: { valid: true } },
+      { agentRunId: 'run-vcc-persist-plan-mode', projectId: 'p1', mode: 'plan', approved: true, outputs: {}, policy: {} },
+    ),
+    /act mode/,
+  );
+  await assert.rejects(
+    () => tool.run(
+      { preview: createVccOutlinePreview(1), validation: { valid: true } },
+      { agentRunId: 'run-vcc-persist-unapproved', projectId: 'p1', mode: 'act', approved: false, outputs: {}, policy: {} },
+    ),
+    /approval/,
+  );
+});
+
+test('COCF-P1 persist_outline rejects incomplete craftBrief before writing', async () => {
+  const prisma = {
+    character: { async findMany() { return [{ name: '林澈', alias: [] }, { name: '沈栖', alias: [] }]; } },
+  };
+  const craftBrief = { ...createOutlineCraftBrief() };
+  delete (craftBrief as Record<string, unknown>).hiddenEmotion;
+  const tool = new PersistOutlineTool(prisma as never);
+
+  await assert.rejects(
+    () => tool.run(
+      { preview: createVccOutlinePreview(1, { chapters: [createOutlineChapter(1, 1, { craftBrief })] }), validation: { valid: true } },
+      { agentRunId: 'run-vcc-persist-incomplete-craft', projectId: 'p1', mode: 'act', approved: true, outputs: {}, policy: {} },
+    ),
+    /hiddenEmotion|craftBrief/,
+  );
+});
+
 test('VCC persist_outline rejects missing characterExecution without validation', async () => {
   const prisma = {
     character: { async findMany() { return [{ name: '林澈', alias: [] }, { name: '沈栖', alias: [] }]; } },
@@ -7706,7 +7760,7 @@ test('PersistOutlineTool 拒绝旧 outline_preview 缺 craftBrief', async () => 
       { preview: { volume: { volumeNo: 1, title: '卷一', synopsis: '卷简介', objective: '卷目标', chapterCount: 1, narrativePlan: createVccNarrativePlanForChapterCount(1) }, chapters: [{ chapterNo: 1, title: '一', objective: '目标', conflict: '冲突', hook: '钩子', outline: '梗概', expectedWordCount: 2000 }], risks: [] } },
       { agentRunId: 'run1', projectId: 'p1', mode: 'act', approved: true, outputs: {}, policy: {} },
     ),
-    /characterExecution/,
+    /craftBrief/,
   );
 
   assert.equal(updatedChapters.length, 0);
@@ -7749,6 +7803,9 @@ test('GenerateOutlinePreviewTool keeps long outer timeout without output token c
   const llmUsages: Array<{ model?: string }> = [];
   const llm = {
     async chatJson(messages: Array<{ role: string; content: string }>, options: Record<string, unknown>) {
+      if (isChapterOutlineQualityReviewCall(options)) {
+        return { data: createPassingChapterOutlineQualityReview(), result: { model: 'mock-chapter-outline-quality' } };
+      }
       receivedMessages = messages;
       receivedOptions = options;
       return {
@@ -17129,6 +17186,9 @@ test('generate_volume_outline_preview 只生成卷纲且不固定单元故事章
   let receivedOptions: Record<string, unknown> | undefined;
   const llm = {
     async chatJson(messages: Array<{ role: string; content: string }>, options: Record<string, unknown>) {
+      if (isChapterOutlineQualityReviewCall(options)) {
+        return { data: createPassingChapterOutlineQualityReview(), result: { model: 'mock-chapter-outline-quality' } };
+      }
       receivedMessages = messages;
       receivedOptions = options;
       return {
@@ -17448,6 +17508,9 @@ test('generate_chapter_outline_preview 生成单章细纲并保留上一章接�
   const llmUsages: Array<{ model?: string }> = [];
   const llm = {
     async chatJson(messages: Array<{ role: string; content: string }>, options: Record<string, unknown>) {
+      if (isChapterOutlineQualityReviewCall(options)) {
+        return { data: createPassingChapterOutlineQualityReview(), result: { model: 'mock-chapter-outline-quality' } };
+      }
       receivedMessages = messages;
       receivedOptions = options;
       return {
@@ -17503,7 +17566,10 @@ test('generate_chapter_outline_preview 使用独立 storyUnitPlan 承接单元�
   let receivedMessages: Array<{ role: string; content: string }> = [];
   const chapter = createOutlineChapter(2, 1, { title: '第二章细纲' });
   const llm = {
-    async chatJson(messages: Array<{ role: string; content: string }>) {
+    async chatJson(messages: Array<{ role: string; content: string }>, options: Record<string, unknown>) {
+      if (isChapterOutlineQualityReviewCall(options)) {
+        return { data: createPassingChapterOutlineQualityReview(), result: { model: 'mock-chapter-story-unit-quality' } };
+      }
       receivedMessages = messages;
       return {
         data: { chapter, risks: [] },
@@ -17547,7 +17613,10 @@ test('generate_chapter_outline_preview 使用独立 storyUnitPlan 承接单元�
 test('generate_chapter_outline_preview 未传 volumeOutline 时承接 inspect_project_context 中的已持久化卷纲', async () => {
   let receivedMessages: Array<{ role: string; content: string }> = [];
   const llm = {
-    async chatJson(messages: Array<{ role: string; content: string }>) {
+    async chatJson(messages: Array<{ role: string; content: string }>, options: Record<string, unknown>) {
+      if (isChapterOutlineQualityReviewCall(options)) {
+        return { data: createPassingChapterOutlineQualityReview(), result: { model: 'mock-existing-volume-quality' } };
+      }
       receivedMessages = messages;
       return {
         data: { chapter: createOutlineChapter(1, 1, { title: '第一章细纲' }), risks: [] },
@@ -17659,9 +17728,13 @@ test('generate_chapter_outline_preview craftBrief 局部缺字段可由 LLM 修�
   const tool = new GenerateChapterOutlinePreviewTool({
     async chatJson(messages: Array<{ role: string; content: string }>, options: Record<string, unknown>) {
       calls.push({ messages, options });
+      if (isChapterOutlineQualityReviewCall(options)) {
+        return { data: createPassingChapterOutlineQualityReview(), result: { model: 'mock-chapter-outline-quality' } };
+      }
+      const generationCallCount = calls.filter((call) => !isChapterOutlineQualityReviewCall(call.options)).length;
       return {
-        data: { chapter: calls.length === 1 ? badChapter : repairedChapter, risks: [] },
-        result: { model: `mock-chapter-outline-repair-${calls.length}` },
+        data: { chapter: generationCallCount === 1 ? badChapter : repairedChapter, risks: [] },
+        result: { model: `mock-chapter-outline-repair-${generationCallCount}` },
       };
     },
   } as never);
@@ -17678,7 +17751,7 @@ test('generate_chapter_outline_preview craftBrief 局部缺字段可由 LLM 修�
     { agentRunId: 'run-chapter-outline-repair-craft-brief', projectId: 'p1', mode: 'plan', approved: false, outputs: {}, policy: {} },
   );
 
-  assert.equal(calls.length, 2);
+  assert.equal(calls.filter((call) => !isChapterOutlineQualityReviewCall(call.options)).length, 2);
   assert.match(calls[1].messages[1].content, /irreversibleConsequence/);
   assert.match(String(result.chapter.craftBrief?.irreversibleConsequence), /临检记录/);
 });
@@ -17697,9 +17770,13 @@ test('generate_chapter_outline_preview relationshipBeats 局部缺字段可由 L
   const tool = new GenerateChapterOutlinePreviewTool({
     async chatJson(messages: Array<{ role: string; content: string }>, options: Record<string, unknown>) {
       calls.push({ messages, options });
+      if (isChapterOutlineQualityReviewCall(options)) {
+        return { data: createPassingChapterOutlineQualityReview(), result: { model: 'mock-chapter-outline-quality' } };
+      }
+      const generationCallCount = calls.filter((call) => !isChapterOutlineQualityReviewCall(call.options)).length;
       return {
-        data: { chapter: calls.length === 1 ? badChapter : repairedChapter, risks: [] },
-        result: { model: `mock-chapter-outline-relationship-repair-${calls.length}` },
+        data: { chapter: generationCallCount === 1 ? badChapter : repairedChapter, risks: [] },
+        result: { model: `mock-chapter-outline-relationship-repair-${generationCallCount}` },
       };
     },
   } as never);
@@ -17716,7 +17793,7 @@ test('generate_chapter_outline_preview relationshipBeats 局部缺字段可由 L
     { agentRunId: 'run-chapter-outline-repair-relationship-beat', projectId: 'p1', mode: 'plan', approved: false, outputs: {}, policy: {} },
   );
 
-  assert.equal(calls.length, 2);
+  assert.equal(calls.filter((call) => !isChapterOutlineQualityReviewCall(call.options)).length, 2);
   assert.match(calls[1].messages[0].content, /publicStateBefore/);
   assert.equal(result.chapter.craftBrief?.characterExecution?.relationshipBeats?.[0]?.publicStateBefore, '互相怀疑');
 });
@@ -17733,9 +17810,13 @@ test('generate_chapter_outline_preview 卷级候选 source 标错可由 LLM 修�
   const tool = new GenerateChapterOutlinePreviewTool({
     async chatJson(messages: Array<{ role: string; content: string }>, options: Record<string, unknown>) {
       calls.push({ messages, options });
+      if (isChapterOutlineQualityReviewCall(options)) {
+        return { data: createPassingChapterOutlineQualityReview(), result: { model: 'mock-chapter-outline-quality' } };
+      }
+      const generationCallCount = calls.filter((call) => !isChapterOutlineQualityReviewCall(call.options)).length;
       return {
-        data: { chapter: calls.length === 1 ? badChapter : repairedChapter, risks: [] },
-        result: { model: `mock-chapter-outline-source-repair-${calls.length}` },
+        data: { chapter: generationCallCount === 1 ? badChapter : repairedChapter, risks: [] },
+        result: { model: `mock-chapter-outline-source-repair-${generationCallCount}` },
       };
     },
   } as never);
@@ -17753,7 +17834,7 @@ test('generate_chapter_outline_preview 卷级候选 source 标错可由 LLM 修�
   );
 
   const cast = result.chapter.craftBrief?.characterExecution?.cast ?? [];
-  assert.equal(calls.length, 2);
+  assert.equal(calls.filter((call) => !isChapterOutlineQualityReviewCall(call.options)).length, 2);
   assert.match(calls[1].messages[0].content, /source 必须与角色来源一致/);
   assert.equal(cast.some((member) => member.characterName === '邵衡' && member.source === 'volume_candidate'), true);
 });
@@ -17770,9 +17851,13 @@ test('generate_chapter_outline_preview 修复阶段可从 inspect_project_contex
   const tool = new GenerateChapterOutlinePreviewTool({
     async chatJson(messages: Array<{ role: string; content: string }>, options: Record<string, unknown>) {
       calls.push({ messages, options });
+      if (isChapterOutlineQualityReviewCall(options)) {
+        return { data: createPassingChapterOutlineQualityReview(), result: { model: 'mock-chapter-outline-quality' } };
+      }
+      const generationCallCount = calls.filter((call) => !isChapterOutlineQualityReviewCall(call.options)).length;
       return {
-        data: { chapter: calls.length === 1 ? badChapter : repairedChapter, risks: [] },
-        result: { model: `mock-chapter-outline-context-source-repair-${calls.length}` },
+        data: { chapter: generationCallCount === 1 ? badChapter : repairedChapter, risks: [] },
+        result: { model: `mock-chapter-outline-context-source-repair-${generationCallCount}` },
       };
     },
   } as never);
@@ -17801,9 +17886,137 @@ test('generate_chapter_outline_preview 修复阶段可从 inspect_project_contex
 
   const repairPayload = JSON.parse(calls[1].messages[1].content) as { volumeCandidateNames?: string[] };
   const cast = result.chapter.craftBrief?.characterExecution?.cast ?? [];
-  assert.equal(calls.length, 2);
+  assert.equal(calls.filter((call) => !isChapterOutlineQualityReviewCall(call.options)).length, 2);
   assert.deepEqual(repairPayload.volumeCandidateNames, ['邵衡']);
   assert.equal(cast.some((member) => member.characterName === '邵衡' && member.source === 'volume_candidate'), true);
+});
+
+test('COCF-P1 generate_chapter_outline_preview quality review fails once then regenerates', async () => {
+  const firstChapter = createOutlineChapter(1, 1, { outline: '林澈进入旧闸棚，但行动链过于抽象。' });
+  const regeneratedChapter = createOutlineChapter(1, 1, {
+    outline: '林澈在旧闸棚账房核对湿账页，巡检员夺走账册并登记他的名字；沈栖从后门递回半页证据；雨廊尽头的东闸铃声迫使二人分头撤离。',
+  });
+  const calls: Array<{ messages: Array<{ role: string; content: string }>; options: Record<string, unknown> }> = [];
+  const tool = new GenerateChapterOutlinePreviewTool({
+    async chatJson(messages: Array<{ role: string; content: string }>, options: Record<string, unknown>) {
+      calls.push({ messages, options });
+      if (isChapterOutlineQualityReviewCall(options)) {
+        const qualityCallCount = calls.filter((call) => isChapterOutlineQualityReviewCall(call.options)).length;
+        return {
+          data: qualityCallCount === 1
+            ? {
+                valid: false,
+                summary: 'Chapter action beats are not draftable.',
+                issues: [{
+                  severity: 'error',
+                  chapterNo: 1,
+                  path: 'chapter.craftBrief.actionBeats[0]',
+                  message: 'Action beat lacks actor, visible action, object, obstacle, and result.',
+                  suggestion: 'Regenerate with a concrete visible action chain.',
+                  evidence: '行动链过于抽象',
+                }],
+              }
+            : createPassingChapterOutlineQualityReview(),
+          result: { model: `mock-chapter-quality-${qualityCallCount}` },
+        };
+      }
+      const generationCallCount = calls.filter((call) => !isChapterOutlineQualityReviewCall(call.options)).length;
+      return {
+        data: { chapter: generationCallCount === 1 ? firstChapter : regeneratedChapter, risks: [] },
+        result: { model: `mock-chapter-generation-${generationCallCount}` },
+      };
+    },
+  } as never);
+
+  const result = await tool.run(
+    {
+      context: { project: { title: '旧档案' }, characters: [{ name: '林澈' }, { name: '沈栖' }] },
+      volumeOutline: { volumeNo: 1, title: '旧闸棚账册', synopsis: '卷简介', objective: '拿到账册证据', chapterCount: 4, narrativePlan: createVccNarrativePlanForChapterCount(4) },
+      instruction: '生成第 1 章细纲',
+      volumeNo: 1,
+      chapterNo: 1,
+      chapterCount: 4,
+    },
+    { agentRunId: 'run-chapter-outline-quality-regen', projectId: 'p1', mode: 'plan', approved: false, outputs: {}, policy: {} },
+  );
+
+  assert.equal(calls.length, 4);
+  assert.equal(result.qualityReview?.valid, true);
+  assert.match(result.risks.join('\n'), /quality review requested one regeneration/i);
+  assert.match(calls[2].messages[1].content, /qualityIssuesToFix/);
+  assert.match(calls[2].messages[1].content, /Action beat lacks actor/);
+});
+
+test('COCF-P1 generate_chapter_outline_preview quality review fails after retry', async () => {
+  const calls: Array<{ options: Record<string, unknown> }> = [];
+  const tool = new GenerateChapterOutlinePreviewTool({
+    async chatJson(_messages: Array<{ role: string; content: string }>, options: Record<string, unknown>) {
+      calls.push({ options });
+      if (isChapterOutlineQualityReviewCall(options)) {
+        return {
+          data: {
+            valid: false,
+            summary: 'Chapter remains not draftable.',
+            issues: [{
+              severity: 'error',
+              chapterNo: 1,
+              path: 'chapter.outline',
+              message: 'Outline still lacks visible scene actions.',
+              suggestion: 'Regenerate with concrete scenes.',
+              evidence: '仍然抽象',
+            }],
+          },
+          result: { model: 'mock-chapter-quality-fail' },
+        };
+      }
+      return { data: { chapter: createOutlineChapter(1, 1), risks: [] }, result: { model: 'mock-chapter-generation' } };
+    },
+  } as never);
+
+  await assert.rejects(
+    () => tool.run(
+      {
+        context: { project: { title: '旧档案' }, characters: [{ name: '林澈' }, { name: '沈栖' }] },
+        volumeOutline: { volumeNo: 1, title: '旧闸棚账册', synopsis: '卷简介', objective: '拿到账册证据', chapterCount: 4, narrativePlan: createVccNarrativePlanForChapterCount(4) },
+        instruction: '生成第 1 章细纲',
+        volumeNo: 1,
+        chapterNo: 1,
+        chapterCount: 4,
+      },
+      { agentRunId: 'run-chapter-outline-quality-fail', projectId: 'p1', mode: 'plan', approved: false, outputs: {}, policy: {} },
+    ),
+    /quality validation failed after retry/,
+  );
+  assert.equal(calls.filter((call) => isChapterOutlineQualityReviewCall(call.options)).length, 2);
+});
+
+test('COCF-P1 generate_chapter_outline_preview quality review timeout fails without fallback', async () => {
+  let calls = 0;
+  const tool = new GenerateChapterOutlinePreviewTool({
+    async chatJson(_messages: Array<{ role: string; content: string }>, options: Record<string, unknown>) {
+      calls += 1;
+      if (isChapterOutlineQualityReviewCall(options)) {
+        throw new LlmTimeoutError('单章质量复核超时', 'planner', DEFAULT_LLM_TIMEOUT_MS);
+      }
+      return { data: { chapter: createOutlineChapter(1, 1), risks: [] }, result: { model: 'mock-chapter-generation' } };
+    },
+  } as never);
+
+  await assert.rejects(
+    () => tool.run(
+      {
+        context: { project: { title: '旧档案' }, characters: [{ name: '林澈' }, { name: '沈栖' }] },
+        volumeOutline: { volumeNo: 1, title: '旧闸棚账册', synopsis: '卷简介', objective: '拿到账册证据', chapterCount: 4, narrativePlan: createVccNarrativePlanForChapterCount(4) },
+        instruction: '生成第 1 章细纲',
+        volumeNo: 1,
+        chapterNo: 1,
+        chapterCount: 4,
+      },
+      { agentRunId: 'run-chapter-outline-quality-timeout', projectId: 'p1', mode: 'plan', approved: false, outputs: {}, policy: {} },
+    ),
+    /单章质量复核超时/,
+  );
+  assert.equal(calls, 2);
 });
 
 test('merge_chapter_outline_previews 合并单章输出并拦截缺章', async () => {

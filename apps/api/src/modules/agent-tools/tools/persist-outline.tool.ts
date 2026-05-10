@@ -2,6 +2,7 @@ import { BadRequestException, Injectable } from '@nestjs/common';
 import { Prisma } from '@prisma/client';
 import { PrismaService } from '../../../prisma/prisma.service';
 import { BaseTool, ToolContext } from '../base-tool';
+import { assertCompleteChapterCraftBrief } from './chapter-craft-brief-contracts';
 import { OutlinePreviewOutput } from './generate-outline-preview.tool';
 import { assertChapterCharacterExecution, VolumeCharacterPlan } from './outline-character-contracts';
 import { assertVolumeNarrativePlan } from './outline-narrative-contracts';
@@ -44,6 +45,8 @@ export class PersistOutlineTool implements BaseTool<PersistOutlineInput, Record<
   constructor(private readonly prisma: PrismaService) {}
 
   async run(args: PersistOutlineInput, context: ToolContext) {
+    if (context.mode !== 'act') throw new BadRequestException('persist_outline must run in act mode.');
+    if (!context.approved) throw new BadRequestException('persist_outline requires explicit user approval.');
     if (!args.preview?.chapters?.length) throw new BadRequestException('persist_outline 需要 outline preview');
     if (args.validation && args.validation.valid !== true) {
       throw new BadRequestException('persist_outline received validation.valid=false before writing.');
@@ -129,6 +132,7 @@ export class PersistOutlineTool implements BaseTool<PersistOutlineInput, Record<
     const volumeCandidateNames = characterPlan.newCharacterCandidates.map((candidate) => candidate.name);
     for (const chapter of preview.chapters) {
       const craftBrief = this.asRecord(chapter.craftBrief);
+      assertCompleteChapterCraftBrief(craftBrief, { label: `persist_outline chapter ${chapter.chapterNo}.craftBrief` });
       assertChapterCharacterExecution(craftBrief.characterExecution, {
         existingCharacterNames: characterCatalog.existingCharacterNames,
         existingCharacterAliases: characterCatalog.existingCharacterAliases,

@@ -21,6 +21,13 @@ import {
   stringArray,
   text,
 } from './chapter-outline-batch-contracts';
+import { assertCompleteChapterCraftBrief } from './chapter-craft-brief-contracts';
+import {
+  buildChapterOutlineQualityRubric,
+  CHAPTER_OUTLINE_QUALITY_REVIEW_TIMEOUT_MS,
+  formatChapterOutlineQualityIssues,
+  reviewChapterOutlineQuality,
+} from './chapter-outline-quality-review';
 import { ChapterContinuityState, ChapterCraftBrief, ChapterSceneBeat, ChapterStoryUnit, OutlinePreviewOutput } from './generate-outline-preview.tool';
 import { recordToolLlmUsage } from './import-preview-llm-usage';
 import { assertChapterCharacterExecution, assertVolumeCharacterPlan, type CharacterReferenceCatalog } from './outline-character-contracts';
@@ -39,7 +46,7 @@ interface SegmentChapterOutlineBatchesInput {
 
 const CHAPTER_OUTLINE_BATCH_PREVIEW_LLM_TIMEOUT_MS = DEFAULT_LLM_TIMEOUT_MS;
 const CHAPTER_OUTLINE_BATCH_PREVIEW_REPAIR_TIMEOUT_MS = DEFAULT_LLM_TIMEOUT_MS;
-const CHAPTER_OUTLINE_BATCH_QUALITY_REVIEW_TIMEOUT_MS = DEFAULT_LLM_TIMEOUT_MS;
+const CHAPTER_OUTLINE_BATCH_QUALITY_REVIEW_TIMEOUT_MS = CHAPTER_OUTLINE_QUALITY_REVIEW_TIMEOUT_MS;
 const CHAPTER_OUTLINE_BATCH_QUALITY_REGENERATION_ATTEMPTS = 1;
 
 @Injectable()
@@ -415,7 +422,7 @@ export class GenerateChapterOutlineBatchPreviewTool implements BaseTool<Generate
           context,
         });
         if (!qualityReview.valid) {
-          throw new Error(`generate_chapter_outline_batch_preview LLM quality validation failed after retry: ${this.formatQualityIssues(qualityReview)}`);
+          throw new Error(`generate_chapter_outline_batch_preview LLM quality validation failed after retry: ${formatChapterOutlineQualityIssues(qualityReview)}`);
         }
       }
 
@@ -514,26 +521,30 @@ export class GenerateChapterOutlineBatchPreviewTool implements BaseTool<Generate
     allowedStoryUnitIds: string[];
     context: ToolContext;
   }): Promise<ChapterOutlineBatchQualityReview> {
-    await options.context.updateProgress?.({
-      phase: 'calling_llm',
-      phaseMessage: `LLM reviewing chapter outline batch ${options.chapterRange.start}-${options.chapterRange.end}`,
+    return reviewChapterOutlineQuality(this.llm, options.context, {
+      task: 'Review this generated chapter-outline batch before it can enter approval/write flow.',
+      target: {
+        volumeNo: options.volumeNo,
+        chapterCount: options.chapterCount,
+        chapterRange: options.chapterRange,
+        allowedStoryUnitIds: options.allowedStoryUnitIds,
+      },
+      output,
+      volumeSummary: this.volumeRepairSummary(options.volume),
+      storyUnitSlice: options.args.storyUnitSlice ?? this.storyUnitSliceFromPlan(this.storyUnitPlanForPrompt(options.args, options.volume), options.allowedStoryUnitIds),
+      characterSourceWhitelist: {
+        existing: options.characterCatalog.existingCharacterNames ?? [],
+        volume_candidate: options.characterCatalog.volumeCandidateNames ?? [],
+        minor_temporary: 'Only one-off local function characters declared in newMinorCharacters.',
+      },
+      chapterRange: options.chapterRange,
+      progressMessage: `LLM reviewing chapter outline batch ${options.chapterRange.start}-${options.chapterRange.end}`,
       progressCurrent: options.chapterRange.end,
       progressTotal: options.chapterCount,
-      timeoutMs: CHAPTER_OUTLINE_BATCH_QUALITY_REVIEW_TIMEOUT_MS,
+      usageStep: 'outline_batch_quality_review',
+      schemaName: 'chapter_outline_batch_quality_review',
+      schemaDescription: 'LLM semantic quality review for a generated chapter outline batch.',
     });
-    const response = await this.llm.chatJson<unknown>(
-      this.buildQualityReviewMessages(output, options),
-      {
-        appStep: 'planner',
-        timeoutMs: CHAPTER_OUTLINE_BATCH_QUALITY_REVIEW_TIMEOUT_MS,
-        retries: 0,
-        jsonMode: true,
-        jsonSchema: this.buildQualityReviewJsonSchema(),
-        temperature: 0,
-      },
-    );
-    recordToolLlmUsage(options.context, 'outline_batch_quality_review', response.result);
-    return this.normalizeQualityReview(response.data, options.chapterRange);
   }
 
   private buildQualityReviewMessages(output: ChapterOutlineBatchPreviewOutput, options: {
@@ -621,7 +632,7 @@ export class GenerateChapterOutlineBatchPreviewTool implements BaseTool<Generate
         content: this.safeJson({
           userInstruction: input.args.instruction ?? '',
           target: { volumeNo: input.volumeNo, chapterCount: input.chapterCount, chapterRange: input.chapterRange, allowedStoryUnitIds: input.allowedStoryUnitIds },
-          qualityRubric: this.batchQualityRubric(),
+          qualityRubric: buildChapterOutlineQualityRubric(),
           qualityIssuesToFix: input.qualityReview.issues.filter((issue) => issue.severity === 'error'),
           rejectedOutput: input.rejectedOutput,
           volume: input.volume,
@@ -1723,6 +1734,7 @@ export class MergeChapterOutlineBatchPreviewsTool implements BaseTool<MergeChapt
     if (!positiveInt(chapter.expectedWordCount)) throw new Error(`merge_chapter_outline_batch_previews chapter ${chapterNo} expectedWordCount is invalid.`);
     const craftBrief = asRecord(chapter.craftBrief);
     if (!Object.keys(craftBrief).length) throw new Error(`merge_chapter_outline_batch_previews chapter ${chapterNo} missing craftBrief.`);
+    assertCompleteChapterCraftBrief(craftBrief, { label: `merge_chapter_outline_batch_previews chapter ${chapterNo}.craftBrief` });
     for (const field of ['visibleGoal', 'hiddenEmotion', 'coreConflict', 'mainlineTask', 'dialogueSubtext', 'characterShift', 'irreversibleConsequence', 'entryState', 'exitState', 'handoffToNextChapter']) {
       this.requiredText(craftBrief[field], `chapter ${chapterNo}.craftBrief.${field}`);
     }

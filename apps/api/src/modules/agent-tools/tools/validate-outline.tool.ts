@@ -1,6 +1,7 @@
 import { Injectable } from '@nestjs/common';
 import { PrismaService } from '../../../prisma/prisma.service';
 import { BaseTool, ToolContext } from '../base-tool';
+import { assertCompleteChapterCraftBrief } from './chapter-craft-brief-contracts';
 import { OutlinePreviewOutput } from './generate-outline-preview.tool';
 import { assertChapterCharacterExecution, VolumeCharacterPlan } from './outline-character-contracts';
 import { assertVolumeNarrativePlan } from './outline-narrative-contracts';
@@ -398,6 +399,15 @@ export class ValidateOutlineTool implements BaseTool<ValidateOutlineInput, Valid
     }
     this.validateStoryUnit(brief.storyUnit, label, issues);
     this.validateContinuityFields(brief, label, issues);
+    try {
+      assertCompleteChapterCraftBrief(brief, { label: `${label}.craftBrief` });
+    } catch (error) {
+      issues.push({
+        severity: 'error',
+        message: `${label} 的 craftBrief 结构不完整：${this.errorMessage(error)}`,
+        suggestion: '请重新生成完整 Chapter.craftBrief，不要补占位字段。',
+      });
+    }
   }
 
   private validateStoryUnit(value: unknown, label: string, issues: OutlineValidationIssue[]) {

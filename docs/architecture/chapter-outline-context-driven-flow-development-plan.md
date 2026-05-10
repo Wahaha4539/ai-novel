@@ -1,6 +1,6 @@
 # 章节细纲上下文驱动流程任务计划文档
 
-> 状态：P0 已完成，P1/P2 待实施
+> 状态：P0/P1 已完成，P2 待实施
 > 日期：2026-05-11
 > 任务前缀：`COCF`，即 Chapter Outline Context Flow
 > 关联设计：`docs/architecture/chapter-outline-context-driven-flow-design.md`
@@ -126,7 +126,9 @@
 
 ## 3. P1：质量门禁一致性
 
-### COCF-P1-001：抽取章节细纲 LLM 质量复核 helper
+> 状态：已完成（2026-05-11）
+
+### COCF-P1-001：抽取章节细纲 LLM 质量复核 helper（已完成）
 
 - 文件：
   - `apps/api/src/modules/agent-tools/tools/chapter-outline-batch-tools.tool.ts`
@@ -138,7 +140,7 @@
   - batch 工具继续通过现有质量复核测试。
   - helper 可被单章工具调用。
 
-### COCF-P1-002：单章与短章节链路接入 LLM rubric
+### COCF-P1-002：单章与短章节链路接入 LLM rubric（已完成）
 
 - 文件：
   - `apps/api/src/modules/agent-tools/tools/chapter-outline-preview-tools.tool.ts`
@@ -151,7 +153,7 @@
   - 测试覆盖：单章质量 review 重试后仍失败，工具抛错。
   - 测试覆盖：review LLM timeout 直接抛错，不生成 fallback。
 
-### COCF-P1-003：统一 craftBrief 完整性校验
+### COCF-P1-003：统一 craftBrief 完整性校验（已完成）
 
 - 文件：
   - `apps/api/src/modules/agent-tools/tools/chapter-outline-preview-tools.tool.ts`
@@ -186,7 +188,7 @@
   - 缺任意关键 craftBrief 字段时，preview/merge/persist 任一入口都不能写入。
   - 旧测试继续通过，新增测试覆盖 `persist_outline` 直接接收缺字段 preview 时失败。
 
-### COCF-P1-004：显式检查 persist_outline 模式和审批
+### COCF-P1-004：显式检查 persist_outline 模式和审批（已完成）
 
 - 文件：
   - `apps/api/src/modules/agent-tools/tools/persist-outline.tool.ts`
@@ -198,6 +200,28 @@
 - 验收：
   - 直接调用工具且 `approved=false` 时失败。
   - act 审批路径不受影响。
+
+### P1 实施记录
+
+- 实现摘要：
+  - 抽取 `chapter-outline-quality-review` 共享 LLM rubric helper，batch 质量复核继续使用同一 schema/normalize 逻辑，单章链路复用该 helper。
+  - `generate_chapter_outline_preview` 在结构校验和必要修复后执行 LLM quality review；`valid=false` 时按 LLM issues 重生一次，重试仍失败或 review timeout 时直接抛错，不生成 fallback。
+  - 多个单章组成的短链路由 `merge_chapter_outline_previews` 合并已通过单章质量门禁的 preview，并在 merge 阶段继续做 craftBrief 完整性保护。
+  - 抽取 `assertCompleteChapterCraftBrief`，在 batch preview、single preview、merge、`validate_outline`、`persist_outline` 中复用；缺关键 craftBrief 字段会显式失败，不补字段。
+  - `persist_outline` 内部增加 `mode === 'act'` 与 `approved === true` 双保险，并在写库事务前执行 craftBrief 完整性校验。
+- 关键文件：
+  - `apps/api/src/modules/agent-tools/tools/chapter-outline-quality-review.ts`
+  - `apps/api/src/modules/agent-tools/tools/chapter-craft-brief-contracts.ts`
+  - `apps/api/src/modules/agent-tools/tools/chapter-outline-batch-tools.tool.ts`
+  - `apps/api/src/modules/agent-tools/tools/chapter-outline-preview-tools.tool.ts`
+  - `apps/api/src/modules/agent-tools/tools/validate-outline.tool.ts`
+  - `apps/api/src/modules/agent-tools/tools/persist-outline.tool.ts`
+  - `apps/api/src/modules/agent-runs/agent-services.spec.ts`
+- 测试结果：
+  - `pnpm --dir apps/api exec ts-node src/modules/agent-runs/agent-services.spec.ts`：通过，431/431 项。
+  - `pnpm --dir apps/api exec ts-node src/modules/agent-runs/chapter-outline-batch.spec.ts`：通过，38/38 项。
+- 暂缓项 / 风险：
+  - 无 P1 暂缓项。P2 仍需清理旧 `generate_outline_preview` 推荐链路、eval 口径和审批展示。
 
 ## 4. P2：旧链路清理与文档同步
 

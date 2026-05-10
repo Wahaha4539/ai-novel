@@ -4,6 +4,14 @@ import { LlmGatewayService } from '../../llm/llm-gateway.service';
 import { DEFAULT_LLM_TIMEOUT_MS } from '../../llm/llm-timeout.constants';
 import { BaseTool, ToolContext } from '../base-tool';
 import type { ToolManifestV2 } from '../tool-manifest.types';
+import type { ChapterOutlineBatchQualityReview } from './chapter-outline-batch-contracts';
+import { assertCompleteChapterCraftBrief } from './chapter-craft-brief-contracts';
+import {
+  buildChapterOutlineQualityRubric,
+  CHAPTER_OUTLINE_QUALITY_REVIEW_TIMEOUT_MS,
+  formatChapterOutlineQualityIssues,
+  reviewChapterOutlineQuality,
+} from './chapter-outline-quality-review';
 import { ChapterContinuityState, ChapterCraftBrief, ChapterSceneBeat, ChapterStoryUnit, OutlinePreviewOutput } from './generate-outline-preview.tool';
 import { recordToolLlmUsage } from './import-preview-llm-usage';
 import { assertChapterCharacterExecution, assertVolumeCharacterPlan, type CharacterReferenceCatalog } from './outline-character-contracts';
@@ -12,6 +20,7 @@ import { normalizeWithLlmRepair } from './structured-output-repair';
 
 const CHAPTER_OUTLINE_PREVIEW_LLM_TIMEOUT_MS = DEFAULT_LLM_TIMEOUT_MS;
 const CHAPTER_OUTLINE_PREVIEW_REPAIR_TIMEOUT_MS = DEFAULT_LLM_TIMEOUT_MS;
+const CHAPTER_OUTLINE_PREVIEW_QUALITY_REGENERATION_ATTEMPTS = 1;
 
 interface GenerateChapterOutlinePreviewInput {
   context?: Record<string, unknown>;
@@ -37,6 +46,7 @@ export interface ChapterOutlinePreviewOutput {
   chapter: OutlinePreviewOutput['chapters'][number];
   chapters: OutlinePreviewOutput['chapters'];
   risks: string[];
+  qualityReview?: ChapterOutlineBatchQualityReview;
 }
 
 @Injectable()
@@ -72,7 +82,9 @@ export class GenerateChapterOutlinePreviewTool implements BaseTool<GenerateChapt
   riskLevel: 'low' = 'low';
   requiresApproval = false;
   sideEffects: string[] = [];
-  executionTimeoutMs = CHAPTER_OUTLINE_PREVIEW_LLM_TIMEOUT_MS + CHAPTER_OUTLINE_PREVIEW_REPAIR_TIMEOUT_MS + 30_000;
+  executionTimeoutMs = ((CHAPTER_OUTLINE_PREVIEW_LLM_TIMEOUT_MS + CHAPTER_OUTLINE_PREVIEW_REPAIR_TIMEOUT_MS) * (CHAPTER_OUTLINE_PREVIEW_QUALITY_REGENERATION_ATTEMPTS + 1))
+    + (CHAPTER_OUTLINE_QUALITY_REVIEW_TIMEOUT_MS * (CHAPTER_OUTLINE_PREVIEW_QUALITY_REGENERATION_ATTEMPTS + 1))
+    + 30_000;
   manifest: ToolManifestV2 = {
     name: this.name,
     displayName: '生成单章细纲与执行卡预览',
@@ -165,7 +177,7 @@ export class GenerateChapterOutlinePreviewTool implements BaseTool<GenerateChapt
         { appStep: 'planner', timeoutMs: CHAPTER_OUTLINE_PREVIEW_LLM_TIMEOUT_MS, retries: 0, jsonMode: true },
       );
       recordToolLlmUsage(context, 'planner', response.result);
-      const normalized = await normalizeWithLlmRepair({
+      let normalized = await normalizeWithLlmRepair({
         toolName: this.name,
         loggerEventPrefix: 'chapter_outline_preview',
         llm: this.llm,
@@ -188,13 +200,77 @@ export class GenerateChapterOutlinePreviewTool implements BaseTool<GenerateChapt
         initialModel: response.result.model,
         logger: this.logger,
       });
+      let regeneratedForQuality = false;
+      let qualityReview = await this.reviewChapterQuality(normalized, args, volumeNo, chapterNo, chapterCount, characterCatalog, context);
+      if (!qualityReview.valid) {
+        regeneratedForQuality = true;
+        await context.updateProgress?.({
+          phase: 'calling_llm',
+          phaseMessage: `Regenerating chapter ${chapterNo} outline from LLM quality issues`,
+          progressCurrent: chapterNo,
+          progressTotal: chapterCount,
+          timeoutMs: CHAPTER_OUTLINE_PREVIEW_LLM_TIMEOUT_MS,
+        });
+        const regenerationResponse = await this.llm.chatJson<unknown>(
+          this.buildQualityRegenerationMessages({
+            args,
+            volumeNo,
+            chapterNo,
+            chapterCount,
+            rejectedOutput: normalized,
+            qualityReview,
+            characterCatalog,
+          }),
+          { appStep: 'planner', timeoutMs: CHAPTER_OUTLINE_PREVIEW_LLM_TIMEOUT_MS, retries: 0, jsonMode: true, temperature: 0.2 },
+        );
+        recordToolLlmUsage(context, 'outline_chapter_quality_regeneration', regenerationResponse.result);
+        normalized = await normalizeWithLlmRepair({
+          toolName: this.name,
+          loggerEventPrefix: 'chapter_outline_preview',
+          llm: this.llm,
+          context,
+          data: regenerationResponse.data,
+          normalize: (data) => this.normalize(data, volumeNo, chapterNo, chapterCount, args.context, args.volumeOutline, args.storyUnitPlan, characterCatalog),
+          shouldRepair: ({ error, data }) => this.shouldRepairChapterOutlineOutput(data, error),
+          buildRepairMessages: ({ invalidOutput, validationError }) =>
+            this.buildRepairMessages(invalidOutput, validationError, args, volumeNo, chapterNo, chapterCount, characterCatalog),
+          progress: {
+            phaseMessage: `正在修复第 ${chapterNo} 章质量重生后的结构`,
+            timeoutMs: CHAPTER_OUTLINE_PREVIEW_REPAIR_TIMEOUT_MS,
+          },
+          llmOptions: {
+            appStep: 'planner',
+            timeoutMs: CHAPTER_OUTLINE_PREVIEW_REPAIR_TIMEOUT_MS,
+            temperature: 0.1,
+          },
+          maxRepairAttempts: 1,
+          initialModel: regenerationResponse.result.model,
+          logger: this.logger,
+        });
+        qualityReview = await this.reviewChapterQuality(normalized, args, volumeNo, chapterNo, chapterCount, characterCatalog, context);
+        if (!qualityReview.valid) {
+          throw new Error(`generate_chapter_outline_preview LLM quality validation failed after retry: ${formatChapterOutlineQualityIssues(qualityReview)}`);
+        }
+      }
       this.logger.log('chapter_outline_preview.llm_request.completed', {
         ...logContext,
         elapsedMs: Date.now() - startedAt,
         model: response.result.model,
         tokenUsage: response.result.usage,
+        regeneratedForQuality,
+        qualityIssueCount: qualityReview.issues.length,
       });
-      return normalized;
+      return {
+        ...normalized,
+        qualityReview,
+        risks: [
+          ...normalized.risks,
+          ...(regeneratedForQuality ? [`LLM quality review requested one regeneration for chapter ${chapterNo}; accepted after retry.`] : []),
+          ...qualityReview.issues
+            .filter((issue) => issue.severity === 'warning')
+            .map((issue) => `LLM quality warning${issue.chapterNo ? ` chapter ${issue.chapterNo}` : ''}${issue.path ? ` ${issue.path}` : ''}: ${issue.message}`),
+        ],
+      };
     } catch (error) {
       this.logger.error('chapter_outline_preview.llm_request.failed', error, {
         ...logContext,
@@ -221,6 +297,90 @@ export class GenerateChapterOutlinePreviewTool implements BaseTool<GenerateChapt
     if (/(cast|newMinorCharacters)\[\d+\]\./.test(message)) return true;
     if (/characterExecution|sceneBeats\[\d+\]\.participants|participants 未被 characterExecution\.cast 覆盖|povCharacter 未出现在 cast|sceneBeatRefs|actionBeatRefs/.test(message)) return true;
     return false;
+  }
+
+  private async reviewChapterQuality(
+    output: ChapterOutlinePreviewOutput,
+    args: GenerateChapterOutlinePreviewInput,
+    volumeNo: number,
+    chapterNo: number,
+    chapterCount: number,
+    characterCatalog: CharacterReferenceCatalog,
+    context: ToolContext,
+  ): Promise<ChapterOutlineBatchQualityReview> {
+    return reviewChapterOutlineQuality(this.llm, context, {
+      task: 'Review this generated single chapter outline before it can enter approval/write or downstream drafting flow.',
+      target: { volumeNo, chapterCount, chapterNo, chapterRange: { start: chapterNo, end: chapterNo } },
+      output,
+      volumeSummary: {
+        title: output.volume.title,
+        synopsis: output.volume.synopsis,
+        objective: output.volume.objective,
+        narrativePlan: output.volume.narrativePlan,
+      },
+      storyUnitSlice: output.chapter.craftBrief?.storyUnit ?? args.storyUnitPlan ?? {},
+      characterSourceWhitelist: {
+        existing: characterCatalog.existingCharacterNames ?? [],
+        volume_candidate: this.extractVolumeCandidateNames(output.volume),
+        minor_temporary: 'Only one-off local function characters declared in newMinorCharacters.',
+      },
+      chapterRange: { start: chapterNo, end: chapterNo },
+      progressMessage: `LLM reviewing chapter ${chapterNo} outline quality`,
+      progressCurrent: chapterNo,
+      progressTotal: chapterCount,
+      usageStep: 'outline_chapter_quality_review',
+      schemaName: 'chapter_outline_quality_review',
+      schemaDescription: 'LLM semantic quality review for a generated single chapter outline.',
+    });
+  }
+
+  private buildQualityRegenerationMessages(input: {
+    args: GenerateChapterOutlinePreviewInput;
+    volumeNo: number;
+    chapterNo: number;
+    chapterCount: number;
+    rejectedOutput: ChapterOutlinePreviewOutput;
+    qualityReview: ChapterOutlineBatchQualityReview;
+    characterCatalog: CharacterReferenceCatalog;
+  }): Array<{ role: 'system' | 'user'; content: string }> {
+    return [
+      {
+        role: 'system',
+        content: [
+          'You regenerate a Chinese web-novel single chapter outline after LLM semantic quality review.',
+          'Regenerate the whole target chapter, not a prose explanation.',
+          'Preserve the target chapterNo, volumeNo, storyUnit identity, and required JSON shape.',
+          'Fix every error-level quality issue. Do not create deterministic placeholders or skeletal template text.',
+          'Return compact strict JSON only with volume, chapter, and risks. No Markdown, comments, or prose.',
+        ].join('\n'),
+      },
+      {
+        role: 'user',
+        content: JSON.stringify({
+          userInstruction: input.args.instruction ?? '',
+          target: { volumeNo: input.volumeNo, chapterNo: input.chapterNo, chapterCount: input.chapterCount },
+          qualityRubric: buildChapterOutlineQualityRubric(),
+          qualityIssuesToFix: input.qualityReview.issues.filter((issue) => issue.severity === 'error'),
+          rejectedOutput: input.rejectedOutput,
+          volume: input.rejectedOutput.volume,
+          storyUnit: input.rejectedOutput.chapter.craftBrief?.storyUnit ?? input.args.storyUnitPlan ?? null,
+          previousChapter: input.args.previousChapter ?? null,
+          characterSourceWhitelist: {
+            existing: input.characterCatalog.existingCharacterNames ?? [],
+            volume_candidate: this.extractVolumeCandidateNames(input.rejectedOutput.volume),
+            minor_temporary: 'Only one-off local function characters; declare in newMinorCharacters with firstAndOnlyUse=true and approvalPolicy=preview_only.',
+          },
+          hardRules: [
+            `Return exactly chapter ${input.chapterNo}.`,
+            'Every chapter must include title, objective, conflict, hook, outline, expectedWordCount, and complete craftBrief.',
+            'Every craftBrief.actionBeats item must be a concrete executable beat with actor, visible action, object/target, obstacle or result.',
+            'Every sceneBeats.visibleAction must describe a visible action that can be drafted directly into prose.',
+            'Maintain entryState, exitState, handoffToNextChapter, openLoops, closedLoops, and continuityState so adjacent chapters can continue.',
+          ],
+          requiredJsonShape: { volume: input.rejectedOutput.volume, chapter: input.rejectedOutput.chapter, risks: [] },
+        }),
+      },
+    ];
   }
 
   private buildRepairMessages(
@@ -540,7 +700,7 @@ export class GenerateChapterOutlinePreviewTool implements BaseTool<GenerateChapt
       sceneBeats,
       label: `${label}.craftBrief.characterExecution`,
     });
-    return {
+    const craftBrief = {
       visibleGoal: this.requiredText(record.visibleGoal, `${label}.craftBrief.visibleGoal`),
       hiddenEmotion: this.requiredText(record.hiddenEmotion, `${label}.craftBrief.hiddenEmotion`),
       coreConflict: this.requiredText(record.coreConflict, `${label}.craftBrief.coreConflict`),
@@ -562,6 +722,8 @@ export class GenerateChapterOutlinePreviewTool implements BaseTool<GenerateChapt
       continuityState: this.normalizeContinuityState(record.continuityState, label),
       characterExecution,
     };
+    assertCompleteChapterCraftBrief(craftBrief, { label: `generate_chapter_outline_preview ${label}.craftBrief` });
+    return craftBrief;
   }
 
   private normalizeStoryUnit(value: unknown, label: string): ChapterStoryUnit {
@@ -821,9 +983,6 @@ export class MergeChapterOutlinePreviewsTool implements BaseTool<MergeChapterOut
     if (chapters.some((chapter) => Number(chapter.volumeNo) !== volumeNo)) {
       throw new Error(`merge_chapter_outline_previews 发现 volumeNo 与目标卷 ${volumeNo} 不一致，未合并完整细纲。`);
     }
-    if (chapters.some((chapter) => !chapter.craftBrief || !chapter.craftBrief.visibleGoal || !chapter.craftBrief.coreConflict || !chapter.craftBrief.storyUnit?.unitId || !chapter.craftBrief.characterExecution?.cast?.length)) {
-      throw new Error('merge_chapter_outline_previews 发现部分章节 craftBrief 不完整，未合并完整细纲。');
-    }
     const narrativePlan = this.asRecord(volume.narrativePlan);
     const characterPlan = assertVolumeCharacterPlan(narrativePlan.characterPlan, {
       chapterCount,
@@ -833,6 +992,7 @@ export class MergeChapterOutlinePreviewsTool implements BaseTool<MergeChapterOut
     });
     const volumeCandidateNames = characterPlan.newCharacterCandidates.map((candidate) => candidate.name);
     for (const chapter of chapters) {
+      assertCompleteChapterCraftBrief(chapter.craftBrief, { label: `merge_chapter_outline_previews 第 ${chapter.chapterNo} 章 craftBrief` });
       assertChapterCharacterExecution(chapter.craftBrief?.characterExecution, {
         existingCharacterNames: characterCatalog.existingCharacterNames,
         existingCharacterAliases: characterCatalog.existingCharacterAliases,
