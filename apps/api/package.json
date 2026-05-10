@@ -5,7 +5,7 @@
     "dev": "nest start --watch",
     "start:dev": "nest start --watch",
     "build": "nest build",
-    "test:agent": "ts-node src/modules/agent-runs/agent-services.spec.ts",
+    "test:agent": "ts-node src/modules/agent-runs/agent-services.spec.ts && ts-node src/modules/agent-runs/chapter-outline-batch.spec.ts",
     "eval:agent": "ts-node --project tsconfig.json ../../scripts/dev/eval_agent_planner.ts",
     "eval:agent:report": "ts-node --project tsconfig.json ../../scripts/dev/eval_agent_planner.ts --plans ../../tmp/agent-eval-plans --report ../../tmp/agent-eval-report.json --history ../../tmp/agent-eval-history.json",
     "eval:agent:live": "ts-node --project tsconfig.json ../../scripts/dev/eval_agent_planner.ts --live-planner",
