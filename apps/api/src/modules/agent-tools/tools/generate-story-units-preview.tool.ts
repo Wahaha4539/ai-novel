@@ -77,12 +77,13 @@ export class GenerateStoryUnitsPreviewTool implements BaseTool<GenerateStoryUnit
     description: '在卷大纲之后独立生成 storyUnitPlan；先把卷主线拆成 mainlineSegments，再让单元故事绑定主线段并给出建议篇幅和叙事交付物；若提供 chapterCount，则额外输出 chapterAllocation 供章节细纲承接。',
     whenToUse: [
       '用户要求丰富单元故事、支线故事、人物登场、人物情感、背景故事、世界观展示或卷内小故事时',
-      '用户要求卷细纲、章节细纲或把卷拆成章节时，应在 generate_volume_outline_preview 后、generate_chapter_outline_preview 前使用',
+      '用户要求卷细纲、60 章细纲、等长细纲、把卷拆成章节或改变章节数时，应在 generate_volume_outline_preview 后、generate_chapter_outline_preview 前使用',
       '需要把单元故事从 Volume.narrativePlan.storyUnits 解耦为独立预览和审批对象时',
     ],
     whenNotToUse: [
       '用户只要求卷大纲且不需要单元故事时，使用 generate_volume_outline_preview',
       '用户要求具体章节细纲或 Chapter.craftBrief 时，本工具只做上游计划，后续仍要用 generate_chapter_outline_preview',
+      '用户只要求基于已有卷纲生成章节细纲时，直接复用 Volume.narrativePlan.storyUnitPlan 或 narrativePlan.storyUnits',
       '用户要求写正文时使用 write_chapter 或 write_chapter_series',
     ],
     inputSchema: this.inputSchema,

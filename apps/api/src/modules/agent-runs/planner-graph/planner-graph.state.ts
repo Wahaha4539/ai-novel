@@ -23,6 +23,7 @@ export interface RouteDecision {
   reasons: string[];
   volumeNo?: number;
   chapterNo?: number;
+  chapterCount?: number;
   needsApproval?: boolean;
   needsPersistence?: boolean;
   ambiguity?: {

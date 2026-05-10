@@ -57,12 +57,13 @@ export class GenerateVolumeOutlinePreviewTool implements BaseTool<GenerateVolume
     displayName: '生成卷大纲预览',
     description: '先生成卷大纲、卷内支线、角色规划和伏笔方向；单元故事由 generate_story_units_preview 在后续步骤独立生成。',
     whenToUse: [
-      '用户要求生成卷大纲、卷细纲、章节细纲或 60 章细纲时，先用本工具生成卷级战略规划',
+      '用户要求生成或重写卷大纲、卷细纲、60 章细纲、等长细纲、拆成 N 章或改变章节数时，先用本工具生成卷级战略规划',
       '后续 generate_story_units_preview 需要承接稳定的卷主线、支线、角色规划和伏笔时',
     ],
     whenNotToUse: [
       '用户只要求生成单章正文时使用 write_chapter',
       '用户只要求合并已生成章节细纲时使用 merge_chapter_outline_previews',
+      '用户只要求基于已有卷纲生成章节细纲时，直接由 generate_chapter_outline_preview 承接 inspect_project_context 中的已持久化卷纲',
     ],
     inputSchema: this.inputSchema,
     outputSchema: this.outputSchema,

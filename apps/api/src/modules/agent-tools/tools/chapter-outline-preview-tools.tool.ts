@@ -81,6 +81,7 @@ export class GenerateChapterOutlinePreviewTool implements BaseTool<GenerateChapt
       'Agent 需要为卷细纲、章节细纲、60 章细纲逐章生成可见步骤时',
       '上一章细纲已经生成，需要用 previousChapter 接力卡生成下一章时',
       '只需要生成某一个 chapterNo 的章节细纲和 craftBrief，不写正文时',
+      '用户只要求基于已有卷纲生成章节细纲时，可直接读取 inspect_project_context.output.volumes 中的 Volume.narrativePlan，不必重新生成卷大纲或单元故事',
     ],
     whenNotToUse: [
       '用户要求写正文时使用 write_chapter 或 write_chapter_series',
@@ -91,8 +92,8 @@ export class GenerateChapterOutlinePreviewTool implements BaseTool<GenerateChapt
     outputSchema: this.outputSchema,
     parameterHints: {
       context: { source: 'previous_step', description: '通常来自 inspect_project_context.output。' },
-      volumeOutline: { source: 'previous_step', description: '上游 generate_volume_outline_preview.output.volume；本章必须承接其中的卷主线、支线和 characterPlan。' },
-      storyUnitPlan: { source: 'previous_step', description: '上游 generate_story_units_preview.output.storyUnitPlan；本章必须承接其中覆盖当前章的 chapterAllocation。' },
+      volumeOutline: { source: 'previous_step', description: '可选。若刚重写卷纲，传上游 generate_volume_outline_preview.output.volume；否则工具会从 inspect_project_context.output.volumes 读取目标卷。' },
+      storyUnitPlan: { source: 'previous_step', description: '可选。若刚重写单元故事，传上游 generate_story_units_preview.output.storyUnitPlan；否则工具会从 Volume.narrativePlan.storyUnitPlan 或 narrativePlan.storyUnits 读取。' },
       chapterNo: { source: 'user_message', description: '本次生成的全卷绝对章号。' },
       chapterCount: { source: 'user_message', description: '目标全卷总章节数，用于 volume.chapterCount 和单元故事范围。' },
       previousChapter: { source: 'previous_step', description: '上一章 generate_chapter_outline_preview.output.chapter，用于接力连续性。' },
@@ -170,7 +171,7 @@ export class GenerateChapterOutlinePreviewTool implements BaseTool<GenerateChapt
         llm: this.llm,
         context,
         data: response.data,
-        normalize: (data) => this.normalize(data, volumeNo, chapterNo, chapterCount, args.volumeOutline, args.storyUnitPlan, characterCatalog),
+        normalize: (data) => this.normalize(data, volumeNo, chapterNo, chapterCount, args.context, args.volumeOutline, args.storyUnitPlan, characterCatalog),
         shouldRepair: ({ error, data }) => this.shouldRepairChapterOutlineOutput(data, error),
         buildRepairMessages: ({ invalidOutput, validationError }) =>
           this.buildRepairMessages(invalidOutput, validationError, args, volumeNo, chapterNo, chapterCount, characterCatalog),
@@ -183,7 +184,7 @@ export class GenerateChapterOutlinePreviewTool implements BaseTool<GenerateChapt
           timeoutMs: CHAPTER_OUTLINE_PREVIEW_REPAIR_TIMEOUT_MS,
           temperature: 0.1,
         },
-        maxRepairAttempts: 1,
+        maxRepairAttempts: 2,
         initialModel: response.result.model,
         logger: this.logger,
       });
@@ -216,6 +217,8 @@ export class GenerateChapterOutlinePreviewTool implements BaseTool<GenerateChapt
     if (/临时角色承担了重要或长期角色功能|未进入卷级角色候选/.test(message)) return false;
     if (/craftBrief\.storyUnit (is required|缺少)|缺少 craftBrief\.storyUnit/.test(message)) return false;
     if (/craftBrief\.(visibleGoal|hiddenEmotion|coreConflict|mainlineTask|subplotTasks|actionBeats|sceneBeats|concreteClues|dialogueSubtext|characterShift|irreversibleConsequence|progressTypes|entryState|exitState|openLoops|closedLoops|handoffToNextChapter|continuityState)/.test(message)) return true;
+    if (/relationshipBeats\[\d+\]\.(participants|publicStateBefore|trigger|shift|publicStateAfter|hiddenStateBefore|hiddenStateAfter)/.test(message)) return true;
+    if (/(cast|newMinorCharacters)\[\d+\]\./.test(message)) return true;
     if (/characterExecution|sceneBeats\[\d+\]\.participants|participants 未被 characterExecution\.cast 覆盖|povCharacter 未出现在 cast|sceneBeatRefs|actionBeatRefs/.test(message)) return true;
     return false;
   }
@@ -229,7 +232,8 @@ export class GenerateChapterOutlinePreviewTool implements BaseTool<GenerateChapt
     chapterCount: number,
     characterCatalog: CharacterReferenceCatalog,
   ): Array<{ role: 'system' | 'user'; content: string }> {
-    const volumeCandidateNames = this.extractVolumeCandidateNames(args.volumeOutline);
+    const outlineCandidateNames = this.extractVolumeCandidateNames(args.volumeOutline);
+    const volumeCandidateNames = outlineCandidateNames.length ? outlineCandidateNames : this.extractVolumeCandidateNames(this.findContextVolume(args.context, volumeNo));
     return [
       {
         role: 'system',
@@ -239,6 +243,7 @@ export class GenerateChapterOutlinePreviewTool implements BaseTool<GenerateChapt
           '不得输出占位 craftBrief、模板行动链或模板后果；缺整章、缺整张 craftBrief、重要新角色未进入卷级候选时应保持失败。',
           'characterExecution.cast 的 source 必须与角色来源一致：既有角色用 existing；卷级候选用 volume_candidate；一次性临时角色用 minor_temporary 并列入 newMinorCharacters。',
           'sceneBeats.participants、relationshipBeats.participants 必须都出现在 characterExecution.cast.characterName 中。',
+          'relationshipBeats 可以是空数组；如果包含对象，每个对象必须完整包含 participants、publicStateBefore、trigger、shift、publicStateAfter，hiddenStateBefore/hiddenStateAfter 可选。不要留下半截关系变化对象。',
           '修复后必须返回完整对象，只包含 volume、chapter、risks。',
         ].join('\n'),
       },
@@ -261,7 +266,11 @@ export class GenerateChapterOutlinePreviewTool implements BaseTool<GenerateChapt
                 chapterNo,
                 volumeNo,
                 craftBrief: 'complete local missing fields only; preserve concrete action and consequence content',
-                characterExecution: 'cast/source/participants must match known existing characters, volume candidates, or declared minor temporaries',
+                characterExecution: {
+                  cast: 'source/participants must match known existing characters, volume candidates, or declared minor temporaries',
+                  relationshipBeats: '[] or complete objects with participants, publicStateBefore, trigger, shift, publicStateAfter; hiddenStateBefore/hiddenStateAfter are optional',
+                  newMinorCharacters: '[] or complete temporary character declarations',
+                },
               },
             },
           },
@@ -272,7 +281,7 @@ export class GenerateChapterOutlinePreviewTool implements BaseTool<GenerateChapt
     ];
   }
 
-  private normalize(data: unknown, volumeNo: number, chapterNo: number, chapterCount: number, volumeOutline?: Record<string, unknown>, storyUnitPlanInput?: Record<string, unknown>, characterCatalog: CharacterReferenceCatalog = {}): ChapterOutlinePreviewOutput {
+  private normalize(data: unknown, volumeNo: number, chapterNo: number, chapterCount: number, contextInput?: Record<string, unknown>, volumeOutline?: Record<string, unknown>, storyUnitPlanInput?: Record<string, unknown>, characterCatalog: CharacterReferenceCatalog = {}): ChapterOutlinePreviewOutput {
     const output = this.asRecord(data);
     const topLevelChapter = this.asRecord(output.chapter);
     const rawChapters = Object.keys(topLevelChapter).length ? [topLevelChapter] : (Array.isArray(output.chapters) ? output.chapters : []);
@@ -293,8 +302,9 @@ export class GenerateChapterOutlinePreviewTool implements BaseTool<GenerateChapt
       throw new Error(`generate_chapter_outline_preview 第 ${chapterNo} 章 expectedWordCount 无效，未生成完整单章细纲。`);
     }
     const providedVolume = this.asRecord(volumeOutline);
+    const contextVolume = this.findContextVolume(contextInput, volumeNo);
     const llmVolume = this.asRecord(output.volume);
-    const volumeRecord = Object.keys(providedVolume).length ? providedVolume : llmVolume;
+    const volumeRecord = Object.keys(providedVolume).length ? providedVolume : (Object.keys(contextVolume).length ? contextVolume : llmVolume);
     const returnedVolumeChapterCount = Number(volumeRecord.chapterCount);
     if (!Number.isInteger(Number(volumeRecord.volumeNo)) || Number(volumeRecord.volumeNo) !== volumeNo) {
       throw new Error(`generate_chapter_outline_preview volume.volumeNo 与目标卷 ${volumeNo} 不匹配，未生成完整单章细纲。`);
@@ -317,8 +327,9 @@ export class GenerateChapterOutlinePreviewTool implements BaseTool<GenerateChapt
       });
     }
     const volumeCandidateNames = characterPlan.newCharacterCandidates.map((candidate) => candidate.name);
-    const requiredStoryUnit = Object.keys(providedVolume).length ? this.findRequiredStoryUnit(narrativePlan, storyUnitPlanInput, chapterNo, chapterCount) : undefined;
-    if (Object.keys(providedVolume).length) {
+    const hasAuthoritativeVolume = Object.keys(providedVolume).length > 0 || Object.keys(contextVolume).length > 0;
+    const requiredStoryUnit = hasAuthoritativeVolume ? this.findRequiredStoryUnit(narrativePlan, storyUnitPlanInput, chapterNo, chapterCount) : undefined;
+    if (hasAuthoritativeVolume) {
       this.assertProvidedVolumeStoryUnit(requiredStoryUnit, chapterNo);
     }
     const chapter = {
@@ -365,13 +376,14 @@ export class GenerateChapterOutlinePreviewTool implements BaseTool<GenerateChapt
       'craftBrief 必须包含 characterExecution：povCharacter、cast、relationshipBeats、newMinorCharacters。',
       'characterExecution.cast 至少 1 人；source 只能是 existing、volume_candidate、minor_temporary。existing 必须来自角色摘要；volume_candidate 必须来自上游卷纲 characterPlan.newCharacterCandidates；minor_temporary 必须出现在 newMinorCharacters。',
       'sceneBeats.participants 和 relationshipBeats.participants 必须全部被 characterExecution.cast.characterName 覆盖。',
+      'relationshipBeats 可以是空数组；如果包含关系变化对象，必须包含 participants、publicStateBefore、trigger、shift、publicStateAfter，hiddenStateBefore/hiddenStateAfter 可选。',
       'minor_temporary 只能承担一次性功能角色，不得承担本卷主线核心功能、反派主压力或长期人物弧；重要新角色必须先进入上游卷级候选。',
       'craftBrief.actionBeats 至少 3 个节点；sceneBeats 至少 3 个场景段；concreteClues 至少 1 个且包含 name、sensoryDetail、laterUse。',
       'craftBrief.storyUnit 必须包含 unitId、title、chapterRange、chapterRole、localGoal、localConflict、serviceFunctions、mainlineContribution、characterContribution、relationshipContribution、worldOrThemeContribution、unitPayoff、stateChangeAfterUnit；若上游单元故事含 mainlineSegmentIds/serviceToMainline，必须承接到 mainlineContribution；serviceFunctions 至少 3 项。',
       'craftBrief.continuityState 必须包含角色位置、仍在生效的威胁、已持有线索/资源、关系变化和 nextImmediatePressure。',
       '如果提供 previousChapter，必须承接 previousChapter.craftBrief.exitState、handoffToNextChapter、openLoops、continuityState.nextImmediatePressure；不能让压力凭空消失。',
       '禁止只写推进、建立、完成、探索、揭示、面对、选择、升级、铺垫、承接等抽象词；必须绑定具体地点、人物、动作、物件和后果。',
-      'JSON 骨架：{"volume":{"volumeNo":1,"title":"卷名","synopsis":"卷概要","objective":"卷目标","chapterCount":60,"narrativePlan":{"storyUnits":[],"characterPlan":{"existingCharacterArcs":[],"newCharacterCandidates":[],"relationshipArcs":[],"roleCoverage":{"mainlineDrivers":[],"antagonistPressure":[],"emotionalCounterweights":[],"expositionCarriers":[]}}}},"chapter":{"chapterNo":1,"volumeNo":1,"title":"章节标题","objective":"本章可检验目标","conflict":"阻力来源与方式","hook":"章末交接钩子","outline":"1. 场景段...\\n2. 场景段...\\n3. 场景段...","expectedWordCount":2500,"craftBrief":{"visibleGoal":"表层目标","hiddenEmotion":"隐藏情绪","coreConflict":"核心冲突","mainlineTask":"主线任务","subplotTasks":["支线任务"],"storyUnit":{"unitId":"v1_unit_01","title":"单元故事名","chapterRange":{"start":1,"end":4},"chapterRole":"开局/升级/反转/收束","localGoal":"单元目标","localConflict":"单元阻力","serviceFunctions":["mainline","relationship_shift","foreshadow"],"mainlineContribution":"主线贡献","characterContribution":"人物贡献","relationshipContribution":"关系贡献","worldOrThemeContribution":"世界或主题贡献","unitPayoff":"单元回收","stateChangeAfterUnit":"单元后状态"},"actionBeats":["行动1","行动2","行动3"],"sceneBeats":[{"sceneArcId":"arc","scenePart":"1/3","continuesFromChapterNo":null,"continuesToChapterNo":null,"location":"地点","participants":["角色"],"localGoal":"场景目标","visibleAction":"可见动作","obstacle":"阻力","turningPoint":"转折","partResult":"结果","sensoryAnchor":"感官锚点"}],"characterExecution":{"povCharacter":"角色","cast":[{"characterName":"角色","source":"existing","functionInChapter":"本章功能","visibleGoal":"可见目标","pressure":"压力","actionBeatRefs":[1],"sceneBeatRefs":["arc"],"entryState":"入场状态","exitState":"离场状态"}],"relationshipBeats":[],"newMinorCharacters":[]},"concreteClues":[{"name":"线索","sensoryDetail":"感官细节","laterUse":"后续用途"}],"dialogueSubtext":"潜台词","characterShift":"人物变化","irreversibleConsequence":"不可逆后果","progressTypes":["info"],"entryState":"入场状态","exitState":"离场状态","openLoops":["未解决问题"],"closedLoops":["阶段性解决问题"],"handoffToNextChapter":"下一章交接","continuityState":{"characterPositions":["位置"],"activeThreats":["威胁"],"ownedClues":["线索"],"relationshipChanges":["关系变化"],"nextImmediatePressure":"下一章压力"}}},"risks":[]}',
+      'JSON 骨架：{"volume":{"volumeNo":1,"title":"卷名","synopsis":"卷概要","objective":"卷目标","chapterCount":60,"narrativePlan":{"storyUnits":[],"characterPlan":{"existingCharacterArcs":[],"newCharacterCandidates":[],"relationshipArcs":[],"roleCoverage":{"mainlineDrivers":[],"antagonistPressure":[],"emotionalCounterweights":[],"expositionCarriers":[]}}}},"chapter":{"chapterNo":1,"volumeNo":1,"title":"章节标题","objective":"本章可检验目标","conflict":"阻力来源与方式","hook":"章末交接钩子","outline":"1. 场景段...\\n2. 场景段...\\n3. 场景段...","expectedWordCount":2500,"craftBrief":{"visibleGoal":"表层目标","hiddenEmotion":"隐藏情绪","coreConflict":"核心冲突","mainlineTask":"主线任务","subplotTasks":["支线任务"],"storyUnit":{"unitId":"v1_unit_01","title":"单元故事名","chapterRange":{"start":1,"end":4},"chapterRole":"开局/升级/反转/收束","localGoal":"单元目标","localConflict":"单元阻力","serviceFunctions":["mainline","relationship_shift","foreshadow"],"mainlineContribution":"主线贡献","characterContribution":"人物贡献","relationshipContribution":"关系贡献","worldOrThemeContribution":"世界或主题贡献","unitPayoff":"单元回收","stateChangeAfterUnit":"单元后状态"},"actionBeats":["行动1","行动2","行动3"],"sceneBeats":[{"sceneArcId":"arc","scenePart":"1/3","continuesFromChapterNo":null,"continuesToChapterNo":null,"location":"地点","participants":["角色"],"localGoal":"场景目标","visibleAction":"可见动作","obstacle":"阻力","turningPoint":"转折","partResult":"结果","sensoryAnchor":"感官锚点"}],"characterExecution":{"povCharacter":"角色","cast":[{"characterName":"角色","source":"existing","functionInChapter":"本章功能","visibleGoal":"可见目标","pressure":"压力","actionBeatRefs":[1],"sceneBeatRefs":["arc"],"entryState":"入场状态","exitState":"离场状态"}],"relationshipBeats":[{"participants":["角色A","角色B"],"publicStateBefore":"公开关系旧状态","trigger":"触发关系变化的具体事件","shift":"关系变化","publicStateAfter":"公开关系新状态"}],"newMinorCharacters":[]},"concreteClues":[{"name":"线索","sensoryDetail":"感官细节","laterUse":"后续用途"}],"dialogueSubtext":"潜台词","characterShift":"人物变化","irreversibleConsequence":"不可逆后果","progressTypes":["info"],"entryState":"入场状态","exitState":"离场状态","openLoops":["未解决问题"],"closedLoops":["阶段性解决问题"],"handoffToNextChapter":"下一章交接","continuityState":{"characterPositions":["位置"],"activeThreats":["威胁"],"ownedClues":["线索"],"relationshipChanges":["关系变化"],"nextImmediatePressure":"下一章压力"}}},"risks":[]}',
     ].join('\n');
   }
 
@@ -384,6 +396,8 @@ export class GenerateChapterOutlinePreviewTool implements BaseTool<GenerateChapt
     const targetVolume = Object.keys(upstreamVolumeOutline).length ? upstreamVolumeOutline : contextVolume;
     const targetNarrativePlan = this.asRecord(targetVolume.narrativePlan);
     const selectedStoryUnit = this.findRequiredStoryUnit(targetNarrativePlan, args.storyUnitPlan, chapterNo, chapterCount);
+    const characterCatalog = this.extractCharacterCatalog(context);
+    const volumeCandidateNames = this.extractVolumeCandidateNames(targetVolume);
     const relationships = Array.isArray(context.relationships) ? context.relationships.slice(0, 60) : [];
     const characterStates = Array.isArray(context.characterStates) ? context.characterStates.slice(0, 60) : [];
     return [
@@ -412,6 +426,13 @@ export class GenerateChapterOutlinePreviewTool implements BaseTool<GenerateChapt
       '',
       '已有角色摘要（名称、别名、scope、状态和关系锚点；优先使用既有角色，不要重复造人）：',
       this.safeJson(Array.isArray(context.characters) ? context.characters.slice(0, 30) : [], 4000),
+      '',
+      'characterExecution.cast source whitelist (must follow exactly):',
+      this.safeJson({
+        existing: characterCatalog.existingCharacterNames ?? [],
+        volume_candidate: volumeCandidateNames,
+        minor_temporary: 'Only one-off local function characters; declare in newMinorCharacters with firstAndOnlyUse as JSON boolean true and approvalPolicy preview_only.',
+      }, 3000),
       '',
       '既有关系边摘要（本章 relationshipBeats 必须承接或推进这些关系；新增长期关系应先进入卷级 characterPlan.relationshipArcs）：',
       this.safeJson(relationships, 4000),
@@ -491,6 +512,12 @@ export class GenerateChapterOutlinePreviewTool implements BaseTool<GenerateChapt
       };
     }
     return this.findStoryUnitForChapter(narrativePlan, chapterNo);
+  }
+
+  private findContextVolume(contextInput: unknown, volumeNo: number): Record<string, unknown> {
+    const context = this.asRecord(contextInput);
+    const volumes = this.asRecordArray(context.volumes);
+    return volumes.find((item) => Number(item.volumeNo) === volumeNo) ?? {};
   }
 
   private normalizeCraftBrief(value: unknown, label: string, characterOptions: CharacterReferenceCatalog & { volumeCandidateNames: string[] }): ChapterCraftBrief {
