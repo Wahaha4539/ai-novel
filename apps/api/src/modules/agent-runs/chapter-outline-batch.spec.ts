@@ -613,6 +613,42 @@ test('COB-OPT batch preview prompt uses persisted storyUnit slice when plan pass
   assert.match(sliceSection, /"chapterRange":\{"start":1,"end":4\}/);
 });
 
+test('COB-OPT batch preview prompt shape uses the active batch range', async () => {
+  const storyUnitPlan = createStoryUnitPlan([{ unitId: 'u1', start: 1, end: 4 }, { unitId: 'u2', start: 5, end: 8 }]);
+  const calls: Array<{ messages: Array<{ role: string; content: string }>; options: Record<string, unknown> }> = [];
+  const tool = new GenerateChapterOutlineBatchPreviewTool({
+    async chatJson(messages: Array<{ role: string; content: string }>, options: Record<string, unknown>) {
+      calls.push({ messages, options });
+      return { data: createBatchOutputForRange(5, 8, 'u2'), result: { model: 'mock-active-batch-shape' } };
+    },
+  } as never);
+  const { context } = createToolContext();
+
+  await tool.run(
+    {
+      context: createValidatedSegmentContext(storyUnitPlan, 8),
+      batchPlan: createBatchPlan([
+        { batchNo: 1, chapterRange: { start: 1, end: 4 }, storyUnitIds: ['u1'], reason: 'unit u1' },
+        { batchNo: 2, chapterRange: { start: 5, end: 8 }, storyUnitIds: ['u2'], reason: 'unit u2' },
+      ], 8),
+      volumeNo: 1,
+      chapterCount: 8,
+      chapterRange: { start: 5, end: 8 },
+    },
+    context,
+  );
+
+  const prompt = calls[0].messages[1].content;
+  const shapeSection = prompt.split('Required JSON shape:\n')[1] ?? '';
+  assert.match(prompt, /Target batch chapterRange: 5-8/);
+  assert.match(shapeSection, /"chapterRange":\{"start":5,"end":8\}/);
+  assert.match(shapeSection, /"storyUnitIds":\["u2"\]/);
+  assert.match(shapeSection, /"chapterNo":5/);
+  assert.doesNotMatch(shapeSection, /"chapterRange":\{"start":1,"end":4\}/);
+  assert.doesNotMatch(shapeSection, /"storyUnitIds":\["u1"\]/);
+  assert.doesNotMatch(shapeSection, /"chapterNo":1/);
+});
+
 test('COB-P2 batch preview rejects missing whole chapter without repair', async () => {
   const storyUnitPlan = createStoryUnitPlan([{ unitId: 'u1', start: 1, end: 4 }]);
   let calls = 0;
