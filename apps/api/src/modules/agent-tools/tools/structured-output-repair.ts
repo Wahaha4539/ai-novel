@@ -29,7 +29,7 @@ export interface StructuredOutputRepairOptions<T> {
     phaseMessage: string;
     timeoutMs: number;
   };
-  llmOptions?: Pick<LlmChatOptions, 'appStep' | 'timeoutMs' | 'temperature' | 'maxTokens' | 'jsonSchema'>;
+  llmOptions?: Pick<LlmChatOptions, 'appStep' | 'timeoutMs' | 'stream' | 'streamIdleTimeoutMs' | 'onStreamProgress' | 'temperature' | 'maxTokens' | 'jsonSchema'>;
   maxRepairAttempts?: number;
   initialModel?: string;
   logger?: StructuredOutputRepairLogger;
@@ -98,6 +98,9 @@ async function repairAfterNormalizeFailure<T>(
         {
           appStep: options.llmOptions?.appStep,
           timeoutMs,
+          stream: options.llmOptions?.stream,
+          streamIdleTimeoutMs: options.llmOptions?.streamIdleTimeoutMs,
+          onStreamProgress: options.llmOptions?.onStreamProgress,
           retries: 0,
           jsonMode: true,
           jsonSchema: options.llmOptions?.jsonSchema,

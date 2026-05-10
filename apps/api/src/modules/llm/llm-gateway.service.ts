@@ -3,7 +3,7 @@ import { StructuredLogger } from '../../common/logging/structured-logger';
 import { LlmProvidersService, ResolvedLlmConfig } from '../llm-providers/llm-providers.service';
 import { LlmChatMessage, LlmChatOptions, LlmChatResult } from './dto/llm-chat.dto';
 import { buildProviderChatParams } from './llm-chat-params';
-import { postJson } from './llm-http-client';
+import { LlmHttpResponse, LlmStreamProgress, postJson, postJsonStream } from './llm-http-client';
 import { DEFAULT_LLM_TIMEOUT_MS } from './llm-timeout.constants';
 
 export class LlmTimeoutError extends Error {
@@ -221,6 +221,9 @@ export class LlmGatewayService {
 
     const startedAt = Date.now();
     const timeoutMs = options.timeoutMs ?? DEFAULT_LLM_TIMEOUT_MS;
+    const stream = options.stream === true;
+    const streamIdleTimeoutMs = options.streamIdleTimeoutMs ?? timeoutMs;
+    const effectiveTimeoutMs = stream ? streamIdleTimeoutMs : timeoutMs;
     const logContext = this.buildRequestLogContext(config, messages, options, timeoutMs, startedAt);
     const temperature = options.temperature ?? (config.params.temperature as number | undefined) ?? 0.2;
     const responseFormat = this.buildResponseFormat(options);
@@ -229,27 +232,37 @@ export class LlmGatewayService {
       messages,
       ...buildProviderChatParams(config.params),
       temperature,
+      ...(stream ? { stream: true } : {}),
       ...(options.tools ? { tools: options.tools } : {}),
       ...(responseFormat ? { response_format: responseFormat } : {}),
     };
-    let response: { status: number; bodyText: string };
+    let response: LlmHttpResponse;
     try {
       this.logger.log('llm.gateway.chat.requested', {
         ...logContext,
         requestBody: this.summarizeRequestBodyForLog(requestBody, messages, options),
       });
-      response = await postJson(
-        `${config.baseUrl.replace(/\/+$/, '')}/chat/completions`,
-        { 'Content-Type': 'application/json', Authorization: `Bearer ${config.apiKey}` },
-        requestBody,
-        timeoutMs,
-      );
+      response = stream
+        ? await postJsonStream(
+          `${config.baseUrl.replace(/\/+$/, '')}/chat/completions`,
+          { 'Content-Type': 'application/json', Authorization: `Bearer ${config.apiKey}` },
+          requestBody,
+          streamIdleTimeoutMs,
+          this.buildStreamProgressHandler(logContext, startedAt, options.onStreamProgress),
+        )
+        : await postJson(
+          `${config.baseUrl.replace(/\/+$/, '')}/chat/completions`,
+          { 'Content-Type': 'application/json', Authorization: `Bearer ${config.apiKey}` },
+          requestBody,
+          timeoutMs,
+        );
     } catch (error) {
-      const normalized = this.normalizeLlmError(error, { ...options, timeoutMs });
+      const normalized = this.normalizeLlmError(error, { ...options, timeoutMs: stream ? streamIdleTimeoutMs : timeoutMs });
       this.logger.error('llm.gateway.chat.failed', normalized, {
         ...logContext,
         elapsedMs: Date.now() - startedAt,
         cause: this.describeError(error),
+        streamDiagnostics: this.extractStreamDiagnostics(error),
       });
       throw normalized;
     }
@@ -258,7 +271,7 @@ export class LlmGatewayService {
       const detail = response.bodyText;
       const message = `${response.status} ${detail.slice(0, 500)}`;
       if (response.status === 408 || response.status === 504 || /timeout|timed out|deadline exceeded/i.test(detail)) {
-        const error = new LlmTimeoutError(`LLM 请求超时：${message}`, options.appStep, timeoutMs);
+        const error = new LlmTimeoutError(`LLM 请求超时：${message}`, options.appStep, effectiveTimeoutMs);
         this.logger.error('llm.gateway.chat.failed', error, {
           ...logContext,
           elapsedMs: Date.now() - startedAt,
@@ -266,6 +279,7 @@ export class LlmGatewayService {
           responseTextPreview: detail.slice(0, 500),
           rawProviderResponseLength: detail.length,
           rawProviderResponseText: detail,
+          streamDiagnostics: response.streamDiagnostics,
         });
         throw error;
       }
@@ -277,6 +291,7 @@ export class LlmGatewayService {
         responseTextPreview: detail.slice(0, 500),
         rawProviderResponseLength: detail.length,
         rawProviderResponseText: detail,
+        streamDiagnostics: response.streamDiagnostics,
       });
       throw error;
     }
@@ -285,13 +300,14 @@ export class LlmGatewayService {
     try {
       payload = this.parseProviderJson(response.bodyText, options.appStep);
     } catch (error) {
-      const normalized = this.normalizeLlmError(error, { ...options, timeoutMs });
+      const normalized = this.normalizeLlmError(error, { ...options, timeoutMs: stream ? streamIdleTimeoutMs : timeoutMs });
       this.logger.error('llm.gateway.chat.failed', normalized, {
         ...logContext,
         elapsedMs: Date.now() - startedAt,
         httpStatus: response.status,
         rawProviderResponseLength: response.bodyText.length,
         rawProviderResponseText: response.bodyText,
+        streamDiagnostics: response.streamDiagnostics,
       });
       throw normalized;
     }
@@ -305,6 +321,7 @@ export class LlmGatewayService {
         rawPayloadSummary,
         rawProviderResponseLength: response.bodyText.length,
         rawProviderResponseText: response.bodyText,
+        streamDiagnostics: response.streamDiagnostics,
       });
       throw error;
     }
@@ -315,6 +332,7 @@ export class LlmGatewayService {
       usage: payload.usage as Record<string, number> | undefined,
       elapsedMs: Date.now() - startedAt,
       rawPayloadSummary,
+      ...(response.streamDiagnostics ? { streamDiagnostics: response.streamDiagnostics } : {}),
     };
     this.logger.log('llm.gateway.chat.completed', {
       ...logContext,
@@ -326,6 +344,7 @@ export class LlmGatewayService {
       rawResponseText: result.text,
       rawProviderResponseLength: response.bodyText.length,
       rawProviderResponseText: response.bodyText,
+      streamDiagnostics: response.streamDiagnostics,
     });
     return result;
   }
@@ -337,11 +356,19 @@ export class LlmGatewayService {
     delete providerParams.temperature;
     delete providerParams.tools;
     delete providerParams.response_format;
+    delete providerParams.stream;
+    const responseFormatChars = requestBody.response_format === undefined ? 0 : JSON.stringify(requestBody.response_format).length;
+    const requestBodyChars = JSON.stringify(requestBody).length;
     return {
       model: requestBody.model,
       temperature: requestBody.temperature,
       response_format: requestBody.response_format,
+      responseFormatChars,
+      requestBodyChars,
       providerParams,
+      stream: options.stream === true,
+      streamIdleTimeoutMs: options.streamIdleTimeoutMs ?? null,
+      timeoutKind: options.stream === true ? 'stream_idle' : 'wall_clock',
       requestedMaxTokens: options.maxTokens ?? null,
       maxTokensSent: null,
       maxTokensOmitted: true,
@@ -418,6 +445,9 @@ export class LlmGatewayService {
       baseUrl: config.baseUrl,
       model: config.model,
       timeoutMs,
+      timeoutKind: options.stream === true ? 'stream_idle' : 'wall_clock',
+      stream: options.stream === true,
+      streamIdleTimeoutMs: options.streamIdleTimeoutMs ?? (options.stream ? timeoutMs : null),
       requestedMaxTokens: options.maxTokens ?? null,
       maxTokensSent: null,
       maxTokensOmitted: true,
@@ -435,6 +465,7 @@ export class LlmGatewayService {
     if (typeof record.name === 'string') output.name = record.name;
     if (typeof record.message === 'string') output.message = record.message;
     if (typeof record.code === 'string' || typeof record.code === 'number') output.code = record.code;
+    if (record.streamDiagnostics !== undefined) output.streamDiagnostics = record.streamDiagnostics;
     if (depth < 2 && record.cause !== undefined) output.cause = this.describeError(record.cause, depth + 1);
     return output;
   }
@@ -445,11 +476,75 @@ export class LlmGatewayService {
     const record = error && typeof error === 'object' ? error as Record<string, unknown> : {};
     const name = typeof record.name === 'string' ? record.name : '';
     const message = error instanceof Error ? error.message : String(error);
-    const timeoutCode = this.findErrorCode(error, ['UND_ERR_HEADERS_TIMEOUT', 'UND_ERR_BODY_TIMEOUT']);
+    const streamIdleCode = this.findErrorCode(error, ['LLM_STREAM_IDLE_TIMEOUT']);
+    const timeoutCode = this.findErrorCode(error, ['UND_ERR_HEADERS_TIMEOUT', 'UND_ERR_BODY_TIMEOUT', 'LLM_STREAM_IDLE_TIMEOUT']);
     if (name === 'TimeoutError' || name === 'AbortError' || timeoutCode || /timeout|timed out|aborted/i.test(message)) {
+      if (options.stream && (streamIdleCode || /stream idle timeout/i.test(message))) {
+        return new LlmTimeoutError(`LLM stream idle timeout after ${Math.round(timeoutMs / 1000)}s without new output`, options.appStep, timeoutMs, error);
+      }
       return new LlmTimeoutError(`LLM 在 ${Math.round(timeoutMs / 1000)}s 内未返回`, options.appStep, timeoutMs, error);
     }
     return new LlmProviderError(message, options.appStep, error);
+  }
+
+  private buildStreamProgressHandler(logContext: Record<string, unknown>, startedAt: number, onStreamProgress?: LlmChatOptions['onStreamProgress']): (progress: LlmStreamProgress) => void {
+    let firstChunkLogged = false;
+    let firstContentLogged = false;
+    let lastPeriodicLogAt = 0;
+    let lastPeriodicContentChars = 0;
+    return (progress) => {
+      try {
+        const progressResult = onStreamProgress?.(progress);
+        if (progressResult && typeof (progressResult as Promise<void>).then === 'function') {
+          void (progressResult as Promise<void>).catch((error) => {
+            this.logger.warn('llm.gateway.chat.stream_progress_callback_failed', {
+              ...logContext,
+              elapsedMs: Date.now() - startedAt,
+              cause: this.describeError(error),
+            });
+          });
+        }
+      } catch (error) {
+        this.logger.warn('llm.gateway.chat.stream_progress_callback_failed', {
+          ...logContext,
+          elapsedMs: Date.now() - startedAt,
+          cause: this.describeError(error),
+        });
+      }
+      const isFirstChunk = progress.event === 'chunk' && !firstChunkLogged;
+      const isFirstContent = progress.event === 'content' && !firstContentLogged;
+      const isDone = progress.event === 'done';
+      const now = Date.now();
+      const shouldLogPeriodic = progress.event === 'content'
+        && (now - lastPeriodicLogAt >= 30_000 || progress.streamedContentChars - lastPeriodicContentChars >= 4_000);
+      if (!isFirstChunk && !isFirstContent && !isDone && !shouldLogPeriodic) return;
+      if (isFirstChunk) firstChunkLogged = true;
+      if (isFirstContent) firstContentLogged = true;
+      if (shouldLogPeriodic) {
+        lastPeriodicLogAt = now;
+        lastPeriodicContentChars = progress.streamedContentChars;
+      }
+      this.logger.log('llm.gateway.chat.stream_progress', {
+        ...logContext,
+        elapsedMs: now - startedAt,
+        streamEvent: progress.event,
+        chunkCount: progress.chunkCount,
+        eventCount: progress.eventCount,
+        contentChunkCount: progress.contentChunkCount,
+        streamedContentChars: progress.streamedContentChars,
+        firstChunkAtMs: progress.firstChunkAtMs ?? null,
+        firstContentAtMs: progress.firstContentAtMs ?? null,
+        lastChunkAtMs: progress.lastChunkAtMs ?? null,
+        doneReceived: progress.doneReceived,
+        finishReason: progress.finishReason ?? null,
+        contentTail: progress.contentTail ?? null,
+      });
+    };
+  }
+
+  private extractStreamDiagnostics(error: unknown): unknown {
+    if (!error || typeof error !== 'object') return undefined;
+    return (error as Record<string, unknown>).streamDiagnostics;
   }
 
   private parseProviderJson(text: string, appStep?: string): Record<string, unknown> {

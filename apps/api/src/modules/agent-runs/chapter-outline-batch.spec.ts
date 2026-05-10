@@ -7,6 +7,7 @@ import {
 } from '../agent-tools/tools/chapter-outline-batch-contracts';
 import { GenerateChapterOutlineBatchPreviewTool, MergeChapterOutlineBatchPreviewsTool, SegmentChapterOutlineBatchesTool } from '../agent-tools/tools/chapter-outline-batch-tools.tool';
 import { ValidateOutlineTool } from '../agent-tools/tools/validate-outline.tool';
+import { DEFAULT_LLM_TIMEOUT_MS } from '../llm/llm-timeout.constants';
 import { PlanValidatorService } from './planner-graph/plan-validator.service';
 import type { AgentPlanSpec } from './agent-planner.service';
 
@@ -386,6 +387,7 @@ function createToolContext() {
     outputs: {},
     policy: {},
     async updateProgress(patch: ToolProgressPatch) { progress.push(patch); },
+    async heartbeat(patch?: ToolProgressPatch) { if (patch) progress.push(patch); },
   };
   return {
     progress,
@@ -565,10 +567,13 @@ test('COB-P2 batch preview generates continuous chapters with source whitelist i
     async chatJson(messages: Array<{ role: string; content: string }>, options: Record<string, unknown>) {
       calls.push({ messages, options });
       if (isQualityReviewCall(options)) return { data: createPassingQualityReview(), result: { model: 'mock-quality-review' } };
+      const onStreamProgress = options.onStreamProgress as ((progress: Record<string, unknown>) => void) | undefined;
+      onStreamProgress?.({ event: 'headers', elapsedMs: 1, streamed: true, chunkCount: 0, eventCount: 0, contentChunkCount: 0, streamedContentChars: 0, doneReceived: false });
+      onStreamProgress?.({ event: 'chunk', elapsedMs: 2, streamed: true, chunkCount: 1, eventCount: 1, contentChunkCount: 1, streamedContentChars: 42, doneReceived: false });
       return { data: createBatchOutput(), result: { model: 'mock-batch-preview' } };
     },
   } as never);
-  const { context } = createToolContext();
+  const { context, progress } = createToolContext();
 
   const result = await tool.run(
     {
@@ -594,6 +599,11 @@ test('COB-P2 batch preview generates continuous chapters with source whitelist i
   assert.match(calls[0].messages[1].content, /sceneBeats array must contain at least 3 concrete scene segments/);
   assert.match(calls[0].messages[1].content, /"sceneBeats":\[\{"sceneArcId":"scene_1".*"sceneArcId":"scene_2".*"sceneArcId":"scene_3"/);
   assert.equal(calls[0].options.jsonMode, true);
+  assert.equal(calls[0].options.stream, true);
+  assert.equal(calls[0].options.streamIdleTimeoutMs, DEFAULT_LLM_TIMEOUT_MS);
+  assert.equal(typeof calls[0].options.onStreamProgress, 'function');
+  assert.equal(progress.some((item) => item.phase === 'calling_llm' && item.timeoutMs === DEFAULT_LLM_TIMEOUT_MS + 30_000), true);
+  assert.equal(progress.some((item) => /streaming 42 chars/.test(item.phaseMessage ?? '')), true);
   const schema = calls[0].options.jsonSchema as Record<string, unknown>;
   assert.equal(schema.name, 'chapter_outline_batch_preview');
   assert.equal(schema.strict, true);

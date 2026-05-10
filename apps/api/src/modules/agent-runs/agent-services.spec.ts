@@ -17039,9 +17039,131 @@ test('LlmGatewayService sends OpenAI-compatible JSON schema response format when
     assert.ok(requested);
     const loggedRequestBody = requested.payload.requestBody as Record<string, unknown>;
     assert.deepEqual(loggedRequestBody.response_format, parsedBody.response_format);
+    assert.equal(typeof loggedRequestBody.requestBodyChars, 'number');
+    assert.equal(typeof loggedRequestBody.responseFormatChars, 'number');
+    assert.ok((loggedRequestBody.responseFormatChars as number) > 0);
   } finally {
     await new Promise<void>((resolve, reject) => server.close((error) => (error ? reject(error) : resolve())));
   }
+});
+
+test('LlmGatewayService streaming chat uses idle timeout instead of wall-clock timeout', async () => {
+  let requestBody = '';
+  const logged: Array<{ event: string; payload: Record<string, unknown>; error?: unknown }> = [];
+  const progressEvents: string[] = [];
+  const server = createServer((req, res) => {
+    req.setEncoding('utf8');
+    req.on('data', (chunk) => {
+      requestBody += String(chunk);
+    });
+    req.on('end', () => {
+      res.writeHead(200, { 'Content-Type': 'text/event-stream' });
+      setTimeout(() => {
+        res.write(`data: ${JSON.stringify({ id: 'stream-1', model: 'mock-stream-model', choices: [{ delta: { content: '{"ok":' } }] })}\n\n`);
+      }, 5);
+      setTimeout(() => {
+        res.write(`data: ${JSON.stringify({ model: 'mock-stream-model', choices: [{ delta: { content: 'true}' }, finish_reason: 'stop' }], usage: { completion_tokens: 2 } })}\n\n`);
+      }, 45);
+      setTimeout(() => {
+        res.end('data: [DONE]\n\n');
+      }, 70);
+    });
+  });
+  await new Promise<void>((resolve) => server.listen(0, '127.0.0.1', resolve));
+  const address = server.address() as AddressInfo;
+  const gateway = new LlmGatewayService({
+    resolveForStep() {
+      return {
+        providerName: 'rxinai',
+        baseUrl: `http://127.0.0.1:${address.port}/v1`,
+        apiKey: 'test-key',
+        model: 'gpt-5.5',
+        params: {},
+        source: 'default_provider',
+      };
+    },
+  } as never);
+  (gateway as unknown as { logger: { log: (event: string, payload: Record<string, unknown>) => void; warn: () => void; error: (event: string, error: unknown, payload: Record<string, unknown>) => void } }).logger = {
+    log(event, payload) { logged.push({ event, payload }); },
+    warn() {},
+    error(event, error, payload) { logged.push({ event, payload, error }); },
+  };
+
+  try {
+    const result = await gateway.chatJson<{ ok: boolean }>(
+      [{ role: 'user', content: 'Return streamed JSON.' }],
+      {
+        appStep: 'planner',
+        timeoutMs: 20,
+        stream: true,
+        streamIdleTimeoutMs: 100,
+        onStreamProgress: (progress) => { progressEvents.push(progress.event); },
+        retries: 0,
+        jsonMode: true,
+      },
+    );
+    assert.equal(result.data.ok, true);
+    assert.match(requestBody, /"stream":true/);
+    assert.match(requestBody, /"response_format":\{"type":"json_object"\}/);
+    assert.equal(result.result.streamDiagnostics?.streamedContentChars, '{"ok":true}'.length);
+  } finally {
+    await new Promise<void>((resolve, reject) => server.close((error) => (error ? reject(error) : resolve())));
+  }
+
+  const completed = logged.find((item) => item.event === 'llm.gateway.chat.completed');
+  assert.ok(completed);
+  assert.equal((completed.payload.streamDiagnostics as Record<string, unknown>).doneReceived, true);
+  assert.equal((completed.payload.streamDiagnostics as Record<string, unknown>).streamedContentChars, '{"ok":true}'.length);
+  assert.equal(logged.some((item) => item.event === 'llm.gateway.chat.stream_progress' && item.payload.streamEvent === 'content'), true);
+  assert.equal(progressEvents.includes('chunk'), true);
+  assert.equal(progressEvents.includes('done'), true);
+});
+
+test('LlmGatewayService streaming chat reports partial output on idle timeout', async () => {
+  const logged: Array<{ event: string; payload: Record<string, unknown>; error?: unknown }> = [];
+  const server = createServer((_req, res) => {
+    res.writeHead(200, { 'Content-Type': 'text/event-stream' });
+    res.write(`data: ${JSON.stringify({ id: 'stream-timeout', model: 'mock-stream-model', choices: [{ delta: { content: '{"partial":' } }] })}\n\n`);
+  });
+  await new Promise<void>((resolve) => server.listen(0, '127.0.0.1', resolve));
+  const address = server.address() as AddressInfo;
+  const gateway = new LlmGatewayService({
+    resolveForStep() {
+      return {
+        providerName: 'rxinai',
+        baseUrl: `http://127.0.0.1:${address.port}/v1`,
+        apiKey: 'test-key',
+        model: 'gpt-5.5',
+        params: {},
+        source: 'default_provider',
+      };
+    },
+  } as never);
+  (gateway as unknown as { logger: { log: (event: string, payload: Record<string, unknown>) => void; warn: () => void; error: (event: string, error: unknown, payload: Record<string, unknown>) => void } }).logger = {
+    log(event, payload) { logged.push({ event, payload }); },
+    warn() {},
+    error(event, error, payload) { logged.push({ event, payload, error }); },
+  };
+
+  try {
+    await assert.rejects(
+      () => gateway.chatJson<{ ok: boolean }>(
+        [{ role: 'user', content: 'Return streamed JSON.' }],
+        { appStep: 'planner', timeoutMs: 1_000, stream: true, streamIdleTimeoutMs: 30, retries: 0, jsonMode: true },
+      ),
+      /stream idle timeout/,
+    );
+  } finally {
+    await new Promise<void>((resolve, reject) => server.close((error) => (error ? reject(error) : resolve())));
+  }
+
+  const failed = logged.find((item) => item.event === 'llm.gateway.chat.failed');
+  assert.ok(failed);
+  const diagnostics = failed.payload.streamDiagnostics as Record<string, unknown>;
+  assert.equal(diagnostics.streamedContentChars, '{"partial":'.length);
+  assert.equal(typeof diagnostics.firstChunkAtMs, 'number');
+  assert.equal(typeof diagnostics.firstContentAtMs, 'number');
+  assert.match(String(diagnostics.contentTail), /\{"partial":/);
 });
 
 test('LlmGatewayService logs full raw chat response text without truncation', async () => {
