@@ -319,6 +319,7 @@ function AgentTodoListPanel({
   activePlanVersion,
   runStatus,
   approvedStepNos,
+  canApprove,
   loading,
   onToggleApproval,
 }: {
@@ -327,6 +328,7 @@ function AgentTodoListPanel({
   activePlanVersion: number;
   runStatus?: string;
   approvedStepNos: number[];
+  canApprove: boolean;
   loading: boolean;
   onToggleApproval: (stepNo: number) => void;
 }) {
@@ -366,13 +368,13 @@ function AgentTodoListPanel({
             const record = findTodoStepRecord(runSteps, step.stepNo, activePlanVersion, runStatus);
             const approved = approvedStepNos.includes(step.stepNo);
             const state = todoItemState(record, Boolean(step.requiresApproval), approved);
-            const canToggleApproval = Boolean(step.requiresApproval && !isFinishedStatus(record?.status) && !isActiveStatus(record?.status) && !isFailedStatus(record?.status));
+            const canToggleApproval = Boolean(canApprove && step.requiresApproval && !isFinishedStatus(record?.status) && !isActiveStatus(record?.status) && !isFailedStatus(record?.status));
             const explanation = agentToolUiExplanation(step.tool);
             const chapterNos = chapterNosFromPlanStep(step);
             const rangeLabel = chapterRangeLabel(step);
             return (
               <li key={step.stepNo} className={`agent-todo-list__item agent-todo-list__item--${state}`}>
-                {step.requiresApproval ? (
+                {step.requiresApproval && canApprove ? (
                   <button
                     type="button"
                     className="agent-todo-list__marker agent-todo-list__marker--button"
@@ -561,6 +563,7 @@ export function AgentMissionWindow({
         activePlanVersion={activePlanVersion}
         runStatus={currentRun?.status}
         approvedStepNos={approvedStepNos}
+        canApprove={canAct}
         loading={loading}
         onToggleApproval={onToggleApproval}
       />

@@ -78,7 +78,10 @@ export function AgentFloatingPanel({
   const canAct = !!currentRun && (currentRun.status === 'waiting_approval' || currentRun.status === 'waiting_review');
   const canRetry = !!currentRun && currentRun.status === 'failed';
   const canReplan = !!currentRun && !['planning', 'acting', 'running'].includes(currentRun.status);
-  const riskSummary = useMemo(() => approvalRiskSummary(plan, approvedStepNos), [plan, approvedStepNos]);
+  const riskSummary = useMemo(
+    () => (canAct || canRetry ? approvalRiskSummary(plan, approvedStepNos) : []),
+    [canAct, canRetry, plan, approvedStepNos],
+  );
   const uploadedCreativeDocumentAttachments = useMemo(
     () => creativeDocumentAttachments.flatMap((item) => (item.status === 'uploaded' && item.attachment ? [item.attachment] : [])),
     [creativeDocumentAttachments],
@@ -106,8 +109,12 @@ export function AgentFloatingPanel({
 
   // 默认勾选计划要求审批的步骤
   useEffect(() => {
+    if (!canAct) {
+      setApprovedStepNos((current) => (current.length ? [] : current));
+      return;
+    }
     setApprovedStepNos((current) => (areSameStepNos(current, approvalStepNos) ? current : approvalStepNos));
-  }, [approvalStepNos]);
+  }, [approvalStepNos, canAct]);
 
   // ── 事件处理 ──
 
