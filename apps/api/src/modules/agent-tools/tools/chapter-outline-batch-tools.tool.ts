@@ -10,6 +10,7 @@ import {
   assertChapterRangeCoverage,
   buildChapterOutlineBatchesFromStoryUnitPlan,
   chapterCountForRange,
+  ChapterOutlineBatchQualityReview,
   ChapterOutlineBatchPreviewOutput,
   ChapterOutlineBatchPlan,
   ChapterRange,
@@ -38,6 +39,8 @@ interface SegmentChapterOutlineBatchesInput {
 
 const CHAPTER_OUTLINE_BATCH_PREVIEW_LLM_TIMEOUT_MS = DEFAULT_LLM_TIMEOUT_MS;
 const CHAPTER_OUTLINE_BATCH_PREVIEW_REPAIR_TIMEOUT_MS = DEFAULT_LLM_TIMEOUT_MS;
+const CHAPTER_OUTLINE_BATCH_QUALITY_REVIEW_TIMEOUT_MS = DEFAULT_LLM_TIMEOUT_MS;
+const CHAPTER_OUTLINE_BATCH_QUALITY_REGENERATION_ATTEMPTS = 1;
 
 @Injectable()
 export class SegmentChapterOutlineBatchesTool implements BaseTool<SegmentChapterOutlineBatchesInput, ChapterOutlineBatchPlan> {
@@ -247,6 +250,7 @@ export class GenerateChapterOutlineBatchPreviewTool implements BaseTool<Generate
       batch: { type: 'object' as const },
       chapters: { type: 'array' as const },
       risks: { type: 'array' as const, items: { type: 'string' as const } },
+      qualityReview: { type: 'object' as const },
       repairDiagnostics: { type: 'array' as const, items: { type: 'object' as const } },
     },
   };
@@ -254,7 +258,9 @@ export class GenerateChapterOutlineBatchPreviewTool implements BaseTool<Generate
   riskLevel: 'low' = 'low';
   requiresApproval = false;
   sideEffects: string[] = [];
-  executionTimeoutMs = CHAPTER_OUTLINE_BATCH_PREVIEW_LLM_TIMEOUT_MS + CHAPTER_OUTLINE_BATCH_PREVIEW_REPAIR_TIMEOUT_MS + 30_000;
+  executionTimeoutMs = ((CHAPTER_OUTLINE_BATCH_PREVIEW_LLM_TIMEOUT_MS + CHAPTER_OUTLINE_BATCH_PREVIEW_REPAIR_TIMEOUT_MS) * (CHAPTER_OUTLINE_BATCH_QUALITY_REGENERATION_ATTEMPTS + 1))
+    + (CHAPTER_OUTLINE_BATCH_QUALITY_REVIEW_TIMEOUT_MS * (CHAPTER_OUTLINE_BATCH_QUALITY_REGENERATION_ATTEMPTS + 1))
+    + 60_000;
   manifest: ToolManifestV2 = {
     name: this.name,
     displayName: 'Generate chapter outline batch preview',
@@ -327,6 +333,7 @@ export class GenerateChapterOutlineBatchPreviewTool implements BaseTool<Generate
       { role: 'system' as const, content: this.buildSystemPrompt() },
       { role: 'user' as const, content: this.buildUserPrompt(args, volume, volumeNo, chapterCount, chapterRange, characterCatalog, allowedStoryUnitIds) },
     ];
+    const jsonSchema = this.buildResponseJsonSchema(allowedStoryUnitIds);
     const logContext = {
       agentRunId: context.agentRunId,
       projectId: context.projectId,
@@ -342,18 +349,40 @@ export class GenerateChapterOutlineBatchPreviewTool implements BaseTool<Generate
     const startedAt = Date.now();
     this.logger.log('chapter_outline_batch_preview.llm_request.started', logContext);
     try {
-      const response = await this.llm.chatJson<unknown>(
-        messages,
-        { appStep: 'planner', timeoutMs: CHAPTER_OUTLINE_BATCH_PREVIEW_LLM_TIMEOUT_MS, retries: 0, jsonMode: true, temperature: 0.2 },
-      );
-      recordToolLlmUsage(context, 'planner', response.result);
-      const normalized = await normalizeWithLlmRepair({
-        toolName: this.name,
-        loggerEventPrefix: 'chapter_outline_batch_preview',
-        llm: this.llm,
+      let normalized = await this.generateAndNormalizeBatch(messages, {
+        args,
+        volume,
+        volumeNo,
+        chapterCount,
+        chapterRange,
+        characterCatalog,
+        allowedStoryUnitIds,
         context,
-        data: response.data,
-        normalize: (data) => this.normalize(data, {
+        jsonSchema,
+        phaseMessage: `Repairing chapter outline batch ${chapterRange.start}-${chapterRange.end}`,
+      });
+      let qualityReview = await this.reviewBatchQuality(normalized, {
+        args,
+        volume,
+        volumeNo,
+        chapterCount,
+        chapterRange,
+        characterCatalog,
+        allowedStoryUnitIds,
+        context,
+      });
+      let regeneratedForQuality = false;
+
+      if (!qualityReview.valid) {
+        regeneratedForQuality = true;
+        await context.updateProgress?.({
+          phase: 'calling_llm',
+          phaseMessage: `Regenerating chapter outline batch ${chapterRange.start}-${chapterRange.end} from LLM quality issues`,
+          progressCurrent: chapterRange.start - 1,
+          progressTotal: chapterCount,
+          timeoutMs: CHAPTER_OUTLINE_BATCH_PREVIEW_LLM_TIMEOUT_MS,
+        });
+        normalized = await this.generateAndNormalizeBatch(this.buildQualityRegenerationMessages({
           args,
           volume,
           volumeNo,
@@ -361,27 +390,40 @@ export class GenerateChapterOutlineBatchPreviewTool implements BaseTool<Generate
           chapterRange,
           characterCatalog,
           allowedStoryUnitIds,
-        }),
-        shouldRepair: ({ error, data }) => this.shouldRepairBatchOutput(data, error, chapterRange),
-        buildRepairMessages: ({ invalidOutput, validationError }) => this.buildRepairMessages(invalidOutput, validationError, args, volume, volumeNo, chapterCount, chapterRange, characterCatalog, allowedStoryUnitIds),
-        progress: {
-          phaseMessage: `Repairing chapter outline batch ${chapterRange.start}-${chapterRange.end}`,
-          timeoutMs: CHAPTER_OUTLINE_BATCH_PREVIEW_REPAIR_TIMEOUT_MS,
-        },
-        llmOptions: {
-          appStep: 'planner',
-          timeoutMs: CHAPTER_OUTLINE_BATCH_PREVIEW_REPAIR_TIMEOUT_MS,
-          temperature: 0.1,
-        },
-        maxRepairAttempts: 1,
-        initialModel: response.result.model,
-        logger: this.logger,
-      });
+          rejectedOutput: normalized,
+          qualityReview,
+        }), {
+          args,
+          volume,
+          volumeNo,
+          chapterCount,
+          chapterRange,
+          characterCatalog,
+          allowedStoryUnitIds,
+          context,
+          jsonSchema,
+          phaseMessage: `Repairing regenerated chapter outline batch ${chapterRange.start}-${chapterRange.end}`,
+        });
+        qualityReview = await this.reviewBatchQuality(normalized, {
+          args,
+          volume,
+          volumeNo,
+          chapterCount,
+          chapterRange,
+          characterCatalog,
+          allowedStoryUnitIds,
+          context,
+        });
+        if (!qualityReview.valid) {
+          throw new Error(`generate_chapter_outline_batch_preview LLM quality validation failed after retry: ${this.formatQualityIssues(qualityReview)}`);
+        }
+      }
+
       this.logger.log('chapter_outline_batch_preview.llm_request.completed', {
         ...logContext,
         elapsedMs: Date.now() - startedAt,
-        model: response.result.model,
-        tokenUsage: response.result.usage,
+        regeneratedForQuality,
+        qualityIssueCount: qualityReview.issues.length,
       });
       await context.updateProgress?.({
         phase: 'validating',
@@ -389,7 +431,17 @@ export class GenerateChapterOutlineBatchPreviewTool implements BaseTool<Generate
         progressCurrent: chapterRange.end,
         progressTotal: chapterCount,
       });
-      return normalized;
+      return {
+        ...normalized,
+        qualityReview,
+        risks: [
+          ...normalized.risks,
+          ...(regeneratedForQuality ? [`LLM quality review requested one regeneration for batch ${chapterRange.start}-${chapterRange.end}; accepted after retry.`] : []),
+          ...qualityReview.issues
+            .filter((issue) => issue.severity === 'warning')
+            .map((issue) => `LLM quality warning${issue.chapterNo ? ` chapter ${issue.chapterNo}` : ''}${issue.path ? ` ${issue.path}` : ''}: ${issue.message}`),
+        ],
+      };
     } catch (error) {
       this.logger.error('chapter_outline_batch_preview.llm_request.failed', error, {
         ...logContext,
@@ -397,6 +449,275 @@ export class GenerateChapterOutlineBatchPreviewTool implements BaseTool<Generate
       });
       throw error;
     }
+  }
+
+  private async generateAndNormalizeBatch(
+    messages: Array<{ role: 'system' | 'user' | 'assistant'; content: string }>,
+    options: {
+      args: GenerateChapterOutlineBatchPreviewInput;
+      volume: Record<string, unknown>;
+      volumeNo: number;
+      chapterCount: number;
+      chapterRange: ChapterRange;
+      characterCatalog: CharacterReferenceCatalog & { volumeCandidateNames: string[] };
+      allowedStoryUnitIds: string[];
+      context: ToolContext;
+      jsonSchema: { name: string; description: string; schema: Record<string, unknown>; strict: boolean };
+      phaseMessage: string;
+    },
+  ): Promise<ChapterOutlineBatchPreviewOutput> {
+    const response = await this.llm.chatJson<unknown>(
+      messages,
+      { appStep: 'planner', timeoutMs: CHAPTER_OUTLINE_BATCH_PREVIEW_LLM_TIMEOUT_MS, retries: 0, jsonMode: true, jsonSchema: options.jsonSchema, temperature: 0.2 },
+    );
+    recordToolLlmUsage(options.context, 'planner', response.result);
+    return normalizeWithLlmRepair({
+      toolName: this.name,
+      loggerEventPrefix: 'chapter_outline_batch_preview',
+      llm: this.llm,
+      context: options.context,
+      data: response.data,
+      normalize: (data) => this.normalize(data, {
+        args: options.args,
+        volume: options.volume,
+        volumeNo: options.volumeNo,
+        chapterCount: options.chapterCount,
+        chapterRange: options.chapterRange,
+        characterCatalog: options.characterCatalog,
+        allowedStoryUnitIds: options.allowedStoryUnitIds,
+      }),
+      shouldRepair: ({ error, data }) => this.shouldRepairBatchOutput(data, error, options.chapterRange),
+      buildRepairMessages: ({ invalidOutput, validationError }) => this.buildRepairMessages(invalidOutput, validationError, options.args, options.volume, options.volumeNo, options.chapterCount, options.chapterRange, options.characterCatalog, options.allowedStoryUnitIds),
+      progress: {
+        phaseMessage: options.phaseMessage,
+        timeoutMs: CHAPTER_OUTLINE_BATCH_PREVIEW_REPAIR_TIMEOUT_MS,
+      },
+      llmOptions: {
+        appStep: 'planner',
+        timeoutMs: CHAPTER_OUTLINE_BATCH_PREVIEW_REPAIR_TIMEOUT_MS,
+        temperature: 0.1,
+        jsonSchema: options.jsonSchema,
+      },
+      maxRepairAttempts: 1,
+      initialModel: response.result.model,
+      logger: this.logger,
+    });
+  }
+
+  private async reviewBatchQuality(output: ChapterOutlineBatchPreviewOutput, options: {
+    args: GenerateChapterOutlineBatchPreviewInput;
+    volume: Record<string, unknown>;
+    volumeNo: number;
+    chapterCount: number;
+    chapterRange: ChapterRange;
+    characterCatalog: CharacterReferenceCatalog & { volumeCandidateNames: string[] };
+    allowedStoryUnitIds: string[];
+    context: ToolContext;
+  }): Promise<ChapterOutlineBatchQualityReview> {
+    await options.context.updateProgress?.({
+      phase: 'calling_llm',
+      phaseMessage: `LLM reviewing chapter outline batch ${options.chapterRange.start}-${options.chapterRange.end}`,
+      progressCurrent: options.chapterRange.end,
+      progressTotal: options.chapterCount,
+      timeoutMs: CHAPTER_OUTLINE_BATCH_QUALITY_REVIEW_TIMEOUT_MS,
+    });
+    const response = await this.llm.chatJson<unknown>(
+      this.buildQualityReviewMessages(output, options),
+      {
+        appStep: 'planner',
+        timeoutMs: CHAPTER_OUTLINE_BATCH_QUALITY_REVIEW_TIMEOUT_MS,
+        retries: 0,
+        jsonMode: true,
+        jsonSchema: this.buildQualityReviewJsonSchema(),
+        temperature: 0,
+      },
+    );
+    recordToolLlmUsage(options.context, 'outline_batch_quality_review', response.result);
+    return this.normalizeQualityReview(response.data, options.chapterRange);
+  }
+
+  private buildQualityReviewMessages(output: ChapterOutlineBatchPreviewOutput, options: {
+    args: GenerateChapterOutlineBatchPreviewInput;
+    volume: Record<string, unknown>;
+    volumeNo: number;
+    chapterCount: number;
+    chapterRange: ChapterRange;
+    characterCatalog: CharacterReferenceCatalog & { volumeCandidateNames: string[] };
+    allowedStoryUnitIds: string[];
+  }) {
+    return [
+      {
+        role: 'system' as const,
+        content: [
+          'You are an expert Chinese web-novel outline quality reviewer.',
+          'Judge semantic usability for drafting prose. Do not use keyword matching or regex-like heuristics; read the whole field in context.',
+          'Return strict JSON only. No Markdown, comments, or prose.',
+        ].join('\n'),
+      },
+      {
+        role: 'user' as const,
+        content: this.safeJson({
+          task: 'Review this generated chapter-outline batch before it can enter approval/write flow.',
+          target: { volumeNo: options.volumeNo, chapterCount: options.chapterCount, chapterRange: options.chapterRange, allowedStoryUnitIds: options.allowedStoryUnitIds },
+          rubric: this.batchQualityRubric(),
+          decisionRules: [
+            'Return valid=false if any chapter has an error-level issue.',
+            'Return error only when the issue would make the chapter hard to draft into concrete prose without inventing major missing action, obstacle, result, or continuity.',
+            'Return warning for polish, minor repetition, weak style, or fixable wording that does not block drafting.',
+            'Do not reject solely because a sentence contains abstract words; reject only if the whole field lacks concrete actor/action/object/obstacle/result in context.',
+            'Do not rewrite content. Report specific failed points with chapterNo, path, message, suggestion, and short evidence.',
+          ],
+          volumeSummary: this.volumeRepairSummary(options.volume),
+          storyUnitSlice: options.args.storyUnitSlice ?? this.storyUnitSliceFromPlan(this.storyUnitPlanForPrompt(options.args, options.volume), options.allowedStoryUnitIds),
+          characterSourceWhitelist: {
+            existing: options.characterCatalog.existingCharacterNames ?? [],
+            volume_candidate: options.characterCatalog.volumeCandidateNames ?? [],
+            minor_temporary: 'Only one-off local function characters declared in newMinorCharacters.',
+          },
+          batchOutput: output,
+          outputContract: {
+            valid: 'boolean',
+            summary: 'short string',
+            issues: [
+              {
+                severity: 'error|warning',
+                chapterNo: 'number optional',
+                path: 'field path such as chapters[1].craftBrief.actionBeats[2]',
+                message: 'what failed',
+                suggestion: 'how the next generation should fix it',
+                evidence: 'short quote or paraphrase from the failed field',
+              },
+            ],
+          },
+        }, 70000),
+      },
+    ];
+  }
+
+  private buildQualityRegenerationMessages(input: {
+    args: GenerateChapterOutlineBatchPreviewInput;
+    volume: Record<string, unknown>;
+    volumeNo: number;
+    chapterCount: number;
+    chapterRange: ChapterRange;
+    characterCatalog: CharacterReferenceCatalog & { volumeCandidateNames: string[] };
+    allowedStoryUnitIds: string[];
+    rejectedOutput: ChapterOutlineBatchPreviewOutput;
+    qualityReview: ChapterOutlineBatchQualityReview;
+  }) {
+    return [
+      {
+        role: 'system' as const,
+        content: [
+          'You regenerate a Chinese web-novel chapter-outline batch after LLM semantic quality review.',
+          'Regenerate the whole target batch, not a prose explanation.',
+          'Preserve the target chapter numbers, volumeNo, storyUnitIds, and required JSON shape.',
+          'Fix every error-level quality issue. Do not create deterministic placeholders or skeletal template text.',
+          'Return compact strict JSON only with batch, chapters, and risks. No Markdown, comments, or prose.',
+        ].join('\n'),
+      },
+      {
+        role: 'user' as const,
+        content: this.safeJson({
+          userInstruction: input.args.instruction ?? '',
+          target: { volumeNo: input.volumeNo, chapterCount: input.chapterCount, chapterRange: input.chapterRange, allowedStoryUnitIds: input.allowedStoryUnitIds },
+          qualityRubric: this.batchQualityRubric(),
+          qualityIssuesToFix: input.qualityReview.issues.filter((issue) => issue.severity === 'error'),
+          rejectedOutput: input.rejectedOutput,
+          volume: input.volume,
+          storyUnitSlice: input.args.storyUnitSlice ?? this.storyUnitSliceFromPlan(this.storyUnitPlanForPrompt(input.args, input.volume), input.allowedStoryUnitIds),
+          previousBatchTail: input.args.previousBatchTail ?? null,
+          characterSourceWhitelist: {
+            existing: input.characterCatalog.existingCharacterNames ?? [],
+            volume_candidate: input.characterCatalog.volumeCandidateNames ?? [],
+            minor_temporary: 'Only one-off local function characters; declare in newMinorCharacters with firstAndOnlyUse=true and approvalPolicy=preview_only.',
+          },
+          hardRules: [
+            `Return exactly chapters ${input.chapterRange.start}-${input.chapterRange.end}, continuous and in order.`,
+            'Every chapter must include title, objective, conflict, hook, outline, expectedWordCount, and complete craftBrief.',
+            'Every craftBrief.actionBeats item must be a concrete executable beat with actor, visible action, object/target, obstacle or result.',
+            'Every sceneBeats.visibleAction must describe a visible action that can be drafted directly into prose.',
+            'Maintain continuityBridgeIn/Out, entryState, exitState, handoffToNextChapter, and continuityState so the next batch can continue.',
+          ],
+          requiredJsonShape: JSON.parse(this.buildRequiredJsonShapeExample(input.volumeNo, input.chapterRange, input.allowedStoryUnitIds)),
+        }, 70000),
+      },
+    ];
+  }
+
+  private batchQualityRubric(): string[] {
+    return [
+      'Chapter outline: must contain a scene chain with who acts, where, visible action, resistance, turn/result, and chapter-end handoff. It may be concise, but cannot be only an intention or theme.',
+      'Action beats: each beat should be executable as a drafting instruction. It needs a concrete actor plus visible action and object/target; at least one beat must show resistance and at least one must show resulting state change.',
+      'Scene beats: each scene must be draftable without inventing its location, participants, visible action, obstacle, turning point, result, or sensory anchor.',
+      'Conflict/obstacle: must identify who or what blocks the action and how the pressure appears on page.',
+      'Continuity: entryState, exitState, handoffToNextChapter, openLoops, closedLoops, and continuityState must let adjacent chapters connect without guessing.',
+      'Character execution: cast functions, actionBeatRefs, sceneBeatRefs, entryState, and exitState must match the chapter action. Temporary characters must remain one-off unless explicitly marked needs_approval upstream.',
+      'Reject as error only for semantic gaps that would force the next writer/LLM to invent major missing plot action or continuity. Use warnings for weaker but still draftable writing.',
+    ];
+  }
+
+  private buildQualityReviewJsonSchema(): { name: string; description: string; schema: Record<string, unknown>; strict: boolean } {
+    return {
+      name: 'chapter_outline_batch_quality_review',
+      description: 'LLM semantic quality review for a generated chapter outline batch.',
+      strict: true,
+      schema: {
+        type: 'object',
+        additionalProperties: false,
+        required: ['valid', 'summary', 'issues'],
+        properties: {
+          valid: { type: 'boolean' },
+          summary: { type: 'string' },
+          issues: {
+            type: 'array',
+            items: {
+              type: 'object',
+              additionalProperties: false,
+              required: ['severity', 'chapterNo', 'path', 'message', 'suggestion', 'evidence'],
+              properties: {
+                severity: { type: 'string', enum: ['warning', 'error'] },
+                chapterNo: { type: ['integer', 'null'] },
+                path: { type: ['string', 'null'] },
+                message: { type: 'string' },
+                suggestion: { type: ['string', 'null'] },
+                evidence: { type: ['string', 'null'] },
+              },
+            },
+          },
+        },
+      },
+    };
+  }
+
+  private normalizeQualityReview(value: unknown, chapterRange: ChapterRange): ChapterOutlineBatchQualityReview {
+    const record = asRecord(value);
+    const issues = asRecordArray(record.issues).map((issue) => {
+      const chapterNo = positiveInt(issue.chapterNo);
+      return {
+        severity: issue.severity === 'error' ? 'error' as const : 'warning' as const,
+        ...(chapterNo && chapterNo >= chapterRange.start && chapterNo <= chapterRange.end ? { chapterNo } : {}),
+        ...(text(issue.path) ? { path: text(issue.path) } : {}),
+        message: this.requiredText(issue.message, 'qualityReview.issues[].message'),
+        ...(text(issue.suggestion) ? { suggestion: text(issue.suggestion) } : {}),
+        ...(text(issue.evidence) ? { evidence: text(issue.evidence) } : {}),
+      };
+    });
+    const valid = typeof record.valid === 'boolean'
+      ? record.valid
+      : !issues.some((issue) => issue.severity === 'error');
+    return {
+      valid: valid && !issues.some((issue) => issue.severity === 'error'),
+      summary: text(record.summary),
+      issues,
+    };
+  }
+
+  private formatQualityIssues(review: ChapterOutlineBatchQualityReview): string {
+    return review.issues
+      .filter((issue) => issue.severity === 'error')
+      .map((issue) => `chapter ${issue.chapterNo ?? '?'}${issue.path ? ` ${issue.path}` : ''}: ${issue.message}`)
+      .join('; ') || review.summary || 'unknown quality issue';
   }
 
   private normalize(data: unknown, options: {
@@ -610,6 +931,7 @@ export class GenerateChapterOutlineBatchPreviewTool implements BaseTool<Generate
     if (rawChapters.some((chapter) => !Object.keys(asRecord(chapter.craftBrief)).length)) return false;
     const message = this.errorMessage(error);
     if (/storyUnit\.unitId does not match|cannot verify storyUnitIds|chapterNo must be|volumeNo must be/.test(message)) return false;
+    if (/firstAndOnlyUse|approvalPolicy 声明为 needs_approval|未进入卷级角色候选/.test(message)) return false;
     return /craftBrief|characterExecution|title|objective|conflict|hook|outline|expectedWordCount|cast|relationshipBeats|sceneBeats|participants|source|volume_candidate|minor_temporary|existing/.test(message);
   }
 
@@ -731,6 +1053,257 @@ export class GenerateChapterOutlineBatchPreviewTool implements BaseTool<Generate
       'Required JSON shape:',
       this.buildRequiredJsonShapeExample(volumeNo, chapterRange, allowedStoryUnitIds),
     ].join('\n');
+  }
+
+  private buildResponseJsonSchema(allowedStoryUnitIds: string[]): { name: string; description: string; schema: Record<string, unknown>; strict: boolean } {
+    const storyUnitIdSchema = allowedStoryUnitIds.length
+      ? { type: 'string', enum: allowedStoryUnitIds }
+      : { type: 'string' };
+    const stringArraySchema = { type: 'array', items: { type: 'string' } };
+    const integerArraySchema = { type: 'array', items: { type: 'integer' } };
+    const chapterNoOrNullSchema = { type: ['integer', 'null'] };
+
+    return {
+      name: 'chapter_outline_batch_preview',
+      description: 'Validated batch preview for continuous Chinese web-novel chapter outlines with complete craftBrief data.',
+      strict: true,
+      schema: {
+        type: 'object',
+        additionalProperties: false,
+        required: ['batch', 'chapters', 'risks'],
+        properties: {
+          batch: { $ref: '#/$defs/batch' },
+          chapters: { type: 'array', items: { $ref: '#/$defs/chapter' } },
+          risks: stringArraySchema,
+        },
+        $defs: {
+          chapterRange: {
+            type: 'object',
+            additionalProperties: false,
+            required: ['start', 'end'],
+            properties: {
+              start: { type: 'integer' },
+              end: { type: 'integer' },
+            },
+          },
+          batch: {
+            type: 'object',
+            additionalProperties: false,
+            required: ['volumeNo', 'chapterRange', 'storyUnitIds', 'continuityBridgeIn', 'continuityBridgeOut'],
+            properties: {
+              volumeNo: { type: 'integer' },
+              chapterRange: { $ref: '#/$defs/chapterRange' },
+              storyUnitIds: { type: 'array', items: storyUnitIdSchema },
+              continuityBridgeIn: { type: 'string' },
+              continuityBridgeOut: { type: 'string' },
+            },
+          },
+          chapter: {
+            type: 'object',
+            additionalProperties: false,
+            required: ['chapterNo', 'volumeNo', 'title', 'objective', 'conflict', 'hook', 'outline', 'expectedWordCount', 'craftBrief'],
+            properties: {
+              chapterNo: { type: 'integer' },
+              volumeNo: { type: 'integer' },
+              title: { type: 'string' },
+              objective: { type: 'string' },
+              conflict: { type: 'string' },
+              hook: { type: 'string' },
+              outline: { type: 'string' },
+              expectedWordCount: { type: 'integer' },
+              craftBrief: { $ref: '#/$defs/craftBrief' },
+            },
+          },
+          craftBrief: {
+            type: 'object',
+            additionalProperties: false,
+            required: [
+              'visibleGoal',
+              'hiddenEmotion',
+              'coreConflict',
+              'mainlineTask',
+              'subplotTasks',
+              'storyUnit',
+              'actionBeats',
+              'sceneBeats',
+              'characterExecution',
+              'concreteClues',
+              'dialogueSubtext',
+              'characterShift',
+              'irreversibleConsequence',
+              'progressTypes',
+              'entryState',
+              'exitState',
+              'openLoops',
+              'closedLoops',
+              'handoffToNextChapter',
+              'continuityState',
+            ],
+            properties: {
+              visibleGoal: { type: 'string' },
+              hiddenEmotion: { type: 'string' },
+              coreConflict: { type: 'string' },
+              mainlineTask: { type: 'string' },
+              subplotTasks: stringArraySchema,
+              storyUnit: { $ref: '#/$defs/storyUnit' },
+              actionBeats: stringArraySchema,
+              sceneBeats: { type: 'array', items: { $ref: '#/$defs/sceneBeat' } },
+              characterExecution: { $ref: '#/$defs/characterExecution' },
+              concreteClues: { type: 'array', items: { $ref: '#/$defs/concreteClue' } },
+              dialogueSubtext: { type: 'string' },
+              characterShift: { type: 'string' },
+              irreversibleConsequence: { type: 'string' },
+              progressTypes: stringArraySchema,
+              entryState: { type: 'string' },
+              exitState: { type: 'string' },
+              openLoops: stringArraySchema,
+              closedLoops: stringArraySchema,
+              handoffToNextChapter: { type: 'string' },
+              continuityState: { $ref: '#/$defs/continuityState' },
+            },
+          },
+          storyUnit: {
+            type: 'object',
+            additionalProperties: false,
+            required: [
+              'unitId',
+              'title',
+              'chapterRange',
+              'chapterRole',
+              'localGoal',
+              'localConflict',
+              'serviceFunctions',
+              'mainlineContribution',
+              'characterContribution',
+              'relationshipContribution',
+              'worldOrThemeContribution',
+              'unitPayoff',
+              'stateChangeAfterUnit',
+            ],
+            properties: {
+              unitId: storyUnitIdSchema,
+              title: { type: 'string' },
+              chapterRange: { $ref: '#/$defs/chapterRange' },
+              chapterRole: { type: 'string' },
+              localGoal: { type: 'string' },
+              localConflict: { type: 'string' },
+              serviceFunctions: stringArraySchema,
+              mainlineContribution: { type: 'string' },
+              characterContribution: { type: 'string' },
+              relationshipContribution: { type: 'string' },
+              worldOrThemeContribution: { type: 'string' },
+              unitPayoff: { type: 'string' },
+              stateChangeAfterUnit: { type: 'string' },
+            },
+          },
+          sceneBeat: {
+            type: 'object',
+            additionalProperties: false,
+            required: [
+              'sceneArcId',
+              'scenePart',
+              'continuesFromChapterNo',
+              'continuesToChapterNo',
+              'location',
+              'participants',
+              'localGoal',
+              'visibleAction',
+              'obstacle',
+              'turningPoint',
+              'partResult',
+              'sensoryAnchor',
+            ],
+            properties: {
+              sceneArcId: { type: 'string' },
+              scenePart: { type: 'string' },
+              continuesFromChapterNo: chapterNoOrNullSchema,
+              continuesToChapterNo: chapterNoOrNullSchema,
+              location: { type: 'string' },
+              participants: stringArraySchema,
+              localGoal: { type: 'string' },
+              visibleAction: { type: 'string' },
+              obstacle: { type: 'string' },
+              turningPoint: { type: 'string' },
+              partResult: { type: 'string' },
+              sensoryAnchor: { type: 'string' },
+            },
+          },
+          characterExecution: {
+            type: 'object',
+            additionalProperties: false,
+            required: ['povCharacter', 'cast', 'relationshipBeats', 'newMinorCharacters'],
+            properties: {
+              povCharacter: { type: 'string' },
+              cast: { type: 'array', items: { $ref: '#/$defs/castMember' } },
+              relationshipBeats: { type: 'array', items: { $ref: '#/$defs/relationshipBeat' } },
+              newMinorCharacters: { type: 'array', items: { $ref: '#/$defs/newMinorCharacter' } },
+            },
+          },
+          castMember: {
+            type: 'object',
+            additionalProperties: false,
+            required: ['characterName', 'source', 'functionInChapter', 'visibleGoal', 'pressure', 'actionBeatRefs', 'sceneBeatRefs', 'entryState', 'exitState'],
+            properties: {
+              characterName: { type: 'string' },
+              source: { type: 'string', enum: ['existing', 'volume_candidate', 'minor_temporary'] },
+              functionInChapter: { type: 'string' },
+              visibleGoal: { type: 'string' },
+              pressure: { type: 'string' },
+              actionBeatRefs: integerArraySchema,
+              sceneBeatRefs: stringArraySchema,
+              entryState: { type: 'string' },
+              exitState: { type: 'string' },
+            },
+          },
+          relationshipBeat: {
+            type: 'object',
+            additionalProperties: false,
+            required: ['participants', 'publicStateBefore', 'trigger', 'shift', 'publicStateAfter'],
+            properties: {
+              participants: stringArraySchema,
+              publicStateBefore: { type: 'string' },
+              trigger: { type: 'string' },
+              shift: { type: 'string' },
+              publicStateAfter: { type: 'string' },
+            },
+          },
+          newMinorCharacter: {
+            type: 'object',
+            additionalProperties: false,
+            required: ['nameOrLabel', 'narrativeFunction', 'interactionScope', 'firstAndOnlyUse', 'approvalPolicy'],
+            properties: {
+              nameOrLabel: { type: 'string' },
+              narrativeFunction: { type: 'string' },
+              interactionScope: { type: 'string' },
+              firstAndOnlyUse: { type: 'boolean' },
+              approvalPolicy: { type: 'string', enum: ['preview_only', 'needs_approval'] },
+            },
+          },
+          concreteClue: {
+            type: 'object',
+            additionalProperties: false,
+            required: ['name', 'sensoryDetail', 'laterUse'],
+            properties: {
+              name: { type: 'string' },
+              sensoryDetail: { type: 'string' },
+              laterUse: { type: 'string' },
+            },
+          },
+          continuityState: {
+            type: 'object',
+            additionalProperties: false,
+            required: ['characterPositions', 'activeThreats', 'ownedClues', 'relationshipChanges', 'nextImmediatePressure'],
+            properties: {
+              characterPositions: stringArraySchema,
+              activeThreats: stringArraySchema,
+              ownedClues: stringArraySchema,
+              relationshipChanges: stringArraySchema,
+              nextImmediatePressure: { type: 'string' },
+            },
+          },
+        },
+      },
+    };
   }
 
   private buildRequiredJsonShapeExample(volumeNo: number, chapterRange: ChapterRange, allowedStoryUnitIds: string[]): string {

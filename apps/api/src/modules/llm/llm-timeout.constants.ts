@@ -1,1 +1,1 @@
-export const DEFAULT_LLM_TIMEOUT_MS = 450_000;
+export const DEFAULT_LLM_TIMEOUT_MS = 600_000;

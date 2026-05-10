@@ -100,7 +100,6 @@ export interface AssertChapterCharacterExecutionOptions extends CharacterReferen
 
 const VOLUME_ROLE_TYPES = new Set<VolumeCharacterRoleType>(VOLUME_CHARACTER_ROLE_TYPES);
 const CHAPTER_CHARACTER_SOURCES = new Set<ChapterCharacterSource>(['existing', 'volume_candidate', 'minor_temporary']);
-const MINOR_IMPORTANCE_PATTERN = /主线|核心|反派|长期|长线|人物弧|弧线|贯穿|主压力|最终对手|关键配角|重要配角|protagonist|antagonist|supporting|mainline|long[-_ ]?term/i;
 const NEW_CHARACTER_CANDIDATE_HINT = '如果这是本卷需要的新人物，请先写入 newCharacterCandidates，不要伪装成既有角色。';
 
 export function assertVolumeCharacterPlan(value: unknown, options: AssertVolumeCharacterPlanOptions): VolumeCharacterPlan {
@@ -242,7 +241,7 @@ export function assertChapterCharacterExecution(value: unknown, options: AssertC
     const minorLabel = `${label}.newMinorCharacters[${index}]`;
     const firstAndOnlyUse = requiredBoolean(minor.firstAndOnlyUse, `${minorLabel}.firstAndOnlyUse`);
     if (!firstAndOnlyUse) {
-      throw new Error(`${minorLabel}.firstAndOnlyUse 必须为 true，临时角色不得承担长期人物弧。`);
+      throw new Error(`${minorLabel}.firstAndOnlyUse 必须为 true，临时角色必须显式声明为一次性使用。`);
     }
     const approvalPolicy = requiredText(minor.approvalPolicy, `${minorLabel}.approvalPolicy`);
     if (approvalPolicy !== 'preview_only' && approvalPolicy !== 'needs_approval') {
@@ -251,9 +250,8 @@ export function assertChapterCharacterExecution(value: unknown, options: AssertC
     const nameOrLabel = requiredText(minor.nameOrLabel, `${minorLabel}.nameOrLabel`);
     const narrativeFunction = requiredText(minor.narrativeFunction, `${minorLabel}.narrativeFunction`);
     const interactionScope = requiredText(minor.interactionScope, `${minorLabel}.interactionScope`);
-    const importanceText = [nameOrLabel, narrativeFunction, interactionScope, approvalPolicy].join(' ');
-    if (approvalPolicy === 'needs_approval' || MINOR_IMPORTANCE_PATTERN.test(importanceText)) {
-      throw new Error(`${minorLabel} 临时角色承担了重要或长期角色功能，必须先进入卷级角色候选。`);
+    if (approvalPolicy === 'needs_approval') {
+      throw new Error(`${minorLabel}.approvalPolicy 声明为 needs_approval，不能作为可审批章节细纲输出；请先进入卷级角色候选，或由 LLM 明确改为 preview_only 的一次性角色。`);
     }
     return {
       nameOrLabel,
@@ -282,16 +280,6 @@ export function assertChapterCharacterExecution(value: unknown, options: AssertC
     if (source === 'minor_temporary') {
       if (!minorNames.has(normalizeName(characterName))) {
         throw new Error(`${memberLabel}.characterName 未出现在 newMinorCharacters：${characterName}`);
-      }
-      const functionText = [
-        member.functionInChapter,
-        member.visibleGoal,
-        member.hiddenGoal,
-        member.pressure,
-        member.dialogueJob,
-      ].map((item) => text(item)).join(' ');
-      if (MINOR_IMPORTANCE_PATTERN.test(functionText)) {
-        throw new Error(`${memberLabel} 临时角色承担了重要或长期角色功能，必须先进入卷级角色候选。`);
       }
     }
     const actionBeatRefs = requiredPositiveIntArray(member.actionBeatRefs, `${memberLabel}.actionBeatRefs`);

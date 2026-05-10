@@ -1252,6 +1252,22 @@ test('VCC character contract accepts complete volume plan and chapter execution'
   assert.equal(characterExecution.cast.length, 3);
 });
 
+test('VCC character contract accepts one-off temporary role with negated long-term wording', () => {
+  const execution = createVccCharacterExecution({
+    newMinorCharacters: [
+      {
+        ...createVccCharacterExecution().newMinorCharacters[0],
+        narrativeFunction: '代表遗属在本章提出一次质问',
+        interactionScope: '仅限本章冲突现场的遗属声音，不承担长期独立角色功能。',
+      },
+    ],
+  });
+
+  assert.doesNotThrow(
+    () => assertChapterCharacterExecution(execution, { existingCharacterNames: ['林澈'], volumeCandidateNames: ['邵衡'] }),
+  );
+});
+
 test('VCC character contract rejects missing volume candidate required field', () => {
   for (const field of ['motivation', 'narrativeFunction', 'firstAppearChapter']) {
     const candidate = { ...createVccCharacterPlan().newCharacterCandidates[0] } as Record<string, unknown>;
@@ -1338,19 +1354,20 @@ test('VCC character contract rejects scene participants missing from cast', () =
   );
 });
 
-test('VCC character contract rejects important temporary character metadata', () => {
+test('VCC character contract rejects temporary character that explicitly needs approval', () => {
   const execution = createVccCharacterExecution({
     newMinorCharacters: [
       {
         ...createVccCharacterExecution().newMinorCharacters[0],
-        narrativeFunction: '承担本卷主线长期关键配角弧线',
+        narrativeFunction: 'LLM 判定该角色可能需要进入上游角色计划',
+        approvalPolicy: 'needs_approval',
       },
     ],
   });
 
   assert.throws(
     () => assertChapterCharacterExecution(execution, { existingCharacterNames: ['林澈'], volumeCandidateNames: ['邵衡'] }),
-    /临时角色承担了重要或长期角色功能/,
+    /approvalPolicy 声明为 needs_approval/,
   );
 });
 
@@ -2111,13 +2128,13 @@ test('VCC chapter outline preview rejects character not in volume candidates', a
   );
 });
 
-test('VCC chapter outline preview rejects important temporary character', async () => {
+test('VCC chapter outline preview rejects temporary character explicitly flagged for approval', async () => {
   const badExecution = {
     ...createOutlineCraftBrief().characterExecution,
-    cast: (createOutlineCraftBrief().characterExecution.cast as Array<Record<string, unknown>>).map((member) => (
-      member.characterName === '巡检员'
-        ? { ...member, functionInChapter: '承担本卷主线核心反派主压力' }
-        : member
+    newMinorCharacters: (createOutlineCraftBrief().characterExecution.newMinorCharacters as Array<Record<string, unknown>>).map((minor) => (
+      minor.nameOrLabel === '巡检员'
+        ? { ...minor, narrativeFunction: 'LLM 判定该角色可能需要进入上游角色计划', approvalPolicy: 'needs_approval' }
+        : minor
     )),
   };
   const tool = new GenerateChapterOutlinePreviewTool({
@@ -2151,7 +2168,7 @@ test('VCC chapter outline preview rejects important temporary character', async 
       },
       { agentRunId: 'run1', projectId: 'p1', mode: 'plan', approved: false, outputs: {}, policy: {} },
     ),
-    /临时角色承担了重要或长期角色功能/,
+    /approvalPolicy 声明为 needs_approval/,
   );
 });
 
@@ -2930,7 +2947,7 @@ test('GenerateChapterService uses GenerationProfile as conservative word count f
   assert.equal(service.resolveTargetWordCount({ wordCount: 1200 }, { expectedWordCount: 1600, project: { creativeProfile: { chapterWordCount: 1800 } } }, generationProfile), 1200);
 });
 
-test('GenerateChapterService preflight warns or blocks disallowed new entity candidates from GenerationProfile', async () => {
+test('GenerateChapterService preflight only warns for keyword-detected new entity candidates from GenerationProfile', async () => {
   const service = new GenerateChapterService({} as never, {} as never, {} as never, {} as never, {} as never, { async listByChapter() { return []; } } as never) as unknown as {
     runPreflight: (
       projectId: string,
@@ -2962,8 +2979,9 @@ test('GenerateChapterService preflight warns or blocks disallowed new entity can
   assert.equal(warningResult.newEntityPolicy.candidates.some((item) => item.type === 'character'), true);
 
   const blockerResult = await service.runPreflight('p1', chapter, undefined, {}, createGenerationProfile({ allowNewCharacters: false, preGenerationChecks: ['blockNewEntities'] }));
-  assert.equal(blockerResult.valid, false);
-  assert.match(blockerResult.blockers.join('；'), /禁止新增角色/);
+  assert.equal(blockerResult.valid, true);
+  assert.deepEqual(blockerResult.blockers, []);
+  assert.match(blockerResult.warnings.join('；'), /仅作诊断提示，不因自然语言关键词阻断/);
 });
 
 test('ChapterAutoRepairService 可从草稿上下文提取执行卡覆盖问题', () => {
@@ -3587,6 +3605,36 @@ test('ValidateOutlineTool 校验 craftBrief 行动链、线索和不可逆后果
   assert.equal(result.issues.some((issue) => /actionBeats/.test(issue.message)), true);
   assert.equal(result.issues.some((issue) => /concreteClues/.test(issue.message)), true);
   assert.equal(result.issues.some((issue) => /irreversibleConsequence/.test(issue.message)), true);
+});
+
+test('ValidateOutlineTool 不用程序关键词拦截抽象/空泛语义', async () => {
+  const prisma = {
+    volume: { async findUnique() { return null; } },
+    chapter: { async findMany() { return []; } },
+    character: { async findMany() { return [{ name: '林澈', alias: [] }, { name: '沈栖', alias: [] }]; } },
+  };
+  const craftBrief = createOutlineCraftBrief({
+    actionBeats: ['推进主线证据', '建立关系压力', '完成阶段选择'],
+    sceneBeats: createOutlineCraftBrief().sceneBeats.map((beat: Record<string, unknown>) => ({
+      ...beat,
+      visibleAction: '推进现场调查',
+    })),
+  });
+  const preview = createVccOutlinePreview(1, {
+    chapters: [createOutlineChapter(1, 1, {
+      outline: '推进本章主线目标，建立人物之间的压力关系，完成阶段性选择并承接下一章的危机；这一段文字故意使用抽象词，但最终语义质量应交给 LLM batch review 判断。',
+      craftBrief,
+    })],
+  });
+  const tool = new ValidateOutlineTool(prisma as never);
+
+  const result = await tool.run(
+    { preview },
+    { agentRunId: 'run1', projectId: 'p1', mode: 'plan', approved: false, outputs: {}, policy: {} },
+  );
+
+  assert.equal(result.valid, true, JSON.stringify(result.issues));
+  assert.equal(result.issues.some((issue) => /过于空泛|抽象目标说明/.test(issue.message)), false);
 });
 
 test('ValidateOutlineTool 对重复章节标题给出 warning', async () => {
@@ -8798,9 +8846,9 @@ test('CrossTargetConsistencyCheckTool 检出角色动机冲突和目标混放', 
   assert.equal(tool.requiresApproval, false);
   assert.deepEqual(tool.sideEffects, []);
   assert.equal(tool.riskLevel, 'low');
-  assert.equal(output.valid, false);
-  assert.equal(output.summary.status, 'likely_conflict');
-  assert.ok(output.issues.some((issue) => issue.dimension === 'character_outline' && issue.severity === 'error' && issue.message.includes('林澈')));
+  assert.equal(output.valid, true);
+  assert.equal(output.summary.status, 'needs_review');
+  assert.ok(output.issues.some((issue) => issue.dimension === 'character_outline' && issue.severity === 'warning' && issue.message.includes('林澈')));
   assert.ok(output.issues.some((issue) => issue.dimension === 'worldbuilding_writing_rules' && issue.message.includes('写作规则')));
   assert.ok(output.issues.some((issue) => issue.dimension === 'worldbuilding_writing_rules' && issue.message.includes('世界设定')));
 });
@@ -16564,7 +16612,7 @@ test('Executor 将 LLM timeout 分类为 LLM_TIMEOUT Observation', () => {
   const executor = new AgentExecutorService({} as never, {} as never, {} as never, {} as never) as unknown as {
     classifyObservationCode: (message: string, error: unknown) => string;
   };
-  const error = new LlmTimeoutError('LLM 在 450s 内未返回', 'planner', DEFAULT_LLM_TIMEOUT_MS);
+  const error = new LlmTimeoutError('LLM 在 600s 内未返回', 'planner', DEFAULT_LLM_TIMEOUT_MS);
   assert.equal(executor.classifyObservationCode(error.message, error), 'LLM_TIMEOUT');
 });
 
@@ -16716,6 +16764,87 @@ test('LlmGatewayService sends OpenAI-compatible JSON mode when requested', async
   }
 });
 
+test('LlmGatewayService sends OpenAI-compatible JSON schema response format when provided', async () => {
+  let requestBody = '';
+  const logged: Array<{ event: string; payload: Record<string, unknown> }> = [];
+  const server = createServer((req, res) => {
+    req.setEncoding('utf8');
+    req.on('data', (chunk) => {
+      requestBody += String(chunk);
+    });
+    req.on('end', () => {
+      res.writeHead(200, { 'Content-Type': 'application/json' });
+      res.end(JSON.stringify({ model: 'mock-chat-model', choices: [{ finish_reason: 'stop', message: { content: '{"ok":true}' } }] }));
+    });
+  });
+  await new Promise<void>((resolve) => server.listen(0, '127.0.0.1', resolve));
+  const address = server.address() as AddressInfo;
+  const gateway = new LlmGatewayService({
+    resolveForStep() {
+      return {
+        providerName: 'rxinai',
+        baseUrl: `http://127.0.0.1:${address.port}/v1`,
+        apiKey: 'test-key',
+        model: 'gpt-5.5',
+        params: {},
+        source: 'default_provider',
+      };
+    },
+  } as never);
+  (gateway as unknown as { logger: { log: (event: string, payload: Record<string, unknown>) => void; warn: () => void; error: () => void } }).logger = {
+    log(event, payload) {
+      logged.push({ event, payload });
+    },
+    warn() {},
+    error() {},
+  };
+
+  try {
+    const result = await gateway.chatJson<{ ok: boolean }>(
+      [{ role: 'user', content: 'Return schema JSON.' }],
+      {
+        appStep: 'planner',
+        timeoutMs: DEFAULT_LLM_TIMEOUT_MS,
+        retries: 0,
+        jsonMode: true,
+        jsonSchema: {
+          name: 'mock_schema',
+          description: 'mock schema response',
+          strict: true,
+          schema: {
+            type: 'object',
+            additionalProperties: false,
+            required: ['ok'],
+            properties: { ok: { type: 'boolean' } },
+          },
+        },
+      },
+    );
+    assert.equal(result.data.ok, true);
+    const parsedBody = JSON.parse(requestBody) as Record<string, unknown>;
+    assert.deepEqual(parsedBody.response_format, {
+      type: 'json_schema',
+      json_schema: {
+        name: 'mock_schema',
+        description: 'mock schema response',
+        strict: true,
+        schema: {
+          type: 'object',
+          additionalProperties: false,
+          required: ['ok'],
+          properties: { ok: { type: 'boolean' } },
+        },
+      },
+    });
+    const requested = logged.find((item) => item.event === 'llm.gateway.chat.requested');
+    assert.ok(requested);
+    const loggedRequestBody = requested.payload.requestBody as Record<string, unknown>;
+    assert.deepEqual(loggedRequestBody.response_format, parsedBody.response_format);
+  } finally {
+    await new Promise<void>((resolve, reject) => server.close((error) => (error ? reject(error) : resolve())));
+  }
+});
+
 test('LlmGatewayService logs full raw chat response text without truncation', async () => {
   const longContent = `prefix-${'x'.repeat(130_000)}-suffix`;
   let providerBody = '';
@@ -16839,7 +16968,7 @@ test('generate_outline_preview LLM timeout 直接抛错且不生成 fallback', a
   const progress: Array<Record<string, unknown>> = [];
   const llm = {
     async chatJson() {
-      throw new LlmTimeoutError('LLM 在 450s 内未返回', 'planner', DEFAULT_LLM_TIMEOUT_MS);
+      throw new LlmTimeoutError('LLM 在 600s 内未返回', 'planner', DEFAULT_LLM_TIMEOUT_MS);
     },
   };
   const tool = new GenerateOutlinePreviewTool(llm as never);
@@ -16856,7 +16985,7 @@ test('generate_outline_preview LLM timeout 直接抛错且不生成 fallback', a
         async updateProgress(patch) { progress.push(patch as Record<string, unknown>); },
       },
     ),
-    /LLM 在 450s 内未返回/,
+    /LLM 在 600s 内未返回/,
   );
 
   assert.equal(progress[0].phase, 'calling_llm');

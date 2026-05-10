@@ -113,11 +113,11 @@ export class CrossTargetConsistencyCheckTool implements BaseTool<CrossTargetCons
       const conflictingChapter = chapterEvidence.find((chapter) => chapter.includes(name) && matchedRule.outline.test(chapter));
       if (!conflictingChapter) continue;
       issues.push({
-        severity: 'error',
+        severity: 'warning',
         dimension: 'character_outline',
         message: `角色 ${name} 的动机/人设与大纲行为疑似冲突：${matchedRule.label}。`,
         evidence: `角色：${motivation.slice(0, 160)}；大纲：${conflictingChapter.slice(0, 200)}`,
-        suggestion: '请调整角色动机、大纲行为，或补充转折铺垫说明。',
+        suggestion: '这是关键词诊断提示，不作为写入阻断；如确需判定冲突，请交给 LLM 复核角色动机、大纲行为和转折铺垫。',
       });
     }
     return issues;

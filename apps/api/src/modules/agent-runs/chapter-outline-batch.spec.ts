@@ -310,6 +310,15 @@ function createBatchOutput(chapterNos = [1, 2, 3, 4], overrides: Record<string, 
   };
 }
 
+function isQualityReviewCall(options?: Record<string, unknown>) {
+  const schema = options?.jsonSchema as Record<string, unknown> | undefined;
+  return schema?.name === 'chapter_outline_batch_quality_review';
+}
+
+function createPassingQualityReview(overrides: Record<string, unknown> = {}) {
+  return { valid: true, summary: 'Batch is draftable.', issues: [], ...overrides };
+}
+
 function createBatchOutputForRange(start: number, end: number, unitId: string) {
   const chapterRange = { start, end };
   return createBatchOutput(
@@ -555,6 +564,7 @@ test('COB-P2 batch preview generates continuous chapters with source whitelist i
   const tool = new GenerateChapterOutlineBatchPreviewTool({
     async chatJson(messages: Array<{ role: string; content: string }>, options: Record<string, unknown>) {
       calls.push({ messages, options });
+      if (isQualityReviewCall(options)) return { data: createPassingQualityReview(), result: { model: 'mock-quality-review' } };
       return { data: createBatchOutput(), result: { model: 'mock-batch-preview' } };
     },
   } as never);
@@ -575,6 +585,7 @@ test('COB-P2 batch preview generates continuous chapters with source whitelist i
   assert.equal(result.chapters.length, 4);
   assert.deepEqual(result.chapters.map((chapter) => chapter.chapterNo), [1, 2, 3, 4]);
   assert.equal(result.chapters.every((chapter) => chapter.craftBrief?.characterExecution?.cast?.length === 2), true);
+  assert.equal(calls.length, 2);
   assert.match(calls[0].messages[1].content, /characterExecution\.cast source whitelist/);
   assert.match(calls[0].messages[1].content, /existing/);
   assert.match(calls[0].messages[1].content, /volume_candidate/);
@@ -582,6 +593,16 @@ test('COB-P2 batch preview generates continuous chapters with source whitelist i
   assert.match(calls[0].messages[1].content, /Shao/);
   assert.match(calls[0].messages[1].content, /sceneBeats array must contain at least 3 concrete scene segments/);
   assert.match(calls[0].messages[1].content, /"sceneBeats":\[\{"sceneArcId":"scene_1".*"sceneArcId":"scene_2".*"sceneArcId":"scene_3"/);
+  assert.equal(calls[0].options.jsonMode, true);
+  const schema = calls[0].options.jsonSchema as Record<string, unknown>;
+  assert.equal(schema.name, 'chapter_outline_batch_preview');
+  assert.equal(schema.strict, true);
+  const schemaText = JSON.stringify(schema.schema);
+  assert.match(schemaText, /"sensoryAnchor"/);
+  assert.match(schemaText, /"enum":\["u1"\]/);
+  assert.match(calls[1].messages[0].content, /Do not use keyword matching/);
+  assert.match(calls[1].messages[1].content, /actor\/action\/object\/obstacle\/result|actor.*visible action.*object/s);
+  assert.equal((calls[1].options.jsonSchema as Record<string, unknown>).name, 'chapter_outline_batch_quality_review');
 });
 
 test('COB-OPT batch preview prompt uses persisted storyUnit slice when plan passes only batchPlan', async () => {
@@ -590,6 +611,7 @@ test('COB-OPT batch preview prompt uses persisted storyUnit slice when plan pass
   const tool = new GenerateChapterOutlineBatchPreviewTool({
     async chatJson(messages: Array<{ role: string; content: string }>, options: Record<string, unknown>) {
       calls.push({ messages, options });
+      if (isQualityReviewCall(options)) return { data: createPassingQualityReview(), result: { model: 'mock-quality-review' } };
       return { data: createBatchOutput(), result: { model: 'mock-persisted-story-unit-slice' } };
     },
   } as never);
@@ -613,12 +635,63 @@ test('COB-OPT batch preview prompt uses persisted storyUnit slice when plan pass
   assert.match(sliceSection, /"chapterRange":\{"start":1,"end":4\}/);
 });
 
+test('COB-P2 batch preview uses LLM quality issues to regenerate one failed batch', async () => {
+  const storyUnitPlan = createStoryUnitPlan([{ unitId: 'u1', start: 1, end: 4 }]);
+  const calls: Array<{ messages: Array<{ role: string; content: string }>; options: Record<string, unknown> }> = [];
+  const tool = new GenerateChapterOutlineBatchPreviewTool({
+    async chatJson(messages: Array<{ role: string; content: string }>, options: Record<string, unknown>) {
+      calls.push({ messages, options });
+      if (isQualityReviewCall(options)) {
+        const qualityCallCount = calls.filter((call) => isQualityReviewCall(call.options)).length;
+        return {
+          data: qualityCallCount === 1
+            ? {
+                valid: false,
+                summary: 'Chapter 2 action beat is not draftable.',
+                issues: [{
+                  severity: 'error',
+                  chapterNo: 2,
+                  path: 'chapters[1].craftBrief.actionBeats[0]',
+                  message: 'Action beat lacks a visible actor action and result.',
+                  suggestion: 'Regenerate chapter 2 with actor, visible action, object, obstacle, and result.',
+                  evidence: '推进线索',
+                }],
+              }
+            : createPassingQualityReview(),
+          result: { model: `mock-quality-${qualityCallCount}` },
+        };
+      }
+      return { data: createBatchOutput(), result: { model: 'mock-quality-regeneration' } };
+    },
+  } as never);
+  const { context } = createToolContext();
+
+  const result = await tool.run(
+    { context: createSegmentContext(storyUnitPlan, 4), storyUnitPlan, volumeNo: 1, chapterCount: 4, chapterRange: { start: 1, end: 4 } },
+    context,
+  );
+
+  assert.equal(calls.length, 4);
+  assert.equal(result.qualityReview?.valid, true);
+  assert.equal(result.risks.some((risk) => /quality review requested one regeneration/i.test(risk)), true);
+  const qualityIssueSchema = (((calls[1].options.jsonSchema as { schema: Record<string, unknown> }).schema.properties as Record<string, { items: unknown }>).issues.items) as {
+    required: string[];
+    properties: Record<string, unknown>;
+  };
+  assert.deepEqual(qualityIssueSchema.required, ['severity', 'chapterNo', 'path', 'message', 'suggestion', 'evidence']);
+  assert.deepEqual(qualityIssueSchema.properties.chapterNo, { type: ['integer', 'null'] });
+  assert.match(calls[2].messages[1].content, /qualityIssuesToFix/);
+  assert.match(calls[2].messages[1].content, /Action beat lacks a visible actor action and result/);
+  assert.match(calls[2].messages[1].content, /rejectedOutput/);
+});
+
 test('COB-OPT batch preview prompt shape uses the active batch range', async () => {
   const storyUnitPlan = createStoryUnitPlan([{ unitId: 'u1', start: 1, end: 4 }, { unitId: 'u2', start: 5, end: 8 }]);
   const calls: Array<{ messages: Array<{ role: string; content: string }>; options: Record<string, unknown> }> = [];
   const tool = new GenerateChapterOutlineBatchPreviewTool({
     async chatJson(messages: Array<{ role: string; content: string }>, options: Record<string, unknown>) {
       calls.push({ messages, options });
+      if (isQualityReviewCall(options)) return { data: createPassingQualityReview(), result: { model: 'mock-quality-review' } };
       return { data: createBatchOutputForRange(5, 8, 'u2'), result: { model: 'mock-active-batch-shape' } };
     },
   } as never);
@@ -688,16 +761,41 @@ test('COB-P2 batch preview rejects missing whole craftBrief without repair', asy
   assert.equal(calls, 1);
 });
 
-test('COB-P2 batch preview repairs local craftBrief field omissions', async () => {
+test('COB-P2 batch preview accepts one-off minor wording that negates long-term role', async () => {
   const storyUnitPlan = createStoryUnitPlan([{ unitId: 'u1', start: 1, end: 4 }]);
-  const badCraftBrief = createBatchCraftBrief(2);
-  delete (badCraftBrief as Record<string, unknown>).characterShift;
-  const calls: Array<{ messages: Array<{ role: string; content: string }>; options: Record<string, unknown> }> = [];
+  const craftBrief = createBatchCraftBrief(1);
+  const characterExecution = craftBrief.characterExecution as Record<string, any>;
+  const sceneBeatRefs = craftBrief.sceneBeats.map((beat) => beat.sceneArcId);
+  characterExecution.cast = [
+    ...characterExecution.cast,
+    {
+      characterName: '遗属代表',
+      source: 'minor_temporary',
+      functionInChapter: '提出一次现场质问，制造公开承诺压力',
+      visibleGoal: '要求主角给出本章现场答复',
+      pressure: '亲属伤亡刚发生，围观者要求立刻处理',
+      actionBeatRefs: [1],
+      sceneBeatRefs,
+      entryState: '随人群进入现场',
+      exitState: '得到公开答复后离开本章冲突中心',
+    },
+  ];
+  characterExecution.newMinorCharacters = [{
+    nameOrLabel: '遗属代表',
+    narrativeFunction: '代表遗属在本章提出一次质问',
+    interactionScope: '仅限本章冲突现场的遗属声音，不承担长期独立角色功能。',
+    firstAndOnlyUse: true,
+    approvalPolicy: 'preview_only',
+  }];
+  let calls = 0;
   const tool = new GenerateChapterOutlineBatchPreviewTool({
-    async chatJson(messages: Array<{ role: string; content: string }>, options: Record<string, unknown>) {
-      calls.push({ messages, options });
-      const bad = createBatchOutput([1, 2, 3, 4], { chapters: [createBatchChapter(1), createBatchChapter(2, { craftBrief: badCraftBrief }), createBatchChapter(3), createBatchChapter(4)] });
-      return { data: calls.length === 1 ? bad : createBatchOutput(), result: { model: `mock-repair-${calls.length}` } };
+    async chatJson(_messages: unknown, options?: Record<string, unknown>) {
+      calls += 1;
+      if (isQualityReviewCall(options)) return { data: createPassingQualityReview(), result: { model: 'mock-quality-review' } };
+      return {
+        data: createBatchOutput([1, 2, 3, 4], { chapters: [createBatchChapter(1, { craftBrief }), createBatchChapter(2), createBatchChapter(3), createBatchChapter(4)] }),
+        result: { model: 'mock-negated-temporary-role' },
+      };
     },
   } as never);
   const { context } = createToolContext();
@@ -707,10 +805,66 @@ test('COB-P2 batch preview repairs local craftBrief field omissions', async () =
     context,
   );
 
-  assert.equal(calls.length, 2);
+  assert.equal(calls, 2);
+  assert.equal(result.chapters[0].craftBrief?.characterExecution?.newMinorCharacters?.[0]?.nameOrLabel, '遗属代表');
+});
+
+test('COB-P2 batch preview rejects LLM-flagged temporary character without repair', async () => {
+  const storyUnitPlan = createStoryUnitPlan([{ unitId: 'u1', start: 1, end: 4 }]);
+  const craftBrief = createBatchCraftBrief(1);
+  const characterExecution = craftBrief.characterExecution as Record<string, any>;
+  characterExecution.newMinorCharacters = [{
+    nameOrLabel: '遗属代表',
+    narrativeFunction: 'LLM 判定该角色可能需要进入上游角色计划',
+    interactionScope: '需要审批后才能作为章节角色执行输入',
+    firstAndOnlyUse: true,
+    approvalPolicy: 'needs_approval',
+  }];
+  let calls = 0;
+  const tool = new GenerateChapterOutlineBatchPreviewTool({
+    async chatJson() {
+      calls += 1;
+      return {
+        data: createBatchOutput([1, 2, 3, 4], { chapters: [createBatchChapter(1, { craftBrief }), createBatchChapter(2), createBatchChapter(3), createBatchChapter(4)] }),
+        result: { model: 'mock-important-temporary-role' },
+      };
+    },
+  } as never);
+  const { context } = createToolContext();
+
+  await assert.rejects(
+    () => tool.run({ context: createSegmentContext(storyUnitPlan, 4), storyUnitPlan, volumeNo: 1, chapterCount: 4, chapterRange: { start: 1, end: 4 } }, context),
+    /approvalPolicy 声明为 needs_approval/,
+  );
+  assert.equal(calls, 1);
+});
+
+test('COB-P2 batch preview repairs local craftBrief field omissions', async () => {
+  const storyUnitPlan = createStoryUnitPlan([{ unitId: 'u1', start: 1, end: 4 }]);
+  const badCraftBrief = createBatchCraftBrief(2);
+  delete (badCraftBrief as Record<string, unknown>).characterShift;
+  const calls: Array<{ messages: Array<{ role: string; content: string }>; options: Record<string, unknown> }> = [];
+  const tool = new GenerateChapterOutlineBatchPreviewTool({
+    async chatJson(messages: Array<{ role: string; content: string }>, options: Record<string, unknown>) {
+      calls.push({ messages, options });
+      if (isQualityReviewCall(options)) return { data: createPassingQualityReview(), result: { model: 'mock-quality-review' } };
+      const bad = createBatchOutput([1, 2, 3, 4], { chapters: [createBatchChapter(1), createBatchChapter(2, { craftBrief: badCraftBrief }), createBatchChapter(3), createBatchChapter(4)] });
+      const generationCallCount = calls.filter((call) => !isQualityReviewCall(call.options)).length;
+      return { data: generationCallCount === 1 ? bad : createBatchOutput(), result: { model: `mock-repair-${generationCallCount}` } };
+    },
+  } as never);
+  const { context } = createToolContext();
+
+  const result = await tool.run(
+    { context: createSegmentContext(storyUnitPlan, 4), storyUnitPlan, volumeNo: 1, chapterCount: 4, chapterRange: { start: 1, end: 4 } },
+    context,
+  );
+
+  assert.equal(calls.length, 3);
   assert.match(calls[1].messages[1].content, /characterShift/);
   assert.match(calls[1].messages[0].content, /compact strict JSON/);
   assert.match(calls[1].messages[1].content, /craftBrief\.actionBeats and craftBrief\.sceneBeats each need at least 3/);
+  assert.equal((calls[1].options.jsonSchema as Record<string, unknown>).name, 'chapter_outline_batch_preview');
   assert.ok(calls[1].messages[1].content.length < 50000, 'repair payload should stay compact for local structural repair');
   assert.equal(result.chapters[1].craftBrief?.characterShift, 'shift 2');
 });
@@ -728,8 +882,10 @@ test('COB-OPT batch preview repair prompt names complete relationshipBeats field
   const tool = new GenerateChapterOutlineBatchPreviewTool({
     async chatJson(messages: Array<{ role: string; content: string }>, options: Record<string, unknown>) {
       calls.push({ messages, options });
+      if (isQualityReviewCall(options)) return { data: createPassingQualityReview(), result: { model: 'mock-quality-review' } };
       const bad = createBatchOutput([1, 2, 3, 4], { chapters: [createBatchChapter(1, { craftBrief: badCraftBrief }), createBatchChapter(2), createBatchChapter(3), createBatchChapter(4)] });
-      return { data: calls.length === 1 ? bad : createBatchOutput(), result: { model: `mock-relationship-repair-${calls.length}` } };
+      const generationCallCount = calls.filter((call) => !isQualityReviewCall(call.options)).length;
+      return { data: generationCallCount === 1 ? bad : createBatchOutput(), result: { model: `mock-relationship-repair-${generationCallCount}` } };
     },
   } as never);
   const { context } = createToolContext();
@@ -739,7 +895,7 @@ test('COB-OPT batch preview repair prompt names complete relationshipBeats field
     context,
   );
 
-  assert.equal(calls.length, 2);
+  assert.equal(calls.length, 3);
   assert.match(calls[0].messages[1].content, /relationshipBeats.*publicStateBefore.*trigger.*shift.*publicStateAfter/s);
   assert.match(calls[1].messages[0].content, /relationshipBeats.*publicStateBefore.*trigger.*shift.*publicStateAfter/s);
   assert.match(calls[1].messages[1].content, /Do not leave partial relationship beat objects/);
@@ -759,8 +915,10 @@ test('COB-OPT batch preview repair prompt names required sceneBeat fields', asyn
   const tool = new GenerateChapterOutlineBatchPreviewTool({
     async chatJson(messages: Array<{ role: string; content: string }>, options: Record<string, unknown>) {
       calls.push({ messages, options });
+      if (isQualityReviewCall(options)) return { data: createPassingQualityReview(), result: { model: 'mock-quality-review' } };
       const bad = createBatchOutput([1, 2, 3, 4], { chapters: [createBatchChapter(1, { craftBrief: badCraftBrief }), createBatchChapter(2), createBatchChapter(3), createBatchChapter(4)] });
-      return { data: calls.length === 1 ? bad : createBatchOutput(), result: { model: `mock-scene-repair-${calls.length}` } };
+      const generationCallCount = calls.filter((call) => !isQualityReviewCall(call.options)).length;
+      return { data: generationCallCount === 1 ? bad : createBatchOutput(), result: { model: `mock-scene-repair-${generationCallCount}` } };
     },
   } as never);
   const { context } = createToolContext();
@@ -770,7 +928,7 @@ test('COB-OPT batch preview repair prompt names required sceneBeat fields', asyn
     context,
   );
 
-  assert.equal(calls.length, 2);
+  assert.equal(calls.length, 3);
   assert.match(calls[1].messages[0].content, /sceneArcId.*scenePart.*location.*participants.*localGoal.*visibleAction.*obstacle.*turningPoint.*partResult.*sensoryAnchor/s);
   assert.match(calls[1].messages[1].content, /Each sceneBeats object must include sceneArcId, scenePart, location, participants, localGoal, visibleAction, obstacle, turningPoint, partResult, and sensoryAnchor/);
   assert.equal(result.chapters[0].craftBrief?.sceneBeats?.[0]?.scenePart, '1/3');
@@ -787,8 +945,10 @@ test('COB-P2 batch preview repairs character source mistakes through LLM only', 
   const tool = new GenerateChapterOutlineBatchPreviewTool({
     async chatJson(messages: Array<{ role: string; content: string }>, options: Record<string, unknown>) {
       calls.push({ messages, options });
+      if (isQualityReviewCall(options)) return { data: createPassingQualityReview(), result: { model: 'mock-quality-review' } };
       const bad = createBatchOutput([1, 2, 3, 4], { chapters: [createBatchChapter(1, { craftBrief: badCraftBrief }), createBatchChapter(2), createBatchChapter(3), createBatchChapter(4)] });
-      return { data: calls.length === 1 ? bad : createBatchOutput(), result: { model: `mock-source-repair-${calls.length}` } };
+      const generationCallCount = calls.filter((call) => !isQualityReviewCall(call.options)).length;
+      return { data: generationCallCount === 1 ? bad : createBatchOutput(), result: { model: `mock-source-repair-${generationCallCount}` } };
     },
   } as never);
   const { context } = createToolContext();
@@ -798,7 +958,7 @@ test('COB-P2 batch preview repairs character source mistakes through LLM only', 
     context,
   );
 
-  assert.equal(calls.length, 2);
+  assert.equal(calls.length, 3);
   assert.match(calls[1].messages[1].content, /volume_candidate/);
   assert.equal(result.chapters[0].craftBrief?.characterExecution?.cast?.some((member) => member.characterName === 'Shao' && member.source === 'volume_candidate'), true);
 });
@@ -1074,7 +1234,10 @@ test('COB-P6 end-to-end batch outline pipeline covers 1..60 and validates standa
 
   const calls: Array<{ start: number; end: number; prompt: string }> = [];
   const previewTool = new GenerateChapterOutlineBatchPreviewTool({
-    async chatJson(messages: Array<{ role: string; content: string }>) {
+    async chatJson(messages: Array<{ role: string; content: string }>, options?: Record<string, unknown>) {
+      if (isQualityReviewCall(options)) {
+        return { data: createPassingQualityReview(), result: { model: 'mock-quality-review' } };
+      }
       const prompt = messages[1]?.content ?? '';
       const match = prompt.match(/Target batch chapterRange: (\d+)-(\d+)/);
       assert.ok(match, 'batch preview prompt should expose the concrete chapter range');

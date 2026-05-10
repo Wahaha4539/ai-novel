@@ -12,6 +12,12 @@ export interface LlmChatOptions {
   retries?: number;
   tools?: unknown[];
   jsonMode?: boolean;
+  jsonSchema?: {
+    name: string;
+    description?: string;
+    schema: Record<string, unknown>;
+    strict?: boolean;
+  };
 }
 
 export interface LlmChatResult {

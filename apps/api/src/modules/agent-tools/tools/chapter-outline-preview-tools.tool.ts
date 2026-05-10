@@ -214,7 +214,7 @@ export class GenerateChapterOutlinePreviewTool implements BaseTool<GenerateChapt
     const craftBrief = this.asRecord(chapterRecord.craftBrief);
     if (/chapterNo 不匹配|volumeNo 不匹配/.test(message)) return Object.keys(chapterRecord).length > 0;
     if (!Object.keys(craftBrief).length) return false;
-    if (/临时角色承担了重要或长期角色功能|未进入卷级角色候选/.test(message)) return false;
+    if (/firstAndOnlyUse|approvalPolicy 声明为 needs_approval|未进入卷级角色候选/.test(message)) return false;
     if (/craftBrief\.storyUnit (is required|缺少)|缺少 craftBrief\.storyUnit/.test(message)) return false;
     if (/craftBrief\.(visibleGoal|hiddenEmotion|coreConflict|mainlineTask|subplotTasks|actionBeats|sceneBeats|concreteClues|dialogueSubtext|characterShift|irreversibleConsequence|progressTypes|entryState|exitState|openLoops|closedLoops|handoffToNextChapter|continuityState)/.test(message)) return true;
     if (/relationshipBeats\[\d+\]\.(participants|publicStateBefore|trigger|shift|publicStateAfter|hiddenStateBefore|hiddenStateAfter)/.test(message)) return true;

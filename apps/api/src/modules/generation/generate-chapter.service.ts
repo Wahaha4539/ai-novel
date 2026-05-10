@@ -768,13 +768,16 @@ export class GenerateChapterService {
       return !generationProfile.allowNewForeshadows;
     });
     const blockMode = this.shouldBlockNewEntityPolicy(generationProfile);
-    const messages = blockedCandidates.map((candidate) => `生成配置禁止新增${this.newEntityLabel(candidate.type)}，但${candidate.source}包含新增候选：${candidate.evidence}`);
+    const messages = blockedCandidates.map((candidate) => (
+      `生成配置禁止新增${this.newEntityLabel(candidate.type)}，但${candidate.source}包含疑似新增候选：${candidate.evidence}。`
+      + '该检测仅作诊断提示，不因自然语言关键词阻断；请让写作 LLM 遵守生成配置。'
+    ));
 
     return {
-      valid: !blockMode || blockedCandidates.length === 0,
+      valid: true,
       blockMode,
-      blockers: blockMode ? messages : [],
-      warnings: blockMode ? [] : messages,
+      blockers: [],
+      warnings: messages,
       candidates,
       allowNewCharacters: generationProfile.allowNewCharacters,
       allowNewLocations: generationProfile.allowNewLocations,
@@ -786,6 +789,7 @@ export class GenerateChapterService {
     chapter: { objective: string | null; conflict: string | null; outline: string | null; revealPoints?: string | null; foreshadowPlan?: string | null; craftBrief?: Prisma.JsonValue | null },
     input: GenerateChapterInput,
   ): NewEntityPolicyCandidate[] {
+    // Natural-language mentions of "new role/location/clue" are diagnostics only; negation and scope require LLM judgment.
     const sources = [
       { source: '用户指令', value: input.instruction },
       { source: '章节目标', value: chapter.objective },

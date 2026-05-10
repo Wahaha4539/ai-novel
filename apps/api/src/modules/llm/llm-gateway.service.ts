@@ -105,6 +105,7 @@ export class LlmGatewayService {
       elapsedMs: result.elapsedMs,
       rawPayloadSummary: result.rawPayloadSummary,
       jsonMode: options.jsonMode ?? false,
+      jsonSchemaName: options.jsonSchema?.name ?? null,
       requestedMaxTokens: options.maxTokens ?? null,
       maxTokensSent: null,
       rawResponseLength: result.text.length,
@@ -222,13 +223,14 @@ export class LlmGatewayService {
     const timeoutMs = options.timeoutMs ?? DEFAULT_LLM_TIMEOUT_MS;
     const logContext = this.buildRequestLogContext(config, messages, options, timeoutMs, startedAt);
     const temperature = options.temperature ?? (config.params.temperature as number | undefined) ?? 0.2;
+    const responseFormat = this.buildResponseFormat(options);
     const requestBody: Record<string, unknown> = {
       model: config.model,
       messages,
       ...buildProviderChatParams(config.params),
       temperature,
       ...(options.tools ? { tools: options.tools } : {}),
-      ...(options.jsonMode ? { response_format: { type: 'json_object' } } : {}),
+      ...(responseFormat ? { response_format: responseFormat } : {}),
     };
     let response: { status: number; bodyText: string };
     try {
@@ -348,6 +350,21 @@ export class LlmGatewayService {
       messages: messages.map((message, index) => this.summarizeMessageForLog(message, index)),
       tools: this.summarizeToolsForLog(options.tools),
     };
+  }
+
+  private buildResponseFormat(options: LlmChatOptions): Record<string, unknown> | undefined {
+    if (options.jsonSchema) {
+      return {
+        type: 'json_schema',
+        json_schema: {
+          name: options.jsonSchema.name,
+          ...(options.jsonSchema.description ? { description: options.jsonSchema.description } : {}),
+          schema: options.jsonSchema.schema,
+          strict: options.jsonSchema.strict ?? true,
+        },
+      };
+    }
+    return options.jsonMode ? { type: 'json_object' } : undefined;
   }
 
   private summarizeMessageForLog(message: LlmChatMessage, index: number): Record<string, unknown> {

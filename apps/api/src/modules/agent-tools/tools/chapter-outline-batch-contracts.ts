@@ -19,6 +19,21 @@ export interface ChapterOutlineBatchPlan {
   risks: string[];
 }
 
+export interface ChapterOutlineBatchQualityIssue {
+  severity: 'warning' | 'error';
+  chapterNo?: number;
+  path?: string;
+  message: string;
+  suggestion?: string;
+  evidence?: string;
+}
+
+export interface ChapterOutlineBatchQualityReview {
+  valid: boolean;
+  summary?: string;
+  issues: ChapterOutlineBatchQualityIssue[];
+}
+
 export interface BuildChapterOutlineBatchesOptions {
   preferredBatchSize?: number;
   maxBatchSize?: number;
@@ -44,6 +59,7 @@ export interface ChapterOutlineBatchPreviewOutput {
   };
   chapters: OutlinePreviewOutput['chapters'];
   risks: string[];
+  qualityReview?: ChapterOutlineBatchQualityReview;
   repairDiagnostics?: Array<{
     attempted: boolean;
     attempts: number;

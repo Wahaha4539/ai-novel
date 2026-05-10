@@ -384,15 +384,6 @@ export class ValidateOutlineTool implements BaseTool<ValidateOutlineInput, Valid
     if (actionBeats.length < 3) {
       issues.push({ severity: 'error', message: `${label} 的 craftBrief.actionBeats 少于 3 个节点。`, suggestion: '行动链必须至少包含起手行动、正面受阻、阶段结果。' });
     }
-    actionBeats.forEach((beat, index) => {
-      if (this.isGenericPlanningText(beat)) {
-        issues.push({
-          severity: 'error',
-          message: `${label} 的 craftBrief.actionBeats[${index}] 过于空泛。`,
-          suggestion: '行动链必须写出具体人物、可见动作、对象和结果，不能只写推进/建立/完成等抽象任务。',
-        });
-      }
-    });
     this.validateSceneBeats(brief.sceneBeats, label, issues);
     const clues = this.asRecordArray(brief.concreteClues).filter((item) => this.text(item.name).trim());
     if (!clues.length) {
@@ -455,9 +446,6 @@ export class ValidateOutlineTool implements BaseTool<ValidateOutlineInput, Valid
     if (outline.length < 60) {
       issues.push({ severity: 'error', message: `${label} 的 outline 过短，缺少可执行场景链。`, suggestion: 'outline 至少写出 3 个场景段，每段包含地点、行动、阻力和结果。' });
     }
-    if (this.isGenericPlanningText(outline)) {
-      issues.push({ severity: 'error', message: `${label} 的 outline 仍是抽象目标说明。`, suggestion: '请改成具体场景链：谁在哪里做了什么、被谁阻止、得到什么结果。' });
-    }
   }
 
   private validateSceneBeats(value: unknown, label: string, issues: OutlineValidationIssue[]) {
@@ -475,9 +463,6 @@ export class ValidateOutlineTool implements BaseTool<ValidateOutlineInput, Valid
       });
       if (!this.stringArray(beat.participants).length) {
         issues.push({ severity: 'error', message: `${label} 的 craftBrief.sceneBeats[${index}].participants 为空。`, suggestion: '场景段必须列出参与人物。' });
-      }
-      if (this.isGenericPlanningText(this.text(beat.visibleAction))) {
-        issues.push({ severity: 'error', message: `${label} 的 craftBrief.sceneBeats[${index}].visibleAction 过于空泛。`, suggestion: 'visibleAction 必须是可被镜头拍到的具体动作。' });
       }
     });
   }
@@ -514,17 +499,6 @@ export class ValidateOutlineTool implements BaseTool<ValidateOutlineInput, Valid
       && this.asRecordArray(brief.sceneBeats).length >= 3
       && this.text(this.asRecord(brief.continuityState).nextImmediatePressure).trim(),
     );
-  }
-
-  private isGenericPlanningText(value: string): boolean {
-    const normalized = value.trim();
-    if (!normalized) return false;
-    const genericTerms = ['推进', '建立', '完成', '探索', '揭示', '面对', '选择', '升级', '铺垫', '承接', '形成', '安排', '明确', '获取证据'];
-    const hasGenericTerm = genericTerms.some((term) => normalized.includes(term));
-    if (!hasGenericTerm) return false;
-    const hasSceneSignal = /在|到|进入|翻开|拿出|递给|撞见|拦住|扣押|闯入|交换|偷换|打开|撕下|藏进|带走|逼问|追|逃|烧|砸|抬|交给/.test(normalized);
-    const hasConcretePunctuation = /[，。；、]/.test(normalized) && normalized.length >= 24;
-    return !(hasSceneSignal && hasConcretePunctuation);
   }
 
   /** 将上游 LLM 预览字段安全转换为文本，避免非字符串内容导致校验阶段 500。 */
