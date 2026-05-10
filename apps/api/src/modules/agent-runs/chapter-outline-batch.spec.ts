@@ -650,6 +650,37 @@ test('COB-P2 batch preview repairs local craftBrief field omissions', async () =
   assert.equal(result.chapters[1].craftBrief?.characterShift, 'shift 2');
 });
 
+test('COB-OPT batch preview repair prompt names complete relationshipBeats fields', async () => {
+  const storyUnitPlan = createStoryUnitPlan([{ unitId: 'u1', start: 1, end: 4 }]);
+  const badCraftBrief = createBatchCraftBrief(1);
+  const characterExecution = badCraftBrief.characterExecution as Record<string, any>;
+  characterExecution.relationshipBeats = characterExecution.relationshipBeats.map((beat: Record<string, unknown>) => {
+    const incomplete = { ...beat };
+    delete incomplete.publicStateBefore;
+    return incomplete;
+  });
+  const calls: Array<{ messages: Array<{ role: string; content: string }>; options: Record<string, unknown> }> = [];
+  const tool = new GenerateChapterOutlineBatchPreviewTool({
+    async chatJson(messages: Array<{ role: string; content: string }>, options: Record<string, unknown>) {
+      calls.push({ messages, options });
+      const bad = createBatchOutput([1, 2, 3, 4], { chapters: [createBatchChapter(1, { craftBrief: badCraftBrief }), createBatchChapter(2), createBatchChapter(3), createBatchChapter(4)] });
+      return { data: calls.length === 1 ? bad : createBatchOutput(), result: { model: `mock-relationship-repair-${calls.length}` } };
+    },
+  } as never);
+  const { context } = createToolContext();
+
+  const result = await tool.run(
+    { context: createSegmentContext(storyUnitPlan, 4), storyUnitPlan, volumeNo: 1, chapterCount: 4, chapterRange: { start: 1, end: 4 } },
+    context,
+  );
+
+  assert.equal(calls.length, 2);
+  assert.match(calls[0].messages[1].content, /relationshipBeats.*publicStateBefore.*trigger.*shift.*publicStateAfter/s);
+  assert.match(calls[1].messages[0].content, /relationshipBeats.*publicStateBefore.*trigger.*shift.*publicStateAfter/s);
+  assert.match(calls[1].messages[1].content, /Do not leave partial relationship beat objects/);
+  assert.equal(result.chapters[0].craftBrief?.characterExecution?.relationshipBeats?.[0]?.publicStateBefore, 'mutual suspicion');
+});
+
 test('COB-P2 batch preview repairs character source mistakes through LLM only', async () => {
   const storyUnitPlan = createStoryUnitPlan([{ unitId: 'u1', start: 1, end: 4 }]);
   const badCraftBrief = createBatchCraftBrief(1);
