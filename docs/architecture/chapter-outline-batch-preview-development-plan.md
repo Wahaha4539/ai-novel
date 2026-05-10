@@ -1,5 +1,7 @@
 # 章节细纲分段批次生成开发任务文档
 
+> 更新说明（2026-05-11）：本文件记录早期 batch 方案背景。关于“章节细纲默认承接卷大纲 `Volume.chapterCount` / `storyUnitPlan`、自然语言数字只由 LLM Planner 结构化输出、长卷 batch 不追加终局 `validate_outline`”的新口径，以 `docs/architecture/chapter-outline-context-driven-flow-design.md` 和 `docs/architecture/chapter-outline-context-driven-flow-development-plan.md` 为准。
+
 > 状态：待实现开发计划
 > 任务前缀：`COB`，即 Chapter Outline Batch
 > 范围：Agent 工作台整卷章节细纲生成、Planner 编排、章节细纲批次工具、合并校验、Artifact/UI 展示、端到端验证
@@ -19,7 +21,6 @@
 inspect_project_context: 1
 generate_chapter_outline_preview: 60
 merge_chapter_outline_previews: 1
-validate_outline: 1
 persist_outline: 1
 ```
 
@@ -123,8 +124,7 @@ generate batches
 4. generate_chapter_outline_batch_preview 第 5-8 章
 ...
 N. merge_chapter_outline_batch_previews
-N+1. validate_outline
-N+2. persist_outline
+N+1. persist_outline
 ```
 
 如果第一卷 storyUnit 范围为：
@@ -382,9 +382,10 @@ merge_chapter_outline_batch_previews
 inspect_project_context
 generate_chapter_outline_preview
 merge_chapter_outline_previews
-validate_outline
 persist_outline
 ```
+
+`validate_outline` 只作为人工诊断或旧链路兼容工具；长卷 batch 主链路不在所有 batch 合并后追加终局 `validate_outline`。
 
 ### 7.3 PlanValidator
 
@@ -493,7 +494,7 @@ apps/web/components/agent/AgentSharedWidgets.tsx
 | COB-P3-001 | [ ] | 新增 `MergeChapterOutlineBatchPreviewsTool`。 | `chapter-outline-preview-tools.tool.ts` 或新文件 | 多个 batch 合并成标准 `OutlinePreviewOutput`。 |
 | COB-P3-002 | [ ] | 复用单章 craftBrief / characterExecution 校验。 | `outline-character-contracts.ts` | 合并时能拦截角色来源错误。 |
 | COB-P3-003 | [ ] | 增加跨 batch continuity 校验。 | 同上 | 上一批 handoff 与下一批 entryState 断裂时输出 issue 或失败。 |
-| COB-P3-004 | [ ] | 保持 `validate_outline` 和 `persist_outline` 下游兼容。 | `validate-outline.tool.ts`, `persist-outline.tool.ts` | 合并产物可进入原有校验和审批写入。 |
+| COB-P3-004 | [ ] | 保持 `persist_outline` 下游兼容；`validate_outline` 仅保留为人工诊断或旧链路兼容。 | `persist-outline.tool.ts`, `validate-outline.tool.ts` | 合并产物可直接进入审批写入，长卷 batch 主链路不追加终局 `validate_outline`。 |
 
 ### COB-P4：Planner 与 PlanValidator
 
@@ -550,7 +551,7 @@ AGENT_TEST_FILTER="COB" pnpm --dir apps/api test:agent
 6. repair 后仍缺字段失败。
 7. 合并 batch 缺第 37 章失败。
 8. 合并 batch 重叠第 8 章失败。
-9. 合并后 `validate_outline` 通过。
+9. 合并后直接进入审批写入链路；不追加终局 `validate_outline` 作为整卷兜底。
 10. `persist_outline` 仍要求审批。
 
 ### 前端测试
@@ -601,7 +602,7 @@ http://localhost:3002/
 
 1. COB-P1：先做批次切分，验证能稳定覆盖 60 章。
 2. COB-P2：实现 batch preview 工具，先用 mock LLM 测结构。
-3. COB-P3：实现 batch merge，确保输出兼容现有 `validate_outline` 和 `persist_outline`。
+3. COB-P3：实现 batch merge，确保输出可直接进入审批后的 `persist_outline`，`validate_outline` 仅保留为旧链路兼容或人工诊断。
 4. COB-P4：接入 Planner 和 PlanValidator。
 5. COB-P5：补前端展示。
 6. COB-P6：Docker Compose 端到端测试。
@@ -625,7 +626,7 @@ Artifact 能看到 60 章
 3. LLM 调用次数从 60 次单章调用降低到约 12-18 次 batch 调用。
 4. 任意 batch 输出缺章、错章、缺关键字段时不会被后端补齐。
 5. LLM repair 只修复局部结构错误，repair 失败则整个 run 明确失败。
-6. 合并产物仍是标准 `OutlinePreviewOutput`，可被 `validate_outline` 和 `persist_outline` 复用。
+6. 合并产物仍是标准 `OutlinePreviewOutput`，可被审批后的 `persist_outline` 复用；`validate_outline` 不作为 batch 主链路终局门禁。
 7. Plan 模式不写库，审批后才允许 `persist_outline`。
 8. `pnpm --dir apps/api test:agent`、`pnpm --dir apps/api build`、`pnpm --dir apps/web build` 通过。
 9. Docker Compose 端到端测试通过。

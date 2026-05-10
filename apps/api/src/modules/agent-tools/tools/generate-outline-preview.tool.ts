@@ -11,6 +11,7 @@ import { normalizeWithLlmRepair } from './structured-output-repair';
 
 const OUTLINE_PREVIEW_LLM_TIMEOUT_MS = DEFAULT_LLM_TIMEOUT_MS;
 const OUTLINE_PREVIEW_REPAIR_TIMEOUT_MS = DEFAULT_LLM_TIMEOUT_MS;
+const OUTLINE_PREVIEW_MAX_CHAPTER_COUNT = 80;
 const OUTLINE_PREVIEW_BATCH_SIZE = 1;
 const OUTLINE_PREVIEW_BATCH_THRESHOLD = OUTLINE_PREVIEW_BATCH_SIZE;
 
@@ -119,7 +120,7 @@ export class GenerateOutlinePreviewTool implements BaseTool<GenerateOutlinePrevi
   riskLevel: 'low' = 'low';
   requiresApproval = false;
   sideEffects: string[] = [];
-  executionTimeoutMs = OUTLINE_PREVIEW_LLM_TIMEOUT_MS * Math.ceil(80 / OUTLINE_PREVIEW_BATCH_SIZE) + 60_000;
+  executionTimeoutMs = OUTLINE_PREVIEW_LLM_TIMEOUT_MS * Math.ceil(OUTLINE_PREVIEW_MAX_CHAPTER_COUNT / OUTLINE_PREVIEW_BATCH_SIZE) + 60_000;
   manifest: ToolManifestV2 = {
     name: this.name,
     displayName: '生成卷/章节细纲与执行卡预览',
@@ -148,8 +149,7 @@ export class GenerateOutlinePreviewTool implements BaseTool<GenerateOutlinePrevi
         plan: [
           { tool: 'inspect_project_context', args: { focus: ['outline', 'volumes', 'chapters', 'characters', 'lorebook'] } },
           { tool: 'generate_outline_preview', args: { context: '{{steps.1.output}}', instruction: '为第 1 卷生成 60 章细纲', volumeNo: 1, chapterCount: 60 } },
-          { tool: 'validate_outline', args: { preview: '{{steps.2.output}}' } },
-          { tool: 'persist_outline', args: { preview: '{{steps.2.output}}', validation: '{{steps.3.output}}' } },
+          { tool: 'persist_outline', args: { preview: '{{steps.2.output}}' } },
         ],
       },
     ],
@@ -178,7 +178,10 @@ export class GenerateOutlinePreviewTool implements BaseTool<GenerateOutlinePrevi
     if (!Number.isInteger(numeric) || numeric < 1) {
       throw new Error('generate_outline_preview 缺少有效 chapterCount，未生成章节细纲。');
     }
-    return Math.min(80, numeric);
+    if (numeric > OUTLINE_PREVIEW_MAX_CHAPTER_COUNT) {
+      throw new Error(`generate_outline_preview chapterCount ${numeric} exceeds max ${OUTLINE_PREVIEW_MAX_CHAPTER_COUNT}; shrink the request or rebuild the volume outline with a supported chapter count.`);
+    }
+    return numeric;
   }
 
   private async runSingleBatch(args: GenerateOutlinePreviewInput, context: ToolContext, volumeNo: number, chapterCount: number): Promise<OutlinePreviewOutput> {

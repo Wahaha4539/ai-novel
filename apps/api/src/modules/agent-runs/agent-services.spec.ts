@@ -4624,22 +4624,75 @@ test('COB-P6 AgentRuntime promotes batch merged outline preview artifacts', () =
     buildPreviewArtifacts: (taskType: string, outputs: Record<number, unknown>, steps: Array<{ stepNo: number; tool: string }>) => Array<{ artifactType: string; title: string; content: unknown }>;
   };
   const preview = {
-    volume: { volumeNo: 1, title: 'Volume 1', chapterCount: 60 },
+    volume: { volumeNo: 1, title: 'Volume 1', chapterCount: 60, narrativePlan: { storyUnitPlan: { units: [] } } },
     chapters: Array.from({ length: 60 }, (_item, index) => ({ chapterNo: index + 1, title: `Chapter ${index + 1}` })),
     risks: [],
   };
 
   const artifacts = runtime.buildPreviewArtifacts(
     'outline_design',
-    { 18: preview },
+    {
+      2: { batch: { chapterRange: { start: 1, end: 4 }, storyUnitIds: ['v1_unit_01'] } },
+      3: { batch: { chapterRange: { start: 5, end: 8 }, storyUnitIds: ['v1_unit_02'] } },
+      18: preview,
+    },
     [
+      { stepNo: 1, tool: 'inspect_project_context' },
+      { stepNo: 2, tool: 'generate_chapter_outline_batch_preview' },
+      { stepNo: 3, tool: 'generate_chapter_outline_batch_preview' },
       { stepNo: 18, tool: 'merge_chapter_outline_batch_previews' },
       { stepNo: 19, tool: 'persist_outline' },
     ],
   );
 
   assert.deepEqual(artifacts.map((item) => item.artifactType), ['outline_preview']);
-  assert.equal(artifacts[0].content, preview);
+  const content = artifacts[0].content as Record<string, unknown>;
+  const outlineContext = content.chapterOutlineContext as Record<string, unknown>;
+  assert.deepEqual(content.chapters, preview.chapters);
+  assert.equal(outlineContext.chapterCount, 60);
+  assert.equal(outlineContext.chapterCountSource, 'context_volume');
+  assert.equal(outlineContext.storyUnitPlanSource, 'context_volume');
+  assert.equal(outlineContext.batchCount, 2);
+  assert.deepEqual((outlineContext.batchRanges as Array<Record<string, unknown>>).map((range) => [range.start, range.end]), [[1, 4], [5, 8]]);
+  assert.match(String(outlineContext.approvalMessage), /已审批卷纲 Volume\.chapterCount/);
+});
+
+test('COCF-P2 AgentRuntime marks rebuilt outline and generated storyUnitPlan sources', () => {
+  const runtime = new AgentRuntimeService({} as never, {} as never, {} as never, {} as never, {} as never, {} as never) as unknown as {
+    buildPreviewArtifacts: (taskType: string, outputs: Record<number, unknown>, steps: Array<{ stepNo: number; tool: string; args?: Record<string, unknown> }>) => Array<{ artifactType: string; title: string; content: unknown }>;
+  };
+  const storyUnitPlan = { units: [{ unitId: 'v1_unit_01' }], chapterAllocation: [{ unitId: 'v1_unit_01', chapterRange: { start: 1, end: 45 } }] };
+  const preview = {
+    volume: { volumeNo: 1, title: 'Volume 1', chapterCount: 45, narrativePlan: { storyUnitPlan } },
+    chapters: Array.from({ length: 45 }, (_item, index) => ({ chapterNo: index + 1, title: `Chapter ${index + 1}` })),
+    risks: [],
+  };
+
+  const artifacts = runtime.buildPreviewArtifacts(
+    'outline_design',
+    {
+      1: { volumes: [{ volumeNo: 1, chapterCount: 60 }] },
+      2: { volume: { volumeNo: 1, chapterCount: 45 } },
+      3: { storyUnitPlan },
+      4: { batch: { chapterRange: { start: 1, end: 45 }, storyUnitIds: ['v1_unit_01'] } },
+      5: preview,
+    },
+    [
+      { stepNo: 1, tool: 'inspect_project_context' },
+      { stepNo: 2, tool: 'generate_volume_outline_preview', args: { volumeNo: 1, chapterCount: 45 } },
+      { stepNo: 3, tool: 'generate_story_units_preview', args: { volumeNo: 1, chapterCount: 45 } },
+      { stepNo: 4, tool: 'generate_chapter_outline_batch_preview' },
+      { stepNo: 5, tool: 'merge_chapter_outline_batch_previews' },
+      { stepNo: 6, tool: 'persist_outline' },
+    ],
+  );
+
+  const content = artifacts[0].content as Record<string, unknown>;
+  const outlineContext = content.chapterOutlineContext as Record<string, unknown>;
+  assert.equal(outlineContext.chapterCount, 45);
+  assert.equal(outlineContext.chapterCountSource, 'user_explicit_rebuild');
+  assert.equal(outlineContext.storyUnitPlanSource, 'generated_story_units_preview');
+  assert.deepEqual((outlineContext.batchRanges as Array<Record<string, unknown>>).map((range) => [range.start, range.end]), [[1, 45]]);
 });
 
 test('VCC AgentRuntime maps volume character candidate preview and filters existing characters', () => {
@@ -17177,6 +17230,25 @@ test('generate_outline_preview 缺少 chapterCount 时不调用 LLM', async () =
       { agentRunId: 'run1', projectId: 'p1', mode: 'plan', approved: false, outputs: {}, policy: {} },
     ),
     /缺少有效 chapterCount/,
+  );
+  assert.equal(calls, 0);
+});
+
+test('COCF-P2 generate_outline_preview rejects chapterCount above max instead of truncating', async () => {
+  let calls = 0;
+  const tool = new GenerateOutlinePreviewTool({
+    async chatJson() {
+      calls += 1;
+      return { data: {}, result: { model: 'should-not-call' } };
+    },
+  } as never);
+
+  await assert.rejects(
+    () => tool.run(
+      { instruction: '生成 100 章细纲', volumeNo: 1, chapterCount: 100 },
+      { agentRunId: 'run-outline-too-large', projectId: 'p1', mode: 'plan', approved: false, outputs: {}, policy: {} },
+    ),
+    /chapterCount 100 exceeds max 80/,
   );
   assert.equal(calls, 0);
 });

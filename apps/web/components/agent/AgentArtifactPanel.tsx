@@ -551,6 +551,17 @@ function OutlinePreviewSummary({ content }: { content: unknown }) {
   const fallbackChapterCount = fallbackChapterCountFromRisks(riskTexts, chapters.length);
   const validation = asRecord(data?.validation);
   const stats = asRecord(data?.stats ?? validation?.stats);
+  const outlineContext = asRecord(data?.chapterOutlineContext);
+  const batchRanges = recordList(outlineContext?.batchRanges);
+  const approvalMessage = textValue(outlineContext?.approvalMessage, '');
+  const batchRangeSummary = batchRanges
+    .map((range) => {
+      const start = numberValue(range.start, 0);
+      const end = numberValue(range.end, 0);
+      return start && end ? `第${start}-${end}章` : '';
+    })
+    .filter(Boolean)
+    .join('、');
   const volumeCandidateCount = numberValue(stats?.volumeCharacterCandidateCount, volumeCharacterCandidateCount(volumeRecords));
   const chapterCharacterExecutionCount = numberValue(stats?.chapterCharacterExecutionCount, chapterRecords.filter(hasChapterCharacterExecution).length);
   const temporaryCharacterCount = numberValue(stats?.temporaryCharacterCount, chapterRecords.reduce((sum, chapter) => sum + chapterTemporaryCharacterCount(chapter), 0));
@@ -568,7 +579,16 @@ function OutlinePreviewSummary({ content }: { content: unknown }) {
         <Metric label="异常风险章节" value={fallbackChapterCount} tone={fallbackChapterCount ? 'danger' : 'ok'} />
         <Metric label="风险" value={riskTexts.length} tone={riskTexts.length ? 'warn' : 'ok'} />
         <Metric label="总目标字数" value={totalExpectedWordCount} />
+        {textValue(outlineContext?.chapterCountSourceLabel, '') && <Metric label="章数来源" value={textValue(outlineContext?.chapterCountSourceLabel)} />}
+        {textValue(outlineContext?.storyUnitPlanSourceLabel, '') && <Metric label="单元故事来源" value={textValue(outlineContext?.storyUnitPlanSourceLabel)} />}
+        {batchRanges.length > 0 && <Metric label="批次数" value={batchRanges.length} tone="ok" />}
       </div>
+      {approvalMessage && (
+        <div className="rounded-lg border px-3 py-2 text-xs leading-5" style={{ borderColor: 'rgba(103,232,249,0.24)', background: 'rgba(14,165,233,0.07)', color: 'var(--text-muted)' }}>
+          {approvalMessage}
+          {batchRangeSummary ? <div className="mt-1">批次覆盖：{batchRangeSummary}</div> : null}
+        </div>
+      )}
       <OutlineWriteNotice fallbackChapterCount={fallbackChapterCount} riskCount={riskTexts.length} />
       {riskTexts.length > 0 && (
         <div className="space-y-1">

@@ -1018,7 +1018,7 @@ export class AgentRuntimeService {
       const inspectContext = this.latestOutputByTools(outputs, steps, ['inspect_project_context']);
       const volumeCharacterCandidatesPreview = this.buildVolumeCharacterCandidatesPreview(preview, inspectContext);
       return [
-        ...(preview ? [{ artifactType: 'outline_preview', title: '大纲预览', content: preview }] : []),
+        ...(preview ? [this.buildOutlinePreviewArtifact(preview, outputs, steps)] : []),
         ...(storyUnitsPreview ? [{ artifactType: 'story_units_preview', title: '单元故事计划预览', content: storyUnitsPreview }] : []),
         ...(volumeCharacterCandidatesPreview ? [volumeCharacterCandidatesPreview] : []),
         ...(validation ? [{ artifactType: 'outline_validation_report', title: '大纲校验报告', content: validation }] : []),
@@ -1092,6 +1092,106 @@ export class AgentRuntimeService {
       ...(validation ? [{ artifactType: 'timeline_validation_report', title: '计划时间线校验与写入前 Diff', content: validation }] : []),
       ...(persist ? [{ artifactType: 'timeline_persist_result', title: '计划时间线写入结果', content: persist }] : []),
     ];
+  }
+
+  private buildOutlinePreviewArtifact(preview: unknown, outputs: Record<number, unknown>, steps: Pick<AgentPlanSpec, 'steps'>['steps']): AgentArtifactDraft {
+    return {
+      artifactType: 'outline_preview',
+      title: '大纲预览',
+      content: this.decorateOutlinePreviewContent(preview, outputs, steps),
+    };
+  }
+
+  private decorateOutlinePreviewContent(preview: unknown, outputs: Record<number, unknown>, steps: Pick<AgentPlanSpec, 'steps'>['steps']): unknown {
+    const previewRecord = this.asRecord(preview);
+    if (!Object.keys(previewRecord).length) return preview;
+    return {
+      ...previewRecord,
+      chapterOutlineContext: this.buildChapterOutlineContext(previewRecord, outputs, steps),
+    };
+  }
+
+  private buildChapterOutlineContext(preview: Record<string, unknown>, outputs: Record<number, unknown>, steps: Pick<AgentPlanSpec, 'steps'>['steps']) {
+    const volume = this.asRecord(preview.volume);
+    const narrativePlan = this.asRecord(volume.narrativePlan);
+    const chapters = this.recordArray(preview.chapters);
+    const chapterCount = this.numberValue(volume.chapterCount) ?? chapters.length;
+    const volumeNo = this.numberValue(volume.volumeNo);
+    const previewTool = this.latestOutputStepByTools(outputs, steps, ['merge_chapter_outline_batch_previews', 'merge_chapter_outline_previews', 'generate_outline_preview', 'generate_volume_outline_preview'])?.tool;
+    const rebuiltVolumeStep = this.latestOutputStepByTools(outputs, steps, ['generate_volume_outline_preview']);
+    const rebuiltVolumeArgs = this.asRecord(rebuiltVolumeStep?.args);
+    const contextChapterCount = this.contextVolumeChapterCountFromOutputs(outputs, steps, volumeNo);
+    const rebuiltChapterCount = this.numberValue(rebuiltVolumeArgs.chapterCount) ?? chapterCount;
+    const storyUnitsStep = this.latestOutputStepByTools(outputs, steps, ['generate_story_units_preview']);
+    const hasStoryUnitPlan = Object.keys(this.asRecord(narrativePlan.storyUnitPlan)).length > 0;
+    const batchRanges = this.batchRangesFromOutputs(outputs, steps);
+    const chapterCountSource = previewTool === 'generate_volume_outline_preview'
+      ? 'generated_volume_outline'
+      : rebuiltVolumeStep
+        ? (contextChapterCount !== undefined && rebuiltChapterCount !== undefined && contextChapterCount !== rebuiltChapterCount ? 'user_explicit_rebuild' : 'rebuilt_volume_outline')
+        : 'context_volume';
+    const storyUnitPlanSource = storyUnitsStep
+      ? 'generated_story_units_preview'
+      : hasStoryUnitPlan
+        ? (rebuiltVolumeStep ? 'rebuilt_volume_outline' : 'context_volume')
+        : 'missing';
+    return {
+      volumeNo,
+      chapterCount,
+      chapterCountSource,
+      chapterCountSourceLabel: this.chapterCountSourceLabel(chapterCountSource),
+      storyUnitPlanSource,
+      storyUnitPlanSourceLabel: this.storyUnitPlanSourceLabel(storyUnitPlanSource),
+      batchCount: batchRanges.length,
+      batchRanges,
+      approvalMessage: this.outlineApprovalMessage(chapterCount, chapterCountSource, batchRanges.length),
+    };
+  }
+
+  private batchRangesFromOutputs(outputs: Record<number, unknown>, steps: Pick<AgentPlanSpec, 'steps'>['steps']) {
+    return steps
+      .filter((step) => step.tool === 'generate_chapter_outline_batch_preview' && outputs[step.stepNo] !== undefined)
+      .sort((left, right) => left.stepNo - right.stepNo)
+      .map((step) => {
+        const output = this.asRecord(outputs[step.stepNo]);
+        const batch = this.asRecord(output.batch);
+        const range = this.asRecord(batch.chapterRange);
+        return {
+          stepNo: step.stepNo,
+          start: this.numberValue(range.start),
+          end: this.numberValue(range.end),
+          storyUnitIds: this.stringArray(batch.storyUnitIds),
+        };
+      })
+      .filter((range) => range.start !== undefined && range.end !== undefined);
+  }
+
+  private contextVolumeChapterCountFromOutputs(outputs: Record<number, unknown>, steps: Pick<AgentPlanSpec, 'steps'>['steps'], volumeNo: number | undefined) {
+    const inspectContext = this.asRecord(this.latestOutputByTools(outputs, steps, ['inspect_project_context']));
+    if (volumeNo === undefined) return undefined;
+    const volume = this.recordArray(inspectContext.volumes).find((item) => this.numberValue(item.volumeNo) === volumeNo);
+    return this.numberValue(volume?.chapterCount);
+  }
+
+  private chapterCountSourceLabel(source: string) {
+    if (source === 'user_explicit_rebuild') return '来自用户明确改章数后的本次重建卷纲';
+    if (source === 'rebuilt_volume_outline') return '来自本次重建卷纲';
+    if (source === 'generated_volume_outline') return '来自本次生成卷纲';
+    return '来自已审批卷纲 Volume.chapterCount';
+  }
+
+  private storyUnitPlanSourceLabel(source: string) {
+    if (source === 'generated_story_units_preview') return '来自本次生成的 storyUnitPlan';
+    if (source === 'rebuilt_volume_outline') return '来自本次重建卷纲';
+    if (source === 'context_volume') return '来自已审批卷纲 Volume.narrativePlan.storyUnitPlan';
+    return '未检测到 storyUnitPlan';
+  }
+
+  private outlineApprovalMessage(chapterCount: number | undefined, source: string, batchCount: number) {
+    const countText = chapterCount ? `${chapterCount} 章` : '目标章节';
+    const sourceText = this.chapterCountSourceLabel(source);
+    const batchText = batchCount ? `，已拆成 ${batchCount} 个 batch 覆盖目标范围` : '';
+    return `本次将按${sourceText}的 ${countText} 生成章节细纲${batchText}；审批前不写库，审批后仅写入 planned 章节并跳过已起草章节。`;
   }
 
   private buildVolumeCharacterCandidatesPreview(preview: unknown, inspectContext: unknown): AgentArtifactDraft | undefined {
@@ -1186,7 +1286,7 @@ export class AgentRuntimeService {
    */
   private buildExecutionArtifacts(taskType: string, outputs: Record<number, unknown>, steps: Pick<AgentPlanSpec, 'steps'>['steps'] = []): AgentArtifactDraft[] {
     if (taskType === 'outline_design') {
-      const preview = this.latestOutputByTools(outputs, steps, ['merge_chapter_outline_previews', 'generate_outline_preview', 'generate_volume_outline_preview']);
+      const preview = this.latestOutputByTools(outputs, steps, ['merge_chapter_outline_batch_previews', 'merge_chapter_outline_previews', 'generate_outline_preview', 'generate_volume_outline_preview']);
       const validation = this.latestOutputByTools(outputs, steps, ['validate_outline']);
       const persist = this.latestOutputByTools(outputs, steps, ['persist_outline']);
       const volumePersist = this.latestOutputByTools(outputs, steps, ['persist_volume_outline']);
@@ -1194,7 +1294,7 @@ export class AgentRuntimeService {
       const storyUnitsPersist = this.latestOutputByTools(outputs, steps, ['persist_story_units']);
       const characterPersist = this.latestOutputByTools(outputs, steps, ['persist_volume_character_candidates']);
       return [
-        ...(preview ? [{ artifactType: 'outline_preview', title: '大纲预览', content: preview }] : []),
+        ...(preview ? [this.buildOutlinePreviewArtifact(preview, outputs, steps)] : []),
         ...(storyUnitsPreview ? [{ artifactType: 'story_units_preview', title: '单元故事计划预览', content: storyUnitsPreview }] : []),
         ...(validation ? [{ artifactType: 'outline_validation_report', title: '大纲校验报告', content: validation }] : []),
         ...this.buildTimelineArtifacts(outputs, steps, true),
@@ -1392,5 +1492,10 @@ export class AgentRuntimeService {
   private latestOutputByTools(outputs: Record<number, unknown>, steps: Pick<AgentPlanSpec, 'steps'>['steps'], tools: string[]): unknown {
     const candidates = steps.filter((step) => tools.includes(step.tool) && outputs[step.stepNo] !== undefined).sort((a, b) => b.stepNo - a.stepNo);
     return candidates.length ? outputs[candidates[0].stepNo] : undefined;
+  }
+
+  private latestOutputStepByTools(outputs: Record<number, unknown>, steps: Pick<AgentPlanSpec, 'steps'>['steps'], tools: string[]) {
+    const candidates = steps.filter((step) => tools.includes(step.tool) && outputs[step.stepNo] !== undefined).sort((a, b) => b.stepNo - a.stepNo);
+    return candidates[0];
   }
 }

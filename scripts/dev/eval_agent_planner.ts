@@ -1157,13 +1157,18 @@ const EVAL_TOOL_DEFINITIONS: EvalToolDefinition[] = [
   { name: 'generate_guided_step_preview', description: '生成创作引导当前步骤的结构化预览或问答建议。' },
   { name: 'validate_guided_step_preview', description: '校验创作引导当前步骤预览，不写入业务表。' },
   { name: 'persist_guided_step_result', description: '审批后保存创作引导当前步骤结果。', requiresApproval: true, riskLevel: 'medium', sideEffects: ['update_guided_session'] },
-  { name: 'generate_outline_preview', description: '生成大纲拆分预览。' },
+  { name: 'generate_outline_preview', description: '旧版聚合大纲拆分预览；章节细纲主链路优先使用单章或 batch 工具。' },
   { name: 'generate_volume_outline_preview', description: '生成卷级大纲预览。' },
+  { name: 'generate_story_units_preview', description: '生成卷级 storyUnitPlan 预览。' },
+  { name: 'segment_chapter_outline_batches', description: '按 storyUnitPlan 切分章节细纲 batch。' },
+  { name: 'generate_chapter_outline_batch_preview', description: '生成连续章节 batch 细纲预览。' },
+  { name: 'merge_chapter_outline_batch_previews', description: '合并已通过质量门禁的章节 batch 细纲预览。' },
   { name: 'generate_chapter_outline_preview', description: '生成单章细纲预览。' },
   { name: 'merge_chapter_outline_previews', description: '合并多章细纲预览。' },
   { name: 'validate_outline', description: '校验大纲预览。' },
   { name: 'persist_outline', description: '审批后持久化大纲。', requiresApproval: true, riskLevel: 'medium', sideEffects: ['create_outline'] },
   { name: 'persist_volume_outline', description: '审批后持久化卷级大纲。', requiresApproval: true, riskLevel: 'medium', sideEffects: ['upsert_volume_outline'] },
+  { name: 'persist_volume_character_candidates', description: 'Persist approved volume-level character candidates.', requiresApproval: true, riskLevel: 'medium', sideEffects: ['create_or_update_volume_characters', 'create_relationship_edges'] },
   { name: 'generate_chapter_craft_brief_preview', description: '生成 Chapter.craftBrief 推进卡预览。' },
   { name: 'validate_chapter_craft_brief', description: '校验 Chapter.craftBrief 推进卡预览。' },
   { name: 'persist_chapter_craft_brief', description: '审批后持久化 Chapter.craftBrief。', requiresApproval: true, riskLevel: 'medium', sideEffects: ['update_chapter_craft_brief'] },
@@ -1384,25 +1389,33 @@ function createMockPlannerOutput(goal: string, agentContext: Record<string, unkn
     ]);
   }
   if (goal.includes('第一卷') && goal.includes('30')) {
-    const chapterSteps = Array.from({ length: 30 }, (_item, index) => {
-      const chapterNo = index + 1;
-      return step(3 + index, 'generate_chapter_outline_preview', {
+    const ranges = [
+      { start: 1, end: 5 },
+      { start: 6, end: 10 },
+      { start: 11, end: 15 },
+      { start: 16, end: 20 },
+      { start: 21, end: 25 },
+      { start: 26, end: 30 },
+    ];
+    const batchSteps = ranges.map((range, index) => step(5 + index, 'generate_chapter_outline_batch_preview', {
         context: '{{steps.inspect_project_context.output}}',
         volumeOutline: '{{steps.generate_volume_outline_preview.output.volume}}',
+        storyUnitPlan: '{{steps.generate_story_units_preview.output.storyUnitPlan}}',
+        batchPlan: '{{steps.segment_chapter_outline_batches.output}}',
         volumeNo: 1,
-        chapterNo,
         chapterCount: 30,
+        chapterRange: range,
         instruction: '把第一卷拆成 30 章。',
-        ...(chapterNo > 1 ? { previousChapter: `{{steps.${2 + index}.output.chapter}}` } : {}),
-      });
-    });
+        ...(index > 0 ? { previousBatchTail: `{{steps.${4 + index}.output.batchTail}}` } : {}),
+      }));
     return plan('outline_design', goal, true, [
       step(1, 'inspect_project_context', { projectId: '{{context.session.currentProjectId}}', focus: ['outline', 'volumes', 'chapters'] }),
       step(2, 'generate_volume_outline_preview', { context: '{{steps.inspect_project_context.output}}', instruction: '把第一卷拆成 30 章。', volumeNo: 1, chapterCount: 30 }),
-      ...chapterSteps,
-      step(33, 'merge_chapter_outline_previews', { previews: chapterSteps.map((chapterStep) => `{{steps.${chapterStep.stepNo}.output}}`), volumeNo: 1, chapterCount: 30 }),
-      step(34, 'validate_outline', { preview: '{{steps.merge_chapter_outline_previews.output}}' }),
-      step(35, 'persist_outline', { preview: '{{steps.merge_chapter_outline_previews.output}}', validation: '{{steps.validate_outline.output}}' }),
+      step(3, 'generate_story_units_preview', { context: '{{steps.inspect_project_context.output}}', volumeOutline: '{{steps.generate_volume_outline_preview.output.volume}}', volumeNo: 1, chapterCount: 30 }),
+      step(4, 'segment_chapter_outline_batches', { context: '{{steps.inspect_project_context.output}}', volumeOutline: '{{steps.generate_volume_outline_preview.output.volume}}', storyUnitPlan: '{{steps.generate_story_units_preview.output.storyUnitPlan}}', volumeNo: 1, chapterCount: 30 }),
+      ...batchSteps,
+      step(11, 'merge_chapter_outline_batch_previews', { context: '{{steps.inspect_project_context.output}}', volumeOutline: '{{steps.generate_volume_outline_preview.output.volume}}', storyUnitPlan: '{{steps.generate_story_units_preview.output.storyUnitPlan}}', batchPreviews: batchSteps.map((batchStep) => `{{steps.${batchStep.stepNo}.output}}`), volumeNo: 1, chapterCount: 30 }),
+      step(12, 'persist_outline', { preview: '{{steps.merge_chapter_outline_batch_previews.output}}' }),
     ]);
   }
   if (goal.includes('文案拆成角色')) {

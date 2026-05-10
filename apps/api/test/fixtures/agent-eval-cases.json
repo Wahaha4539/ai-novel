@@ -45,7 +45,7 @@
     "id": "outline_split_008",
     "message": "把第一卷拆成 30 章。",
     "context": { "session": { "currentProjectId": "project_1" } },
-    "expected": { "taskType": "outline_design", "mustUseTools": ["generate_volume_outline_preview", "generate_chapter_outline_preview", "merge_chapter_outline_previews", "validate_outline"], "mustContainInstruction": ["第一卷", "30"], "mustRequireApproval": true, "forbidInventedIds": true, "route": { "domain": "outline", "intent": "split_volume_to_chapters" }, "bundle": "outline.chapter" }
+    "expected": { "taskType": "outline_design", "mustUseTools": ["generate_volume_outline_preview", "generate_story_units_preview", "segment_chapter_outline_batches", "generate_chapter_outline_batch_preview", "merge_chapter_outline_batch_previews", "persist_outline"], "mustNotUseTools": ["generate_outline_preview", "validate_outline"], "mustContainInstruction": ["第一卷", "30"], "mustRequireApproval": true, "forbidInventedIds": true, "route": { "domain": "outline", "intent": "split_volume_to_chapters" }, "bundle": "outline.chapter" }
   },
   {
     "id": "project_import_009",

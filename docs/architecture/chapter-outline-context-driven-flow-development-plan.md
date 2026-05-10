@@ -1,6 +1,6 @@
 # 章节细纲上下文驱动流程任务计划文档
 
-> 状态：P0/P1 已完成，P2 待实施
+> 状态：P0/P1/P2 已完成
 > 日期：2026-05-11
 > 任务前缀：`COCF`，即 Chapter Outline Context Flow
 > 关联设计：`docs/architecture/chapter-outline-context-driven-flow-design.md`
@@ -221,11 +221,11 @@
   - `pnpm --dir apps/api exec ts-node src/modules/agent-runs/agent-services.spec.ts`：通过，431/431 项。
   - `pnpm --dir apps/api exec ts-node src/modules/agent-runs/chapter-outline-batch.spec.ts`：通过，38/38 项。
 - 暂缓项 / 风险：
-  - 无 P1 暂缓项。P2 仍需清理旧 `generate_outline_preview` 推荐链路、eval 口径和审批展示。
+  - 无 P1 暂缓项。P2 已清理旧 `generate_outline_preview` 推荐链路、eval 口径和审批展示。
 
 ## 4. P2：旧链路清理与文档同步
 
-### COCF-P2-001：收紧 outline.chapter 工具包
+### COCF-P2-001：收紧 outline.chapter 工具包（已完成）
 
 - 文件：
   - `apps/api/src/modules/agent-runs/planner-graph/tool-bundles/outline.tool-bundle.ts`
@@ -236,7 +236,7 @@
   - 新 Planner 测试中整卷章节细纲不再使用 `generate_outline_preview`。
   - 旧 volume outline 或兼容场景不受影响。
 
-### COCF-P2-002：修正旧 generate_outline_preview 的静默截断
+### COCF-P2-002：修正旧 generate_outline_preview 的静默截断（已完成）
 
 - 文件：
   - `apps/api/src/modules/agent-tools/tools/generate-outline-preview.tool.ts`
@@ -247,7 +247,7 @@
   - `chapterCount=100` 时直接抛错，不生成 80 章。
   - 现有 60 章测试不受影响。
 
-### COCF-P2-003：清理 Planner prompt、eval、架构文档旧口径
+### COCF-P2-003：清理 Planner prompt、eval、架构文档旧口径（已完成）
 
 - 文件：
   - `apps/api/src/modules/agent-runs/agent-planner.service.ts`
@@ -264,7 +264,7 @@
   - `rg "merge_chapter_outline_batch_previews -> validate_outline"` 无章节细纲主链路命中。
   - eval mock 与真实 Planner guidance 一致。
 
-### COCF-P2-004：Artifact 与审批面板展示章数来源
+### COCF-P2-004：Artifact 与审批面板展示章数来源（已完成）
 
 - 文件：
   - `apps/api/src/modules/agent-runs/agent-runtime.service.ts`
@@ -278,6 +278,33 @@
 - 验收：
   - 用户能在审批前看到“本次将按第一卷卷纲的 60 章生成”。
   - 改章数流程能看到“本次先重建为 45 章卷纲，再生成章节细纲”。
+
+### P2 实施记录
+
+- 实现摘要：
+  - `outline.chapter` 工具包不再把旧 `generate_outline_preview` 放入章节细纲推荐链路，并将其列入该 bundle 的 denied tools，避免新章节细纲计划回退到旧聚合工具。
+  - 旧 `generate_outline_preview` 保留兼容能力，但 `chapterCount > 80` 时显式报错，不再用 `Math.min(80, N)` 静默截断用户目标章数；manifest 示例也移除了 `validate_outline` 终局门禁。
+  - Planner guidance、eval fixture、mock planner 和旧 batch 开发文档统一到长卷 batch 主链路：`inspect_project_context -> segment_chapter_outline_batches -> generate_chapter_outline_batch_preview x M -> merge_chapter_outline_batch_previews -> persist_outline`，不追加终局 `validate_outline`。
+  - Agent Runtime 为章节细纲 preview artifact 增加 `chapterOutlineContext`，记录章数来源、storyUnitPlan 来源、batch 数量、batch 覆盖范围和审批提示；前端 Artifact 面板展示这些信息，帮助用户在审批前确认默认承接卷纲或本次重建来源。
+  - eval mock 工具列表补齐 `persist_volume_character_candidates`，避免 tool bundle registry 在可控 live eval 中因缺 mock 工具提前失败。
+- 关键文件：
+  - `apps/api/src/modules/agent-runs/planner-graph/tool-bundles/outline.tool-bundle.ts`
+  - `apps/api/src/modules/agent-tools/tools/generate-outline-preview.tool.ts`
+  - `apps/api/src/modules/agent-runs/agent-planner.service.ts`
+  - `apps/api/src/modules/agent-runs/agent-runtime.service.ts`
+  - `apps/web/components/agent/AgentArtifactPanel.tsx`
+  - `apps/api/test/fixtures/agent-eval-cases.json`
+  - `scripts/dev/eval_agent_planner.ts`
+  - `docs/architecture/chapter-outline-batch-preview-development-plan.md`
+- 测试结果：
+  - `pnpm --dir apps/api exec ts-node src/modules/agent-runs/agent-services.spec.ts COCF-P2`：通过；该 runner 实际执行全量 agent-services，433/433 项。
+  - `pnpm --dir apps/api exec ts-node src/modules/agent-runs/chapter-outline-batch.spec.ts`：通过，38/38 项。
+  - `pnpm --dir apps/api run eval:agent`：通过；默认模式加载 25 个 Agent Eval 用例，不生成指标报告。
+  - `pnpm --dir apps/api run eval:agent -- --live-planner`：graph planner 子集通过，8/8 项，`outline_split_008` 使用新 batch 链路；命令整体因 legacy planner 既有全量用例 18/25 通过而退出 1，失败项集中在旧 legacy mock 对写作/continuity/缺项目等非 COCF 路由的既有口径。
+  - `pnpm --dir apps/api run build`：通过。
+  - `pnpm --dir apps/web run build`：通过。
+- 暂缓项 / 风险：
+  - P2 无 COCF 暂缓项。`eval:agent -- --live-planner` 的 legacy planner 子集仍有既有失败，不属于本次 COCF 章节细纲链路；graph planner 与本次改动相关的 eval 已通过。
 
 ## 5. 测试计划
 
