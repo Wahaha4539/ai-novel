@@ -5,6 +5,8 @@ import {
   type ChapterOutlineBatchPlan,
 } from '../agent-tools/tools/chapter-outline-batch-contracts';
 import { GenerateChapterOutlineBatchPreviewTool, MergeChapterOutlineBatchPreviewsTool, SegmentChapterOutlineBatchesTool } from '../agent-tools/tools/chapter-outline-batch-tools.tool';
+import { PlanValidatorService } from './planner-graph/plan-validator.service';
+import type { AgentPlanSpec } from './agent-planner.service';
 
 type TestCase = { name: string; run: () => void | Promise<void> };
 
@@ -309,6 +311,24 @@ function createToolContext() {
   return {
     progress,
     context,
+  };
+}
+
+function createPlanValidatorPlan(steps: Array<{ tool: string; requiresApproval?: boolean; args?: Record<string, unknown> }>): AgentPlanSpec {
+  return {
+    taskType: 'outline_design',
+    summary: 'batch validator test',
+    assumptions: [],
+    risks: [],
+    requiredApprovals: [],
+    steps: steps.map((step, index) => ({
+      stepNo: index + 1,
+      name: step.tool,
+      tool: step.tool,
+      mode: 'act' as const,
+      requiresApproval: step.requiresApproval ?? false,
+      args: step.args ?? {},
+    })),
   };
 }
 
@@ -646,6 +666,90 @@ test('COB-P3 merge batch previews rejects invalid characterExecution sources', a
       createToolContext().context,
     ),
     /unknown|未知|existing|Shao|characterExecution/,
+  );
+});
+
+test('COB-P4 PlanValidator accepts segmented batch outline plans covering 1..60', () => {
+  const validator = new PlanValidatorService();
+  const batchSteps = Array.from({ length: 15 }, (_item, index) => {
+    const start = index * 4 + 1;
+    const end = start + 3;
+    return {
+      tool: 'generate_chapter_outline_batch_preview',
+      args: {
+        context: '{{steps.1.output}}',
+        batchPlan: '{{steps.2.output}}',
+        volumeNo: 1,
+        chapterCount: 60,
+        chapterRange: { start, end },
+        instruction: '{{context.userMessage}}',
+      },
+    };
+  });
+
+  assert.doesNotThrow(() => validator.validate({
+    plan: createPlanValidatorPlan([
+      { tool: 'inspect_project_context' },
+      { tool: 'segment_chapter_outline_batches', args: { context: '{{steps.1.output}}', volumeNo: 1, chapterCount: 60 } },
+      ...batchSteps,
+      {
+        tool: 'merge_chapter_outline_batch_previews',
+        args: {
+          batchPreviews: batchSteps.map((_step, index) => `{{steps.${index + 3}.output}}`),
+          volumeNo: 1,
+          chapterCount: 60,
+        },
+      },
+      { tool: 'validate_outline', args: { preview: '{{steps.18.output}}' } },
+      { tool: 'persist_outline', requiresApproval: true, args: { preview: '{{steps.18.output}}', validation: '{{steps.19.output}}' } },
+    ]),
+    route: { domain: 'outline', intent: 'split_volume_to_chapters', confidence: 0.9, reasons: ['test'], volumeNo: 1, chapterCount: 60 },
+  }));
+});
+
+test('COB-P4 PlanValidator rejects batch outline plans with missing chapter coverage', () => {
+  const validator = new PlanValidatorService();
+
+  assert.throws(
+    () => validator.validate({
+      plan: createPlanValidatorPlan([
+        { tool: 'inspect_project_context' },
+        { tool: 'segment_chapter_outline_batches', args: { context: '{{steps.1.output}}', volumeNo: 1, chapterCount: 8 } },
+        { tool: 'generate_chapter_outline_batch_preview', args: { context: '{{steps.1.output}}', batchPlan: '{{steps.2.output}}', volumeNo: 1, chapterCount: 8, chapterRange: { start: 1, end: 4 } } },
+        { tool: 'generate_chapter_outline_batch_preview', args: { context: '{{steps.1.output}}', batchPlan: '{{steps.2.output}}', volumeNo: 1, chapterCount: 8, chapterRange: { start: 6, end: 8 } } },
+        { tool: 'merge_chapter_outline_batch_previews', args: { batchPreviews: ['{{steps.3.output}}', '{{steps.4.output}}'], volumeNo: 1, chapterCount: 8 } },
+      ]),
+      route: { domain: 'outline', intent: 'split_volume_to_chapters', confidence: 0.9, reasons: ['test'], volumeNo: 1, chapterCount: 8 },
+    }),
+    /invalid chapter coverage|missing \[5-5\]/,
+  );
+});
+
+test('COB-P4 PlanValidator still accepts legacy explicit single-chapter outline plans', () => {
+  const validator = new PlanValidatorService();
+
+  assert.doesNotThrow(() => validator.validate({
+    plan: createPlanValidatorPlan([
+      { tool: 'inspect_project_context' },
+      { tool: 'generate_chapter_outline_preview', args: { context: '{{steps.1.output}}', volumeNo: 1, chapterNo: 1, chapterCount: 3 } },
+      { tool: 'generate_chapter_outline_preview', args: { context: '{{steps.1.output}}', volumeNo: 1, chapterNo: 2, chapterCount: 3, previousChapter: '{{steps.2.output.chapter}}' } },
+      { tool: 'generate_chapter_outline_preview', args: { context: '{{steps.1.output}}', volumeNo: 1, chapterNo: 3, chapterCount: 3, previousChapter: '{{steps.3.output.chapter}}' } },
+      { tool: 'merge_chapter_outline_previews', args: { previews: ['{{steps.2.output}}', '{{steps.3.output}}', '{{steps.4.output}}'], volumeNo: 1, chapterCount: 3 } },
+    ]),
+    route: { domain: 'outline', intent: 'split_volume_to_chapters', confidence: 0.9, reasons: ['test'], volumeNo: 1, chapterCount: 3 },
+  }));
+});
+
+test('COB-P4 PlanValidator requires persist_outline approval', () => {
+  const validator = new PlanValidatorService();
+
+  assert.throws(
+    () => validator.validate({
+      plan: createPlanValidatorPlan([
+        { tool: 'persist_outline', requiresApproval: false, args: { preview: '{{steps.1.output}}' } },
+      ]),
+    }),
+    /write tools without approval: persist_outline/,
   );
 });
 

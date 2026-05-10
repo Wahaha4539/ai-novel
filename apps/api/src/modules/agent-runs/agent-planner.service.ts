@@ -73,6 +73,8 @@ interface PlannerOutputDefaults {
   risks: string[];
 }
 
+const AGENT_PLANNER_MAX_TOKENS = 12000;
+
 export interface AgentPlanWithToolsInput {
   goal: string;
   context?: AgentContextV2;
@@ -115,6 +117,9 @@ const GENERATE_VOLUME_OUTLINE_PREVIEW_TOOL = 'generate_volume_outline_preview';
 const GENERATE_STORY_UNITS_PREVIEW_TOOL = 'generate_story_units_preview';
 const GENERATE_CHAPTER_OUTLINE_PREVIEW_TOOL = 'generate_chapter_outline_preview';
 const MERGE_CHAPTER_OUTLINE_PREVIEWS_TOOL = 'merge_chapter_outline_previews';
+const SEGMENT_CHAPTER_OUTLINE_BATCHES_TOOL = 'segment_chapter_outline_batches';
+const GENERATE_CHAPTER_OUTLINE_BATCH_PREVIEW_TOOL = 'generate_chapter_outline_batch_preview';
+const MERGE_CHAPTER_OUTLINE_BATCH_PREVIEWS_TOOL = 'merge_chapter_outline_batch_previews';
 const PERSIST_VOLUME_OUTLINE_TOOL = 'persist_volume_outline';
 const PERSIST_STORY_UNITS_TOOL = 'persist_story_units';
 const PERSIST_VOLUME_CHARACTER_CANDIDATES_TOOL = 'persist_volume_character_candidates';
@@ -285,7 +290,7 @@ export class AgentPlannerService {
     const tools = toolScope?.selectedTools?.length
       ? toolScope.selectedTools.map((tool) => this.compactToolManifestForPrompt(tool))
       : this.toolManifestsForPrompt();
-    const promptContext = this.contextForPrompt(context);
+    const promptContext = this.contextForPrompt(context, { lightweight: Boolean(toolScope?.route) });
     const availableTaskTypes = this.listTaskTypes();
     const skills = this.skills.list();
     const hardRules = this.rules.listHardRules();
@@ -313,7 +318,12 @@ export class AgentPlannerService {
           '如果 agentContext.session.guided.currentStep 存在，说明用户正在创作引导页；当前步骤问答优先选择 guided_step_consultation，当前步骤生成优先选择 guided_step_generate，确认保存/写入优先选择 guided_step_finalize，不要误判成普通章节正文写作。',
           '用户只要求“卷大纲 / 第 N 卷的大纲 / 重写某卷大纲”，且没有明确说单元故事、章节细纲、拆成 N 章、章节规划或 Chapter.craftBrief 时，选择 outline_design，但只编排 inspect_project_context -> generate_volume_outline_preview -> persist_volume_outline；若 generate_volume_outline_preview 产生 newCharacterCandidates 且工具可用，还必须追加 persist_volume_character_candidates；不要生成章节细纲。',
           '用户要求“单元故事 / 支线故事 / 人物登场 / 人物情感 / 背景故事 / 丰富单元分类”时选择 outline_design，并编排 inspect_project_context -> generate_story_units_preview -> persist_story_units；只有用户明确要求同时重写/更新卷大纲时，才额外加入 persist_volume_outline 和 persist_volume_character_candidates。',
-          '用户要求“卷细纲 / 章节细纲 / 60 章细纲 / 等长细纲 / 章节规划 / 拆成 N 章”时选择 outline_design，并优先编排 inspect_project_context -> generate_volume_outline_preview -> generate_story_units_preview -> generate_chapter_outline_preview（每章一个步骤）-> merge_chapter_outline_previews -> validate_outline -> persist_outline；若完整 outline_preview 中含 newCharacterCandidates 且工具可用，还必须在 persist_outline 后追加 persist_volume_character_candidates；不要误判为 write_chapter。',
+          '用户要求“章节细纲 / 第 N 卷章节细纲 / 章节规划”，且没有明确说重写卷纲、重新拆成 N 章、改变章数或从头规划时，选择 outline_design，并优先承接 inspect_project_context 中已有 Volume.narrativePlan/storyUnitPlan，直接编排 inspect_project_context -> generate_chapter_outline_preview（每章一个步骤）-> merge_chapter_outline_previews -> validate_outline -> persist_outline；不要重新生成卷大纲或单元故事。',
+          '用户要求“卷细纲 / 60 章细纲 / 等长细纲 / 拆成 N 章 / 重写章节规划 / 改变章节数”时选择 outline_design，并编排 inspect_project_context -> generate_volume_outline_preview -> generate_story_units_preview -> generate_chapter_outline_preview（每章一个步骤）-> merge_chapter_outline_previews -> validate_outline -> persist_outline；若完整 outline_preview 中含 newCharacterCandidates 且工具可用，还必须在 persist_outline 后追加 persist_volume_character_candidates；不要误判为 write_chapter。',
+          '凡是规划 split_volume_to_chapters 且能确定 chapterCount=N，必须显式返回 N 个 generate_chapter_outline_preview 步骤，chapterNo 从 1 到 N 连续；merge_chapter_outline_previews.args.previews 必须按顺序包含这 N 个步骤的输出引用。不要省略为“批量生成”或等待后端展开。',
+          'UPDATED chapter-outline batching rule overrides older single-chapter wording: for split_volume_to_chapters with chapterCount > 12, prefer inspect_project_context -> segment_chapter_outline_batches -> visible generate_chapter_outline_batch_preview steps with static chapterRange values covering 1..N -> merge_chapter_outline_batch_previews -> validate_outline -> approval-gated persist_outline. Keep every chapter number visible through the batch ranges; do not collapse the whole volume into one vague batch step.',
+          'For batch chapter outlines, each generate_chapter_outline_batch_preview args.chapterRange must be a concrete continuous range, normally 3-5 chapters, and all ranges must cover 1..chapterCount with no gaps, overlaps, duplicates, or out-of-range chapters. merge_chapter_outline_batch_previews.args.batchPreviews must reference every batch preview output in order.',
+          '若 routeDecision.chapterCount 或 agentContext.volumes[].chapterCount 给出了目标章数，必须直接使用该章数展开完整步骤；不要再输出“先巡检再确认章数”的单步计划。',
           '用户要求从全书大纲、卷大纲、章节细纲、Chapter.craftBrief 或创作引导产物生成计划时间线时选择 timeline_plan，并使用 generate_timeline_preview -> validate_timeline_preview；除非用户明确要求审批后写入，不要加入 persist_timeline_events。',
           '用户明确说“写正文 / 生成正文 / 续写正文”才选择 chapter_write 或 multi_chapter_write；用户说“拆成场景 / 场景卡 / SceneCard”时选择 scene_card_planning。',
           '用户明确说“重写章节 / 重新生成章节 / 从头写 / 推倒重来 / 不沿用旧稿”时必须使用 rewrite_chapter；不要使用 polish_chapter。',
@@ -335,7 +345,8 @@ export class AgentPlannerService {
               chapter_write: '写某一章正文、章节内容、目标字数、续写正文；若明确要求重写旧章节，应使用 rewrite_chapter。',
               multi_chapter_write: '连续生成多章正文，例如接下来三章、第 1-5 章、多个指定章节；应优先使用 write_chapter_series，不要展开多个 write_chapter。默认设置 qualityPipeline=full，除非用户明确要求只要草稿。',
               chapter_polish: '润色、局部修改、改稿、优化文风、去 AI 味；不用于从头重写章节。',
-              outline_design: '设计大纲。若用户只说卷大纲/第N卷的大纲/重写某卷大纲，且未要求单元故事、章节细纲、拆成N章、章节规划或 Chapter.craftBrief，只使用 generate_volume_outline_preview，审批写入使用 persist_volume_outline，不要生成章节细纲；如果卷纲 characterPlan.newCharacterCandidates 产生候选人物且 persist_volume_character_candidates 可用，审批写入链路还要追加 persist_volume_character_candidates。若用户要求单元故事、支线故事、人物登场、人物情感、背景故事或丰富单元分类，应使用 generate_story_units_preview，审批写入只使用 persist_story_units；generate_volume_outline_preview 若只是给单元故事提供上游卷纲参考，不要写入 persist_volume_outline，除非用户明确要求同时更新卷大纲。若用户要求卷细纲、章节细纲、60章细纲、等长细纲、拆卷、把某卷拆成多章、章节规划，应先使用 generate_volume_outline_preview 生成卷大纲，再用 generate_story_units_preview 生成单元故事计划，然后使用 generate_chapter_outline_preview 为每一章生成可见 Tool 调用，最后用 merge_chapter_outline_previews 合并为 outline_preview；审批写入使用 persist_outline，若完整预览含 newCharacterCandidates 且工具可用，在 persist_outline 后追加 persist_volume_character_candidates；不要误判为写正文。',
+              outline_design: '设计大纲。若用户只说卷大纲/第N卷的大纲/重写某卷大纲，且未要求单元故事、章节细纲、拆成N章、章节规划或 Chapter.craftBrief，只使用 generate_volume_outline_preview，审批写入使用 persist_volume_outline，不要生成章节细纲；如果卷纲 characterPlan.newCharacterCandidates 产生候选人物且 persist_volume_character_candidates 可用，审批写入链路还要追加 persist_volume_character_candidates。若用户要求单元故事、支线故事、人物登场、人物情感、背景故事或丰富单元分类，应使用 generate_story_units_preview，审批写入只使用 persist_story_units；generate_volume_outline_preview 若只是给单元故事提供上游卷纲参考，不要写入 persist_volume_outline，除非用户明确要求同时更新卷大纲。若用户只要求章节细纲/第N卷章节细纲/章节规划，且没有明确要求重写卷纲、重新拆成N章、改变章数或从头规划，应承接 inspect_project_context 中已有 Volume.narrativePlan/storyUnitPlan，直接使用 generate_chapter_outline_preview 为每一章生成可见 Tool 调用，再 merge_chapter_outline_previews；不要重新生成卷大纲或单元故事。若用户要求卷细纲、60章细纲、等长细纲、拆卷、把某卷拆成多章、重写章节规划或改变章节数，应先使用 generate_volume_outline_preview 生成卷大纲，再用 generate_story_units_preview 生成单元故事计划，然后逐章生成；审批写入使用 persist_outline，若完整预览含 newCharacterCandidates 且工具可用，在 persist_outline 后追加 persist_volume_character_candidates；不要误判为写正文。',
+              outline_chapter_batching: 'For long chapter-outline work (chapterCount > 12, especially 60 chapters), use the segmented batch chain instead of 60 single LLM calls: inspect_project_context -> segment_chapter_outline_batches -> generate_chapter_outline_batch_preview for each concrete range -> merge_chapter_outline_batch_previews -> validate_outline -> persist_outline. Every batch step must expose a static chapterRange so the user can see all target chapters, and the ranges must cover 1..chapterCount exactly.',
               project_import_preview: '拆解导入文案，并按用户指定目标产物生成预览。只要大纲时不要生成角色/世界观/写作规则；要求全套时才生成项目资料、剧情大纲、角色、世界观和写作规则。',
               chapter_revision: '修改当前章或已有章节草稿、增强节奏/压迫感、保留结局等禁改约束；若用户要求重写或不沿用旧稿，使用 rewrite_chapter。',
               character_consistency_check: '检查人设是否崩、角色动机/对话是否符合设定。',
@@ -401,7 +412,7 @@ export class AgentPlannerService {
     this.consumeLlmCall(llmBudget, 'initial_plan');
     const { data, result } = await this.llm.chatJson<unknown>(
       messages,
-      { appStep: 'agent_planner', maxTokens: 4500, timeoutMs: DEFAULT_LLM_TIMEOUT_MS, retries: 1, temperature: 0.1 },
+      { appStep: 'agent_planner', maxTokens: AGENT_PLANNER_MAX_TOKENS, timeoutMs: DEFAULT_LLM_TIMEOUT_MS, retries: 1, temperature: 0.1 },
     );
 
     try {
@@ -416,7 +427,7 @@ export class AgentPlannerService {
     const registeredTools = toolScope?.selectedTools?.length
       ? toolScope.selectedTools.map((tool) => this.compactToolManifestForPrompt(tool))
       : this.toolManifestsForPrompt();
-    const promptContext = this.contextForPrompt(context);
+    const promptContext = this.contextForPrompt(context, { lightweight: Boolean(toolScope?.route) });
     const availableTaskTypes = this.listTaskTypes();
     this.consumeLlmCall(llmBudget, 'repair_plan');
     const { data, result } = await this.llm.chatJson<unknown>(
@@ -435,7 +446,11 @@ export class AgentPlannerService {
             '如果 agentContext.session.guided.currentStep 存在，修复后的 taskType 仍应优先使用 guided_step_consultation、guided_step_generate 或 guided_step_finalize，不要修成 chapter_write。',
             '修复卷大纲计划时，如果用户没有明确要求单元故事、章节细纲、拆成 N 章、章节规划或 Chapter.craftBrief，taskType 应为 outline_design，并使用 generate_volume_outline_preview -> persist_volume_outline；若有卷级候选人物且工具可用，追加 persist_volume_character_candidates；不要生成章节细纲。',
             '修复单元故事计划时，taskType 应为 outline_design，并使用 generate_story_units_preview，审批写入只使用 persist_story_units；除非用户明确要求同时更新卷大纲，不要加入 persist_volume_outline。',
-            '修复卷细纲、章节细纲、60 章细纲或等长细纲计划时，taskType 应为 outline_design，并使用 generate_volume_outline_preview 生成卷大纲，再用 generate_story_units_preview 生成单元故事计划，再用 generate_chapter_outline_preview 为每章生成独立步骤，最后用 merge_chapter_outline_previews 合并；审批写入后若完整预览含候选人物且工具可用，追加 persist_volume_character_candidates；只有写正文/生成正文才使用 chapter_write，明确重写/不沿用旧稿时使用 rewrite_chapter，拆成场景/SceneCard 才使用 scene_card_planning。',
+            '修复章节细纲计划时，如果用户没有明确要求重写卷纲、重新拆成 N 章、改变章数或从头规划，应承接 inspect_project_context 中已有 Volume.narrativePlan/storyUnitPlan，直接用 generate_chapter_outline_preview 为每章生成独立步骤，再用 merge_chapter_outline_previews 合并；不要重新生成卷大纲或单元故事。',
+            '修复卷细纲、60 章细纲、等长细纲、重写章节规划或拆成 N 章计划时，taskType 应为 outline_design，并使用 generate_volume_outline_preview 生成卷大纲，再用 generate_story_units_preview 生成单元故事计划，再用 generate_chapter_outline_preview 为每章生成独立步骤，最后用 merge_chapter_outline_previews 合并；审批写入后若完整预览含候选人物且工具可用，追加 persist_volume_character_candidates；只有写正文/生成正文才使用 chapter_write，明确重写/不沿用旧稿时使用 rewrite_chapter，拆成场景/SceneCard 才使用 scene_card_planning。',
+            '如果 validationError 指出 outline.chapter 计划不完整，按 chapterCount=N 修复：输出 N 个 generate_chapter_outline_preview，chapterNo 必须是 1..N 连续，每步 chapterCount 都等于 N；第 2 章起 previousChapter 引用上一章步骤的 output.chapter；merge_chapter_outline_previews.args.previews 按顺序包含全部 N 个章节步骤输出。不得依赖后端补齐。',
+            'UPDATED repair rule: if chapterCount > 12, prefer repairing to the segmented batch shape: segment_chapter_outline_batches, concrete generate_chapter_outline_batch_preview ranges covering 1..N, merge_chapter_outline_batch_previews.batchPreviews, validate_outline, and approval-gated persist_outline. Do not repair long whole-volume outlines back to 60 single-chapter LLM calls unless the validation error specifically requires the legacy single-chapter shape.',
+            '若 routeDecision.chapterCount 或 agentContext.volumes[].chapterCount 已提供章数，修复时直接展开完整逐章计划，不要再返回仅 inspect_project_context 的计划。',
             '修复计划时间线任务时，taskType 应为 timeline_plan，并使用 generate_timeline_preview -> validate_timeline_preview 从规划产物生成 eventStatus=planned 的只读候选；除非用户明确要求审批后写入，不要加入 persist_timeline_events。',
             'steps[].mode 是后端计划步骤字段，固定填 act；Plan/Act 运行时模式由后端注入，不由 LLM 决定。',
             '引用前序步骤输出时，完整对象用 {{steps.N.output}}，对象字段用 {{steps.N.output.field}}；不要把对象序列化成字符串。',
@@ -485,7 +500,7 @@ export class AgentPlannerService {
           ),
         },
       ],
-      { appStep: 'agent_planner', maxTokens: 4500, timeoutMs: DEFAULT_LLM_TIMEOUT_MS, retries: 1, temperature: 0.1 },
+      { appStep: 'agent_planner', maxTokens: AGENT_PLANNER_MAX_TOKENS, timeoutMs: DEFAULT_LLM_TIMEOUT_MS, retries: 1, temperature: 0.1 },
     );
 
     try {
@@ -507,9 +522,60 @@ export class AgentPlannerService {
     return plan;
   }
 
-  private contextForPrompt(context?: AgentContextV2): AgentContextPromptPayload | undefined {
+  private contextForPrompt(context?: AgentContextV2, options: { lightweight?: boolean } = {}): AgentContextPromptPayload | undefined {
     if (!context) return undefined;
     const { availableTools: _availableTools, ...promptContext } = context;
+    if (options.lightweight) {
+      const constraints = promptContext.constraints ?? { hardRules: [], styleRules: [], approvalRules: [], idPolicy: [] };
+      return {
+        schemaVersion: promptContext.schemaVersion,
+        userMessage: promptContext.userMessage,
+        runtime: promptContext.runtime,
+        session: promptContext.session,
+        project: promptContext.project
+          ? {
+              id: promptContext.project.id,
+              title: promptContext.project.title,
+              genre: promptContext.project.genre,
+              style: promptContext.project.style,
+              defaultWordCount: promptContext.project.defaultWordCount,
+              status: promptContext.project.status,
+            }
+          : undefined,
+        volumes: (promptContext.volumes ?? []).map((volume) => ({
+          id: volume.id,
+          volumeNo: volume.volumeNo,
+          title: volume.title,
+          objective: volume.objective,
+          chapterCount: volume.chapterCount,
+          status: volume.status,
+          hasNarrativePlan: volume.hasNarrativePlan,
+          hasStoryUnitPlan: volume.hasStoryUnitPlan,
+          hasLegacyStoryUnits: volume.hasLegacyStoryUnits,
+        })),
+        currentChapter: promptContext.currentChapter
+          ? {
+              id: promptContext.currentChapter.id,
+              title: promptContext.currentChapter.title,
+              index: promptContext.currentChapter.index,
+              status: promptContext.currentChapter.status,
+              draftId: promptContext.currentChapter.draftId,
+              draftVersion: promptContext.currentChapter.draftVersion,
+            }
+          : undefined,
+        recentChapters: [],
+        knownCharacters: [],
+        worldFacts: [],
+        memoryHints: [],
+        attachments: promptContext.attachments ?? [],
+        constraints: {
+          hardRules: constraints.hardRules ?? [],
+          approvalRules: constraints.approvalRules ?? [],
+          idPolicy: constraints.idPolicy ?? [],
+          styleRules: promptContext.project?.style ? [`项目默认语气/风格：${promptContext.project.style}`] : (constraints.styleRules ?? []),
+        },
+      };
+    }
     return promptContext;
   }
 
@@ -551,6 +617,7 @@ export class AgentPlannerService {
             confidence: scope.route.confidence,
             volumeNo: scope.route.volumeNo,
             chapterNo: scope.route.chapterNo,
+            chapterCount: scope.route.chapterCount,
             needsApproval: scope.route.needsApproval,
             needsPersistence: scope.route.needsPersistence,
             ambiguity: scope.route.ambiguity,
@@ -700,24 +767,22 @@ export class AgentPlannerService {
       return onFailure ? { ...normalized, onFailure } : normalized;
     });
 
-    const normalizedSteps = this.enforcePlanningTimelinePreviewPipeline(
+    const normalizedBaseSteps = this.enforceProjectImportPipeline(
       record.taskType,
-      this.enforceOutlineDesignPipeline(
-        record.taskType,
-        this.enforceProjectImportPipeline(
-          record.taskType,
-          this.enforceChapterWriteQualityPipeline(steps, (tool) => toolRequiresApproval.get(tool) ?? false),
-          registeredTools,
-          (tool) => toolRequiresApproval.get(tool) ?? false,
-          this.explicitImportAssetTypes(context?.session.requestedAssetTypes),
-          context?.session.importPreviewMode,
-        ),
-        registeredTools,
-        (tool) => toolRequiresApproval.get(tool) ?? false,
-      ),
+      this.enforceChapterWriteQualityPipeline(steps, (tool) => toolRequiresApproval.get(tool) ?? false),
       registeredTools,
       (tool) => toolRequiresApproval.get(tool) ?? false,
+      this.explicitImportAssetTypes(context?.session.requestedAssetTypes),
+      context?.session.importPreviewMode,
     );
+    const normalizedSteps = record.taskType === 'outline_design'
+      ? this.renumberSteps(normalizedBaseSteps)
+      : this.enforcePlanningTimelinePreviewPipeline(
+        record.taskType,
+        normalizedBaseSteps,
+        registeredTools,
+        (tool) => toolRequiresApproval.get(tool) ?? false,
+      );
     if (normalizedSteps.length > maxSteps) throw new Error(`规范化后的 Agent Plan steps 数量非法，最多 ${maxSteps} 步`);
     const missingTool = normalizedSteps.find((step) => !registeredTools.has(step.tool));
     if (missingTool) throw new Error(`规范化后的 Agent Plan 使用未注册工具：${missingTool.tool}`);
@@ -775,308 +840,9 @@ export class AgentPlannerService {
     return { id: tool, stepNo: 0, name, purpose: name, tool, mode: 'act', requiresApproval: requiresApproval(tool), args, ...(runIf ? { runIf } : {}) };
   }
 
-  /**
-   * 大纲计划需要在 UI 时间线里显式展示每章 Tool 调用。
-   * LLM 可以先给出旧的 generate_outline_preview 聚合步骤；这里将其稳定展开为 N 个单章步骤。
-   */
-  private enforceOutlineDesignPipeline(taskType: unknown, steps: AgentPlanStepSpec[], registeredTools: Set<string>, requiresApproval: (tool: string) => boolean): AgentPlanStepSpec[] {
-    if (taskType !== 'outline_design') return steps;
-
-    const hasChapterPipelineStep = steps.some((step) => [GENERATE_OUTLINE_PREVIEW_TOOL, GENERATE_CHAPTER_OUTLINE_PREVIEW_TOOL, MERGE_CHAPTER_OUTLINE_PREVIEWS_TOOL].includes(step.tool));
-    const hasStoryUnitStep = steps.some((step) => step.tool === GENERATE_STORY_UNITS_PREVIEW_TOOL);
-    if (!registeredTools.has(GENERATE_VOLUME_OUTLINE_PREVIEW_TOOL) && !hasStoryUnitStep) return steps;
-    const volumeOnlyStep = steps.find((step) => step.tool === GENERATE_VOLUME_OUTLINE_PREVIEW_TOOL);
-    if (!hasChapterPipelineStep) {
-      const explicitVolumePersist = steps.some((step) => step.tool === PERSIST_VOLUME_OUTLINE_TOOL);
-      const outlineSteps = volumeOnlyStep && (!hasStoryUnitStep || explicitVolumePersist)
-        ? this.ensureVolumeOutlinePersistSteps(steps, registeredTools, requiresApproval)
-        : this.renumberSteps(steps.filter((step) => step.tool !== PERSIST_VOLUME_OUTLINE_TOOL && step.tool !== PERSIST_VOLUME_CHARACTER_CANDIDATES_TOOL));
-      const withCandidatePersist = explicitVolumePersist || !hasStoryUnitStep
-        ? this.ensureVolumeCharacterCandidatePersistSteps(outlineSteps, registeredTools, requiresApproval)
-        : outlineSteps;
-      return this.ensureStoryUnitPersistSteps(
-        withCandidatePersist,
-        registeredTools,
-        requiresApproval,
-      );
-    }
-
-    if (!registeredTools.has(GENERATE_CHAPTER_OUTLINE_PREVIEW_TOOL) || !registeredTools.has(MERGE_CHAPTER_OUTLINE_PREVIEWS_TOOL)) return steps;
-
-    const aggregateStep = steps.find((step) => step.tool === GENERATE_OUTLINE_PREVIEW_TOOL);
-    if (aggregateStep) {
-      const args = aggregateStep.args;
-      const chapterCount = this.positiveInt(args.chapterCount) ?? 0;
-      const volumeNo = this.positiveInt(args.volumeNo) ?? 1;
-      const prefix = this.renumberSteps(steps.filter((step) => step.stepNo < aggregateStep.stepNo));
-      const contextArg = args.context ?? this.latestStepOutputRef(prefix, 'inspect_project_context') ?? '{{context.project}}';
-      const instructionArg = args.instruction ?? '{{context.userMessage}}';
-      if (!chapterCount) {
-        return this.buildVolumeOutlineOnlySteps(prefix, contextArg, instructionArg, volumeNo, registeredTools, requiresApproval);
-      }
-      return this.buildExpandedChapterOutlineSteps(prefix, contextArg, instructionArg, volumeNo, chapterCount, registeredTools, requiresApproval);
-    }
-
-    const chapterSteps = steps.filter((step) => step.tool === GENERATE_CHAPTER_OUTLINE_PREVIEW_TOOL);
-    if (!chapterSteps.length) return steps;
-    const firstChapterStep = chapterSteps[0];
-    const chapterCount = this.positiveInt(firstChapterStep.args.chapterCount) ?? chapterSteps.length;
-    const volumeNo = this.positiveInt(firstChapterStep.args.volumeNo) ?? 1;
-    const prefix = this.renumberSteps(steps.filter((step) => step.stepNo < firstChapterStep.stepNo));
-    const contextArg = firstChapterStep.args.context ?? this.latestStepOutputRef(prefix, 'inspect_project_context') ?? '{{context.project}}';
-    const instructionArg = firstChapterStep.args.instruction ?? '{{context.userMessage}}';
-    return this.buildExpandedChapterOutlineSteps(prefix, contextArg, instructionArg, volumeNo, chapterCount, registeredTools, requiresApproval);
-  }
-
-  private buildVolumeOutlineOnlySteps(
-    prefix: AgentPlanStepSpec[],
-    contextArg: unknown,
-    instructionArg: unknown,
-    volumeNo: number,
-    registeredTools: Set<string>,
-    requiresApproval: (tool: string) => boolean,
-  ): AgentPlanStepSpec[] {
-    const steps = [
-      ...prefix,
-      {
-        id: GENERATE_VOLUME_OUTLINE_PREVIEW_TOOL,
-        stepNo: prefix.length + 1,
-        name: `生成第 ${volumeNo} 卷卷大纲`,
-        purpose: `只生成第 ${volumeNo} 卷卷大纲、卷内支线、角色规划和伏笔方向，不生成章节细纲。`,
-        tool: GENERATE_VOLUME_OUTLINE_PREVIEW_TOOL,
-        mode: 'act' as const,
-        requiresApproval: requiresApproval(GENERATE_VOLUME_OUTLINE_PREVIEW_TOOL),
-        args: {
-          context: contextArg,
-          instruction: instructionArg,
-          volumeNo,
-        },
-      },
-    ];
-    return this.ensureStoryUnitPersistSteps(
-      this.ensureVolumeCharacterCandidatePersistSteps(
-        this.ensureVolumeOutlinePersistSteps(steps, registeredTools, requiresApproval),
-        registeredTools,
-        requiresApproval,
-      ),
-      registeredTools,
-      requiresApproval,
-    );
-  }
-
-  private ensureVolumeOutlinePersistSteps(steps: AgentPlanStepSpec[], registeredTools: Set<string>, requiresApproval: (tool: string) => boolean): AgentPlanStepSpec[] {
-    const withoutChapterOutlineWrites = this.renumberSteps(steps.filter((step) => !['validate_outline', 'persist_outline', PERSIST_VOLUME_OUTLINE_TOOL].includes(step.tool)));
-    const volumePreviewStep = this.latestStepByTools(withoutChapterOutlineWrites, [GENERATE_VOLUME_OUTLINE_PREVIEW_TOOL]);
-    if (!volumePreviewStep || !registeredTools.has(PERSIST_VOLUME_OUTLINE_TOOL)) return withoutChapterOutlineWrites;
-    return [
-      ...withoutChapterOutlineWrites,
-      {
-        id: PERSIST_VOLUME_OUTLINE_TOOL,
-        stepNo: withoutChapterOutlineWrites.length + 1,
-        name: '审批后写入卷大纲',
-        purpose: '用户审批后只更新 Volume 卷大纲和 narrativePlan，不创建或覆盖章节细纲。',
-        tool: PERSIST_VOLUME_OUTLINE_TOOL,
-        mode: 'act',
-        requiresApproval: requiresApproval(PERSIST_VOLUME_OUTLINE_TOOL),
-        args: { preview: `{{steps.${volumePreviewStep.stepNo}.output}}` },
-      },
-    ];
-  }
-
-  private ensureVolumeCharacterCandidatePersistSteps(steps: AgentPlanStepSpec[], registeredTools: Set<string>, requiresApproval: (tool: string) => boolean): AgentPlanStepSpec[] {
-    const normalized = this.renumberSteps(steps.filter((step) => step.tool !== PERSIST_VOLUME_CHARACTER_CANDIDATES_TOOL));
-    if (!registeredTools.has(PERSIST_VOLUME_CHARACTER_CANDIDATES_TOOL)) return normalized;
-    const previewStep = this.latestStepByTools(normalized, [
-      MERGE_CHAPTER_OUTLINE_PREVIEWS_TOOL,
-      GENERATE_OUTLINE_PREVIEW_TOOL,
-      GENERATE_VOLUME_OUTLINE_PREVIEW_TOOL,
-    ]);
-    if (!previewStep) return normalized;
-    return [
-      ...normalized,
-      {
-        id: PERSIST_VOLUME_CHARACTER_CANDIDATES_TOOL,
-        stepNo: normalized.length + 1,
-        name: '审批后写入卷级候选人物',
-        purpose: '用户审批后把卷纲 characterPlan.newCharacterCandidates 中的候选人物写入正式 Character，并按需创建关系边；若没有候选人物则跳过执行。',
-        tool: PERSIST_VOLUME_CHARACTER_CANDIDATES_TOOL,
-        mode: 'act',
-        requiresApproval: requiresApproval(PERSIST_VOLUME_CHARACTER_CANDIDATES_TOOL),
-        args: {
-          preview: `{{steps.${previewStep.stepNo}.output}}`,
-          approveAll: true,
-          includeRelationshipArcs: true,
-        },
-        runIf: {
-          ref: `{{steps.${previewStep.stepNo}.output.volume.narrativePlan.characterPlan.newCharacterCandidates.length}}`,
-          operator: 'gt',
-          value: 0,
-        },
-      },
-    ];
-  }
-
-  private ensureStoryUnitPersistSteps(steps: AgentPlanStepSpec[], registeredTools: Set<string>, requiresApproval: (tool: string) => boolean): AgentPlanStepSpec[] {
-    const normalized = this.renumberSteps(steps.filter((step) => step.tool !== PERSIST_STORY_UNITS_TOOL));
-    const storyUnitsStep = this.latestStepByTools(normalized, [GENERATE_STORY_UNITS_PREVIEW_TOOL]);
-    if (!storyUnitsStep || !registeredTools.has(PERSIST_STORY_UNITS_TOOL)) return normalized;
-    return [
-      ...normalized,
-      {
-        id: PERSIST_STORY_UNITS_TOOL,
-        stepNo: normalized.length + 1,
-        name: '审批后写入单元故事计划',
-        purpose: '用户审批后把独立单元故事计划保存到 Volume.narrativePlan.storyUnitPlan，不创建或覆盖章节。',
-        tool: PERSIST_STORY_UNITS_TOOL,
-        mode: 'act',
-        requiresApproval: requiresApproval(PERSIST_STORY_UNITS_TOOL),
-        args: { preview: `{{steps.${storyUnitsStep.stepNo}.output}}` },
-      },
-    ];
-  }
-
-  private buildExpandedChapterOutlineSteps(
-    prefix: AgentPlanStepSpec[],
-    contextArg: unknown,
-    instructionArg: unknown,
-    volumeNo: number,
-    chapterCount: number,
-    registeredTools: Set<string>,
-    requiresApproval: (tool: string) => boolean,
-  ): AgentPlanStepSpec[] {
-    const steps = [...prefix];
-    const existingVolumeStepRef = this.latestStepOutputRef(steps, GENERATE_VOLUME_OUTLINE_PREVIEW_TOOL);
-    let volumeOutlineRef = existingVolumeStepRef ? `${existingVolumeStepRef}.volume` : undefined;
-    if (!volumeOutlineRef) {
-      const volumeStepNo = steps.length + 1;
-      steps.push({
-        id: GENERATE_VOLUME_OUTLINE_PREVIEW_TOOL,
-        stepNo: volumeStepNo,
-        name: `生成第 ${volumeNo} 卷卷大纲`,
-        purpose: `生成第 ${volumeNo} 卷卷大纲、卷内支线、角色规划和伏笔方向，供单元故事计划承接。`,
-        tool: GENERATE_VOLUME_OUTLINE_PREVIEW_TOOL,
-        mode: 'act',
-        requiresApproval: requiresApproval(GENERATE_VOLUME_OUTLINE_PREVIEW_TOOL),
-        args: {
-          context: contextArg,
-          instruction: instructionArg,
-          volumeNo,
-          chapterCount,
-        },
-      });
-      volumeOutlineRef = `{{steps.${volumeStepNo}.output.volume}}`;
-    }
-    const existingStoryUnitStepRef = this.latestStepOutputRef(steps, GENERATE_STORY_UNITS_PREVIEW_TOOL);
-    let storyUnitPlanRef = existingStoryUnitStepRef ? `${existingStoryUnitStepRef}.storyUnitPlan` : undefined;
-    if (!storyUnitPlanRef && registeredTools.has(GENERATE_STORY_UNITS_PREVIEW_TOOL)) {
-      const storyUnitsStepNo = steps.length + 1;
-      steps.push({
-        id: GENERATE_STORY_UNITS_PREVIEW_TOOL,
-        stepNo: storyUnitsStepNo,
-        name: `生成第 ${volumeNo} 卷单元故事计划`,
-        purpose: `生成第 ${volumeNo} 卷独立单元故事计划和 ${chapterCount} 章章节分配，供章节细纲承接。`,
-        tool: GENERATE_STORY_UNITS_PREVIEW_TOOL,
-        mode: 'act',
-        requiresApproval: requiresApproval(GENERATE_STORY_UNITS_PREVIEW_TOOL),
-        args: {
-          context: contextArg,
-          volumeOutline: volumeOutlineRef,
-          instruction: instructionArg,
-          volumeNo,
-          chapterCount,
-        },
-      });
-      storyUnitPlanRef = `{{steps.${storyUnitsStepNo}.output.storyUnitPlan}}`;
-    }
-    const chapterSteps: AgentPlanStepSpec[] = [];
-    for (let chapterNo = 1; chapterNo <= chapterCount; chapterNo += 1) {
-      const previous = chapterSteps.at(-1);
-      const stepNo = steps.length + 1;
-      const step: AgentPlanStepSpec = {
-        id: `chapter_outline_${String(chapterNo).padStart(3, '0')}`,
-        stepNo,
-        name: `生成第 ${chapterNo} 章单章细纲`,
-        purpose: `生成第 ${chapterNo}/${chapterCount} 章章节细纲与 Chapter.craftBrief 执行卡。`,
-        tool: GENERATE_CHAPTER_OUTLINE_PREVIEW_TOOL,
-        mode: 'act',
-        requiresApproval: requiresApproval(GENERATE_CHAPTER_OUTLINE_PREVIEW_TOOL),
-        args: this.removeUndefinedArgs({
-          context: contextArg,
-          volumeOutline: volumeOutlineRef,
-          storyUnitPlan: storyUnitPlanRef,
-          instruction: instructionArg,
-          volumeNo,
-          chapterNo,
-          chapterCount,
-          previousChapter: previous ? `{{steps.${previous.stepNo}.output.chapter}}` : undefined,
-        }),
-      };
-      steps.push(step);
-      chapterSteps.push(step);
-    }
-    steps.push({
-      id: MERGE_CHAPTER_OUTLINE_PREVIEWS_TOOL,
-      stepNo: steps.length + 1,
-      name: '合并所有单章细纲预览',
-      purpose: '把每章细纲预览合并为完整 outline_preview，供校验和审批写入使用。',
-      tool: MERGE_CHAPTER_OUTLINE_PREVIEWS_TOOL,
-      mode: 'act',
-      requiresApproval: requiresApproval(MERGE_CHAPTER_OUTLINE_PREVIEWS_TOOL),
-      args: {
-        previews: chapterSteps.map((step) => `{{steps.${step.stepNo}.output}}`),
-        volumeNo,
-        chapterCount,
-        instruction: instructionArg,
-      },
-    });
-    return this.ensureOutlineValidateAndPersistSteps(steps, MERGE_CHAPTER_OUTLINE_PREVIEWS_TOOL, registeredTools, requiresApproval);
-  }
-
-  private ensureOutlineValidateAndPersistSteps(steps: AgentPlanStepSpec[], previewTool: string, registeredTools: Set<string>, requiresApproval: (tool: string) => boolean): AgentPlanStepSpec[] {
-    const withoutOld = this.renumberSteps(steps.filter((step) => step.tool !== 'validate_outline' && step.tool !== 'persist_outline'));
-    const previewStep = [...withoutOld].reverse().find((step) => step.tool === previewTool);
-    if (!previewStep) return steps;
-    let normalized = withoutOld;
-    if (registeredTools.has('validate_outline')) {
-      normalized = [
-        ...normalized,
-        {
-          id: 'validate_outline',
-          stepNo: normalized.length + 1,
-          name: '校验合并后的完整细纲',
-          purpose: '校验章节数量、编号连续性、字段完整性和 craftBrief 质量。',
-          tool: 'validate_outline',
-          mode: 'act',
-          requiresApproval: requiresApproval('validate_outline'),
-          args: { preview: `{{steps.${previewStep.stepNo}.output}}` },
-        },
-      ];
-    }
-    if (registeredTools.has('persist_outline')) {
-      const validateStep = [...normalized].reverse().find((step) => step.tool === 'validate_outline');
-      normalized = [
-        ...normalized,
-        {
-          id: 'persist_outline',
-          stepNo: normalized.length + 1,
-          name: '审批后写入完整细纲',
-          purpose: '用户审批后把完整 outline_preview 写入卷和 planned 章节。',
-          tool: 'persist_outline',
-          mode: 'act',
-          requiresApproval: requiresApproval('persist_outline'),
-          args: this.removeUndefinedArgs({
-            preview: `{{steps.${previewStep.stepNo}.output}}`,
-            validation: validateStep ? `{{steps.${validateStep.stepNo}.output}}` : undefined,
-          }),
-        },
-      ];
-    }
-    return this.ensureVolumeCharacterCandidatePersistSteps(normalized, registeredTools, requiresApproval);
-  }
-
   private enforcePlanningTimelinePreviewPipeline(taskType: unknown, steps: AgentPlanStepSpec[], registeredTools: Set<string>, requiresApproval: (tool: string) => boolean): AgentPlanStepSpec[] {
     const taskTypeText = typeof taskType === 'string' ? taskType : '';
-    if (!['timeline_plan', 'outline_design', 'chapter_craft_brief', 'chapter_progress_card'].includes(taskTypeText)) return steps;
+    if (!['timeline_plan', 'chapter_craft_brief', 'chapter_progress_card'].includes(taskTypeText)) return steps;
     if (!registeredTools.has(GENERATE_TIMELINE_PREVIEW_TOOL) || !registeredTools.has(VALIDATE_TIMELINE_PREVIEW_TOOL)) return steps;
 
     let normalized = this.renumberSteps(steps);
@@ -1106,19 +872,6 @@ export class AgentPlannerService {
   }
 
   private timelinePlanningSource(steps: AgentPlanStepSpec[], taskType: string): { afterStepNo: number; sourceType: string; contextArg: unknown } | undefined {
-    if (taskType === 'outline_design') {
-      const previewStep = this.latestStepByTools(steps, [MERGE_CHAPTER_OUTLINE_PREVIEWS_TOOL, GENERATE_CHAPTER_OUTLINE_PREVIEW_TOOL, GENERATE_STORY_UNITS_PREVIEW_TOOL, GENERATE_VOLUME_OUTLINE_PREVIEW_TOOL, GENERATE_OUTLINE_PREVIEW_TOOL]);
-      if (!previewStep) return undefined;
-      const validationStep = this.latestStepByTools(steps, ['validate_outline']);
-      return {
-        afterStepNo: validationStep?.stepNo ?? previewStep.stepNo,
-        sourceType: this.timelineSourceTypeForTool(previewStep.tool),
-        contextArg: validationStep
-          ? { outlinePreview: `{{steps.${previewStep.stepNo}.output}}`, outlineValidation: `{{steps.${validationStep.stepNo}.output}}` }
-          : `{{steps.${previewStep.stepNo}.output}}`,
-      };
-    }
-
     if (taskType === 'chapter_craft_brief' || taskType === 'chapter_progress_card') {
       const previewStep = this.latestStepByTools(steps, [GENERATE_CHAPTER_CRAFT_BRIEF_PREVIEW_TOOL]);
       if (!previewStep) return undefined;
@@ -1134,6 +887,8 @@ export class AgentPlannerService {
 
     const previewStep = this.latestStepByTools(steps, [
       GENERATE_CHAPTER_CRAFT_BRIEF_PREVIEW_TOOL,
+      MERGE_CHAPTER_OUTLINE_BATCH_PREVIEWS_TOOL,
+      GENERATE_CHAPTER_OUTLINE_BATCH_PREVIEW_TOOL,
       MERGE_CHAPTER_OUTLINE_PREVIEWS_TOOL,
       GENERATE_CHAPTER_OUTLINE_PREVIEW_TOOL,
       GENERATE_STORY_UNITS_PREVIEW_TOOL,
@@ -1184,13 +939,8 @@ export class AgentPlannerService {
     if (tool === GENERATE_CHAPTER_CRAFT_BRIEF_PREVIEW_TOOL) return 'craft_brief';
     if (tool === GENERATE_STORY_UNITS_PREVIEW_TOOL) return 'volume_outline';
     if (tool === GENERATE_VOLUME_OUTLINE_PREVIEW_TOOL) return 'volume_outline';
-    if (tool === GENERATE_CHAPTER_OUTLINE_PREVIEW_TOOL || tool === MERGE_CHAPTER_OUTLINE_PREVIEWS_TOOL) return 'chapter_outline';
+    if (tool === GENERATE_CHAPTER_OUTLINE_PREVIEW_TOOL || tool === MERGE_CHAPTER_OUTLINE_PREVIEWS_TOOL || tool === GENERATE_CHAPTER_OUTLINE_BATCH_PREVIEW_TOOL || tool === MERGE_CHAPTER_OUTLINE_BATCH_PREVIEWS_TOOL) return 'chapter_outline';
     return 'book_outline';
-  }
-
-  private latestStepOutputRef(steps: AgentPlanStepSpec[], tool: string): string | undefined {
-    const step = [...steps].reverse().find((item) => item.tool === tool);
-    return step ? `{{steps.${step.stepNo}.output}}` : undefined;
   }
 
   private latestStepByTools(steps: AgentPlanStepSpec[], tools: string[]): AgentPlanStepSpec | undefined {
