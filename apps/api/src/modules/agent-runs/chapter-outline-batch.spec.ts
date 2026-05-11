@@ -596,11 +596,14 @@ test('COB-P2 batch preview generates continuous chapters with source whitelist i
   assert.match(calls[0].messages[1].content, /volume_candidate/);
   assert.match(calls[0].messages[1].content, /minor_temporary/);
   assert.match(calls[0].messages[1].content, /Shao/);
+  assert.match(calls[0].messages[0].content, /complete valid JSON object/);
+  assert.match(calls[0].messages[1].content, /outline should summarize the chapter in a few draftable scene sentences/);
   assert.match(calls[0].messages[1].content, /sceneBeats array must contain at least 3 concrete scene segments/);
   assert.match(calls[0].messages[1].content, /"sceneBeats":\[\{"sceneArcId":"scene_1".*"sceneArcId":"scene_2".*"sceneArcId":"scene_3"/);
   assert.equal(calls[0].options.jsonMode, true);
   assert.equal(calls[0].options.stream, true);
   assert.equal(calls[0].options.streamIdleTimeoutMs, DEFAULT_LLM_TIMEOUT_MS);
+  assert.equal(calls[0].options.maxTokens, 24_500);
   assert.equal(typeof calls[0].options.onStreamProgress, 'function');
   assert.equal(progress.some((item) => item.phase === 'calling_llm' && item.timeoutMs === DEFAULT_LLM_TIMEOUT_MS + 30_000), true);
   assert.equal(progress.some((item) => /streaming 42 chars/.test(item.phaseMessage ?? '')), true);
@@ -615,6 +618,7 @@ test('COB-P2 batch preview generates continuous chapters with source whitelist i
   assert.equal((calls[1].options.jsonSchema as Record<string, unknown>).name, 'chapter_outline_batch_quality_review');
   assert.equal(calls[1].options.stream, true);
   assert.equal(calls[1].options.streamIdleTimeoutMs, DEFAULT_LLM_TIMEOUT_MS);
+  assert.equal(calls[1].options.maxTokens, undefined);
   assert.equal(typeof calls[1].options.onStreamProgress, 'function');
 });
 
@@ -687,6 +691,8 @@ test('COB-P2 batch preview uses LLM quality issues to regenerate one failed batc
   assert.equal(calls.length, 4);
   assert.equal(result.qualityReview?.valid, true);
   assert.equal(result.risks.some((risk) => /quality review requested one regeneration/i.test(risk)), true);
+  assert.equal(calls[0].options.maxTokens, 24_500);
+  assert.equal(calls[2].options.maxTokens, 24_500);
   const qualityIssueSchema = (((calls[1].options.jsonSchema as { schema: Record<string, unknown> }).schema.properties as Record<string, { items: unknown }>).issues.items) as {
     required: string[];
     properties: Record<string, unknown>;
@@ -974,6 +980,75 @@ test('COB-P2 batch preview repairs character source mistakes through LLM only', 
   assert.equal(calls.length, 3);
   assert.match(calls[1].messages[1].content, /volume_candidate/);
   assert.equal(result.chapters[0].craftBrief?.characterExecution?.cast?.some((member) => member.characterName === 'Shao' && member.source === 'volume_candidate'), true);
+});
+
+test('COB-OPT batch preview retries cascading local characterExecution repair errors', async () => {
+  const storyUnitPlan = createStoryUnitPlan([{ unitId: 'u1', start: 1, end: 4 }]);
+  const firstBadCraftBrief = createBatchCraftBrief(1);
+  firstBadCraftBrief.sceneBeats[0].participants = [...firstBadCraftBrief.sceneBeats[0].participants, 'Trial Crew'];
+
+  function craftBriefWithTemporaryCrew(declareMinor: boolean) {
+    const craftBrief = createBatchCraftBrief(2);
+    const characterExecution = craftBrief.characterExecution as Record<string, any>;
+    const sceneBeatRefs = craftBrief.sceneBeats.map((beat) => beat.sceneArcId);
+    characterExecution.cast = [
+      ...characterExecution.cast,
+      {
+        characterName: 'Trial Crew',
+        source: 'minor_temporary',
+        functionInChapter: 'carries one local bridge stress test',
+        visibleGoal: 'finish the dangerous bridge check',
+        pressure: 'the test can collapse if the clue is wrong',
+        actionBeatRefs: [1],
+        sceneBeatRefs,
+        entryState: 'assembled for the test',
+        exitState: 'dismissed after the local test',
+      },
+    ];
+    if (declareMinor) {
+      characterExecution.newMinorCharacters = [{
+        nameOrLabel: 'Trial Crew',
+        narrativeFunction: 'one-off pressure group for the bridge stress test',
+        interactionScope: 'chapter 2 bridge test only',
+        firstAndOnlyUse: true,
+        approvalPolicy: 'preview_only',
+      }];
+    }
+    return craftBrief;
+  }
+
+  const firstBad = createBatchOutput([1, 2, 3, 4], {
+    chapters: [createBatchChapter(1, { craftBrief: firstBadCraftBrief }), createBatchChapter(2), createBatchChapter(3), createBatchChapter(4)],
+  });
+  const secondBad = createBatchOutput([1, 2, 3, 4], {
+    chapters: [createBatchChapter(1), createBatchChapter(2, { craftBrief: craftBriefWithTemporaryCrew(false) }), createBatchChapter(3), createBatchChapter(4)],
+  });
+  const fixed = createBatchOutput([1, 2, 3, 4], {
+    chapters: [createBatchChapter(1), createBatchChapter(2, { craftBrief: craftBriefWithTemporaryCrew(true) }), createBatchChapter(3), createBatchChapter(4)],
+  });
+  const calls: Array<{ messages: Array<{ role: string; content: string }>; options: Record<string, unknown> }> = [];
+  const tool = new GenerateChapterOutlineBatchPreviewTool({
+    async chatJson(messages: Array<{ role: string; content: string }>, options: Record<string, unknown>) {
+      calls.push({ messages, options });
+      if (isQualityReviewCall(options)) return { data: createPassingQualityReview(), result: { model: 'mock-quality-review' } };
+      const generationCallCount = calls.filter((call) => !isQualityReviewCall(call.options)).length;
+      const data = generationCallCount === 1 ? firstBad : generationCallCount === 2 ? secondBad : fixed;
+      return { data, result: { model: `mock-cascading-repair-${generationCallCount}` } };
+    },
+  } as never);
+  const { context } = createToolContext();
+
+  const result = await tool.run(
+    { context: createSegmentContext(storyUnitPlan, 4), storyUnitPlan, volumeNo: 1, chapterCount: 4, chapterRange: { start: 1, end: 4 } },
+    context,
+  );
+
+  assert.equal(calls.length, 4);
+  assert.equal(calls.filter((call) => !isQualityReviewCall(call.options)).every((call) => call.options.maxTokens === 24_500), true);
+  assert.match(calls[1].messages[0].content, /scan every chapter in the batch/);
+  assert.match(calls[1].messages[1].content, /Every cast member with source minor_temporary/);
+  assert.match(calls[2].messages[1].content, /Trial Crew/);
+  assert.equal(result.chapters[1].craftBrief?.characterExecution?.newMinorCharacters?.[0]?.nameOrLabel, 'Trial Crew');
 });
 
 test('COB-P3 merge batch previews returns standard outline preview', async () => {

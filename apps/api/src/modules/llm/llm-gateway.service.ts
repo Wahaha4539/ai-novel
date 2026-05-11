@@ -98,6 +98,7 @@ export class LlmGatewayService {
 
   private buildJsonParseFailureLogPayload(error: LlmJsonInvalidError, result: LlmChatResult, options: LlmChatOptions): Record<string, unknown> {
     const parseErrorPosition = this.extractJsonParseErrorPosition(error);
+    const maxTokensSent = this.normalizeMaxTokens(options.maxTokens);
     return {
       appStep: options.appStep,
       model: result.model,
@@ -107,7 +108,8 @@ export class LlmGatewayService {
       jsonMode: options.jsonMode ?? false,
       jsonSchemaName: options.jsonSchema?.name ?? null,
       requestedMaxTokens: options.maxTokens ?? null,
-      maxTokensSent: null,
+      maxTokensSent: maxTokensSent ?? null,
+      maxTokensOmitted: maxTokensSent === undefined,
       rawResponseLength: result.text.length,
       rawResponseTruncated: false,
       rawResponseText: result.text,
@@ -227,11 +229,13 @@ export class LlmGatewayService {
     const logContext = this.buildRequestLogContext(config, messages, options, timeoutMs, startedAt);
     const temperature = options.temperature ?? (config.params.temperature as number | undefined) ?? 0.2;
     const responseFormat = this.buildResponseFormat(options);
+    const maxTokens = this.normalizeMaxTokens(options.maxTokens);
     const requestBody: Record<string, unknown> = {
       model: config.model,
       messages,
       ...buildProviderChatParams(config.params),
       temperature,
+      ...(maxTokens !== undefined ? { max_tokens: maxTokens } : {}),
       ...(stream ? { stream: true } : {}),
       ...(options.tools ? { tools: options.tools } : {}),
       ...(responseFormat ? { response_format: responseFormat } : {}),
@@ -357,8 +361,10 @@ export class LlmGatewayService {
     delete providerParams.tools;
     delete providerParams.response_format;
     delete providerParams.stream;
+    delete providerParams.max_tokens;
     const responseFormatChars = requestBody.response_format === undefined ? 0 : JSON.stringify(requestBody.response_format).length;
     const requestBodyChars = JSON.stringify(requestBody).length;
+    const maxTokensSent = typeof requestBody.max_tokens === 'number' ? requestBody.max_tokens : undefined;
     return {
       model: requestBody.model,
       temperature: requestBody.temperature,
@@ -370,8 +376,8 @@ export class LlmGatewayService {
       streamIdleTimeoutMs: options.streamIdleTimeoutMs ?? null,
       timeoutKind: options.stream === true ? 'stream_idle' : 'wall_clock',
       requestedMaxTokens: options.maxTokens ?? null,
-      maxTokensSent: null,
-      maxTokensOmitted: true,
+      maxTokensSent: maxTokensSent ?? null,
+      maxTokensOmitted: maxTokensSent === undefined,
       messageCount: messages.length,
       totalMessageChars: messages.reduce((sum, message) => sum + message.content.length, 0),
       messages: messages.map((message, index) => this.summarizeMessageForLog(message, index)),
@@ -438,6 +444,7 @@ export class LlmGatewayService {
   }
 
   private buildRequestLogContext(config: ResolvedLlmConfig, messages: LlmChatMessage[], options: LlmChatOptions, timeoutMs: number, startedAt: number): Record<string, unknown> {
+    const maxTokensSent = this.normalizeMaxTokens(options.maxTokens);
     return {
       appStep: options.appStep,
       providerName: config.providerName,
@@ -449,13 +456,18 @@ export class LlmGatewayService {
       stream: options.stream === true,
       streamIdleTimeoutMs: options.streamIdleTimeoutMs ?? (options.stream ? timeoutMs : null),
       requestedMaxTokens: options.maxTokens ?? null,
-      maxTokensSent: null,
-      maxTokensOmitted: true,
+      maxTokensSent: maxTokensSent ?? null,
+      maxTokensOmitted: maxTokensSent === undefined,
       temperature: options.temperature ?? (config.params.temperature as number | undefined) ?? 0.2,
       messageCount: messages.length,
       totalMessageChars: messages.reduce((sum, message) => sum + message.content.length, 0),
       startedAt: new Date(startedAt).toISOString(),
     };
+  }
+
+  private normalizeMaxTokens(value: unknown): number | undefined {
+    const numeric = Number(value);
+    return Number.isInteger(numeric) && numeric > 0 ? numeric : undefined;
   }
 
   private describeError(error: unknown, depth = 0): Record<string, unknown> | string {

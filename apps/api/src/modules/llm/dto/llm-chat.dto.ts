@@ -6,7 +6,7 @@ export interface LlmChatMessage {
 export interface LlmChatOptions {
   appStep?: string;
   temperature?: number;
-  /** Kept for older call sites and diagnostics; the gateway no longer sends max_tokens. */
+  /** Sent as OpenAI-compatible max_tokens when provided. */
   maxTokens?: number;
   timeoutMs?: number;
   /**

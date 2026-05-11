@@ -3,8 +3,7 @@ const ALLOWED_THINKING_TYPES = new Set(['enabled', 'disabled']);
 
 /**
  * Build provider-level chat/completions parameters that are safe to merge into
- * every request. The chat gateway intentionally omits max_tokens so long-form
- * generation is not truncated by a transport-level output cap.
+ * every request. Per-request output budgets are handled by LlmChatOptions.
  */
 export function buildProviderChatParams(params: Record<string, unknown> = {}): Record<string, unknown> {
   const output: Record<string, unknown> = {};

@@ -16865,8 +16865,8 @@ test('LlmGatewayService records provider context when HTTP transport fails', asy
   assert.equal(logged[0].payload.baseUrl, `http://127.0.0.1:${address.port}/v1`);
   assert.equal(logged[0].payload.model, 'gpt-5.5');
   assert.equal(logged[0].payload.requestedMaxTokens, 123);
-  assert.equal(logged[0].payload.maxTokensSent, null);
-  assert.equal(logged[0].payload.maxTokensOmitted, true);
+  assert.equal(logged[0].payload.maxTokensSent, 123);
+  assert.equal(logged[0].payload.maxTokensOmitted, false);
   assert.equal(logged[0].payload.timeoutMs, 1000);
   assert.match(String((logged[0].payload.cause as Record<string, unknown>).message), /socket|ECONNRESET|hang up/i);
 });
@@ -16955,13 +16955,13 @@ test('LlmGatewayService sends OpenAI-compatible JSON mode when requested', async
     assert.equal(result.data.ok, true);
     assert.equal(result.result.rawPayloadSummary.finishReason, 'stop');
     assert.match(requestBody, /"response_format":\{"type":"json_object"\}/);
-    assert.doesNotMatch(requestBody, /"max_tokens"/);
+    assert.match(requestBody, /"max_tokens":777/);
     const requested = logged.find((item) => item.event === 'llm.gateway.chat.requested');
     assert.ok(requested);
     const loggedRequestBody = requested.payload.requestBody as Record<string, unknown>;
     assert.equal(loggedRequestBody.requestedMaxTokens, 777);
-    assert.equal(loggedRequestBody.maxTokensSent, null);
-    assert.equal(loggedRequestBody.maxTokensOmitted, true);
+    assert.equal(loggedRequestBody.maxTokensSent, 777);
+    assert.equal(loggedRequestBody.maxTokensOmitted, false);
     assert.match(JSON.stringify(loggedRequestBody.messages), /Return JSON/);
     assert.doesNotMatch(JSON.stringify(loggedRequestBody), /test-key/);
   } finally {
@@ -17284,6 +17284,7 @@ test('LlmGatewayService chatJson keeps malformed JSON fail-fast', async () => {
   assert.deepEqual(logged[0].payload.rawPayloadSummary, { finishReason: 'stop' });
   assert.equal(logged[0].payload.requestedMaxTokens, null);
   assert.equal(logged[0].payload.maxTokensSent, null);
+  assert.equal(logged[0].payload.maxTokensOmitted, true);
   assert.equal(logged[0].payload.rawResponseLength, rawText.length);
   assert.equal(logged[0].payload.rawResponseTruncated, false);
   assert.equal(logged[0].payload.rawResponseText, rawText);

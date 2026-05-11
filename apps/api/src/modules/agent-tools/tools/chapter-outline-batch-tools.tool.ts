@@ -49,6 +49,13 @@ const CHAPTER_OUTLINE_BATCH_PREVIEW_LLM_TIMEOUT_MS = DEFAULT_LLM_TIMEOUT_MS;
 const CHAPTER_OUTLINE_BATCH_PREVIEW_REPAIR_TIMEOUT_MS = DEFAULT_LLM_TIMEOUT_MS;
 const CHAPTER_OUTLINE_BATCH_QUALITY_REVIEW_TIMEOUT_MS = CHAPTER_OUTLINE_QUALITY_REVIEW_TIMEOUT_MS;
 const CHAPTER_OUTLINE_BATCH_QUALITY_REGENERATION_ATTEMPTS = 1;
+const CHAPTER_OUTLINE_BATCH_STRUCTURAL_REPAIR_ATTEMPTS = 2;
+const CHAPTER_OUTLINE_BATCH_OUTPUT_TOKEN_OVERHEAD = 2_500;
+const CHAPTER_OUTLINE_BATCH_OUTPUT_TOKENS_PER_CHAPTER = 5_500;
+
+function chapterOutlineBatchOutputTokenBudget(chapterRange: ChapterRange): number {
+  return CHAPTER_OUTLINE_BATCH_OUTPUT_TOKEN_OVERHEAD + chapterCountForRange(chapterRange) * CHAPTER_OUTLINE_BATCH_OUTPUT_TOKENS_PER_CHAPTER;
+}
 
 @Injectable()
 export class SegmentChapterOutlineBatchesTool implements BaseTool<SegmentChapterOutlineBatchesInput, ChapterOutlineBatchPlan> {
@@ -300,6 +307,7 @@ export class GenerateChapterOutlineBatchPreviewTool implements BaseTool<Generate
       },
     ],
     failureHints: [
+      { code: 'LLM_JSON_INVALID', meaning: 'The LLM returned malformed or truncated JSON before structural validation could run.', suggestedRepair: 'Retry the same failed batch. If it repeats, reduce the batch range instead of repairing or filling JSON in backend.' },
       { code: 'BATCH_CHAPTER_COUNT_MISMATCH', meaning: 'LLM returned too few, too many, repeated, or non-continuous chapters.', suggestedRepair: 'Retry the same batch; do not fill missing chapters in backend.' },
       { code: 'BATCH_CRAFT_BRIEF_INCOMPLETE', meaning: 'A chapter was missing craftBrief or required craftBrief fields after repair.', suggestedRepair: 'Retry with smaller range or stronger context.' },
       { code: 'BATCH_CHARACTER_SOURCE_INVALID', meaning: 'characterExecution.cast used a source outside existing, volume_candidate, or minor_temporary whitelist.', suggestedRepair: 'Repair through LLM or fix upstream characterPlan.' },
@@ -324,6 +332,7 @@ export class GenerateChapterOutlineBatchPreviewTool implements BaseTool<Generate
     if (targetChapterCount > DEFAULT_CHAPTER_OUTLINE_MAX_BATCH_SIZE && !args.storyUnitSlice) {
       throw new Error(`generate_chapter_outline_batch_preview range ${chapterRange.start}-${chapterRange.end} is too large without an explicit storyUnitSlice.`);
     }
+    const maxTokens = chapterOutlineBatchOutputTokenBudget(chapterRange);
 
     const characterCatalog = this.extractCharacterCatalog(args.context, args.characterSourceWhitelist);
     const allowedStoryUnitIds = this.resolveAllowedStoryUnitIds(args, volumeNo, chapterCount, chapterRange);
@@ -354,6 +363,7 @@ export class GenerateChapterOutlineBatchPreviewTool implements BaseTool<Generate
       timeoutKind: 'stream_idle',
       streamIdleTimeoutMs: CHAPTER_OUTLINE_BATCH_PREVIEW_LLM_TIMEOUT_MS,
       streamPhaseTimeoutMs: streamPhaseTimeoutMs(CHAPTER_OUTLINE_BATCH_PREVIEW_LLM_TIMEOUT_MS),
+      maxTokens,
       messageCount: messages.length,
       totalMessageChars: messages.reduce((sum, message) => sum + message.content.length, 0),
       jsonSchemaChars: JSON.stringify(jsonSchema).length,
@@ -503,6 +513,7 @@ export class GenerateChapterOutlineBatchPreviewTool implements BaseTool<Generate
         jsonMode: true,
         jsonSchema: options.jsonSchema,
         temperature: 0.2,
+        maxTokens: chapterOutlineBatchOutputTokenBudget(options.chapterRange),
       },
     );
     recordToolLlmUsage(options.context, 'planner', response.result);
@@ -547,8 +558,9 @@ export class GenerateChapterOutlineBatchPreviewTool implements BaseTool<Generate
         }),
         temperature: 0.1,
         jsonSchema: options.jsonSchema,
+        maxTokens: chapterOutlineBatchOutputTokenBudget(options.chapterRange),
       },
-      maxRepairAttempts: 1,
+      maxRepairAttempts: CHAPTER_OUTLINE_BATCH_STRUCTURAL_REPAIR_ATTEMPTS,
       initialModel: response.result.model,
       logger: this.logger,
     });
@@ -1011,6 +1023,9 @@ export class GenerateChapterOutlineBatchPreviewTool implements BaseTool<Generate
           'Every existing chapter craftBrief.actionBeats and craftBrief.sceneBeats must each contain at least 3 concrete items.',
           'Every sceneBeats object must include sceneArcId, scenePart, location, participants, localGoal, visibleAction, obstacle, turningPoint, partResult, and sensoryAnchor.',
           'characterExecution.cast source must be exactly one of: existing, volume_candidate, minor_temporary.',
+          'When repairing any characterExecution error, scan every chapter in the batch, not only the chapter named by validationError.',
+          'In each chapter, every minor_temporary cast member must have the exact same nameOrLabel in that chapter characterExecution.newMinorCharacters, with firstAndOnlyUse=true and approvalPolicy=preview_only.',
+          'In each chapter, every sceneBeats.participants and relationshipBeats.participants value must be covered by that chapter characterExecution.cast.characterName.',
           'characterExecution.relationshipBeats may be [] or complete objects with participants, publicStateBefore, trigger, shift, and publicStateAfter.',
         ].join('\n'),
       },
@@ -1025,6 +1040,9 @@ export class GenerateChapterOutlineBatchPreviewTool implements BaseTool<Generate
             'Each chapter needs title, objective, conflict, hook, outline, expectedWordCount, complete craftBrief, and characterExecution.',
             'craftBrief.actionBeats and craftBrief.sceneBeats each need at least 3 concrete items; concreteClues needs at least 1 item.',
             'Each sceneBeats object must include sceneArcId, scenePart, location, participants, localGoal, visibleAction, obstacle, turningPoint, partResult, and sensoryAnchor.',
+            'After fixing the reported validationError, re-check every chapter in this batch for the same characterExecution contract.',
+            'Every sceneBeats.participants and relationshipBeats.participants item must appear in the same chapter characterExecution.cast.characterName.',
+            'Every cast member with source minor_temporary must be declared in the same chapter characterExecution.newMinorCharacters using the exact same nameOrLabel, firstAndOnlyUse=true, and approvalPolicy=preview_only.',
             'relationshipBeats may be empty; if a relationship beat object exists, complete it with participants, publicStateBefore, trigger, shift, and publicStateAfter. Do not leave partial relationship beat objects.',
             'Return minified JSON so the parser receives one valid JSON object.',
           ],
@@ -1047,6 +1065,7 @@ export class GenerateChapterOutlineBatchPreviewTool implements BaseTool<Generate
       'You are a senior Chinese web-novel chapter outline planner.',
       'Generate one continuous batch of chapter outlines. Every chapter must include a complete Chapter.craftBrief and characterExecution.',
       'Do not output deterministic placeholders, skeletal templates, or backend-fillable gaps.',
+      'Keep JSON string fields compact enough to return one complete valid JSON object; craftBrief and sceneBeats carry the detailed execution contract, so outline must not become prose-length chapter text.',
       'The backend will reject missing chapters, repeated chapters, non-continuous chapter numbers, missing craftBrief, incomplete characterExecution, or invalid character sources.',
       'Return compact strict JSON only. No Markdown, comments, or prose.',
     ].join('\n');
@@ -1098,9 +1117,12 @@ export class GenerateChapterOutlineBatchPreviewTool implements BaseTool<Generate
       'Hard output requirements:',
       `- Return exactly ${chapterCountForRange(chapterRange)} chapters: chapterNo ${chapterRange.start} through ${chapterRange.end}, continuous and in order.`,
       '- Every chapter must include title, objective, conflict, hook, outline, expectedWordCount, and a complete craftBrief.',
+      '- Keep title/objective/conflict/hook/outline concrete but compact; outline should summarize the chapter in a few draftable scene sentences, not a long prose paragraph.',
       '- Every craftBrief.actionBeats array must contain at least 3 concrete action nodes.',
       '- Every craftBrief.sceneBeats array must contain at least 3 concrete scene segments; each segment must include sceneArcId, scenePart, location, participants, localGoal, visibleAction, obstacle, turningPoint, partResult, and sensoryAnchor.',
       '- Every craftBrief.characterExecution.cast member must use source exactly existing, volume_candidate, or minor_temporary.',
+      '- Every craftBrief.sceneBeats.participants and craftBrief.characterExecution.relationshipBeats.participants value must appear in the same chapter craftBrief.characterExecution.cast.characterName.',
+      '- Every minor_temporary cast member must be declared in the same chapter craftBrief.characterExecution.newMinorCharacters with exact nameOrLabel, firstAndOnlyUse=true, and approvalPolicy=preview_only.',
       '- craftBrief.characterExecution.relationshipBeats may be []; if present, every object must include participants, publicStateBefore, trigger, shift, and publicStateAfter.',
       '- Keep JSON compact and valid; do not include Markdown fences or explanatory text.',
       '',
