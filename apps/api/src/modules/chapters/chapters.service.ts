@@ -151,6 +151,71 @@ export class ChaptersService {
     });
   }
 
+  async updateDraftContent(chapterId: string, draftId: string, content: string) {
+    if (!content.trim()) {
+      throw new BadRequestException('正文内容不能为空');
+    }
+
+    const existingDraft = await this.prisma.chapterDraft.findFirst({
+      where: { id: draftId, chapterId },
+      include: {
+        chapter: {
+          select: { id: true, projectId: true },
+        },
+      },
+    });
+
+    if (!existingDraft) {
+      throw new NotFoundException(`草稿不存在或不属于当前章节：${draftId}`);
+    }
+
+    const actualWordCount = this.countDraftWords(content);
+    const generationContext = this.withManualEditContext(existingDraft.generationContext);
+    const updatedDraft = await this.prisma.$transaction(async (tx) => {
+      await tx.chapterDraft.updateMany({
+        where: { chapterId, isCurrent: true, id: { not: draftId } },
+        data: { isCurrent: false },
+      });
+
+      const draft = await tx.chapterDraft.update({
+        where: { id: draftId },
+        data: {
+          content,
+          generationContext,
+          isCurrent: true,
+        },
+        select: {
+          id: true,
+          chapterId: true,
+          versionNo: true,
+          content: true,
+          source: true,
+          modelInfo: true,
+          generationContext: true,
+          isCurrent: true,
+          createdAt: true,
+        },
+      });
+
+      await tx.chapter.update({
+        where: { id: chapterId },
+        data: {
+          status: 'drafted',
+          actualWordCount,
+        },
+      });
+
+      return draft;
+    }, { timeout: 30_000, maxWait: 10_000 });
+
+    await Promise.all([
+      this.refreshChapterContext(existingDraft.chapter.projectId, chapterId),
+      this.cacheService.deleteProjectRecallResults(existingDraft.chapter.projectId),
+    ]);
+
+    return updatedDraft;
+  }
+
   async markDrafted(chapterId: string, actualWordCount: number) {
     const chapter = await this.getById(chapterId);
     const updatedChapter = await this.prisma.chapter.update({
@@ -221,5 +286,21 @@ export class ChaptersService {
         speechStyle: item.speechStyle,
       })),
     });
+  }
+
+  private countDraftWords(content: string) {
+    return content.replace(/\s/g, '').length;
+  }
+
+  private withManualEditContext(value: unknown) {
+    const base = value && typeof value === 'object' && !Array.isArray(value)
+      ? { ...value as Record<string, unknown> }
+      : {};
+
+    return {
+      ...base,
+      manualEdited: true,
+      manualEditedAt: new Date().toISOString(),
+    };
   }
 }

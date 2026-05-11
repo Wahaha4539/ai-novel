@@ -530,13 +530,21 @@ textarea.input, textarea.input-field {
 }
 
 /* ── 章节正文版本切换：草稿 / 润色 ── */
+.editor-version-toolbar {
+  max-width: 100%;
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 0.65rem;
+  margin: 0 0 1rem 1.25rem;
+}
 .draft-version-tabs {
   width: fit-content;
   max-width: 100%;
   display: inline-flex;
   align-items: stretch;
   gap: 0;
-  margin: 0 0 1rem 1.25rem;
+  margin: 0;
   padding: 0.22rem;
   border: 1px solid var(--border-light);
   border-radius: 0.95rem;
@@ -588,6 +596,52 @@ textarea.input, textarea.input-field {
 }
 .draft-version-tab--active .draft-version-tab__meta {
   color: color-mix(in srgb, var(--accent-cyan) 68%, var(--text-muted));
+}
+.editor-inline-save-btn {
+  min-height: 3.35rem;
+  padding: 0 1rem;
+  border: 1px solid color-mix(in srgb, var(--accent-cyan) 28%, var(--border-light));
+  border-radius: 0.85rem;
+  background: var(--bg-card);
+  color: var(--text-main);
+  font-family: inherit;
+  font-size: 0.82rem;
+  font-weight: 800;
+  cursor: pointer;
+  white-space: nowrap;
+  box-shadow: 0 10px 26px -24px var(--accent-cyan);
+  transition: background 0.2s ease, color 0.2s ease, transform 0.16s ease, opacity 0.2s ease;
+}
+.editor-inline-save-btn:hover:not(:disabled) {
+  background: var(--accent-cyan-bg);
+  color: var(--accent-cyan);
+  transform: translateY(-1px);
+}
+.editor-inline-save-btn:disabled {
+  cursor: not-allowed;
+  opacity: 0.46;
+}
+.editor-save-status {
+  width: fit-content;
+  max-width: calc(100% - 2.5rem);
+  margin: -0.35rem 0 0.75rem 1.25rem;
+  padding: 0.35rem 0.65rem;
+  border: 1px solid var(--border-light);
+  border-radius: 0.45rem;
+  background: var(--bg-hover-subtle);
+  color: var(--text-muted);
+  font-size: 0.72rem;
+  line-height: 1.4;
+}
+.editor-save-status--ok {
+  border-color: rgba(16,185,129,0.28);
+  background: rgba(16,185,129,0.08);
+  color: #059669;
+}
+.editor-save-status--error {
+  border-color: rgba(239,68,68,0.32);
+  background: rgba(239,68,68,0.08);
+  color: #ef4444;
 }
 
 /* ── 编辑器右下角浮动操作按钮组 ── */

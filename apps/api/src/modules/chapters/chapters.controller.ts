@@ -1,6 +1,7 @@
 import { Body, Controller, Delete, Get, Param, Patch, Post } from '@nestjs/common';
 import { CreateChapterDto } from './dto/create-chapter.dto';
 import { DeleteChaptersDto } from './dto/delete-chapters.dto';
+import { UpdateChapterDraftDto } from './dto/update-chapter-draft.dto';
 import { ChaptersService } from './chapters.service';
 
 @Controller()
@@ -48,5 +49,15 @@ export class ChaptersController {
   @Get('chapters/:chapterId/drafts/all')
   listDrafts(@Param('chapterId') chapterId: string) {
     return this.chaptersService.listDrafts(chapterId);
+  }
+
+  /** Save manual edits directly into an existing draft version. */
+  @Patch('chapters/:chapterId/drafts/:draftId')
+  updateDraft(
+    @Param('chapterId') chapterId: string,
+    @Param('draftId') draftId: string,
+    @Body() dto: UpdateChapterDraftDto,
+  ) {
+    return this.chaptersService.updateDraftContent(chapterId, draftId, dto.content);
   }
 }

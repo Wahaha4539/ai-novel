@@ -419,6 +419,7 @@ export default function HomePage() {
             chapters={chapters}
             draftRefreshKey={data.draftRefreshKey}
             onChapterGenerated={(chapterId) => data.loadProjectData(data.selectedProjectId, chapterId)}
+            onChapterSaved={(chapterId) => data.loadProjectData(data.selectedProjectId, chapterId)}
             onRunAutoMaintenance={data.runAutoMaintenance}
             onMarkChapterComplete={data.markChapterComplete}
           />

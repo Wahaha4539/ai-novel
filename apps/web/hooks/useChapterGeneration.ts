@@ -147,6 +147,14 @@ async function fetchDraftVersions(chapterId: string): Promise<ChapterDraft[]> {
   }
 }
 
+/** Save manual edits directly into an existing draft version. */
+async function requestSaveDraftContent(chapterId: string, draftId: string, content: string): Promise<ChapterDraft> {
+  return apiFetch<ChapterDraft>(`/chapters/${chapterId}/drafts/${draftId}`, {
+    method: 'PATCH',
+    body: JSON.stringify({ content }),
+  });
+}
+
 /** 输出带 jobId 和步骤名的调试日志，便于定位批量生成在哪一章/哪一步中断。 */
 function logGenerationStep(step: string, context: GenerationLogContext, extra?: Record<string, unknown>) {
   console.info('[chapter-generation]', {
@@ -334,6 +342,11 @@ export function useChapterGeneration() {
     return fetchDraftVersions(chapterId);
   }, []);
 
+  /** Persist the current editor text into the selected draft version. */
+  const saveDraftContent = useCallback(async (chapterId: string, draftId: string, content: string) => {
+    return requestSaveDraftContent(chapterId, draftId, content);
+  }, []);
+
   /**
    * Polish an existing chapter draft.
    * Calls the polish endpoint and returns the polished text.
@@ -367,5 +380,6 @@ export function useChapterGeneration() {
     reset,
     loadDraft,
     loadDraftVersions,
+    saveDraftContent,
   };
 }

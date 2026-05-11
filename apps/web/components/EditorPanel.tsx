@@ -23,13 +23,15 @@ interface Props {
   draftRefreshKey?: number;
   /** Refresh parent dashboard data after a chapter draft is generated so status badges update immediately. */
   onChapterGenerated?: (chapterId: string) => void | Promise<void>;
+  /** Refresh parent dashboard data after manual draft edits are saved. */
+  onChapterSaved?: (chapterId: string) => void | Promise<void>;
   /** Run chapter-scoped AI review/maintenance without changing the chapter completion status. */
   onRunAutoMaintenance?: (chapterIds?: string[]) => void | Promise<void>;
   /** Mark the current chapter as complete; this only updates chapter metadata for the sidebar status dot. */
   onMarkChapterComplete?: (chapterId: string) => void | Promise<void>;
 }
 
-export function EditorPanel({ selectedProject, selectedChapterId, chapters, draftRefreshKey = 0, onChapterGenerated, onRunAutoMaintenance, onMarkChapterComplete }: Props) {
+export function EditorPanel({ selectedProject, selectedChapterId, chapters, draftRefreshKey = 0, onChapterGenerated, onChapterSaved, onRunAutoMaintenance, onMarkChapterComplete }: Props) {
   const isGlobal = selectedChapterId === 'all';
   const chapter = chapters.find((c) => c.id === selectedChapterId);
   const gen = useChapterGeneration();
@@ -41,6 +43,10 @@ export function EditorPanel({ selectedProject, selectedChapterId, chapters, draf
   const [draftLoaded, setDraftLoaded] = useState(false);
   const [isAutoMaintaining, setIsAutoMaintaining] = useState(false);
   const [isMarkingComplete, setIsMarkingComplete] = useState(false);
+  const [isSavingDraft, setIsSavingDraft] = useState(false);
+  const [savedDraftContent, setSavedDraftContent] = useState('');
+  const [saveError, setSaveError] = useState('');
+  const [saveNotice, setSaveNotice] = useState('');
 
   const title = isGlobal
     ? selectedProject?.title || '未选择项目'
@@ -50,15 +56,21 @@ export function EditorPanel({ selectedProject, selectedChapterId, chapters, draf
   const wordCount = content.replace(/\s/g, '').length;
 
   const viewPair = buildDraftViewPair(draftVersions);
+  const activeDraft = activeViewMode === 'polished' ? viewPair.polished : viewPair.draft;
+  const hasUnsavedChanges = Boolean(activeDraft && content !== savedDraftContent);
+  const canSaveDraft = Boolean(activeDraft && content.trim() && hasUnsavedChanges);
 
   // Auto-load draft when chapter selection changes. AI validation repair creates a
   // new current draft for the same chapter, so draftRefreshKey forces a reload.
   useEffect(() => {
     if (isGlobal || !selectedChapterId) {
       setContent('');
+      setSavedDraftContent('');
       setDraftVersions([]);
       setActiveViewMode('draft');
       setDraftLoaded(false);
+      setSaveError('');
+      setSaveNotice('');
       return;
     }
     // Load existing drafts for this chapter. The version list lets us pair an
@@ -71,7 +83,10 @@ export function EditorPanel({ selectedProject, selectedChapterId, chapters, draf
       setDraftVersions(versions);
       setActiveViewMode(initialMode);
       setContent(initialDraft?.content ?? '');
+      setSavedDraftContent(initialDraft?.content ?? '');
       setDraftLoaded(Boolean(initialDraft?.content));
+      setSaveError('');
+      setSaveNotice('');
     });
     // Reset generation state when switching chapters
     gen.reset();
@@ -88,13 +103,21 @@ export function EditorPanel({ selectedProject, selectedChapterId, chapters, draf
         setDraftVersions(versions);
         setActiveViewMode(nextMode);
         setContent(nextDraft?.content ?? gen.currentDraft?.content ?? '');
+        setSavedDraftContent(nextDraft?.content ?? gen.currentDraft?.content ?? '');
         setDraftLoaded(true);
+        setSaveError('');
+        setSaveNotice('');
       });
     }
   }, [gen.state, gen.currentDraft]);
 
   /** Switch the text area between the original generated draft and polished result. */
   const handleSwitchViewMode = useCallback((mode: DraftViewMode) => {
+    if (mode === activeViewMode) return;
+    if (hasUnsavedChanges && !window.confirm('当前版本有未保存修改，切换后会放弃这些修改。继续切换？')) {
+      return;
+    }
+
     const pair = buildDraftViewPair(draftVersions);
     const targetDraft = mode === 'polished' ? pair.polished : pair.draft;
 
@@ -102,7 +125,37 @@ export function EditorPanel({ selectedProject, selectedChapterId, chapters, draf
     if (!targetDraft) return;
     setActiveViewMode(mode);
     setContent(targetDraft.content);
-  }, [draftVersions]);
+    setSavedDraftContent(targetDraft.content);
+    setSaveError('');
+    setSaveNotice('');
+  }, [activeViewMode, draftVersions, hasUnsavedChanges]);
+
+  /** Persist manual edits into the active draft row; polished edits stay in the polished version. */
+  const handleSaveDraft = useCallback(async () => {
+    if (isGlobal || !selectedChapterId || !activeDraft || isSavingDraft || !content.trim()) return;
+
+    setIsSavingDraft(true);
+    setSaveError('');
+    setSaveNotice('');
+    try {
+      const savedDraft = await gen.saveDraftContent(selectedChapterId, activeDraft.id, content);
+      const versions = await gen.loadDraftVersions(selectedChapterId);
+      const nextVersions = versions.length ? versions : [savedDraft];
+      const nextDraft = nextVersions.find((item) => item.id === savedDraft.id) ?? savedDraft;
+
+      setDraftVersions(nextVersions);
+      setActiveViewMode(isPolishedDraft(nextDraft) ? 'polished' : 'draft');
+      setContent(nextDraft.content);
+      setSavedDraftContent(nextDraft.content);
+      setDraftLoaded(true);
+      setSaveNotice(isPolishedDraft(nextDraft) ? '已保存到润色版本，事实层待刷新。' : '已保存到草稿版本，事实层待刷新。');
+      await onChapterSaved?.(selectedChapterId);
+    } catch (error) {
+      setSaveError(error instanceof Error ? error.message : '保存正文失败');
+    } finally {
+      setIsSavingDraft(false);
+    }
+  }, [activeDraft, content, gen, isGlobal, isSavingDraft, onChapterSaved, selectedChapterId]);
 
   /** Trigger AI generation for the current chapter */
   const handleGenerate = useCallback(async () => {
@@ -247,18 +300,40 @@ export function EditorPanel({ selectedProject, selectedChapterId, chapters, draf
         ) : (
           <div className="animate-fade-in" style={{ maxWidth: '48rem', margin: '0 auto' }}>
             {chapter && <ChapterPlanningBrief chapter={chapter} />}
-            <DraftVersionTabs
-              activeMode={activeViewMode}
-              draft={viewPair.draft}
-              polished={viewPair.polished}
-              onSwitch={handleSwitchViewMode}
-            />
+            <div className="editor-version-toolbar">
+              <DraftVersionTabs
+                activeMode={activeViewMode}
+                draft={viewPair.draft}
+                polished={viewPair.polished}
+                onSwitch={handleSwitchViewMode}
+              />
+              <button
+                type="button"
+                onClick={handleSaveDraft}
+                disabled={!canSaveDraft || isSavingDraft || isGenerating || isAutoMaintaining || isMarkingComplete}
+                className="editor-inline-save-btn"
+              >
+                {isSavingDraft ? '保存中…' : activeViewMode === 'polished' ? '保存润色' : '保存草稿'}
+              </button>
+            </div>
+            {(saveError || saveNotice || hasUnsavedChanges) && (
+              <div
+                className={`editor-save-status ${saveError ? 'editor-save-status--error' : saveNotice ? 'editor-save-status--ok' : ''}`}
+                aria-live="polite"
+              >
+                {saveError || saveNotice || '当前版本有未保存修改'}
+              </div>
+            )}
             <textarea
               className="editor-textarea"
               placeholder="在这里开始撰写属于你的章节故事…… 或点击「AI 生成」自动生成正文。"
               style={{ minHeight: '600px' }}
               value={content}
-              onChange={(e) => setContent(e.target.value)}
+              onChange={(e) => {
+                setContent(e.target.value);
+                setSaveError('');
+                setSaveNotice('');
+              }}
               disabled={isGenerating}
             />
           </div>
@@ -285,11 +360,25 @@ export function EditorPanel({ selectedProject, selectedChapterId, chapters, draf
             overflow: 'hidden',
           }}
         >
+          {/* 保存当前版本 */}
+          <button
+            type="button"
+            onClick={handleSaveDraft}
+            disabled={!canSaveDraft || isSavingDraft || isGenerating || isAutoMaintaining || isMarkingComplete}
+            className="editor-fab-btn"
+            style={{
+              color: isSavingDraft ? 'var(--text-muted)' : 'var(--text-main)',
+            }}
+          >
+            {isSavingDraft ? '保存中…' : activeViewMode === 'polished' ? '保存润色' : '保存草稿'}
+          </button>
+          {/* 分隔线 */}
+          <span className="editor-fab-divider" />
           {/* 完成 */}
           <button
             type="button"
             onClick={handleMarkComplete}
-            disabled={!onMarkChapterComplete || isMarkingComplete || isGenerating || isAutoMaintaining}
+            disabled={!onMarkChapterComplete || isMarkingComplete || isGenerating || isAutoMaintaining || isSavingDraft}
             className="editor-fab-btn"
             style={{
               color: isMarkingComplete ? 'var(--text-muted)' : '#10b981',
@@ -303,7 +392,7 @@ export function EditorPanel({ selectedProject, selectedChapterId, chapters, draf
           <button
             type="button"
             onClick={handleRunAiReview}
-            disabled={!onRunAutoMaintenance || isAutoMaintaining || isGenerating || isMarkingComplete}
+            disabled={!onRunAutoMaintenance || isAutoMaintaining || isGenerating || isMarkingComplete || isSavingDraft}
             className="editor-fab-btn"
             style={{
               color: isAutoMaintaining ? 'var(--text-muted)' : '#f59e0b',
@@ -317,7 +406,7 @@ export function EditorPanel({ selectedProject, selectedChapterId, chapters, draf
           <button
             type="button"
             onClick={handleGenerate}
-            disabled={isGenerating || isAutoMaintaining || isMarkingComplete}
+            disabled={isGenerating || isAutoMaintaining || isMarkingComplete || isSavingDraft}
             className="editor-fab-btn"
             style={{
               color: isGenerating ? 'var(--text-muted)' : 'var(--accent-cyan)',
