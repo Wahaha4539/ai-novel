@@ -286,7 +286,7 @@ async function upsertProvider(config: ProviderConfig) {
 /** dry-run 下校验必须 appStep 是否已有可用路由。 */
 async function verifyRequiredRoutingsExist(): Promise<boolean> {
   const rows = await prisma.llmRouting.findMany({
-    where: { appStep: { in: REQUIRED_LLM_STEPS } },
+    where: { appStep: { in: [...REQUIRED_LLM_STEPS] } },
     include: { provider: true },
   });
   const routed = new Set(rows.filter((row) => row.provider.isActive).map((row) => row.appStep));
@@ -498,7 +498,7 @@ async function checkAgentSchema(summary: MaintenanceSummary) {
   }
 
   const indexChecks = [
-    { table: 'AgentStep', indexName: 'AgentStep_agentRunId_stepNo_key', name: 'AgentStep(agentRunId, stepNo) unique', unique: true, columns: ['agentRunId', 'stepNo'] },
+    { table: 'AgentStep', indexName: 'AgentStep_agentRunId_mode_planVersion_stepNo_key', name: 'AgentStep(agentRunId, mode, planVersion, stepNo) unique', unique: true, columns: ['agentRunId', 'mode', 'planVersion', 'stepNo'] },
     { table: 'AgentArtifact', indexName: 'AgentArtifact_agentRunId_artifactType_idx', name: 'AgentArtifact(agentRunId, artifactType) index', unique: false, columns: ['agentRunId', 'artifactType'] },
     { table: 'AgentApproval', indexName: 'AgentApproval_agentRunId_status_idx', name: 'AgentApproval(agentRunId, status) index', unique: false, columns: ['agentRunId', 'status'] },
   ];
