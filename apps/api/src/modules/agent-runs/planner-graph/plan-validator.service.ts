@@ -41,6 +41,16 @@ const WRITE_TOOL_NAMES = new Set([
   'ai_quality_review',
 ]);
 
+const CHAPTER_QUALITY_PIPELINE_TRIGGER_TOOLS = new Set(['write_chapter', 'rewrite_chapter']);
+const CHAPTER_QUALITY_PIPELINE_TOOL_NAMES = [
+  'polish_chapter',
+  'fact_validation',
+  'auto_repair_chapter',
+  'extract_chapter_facts',
+  'rebuild_memory',
+  'review_memory',
+];
+
 const GENERATE_VOLUME_OUTLINE_PREVIEW_TOOL = 'generate_volume_outline_preview';
 const GENERATE_STORY_UNITS_PREVIEW_TOOL = 'generate_story_units_preview';
 const GENERATE_CHAPTER_OUTLINE_PREVIEW_TOOL = 'generate_chapter_outline_preview';
@@ -67,20 +77,32 @@ export class PlanValidatorService {
   }
 
   validate(input: PlanValidatorInput): void {
-    this.assertBundleTools(input.plan, input.selectedBundle);
+    this.assertBundleTools(input.plan, input.selectedBundle, { allowPlannerInjectedQualityTools: true });
     this.assertWriteApproval(input.plan);
     this.assertVolumeCharacterCandidateSelection(input.plan);
     this.assertRouteBoundaries(input.plan, input.route, input.context);
     this.assertImportScope(input.plan, input.route, input.context);
   }
 
-  private assertBundleTools(plan: AgentPlanSpec, selectedBundle?: SelectedToolBundle): void {
+  private assertBundleTools(plan: AgentPlanSpec, selectedBundle?: SelectedToolBundle, options: { allowPlannerInjectedQualityTools?: boolean } = {}): void {
     if (!selectedBundle) return;
-    const allowed = new Set([...selectedBundle.strictToolNames, ...selectedBundle.optionalToolNames]);
+    const allowed = this.allowedToolsForBundle(plan, selectedBundle, options);
     const outside = plan.steps.map((step) => step.tool).filter((tool) => !allowed.has(tool));
     if (outside.length) {
       throw new Error(`PlanValidator blocked bundle-outside tools for ${selectedBundle.bundleName}: ${[...new Set(outside)].join(', ')}`);
     }
+  }
+
+  private allowedToolsForBundle(plan: AgentPlanSpec, selectedBundle: SelectedToolBundle, options: { allowPlannerInjectedQualityTools?: boolean }): Set<string> {
+    const allowed = new Set([...selectedBundle.strictToolNames, ...selectedBundle.optionalToolNames]);
+    if (!options.allowPlannerInjectedQualityTools) return allowed;
+    const planTools = new Set(plan.steps.map((step) => step.tool));
+    const bundleTools = new Set([...selectedBundle.strictToolNames, ...selectedBundle.optionalToolNames]);
+    const hasWriteTriggerInPlan = [...CHAPTER_QUALITY_PIPELINE_TRIGGER_TOOLS].some((tool) => planTools.has(tool));
+    const bundleCanTriggerQualityPipeline = [...CHAPTER_QUALITY_PIPELINE_TRIGGER_TOOLS].some((tool) => bundleTools.has(tool));
+    if (!hasWriteTriggerInPlan || !bundleCanTriggerQualityPipeline) return allowed;
+    for (const tool of CHAPTER_QUALITY_PIPELINE_TOOL_NAMES) allowed.add(tool);
+    return allowed;
   }
 
   private assertWriteApproval(plan: AgentPlanSpec): void {

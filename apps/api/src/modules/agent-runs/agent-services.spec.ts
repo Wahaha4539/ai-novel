@@ -11081,6 +11081,101 @@ function createScopedPlannerHarness(toolNames: string[], llm: unknown) {
   };
 }
 
+test('Scoped writing planner accepts backend-injected chapter quality pipeline without exposing polish_chapter', async () => {
+  let promptPayload: Record<string, any> | undefined;
+  const toolNames = [
+    'resolve_chapter',
+    'collect_chapter_context',
+    'write_chapter',
+    'postprocess_chapter',
+    'fact_validation',
+    'polish_chapter',
+    'auto_repair_chapter',
+    'extract_chapter_facts',
+    'rebuild_memory',
+    'review_memory',
+  ];
+  const writeLikeTools = new Set(['write_chapter', 'polish_chapter', 'auto_repair_chapter', 'extract_chapter_facts', 'rebuild_memory']);
+  const toolList = toolNames.map((name) => createTool({
+    name,
+    requiresApproval: writeLikeTools.has(name),
+    riskLevel: writeLikeTools.has(name) ? 'high' : 'low',
+    sideEffects: writeLikeTools.has(name) ? ['write'] : [],
+  }));
+  const tools = {
+    list: () => toolList,
+    listManifestsForPlanner: (requestedToolNames?: string[]) => (requestedToolNames?.length ? [...new Set(requestedToolNames)] : toolList.map((tool) => tool.name)).map((name) => {
+      const tool = toolList.find((item) => item.name === name);
+      if (!tool) throw new Error(`missing ${name}`);
+      return {
+        name: tool.name,
+        displayName: tool.name,
+        description: tool.description,
+        whenToUse: [],
+        whenNotToUse: [],
+        allowedModes: tool.allowedModes,
+        riskLevel: tool.riskLevel,
+        requiresApproval: tool.requiresApproval,
+        sideEffects: tool.sideEffects,
+      };
+    }),
+  } as unknown as ToolRegistryService;
+  const llm = {
+    async chatJson(messages: Array<{ role: string; content: string }>) {
+      promptPayload = JSON.parse(messages[1].content);
+      return {
+        data: {
+          taskType: 'chapter_write',
+          summary: 'Write one chapter.',
+          assumptions: [],
+          risks: [],
+          steps: [
+            { stepNo: 1, name: 'Resolve chapter', tool: 'resolve_chapter', mode: 'act', requiresApproval: false, args: { chapterNo: 1 } },
+            { stepNo: 2, name: 'Collect context', tool: 'collect_chapter_context', mode: 'act', requiresApproval: false, args: { chapterId: '{{steps.1.output.chapterId}}' } },
+            { stepNo: 3, name: 'Write draft', tool: 'write_chapter', mode: 'act', requiresApproval: true, args: { chapterId: '{{steps.1.output.chapterId}}', context: '{{steps.2.output}}', instruction: '写第一章正文' } },
+          ],
+        },
+        result: { model: 'planner-mock', usage: { prompt_tokens: 1, completion_tokens: 1 } },
+      };
+    },
+  };
+  const planner = new AgentPlannerService(new SkillRegistryService(), tools, new RuleEngineService(), llm as never, undefined, new PlanValidatorService());
+  const selectedBundle = {
+    bundleName: 'writing.chapter',
+    strictToolNames: ['resolve_chapter', 'collect_chapter_context', 'write_chapter', 'postprocess_chapter', 'fact_validation'],
+    optionalToolNames: ['auto_repair_chapter', 'extract_chapter_facts', 'rebuild_memory', 'review_memory'],
+    deniedToolNames: ['write_chapter_series', 'rewrite_chapter', 'polish_chapter', 'persist_outline', 'persist_project_assets'],
+    selectionReason: 'test',
+  };
+  const selectedToolNames = [...selectedBundle.strictToolNames, ...selectedBundle.optionalToolNames];
+
+  const plan = await planner.createPlanWithTools({
+    goal: '写第一章正文',
+    route: { domain: 'writing', intent: 'chapter_write', confidence: 0.9, reasons: ['test'], needsApproval: true, needsPersistence: true },
+    selectedBundle,
+    selectedTools: tools.listManifestsForPlanner(selectedToolNames),
+  });
+
+  const promptToolNames = (promptPayload?.availableTools as Array<Record<string, unknown>>).map((tool) => tool.name);
+  assert.ok(!promptToolNames.includes('polish_chapter'));
+  assert.deepEqual(promptToolNames, selectedToolNames);
+  assert.deepEqual(plan.steps.map((step) => step.tool), [
+    'resolve_chapter',
+    'collect_chapter_context',
+    'write_chapter',
+    'polish_chapter',
+    'fact_validation',
+    'auto_repair_chapter',
+    'polish_chapter',
+    'fact_validation',
+    'auto_repair_chapter',
+    'extract_chapter_facts',
+    'rebuild_memory',
+    'review_memory',
+  ]);
+  assert.equal(plan.steps.find((step) => step.tool === 'polish_chapter')?.requiresApproval, true);
+});
+
 function createOutlinePlannerHarness(llm: unknown) {
   return createScopedPlannerHarness([
     'inspect_project_context',

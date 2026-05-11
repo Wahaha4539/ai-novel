@@ -128,6 +128,15 @@ const ALIGN_CHAPTER_TIMELINE_PREVIEW_TOOL = 'align_chapter_timeline_preview';
 const VALIDATE_TIMELINE_PREVIEW_TOOL = 'validate_timeline_preview';
 const GENERATE_CHAPTER_CRAFT_BRIEF_PREVIEW_TOOL = 'generate_chapter_craft_brief_preview';
 const VALIDATE_CHAPTER_CRAFT_BRIEF_TOOL = 'validate_chapter_craft_brief';
+const CHAPTER_QUALITY_PIPELINE_TRIGGER_TOOLS = new Set(['write_chapter', 'rewrite_chapter']);
+const CHAPTER_QUALITY_PIPELINE_TOOL_NAMES = [
+  'polish_chapter',
+  'fact_validation',
+  'auto_repair_chapter',
+  'extract_chapter_facts',
+  'rebuild_memory',
+  'review_memory',
+];
 const AGENT_PLANNER_GRAPH_ENABLED = 'AGENT_PLANNER_GRAPH_ENABLED';
 const MERGE_PREVIEW_ARG_BY_ASSET_TYPE: Record<ImportAssetType, string> = {
   projectProfile: 'projectProfilePreview',
@@ -736,7 +745,9 @@ export class AgentPlannerService {
     const record = this.asRecord(data);
     const availableTaskTypes = new Set(this.listTaskTypes());
     const allTools = this.tools.list();
-    const registeredTools = allowedToolNames ?? new Set(allTools.map((tool) => tool.name));
+    const allToolNames = new Set(allTools.map((tool) => tool.name));
+    const registeredTools = allowedToolNames ?? allToolNames;
+    const normalizedRegisteredTools = this.allowedToolsAfterNormalization(registeredTools, allToolNames);
     const toolRequiresApproval = new Map(allTools.map((tool) => [tool.name, tool.requiresApproval]));
     const rawSteps = Array.isArray(record.steps) ? record.steps : [];
     const maxSteps = this.rules.getPolicy().limits.maxSteps;
@@ -777,7 +788,7 @@ export class AgentPlannerService {
     const normalizedBaseSteps = this.enforceProjectImportPipeline(
       record.taskType,
       this.enforceChapterWriteQualityPipeline(steps, (tool) => toolRequiresApproval.get(tool) ?? false),
-      registeredTools,
+      normalizedRegisteredTools,
       (tool) => toolRequiresApproval.get(tool) ?? false,
       this.explicitImportAssetTypes(context?.session.requestedAssetTypes),
       context?.session.importPreviewMode,
@@ -787,11 +798,11 @@ export class AgentPlannerService {
       : this.enforcePlanningTimelinePreviewPipeline(
         record.taskType,
         normalizedBaseSteps,
-        registeredTools,
+        normalizedRegisteredTools,
         (tool) => toolRequiresApproval.get(tool) ?? false,
       );
     if (normalizedSteps.length > maxSteps) throw new Error(`规范化后的 Agent Plan steps 数量非法，最多 ${maxSteps} 步`);
-    const missingTool = normalizedSteps.find((step) => !registeredTools.has(step.tool));
+    const missingTool = normalizedSteps.find((step) => !normalizedRegisteredTools.has(step.tool));
     if (missingTool) throw new Error(`规范化后的 Agent Plan 使用未注册工具：${missingTool.tool}`);
     const approvalSteps = normalizedSteps.filter((step) => step.requiresApproval);
     return {
@@ -812,6 +823,16 @@ export class AgentPlannerService {
       riskReview: this.normalizeRiskReview(record.riskReview, approvalSteps.length > 0, defaults.risks),
       userVisiblePlan: this.normalizeUserVisiblePlan(record.userVisiblePlan, defaults.summary, normalizedSteps),
     };
+  }
+
+  private allowedToolsAfterNormalization(registeredTools: Set<string>, allToolNames: Set<string>): Set<string> {
+    const expanded = new Set(registeredTools);
+    const hasChapterWriteTrigger = [...CHAPTER_QUALITY_PIPELINE_TRIGGER_TOOLS].some((tool) => registeredTools.has(tool));
+    if (!hasChapterWriteTrigger) return expanded;
+    for (const tool of CHAPTER_QUALITY_PIPELINE_TOOL_NAMES) {
+      if (allToolNames.has(tool)) expanded.add(tool);
+    }
+    return expanded;
   }
 
   /**
