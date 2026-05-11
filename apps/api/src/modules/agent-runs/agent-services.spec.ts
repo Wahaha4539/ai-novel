@@ -38,6 +38,8 @@ import { GenerationService } from '../generation/generation.service';
 import { GenerationProfileService } from '../generation-profile/generation-profile.service';
 import { UpdateGenerationProfileDto } from '../generation-profile/dto/update-generation-profile.dto';
 import { ChapterAutoRepairService } from '../generation/chapter-auto-repair.service';
+import { HUMANIZER_POLISH_GUIDE } from '../generation/humanizer-polish-guide';
+import { PolishChapterService } from '../generation/polish-chapter.service';
 import { PromptBuilderService } from '../generation/prompt-builder.service';
 import { RetrievalPlannerService } from '../generation/retrieval-planner.service';
 import { ValidateOutlineTool } from '../agent-tools/tools/validate-outline.tool';
@@ -2362,6 +2364,17 @@ test('RuleEngine 暴露统一策略上限和硬规则', () => {
   assert.ok(rules.listHardRules().some((rule) => rule.includes('Plan 模式禁止')));
 });
 
+test('SkillRegistry 为章节润色优先选择 humanizer-polish 项目技能', () => {
+  const registry = new SkillRegistryService();
+  const polishSkill = registry.select('chapter_polish');
+  const revisionSkill = registry.select('chapter_revision');
+
+  assert.equal(polishSkill.name, 'humanizer-polish');
+  assert.equal(revisionSkill.name, 'humanizer-polish');
+  assert.ok(polishSkill.defaultTools.includes('polish_chapter'));
+  assert.ok(polishSkill.checklist.some((item) => item.includes('anti-AI pass')));
+});
+
 test('Policy 阻止未审批写入类 Tool 执行', () => {
   const policy = new AgentPolicyService(new RuleEngineService());
   assert.throws(
@@ -2492,6 +2505,118 @@ test('GenerateChapterService 生成后质量门禁提示修辞堆叠的 AI 味',
   assert.ok(result.metrics.aiTasteHitCount >= 1);
   assert.ok(result.metrics.ornamentalParagraphCount >= 1);
   assert.match(result.warnings.join('；'), /AI 味|修辞|感官/);
+});
+
+test('PolishChapterService 润色提示接入 humanizer anti-AI 流程', () => {
+  assert.match(HUMANIZER_POLISH_GUIDE, /What makes the below so obviously AI generated/);
+  assert.match(HUMANIZER_POLISH_GUIDE, /anti-AI pass/);
+  assert.match(HUMANIZER_POLISH_GUIDE, /Not only/);
+
+  const service = new PolishChapterService({} as never, {} as never) as unknown as {
+    buildUserPrompt: (
+      chapter: { chapterNo: number; title: string | null; objective: string | null; conflict: string | null; outline: string | null },
+      characters: Array<{ name: string; roleType: string | null; personalityCore: string | null; motivation: string | null; speechStyle: string | null }>,
+      originalText: string,
+      instruction?: string,
+    ) => string;
+  };
+  const prompt = service.buildUserPrompt(
+    { chapterNo: 3, title: '雨夜', objective: '逼主角做选择', conflict: '师徒对峙', outline: '主角发现真相后选择隐瞒。' },
+    [{ name: '林烬', roleType: '主角', personalityCore: '克制', motivation: '守住同伴', speechStyle: '短句，不爱解释' }],
+    '林烬站在雨里，心中涌起一股莫名的复杂情绪。空气中弥漫着沉重的气息，仿佛命运的齿轮在这一刻开始转动。',
+    '去 AI 味，但别改结局。',
+  );
+
+  assert.match(prompt, /Humanizer 去 AI 味流程/);
+  assert.match(prompt, /What makes the below so obviously AI generated/);
+  assert.match(prompt, /anti-AI pass/);
+  assert.match(prompt, /去 AI 味，但别改结局/);
+});
+
+const POLISH_TEST_ORIGINAL_TEXT = Array.from({ length: 8 }, () => '陆沉舟没回头，黑脊有陆知微的痕迹，而罗嵩刚把门锁死了。').join('');
+
+function createPolishServiceHarness(llmTexts: string[], originalText = POLISH_TEST_ORIGINAL_TEXT) {
+  const writes: Array<Record<string, unknown>> = [];
+  let llmCallCount = 0;
+  const currentDraft = {
+    id: 'draft-original',
+    chapterId: 'chapter-1',
+    content: originalText,
+    source: 'agent_write',
+    generationContext: {},
+    versionNo: 1,
+    createdBy: 'tester',
+  };
+  const draftStore = {
+    async findFirst() { return currentDraft; },
+    async updateMany() { return { count: 1 }; },
+    async create(args: { data: Record<string, unknown> }) {
+      writes.push(args.data);
+      return { id: 'draft-polished', ...args.data };
+    },
+  };
+  const prisma = {
+    chapter: {
+      async findFirst() {
+        return { id: 'chapter-1', projectId: 'project-1', chapterNo: 60, title: '逆潮脊梁', objective: '逼主角选择', conflict: '黑脊封锁', outline: '主角发现痕迹后继续追查。', volume: {} };
+      },
+      async update() { return { id: 'chapter-1' }; },
+    },
+    chapterDraft: draftStore,
+    character: { async findMany() { return []; } },
+    promptTemplate: { async findFirst() { return { systemPrompt: '你是小说文本编辑。必须只输出 <rewrite>...</rewrite>。' }; } },
+    async $transaction(callback: (tx: unknown) => Promise<unknown>) {
+      return callback({ chapterDraft: draftStore, chapter: this.chapter });
+    },
+  };
+  const llm = {
+    async chat() {
+      const text = llmTexts[Math.min(llmCallCount, llmTexts.length - 1)];
+      llmCallCount += 1;
+      return { text, model: 'mock-polish', usage: {}, rawPayloadSummary: { finishReason: text.includes('TRUNCATED') ? 'length' : 'stop' } };
+    },
+  };
+  return {
+    service: new PolishChapterService(prisma as never, llm as never),
+    originalText,
+    writes,
+    getLlmCallCount: () => llmCallCount,
+  };
+}
+
+test('PolishChapterService 不把润色建议当作正文写入', async () => {
+  const advisory = '我们被要求润色给定的章节正文。首先，需要检查 AI 味，然后建议把句子改短。现在，我们还需要注意 Humanizer 去 AI 味流程中的一些点。';
+  const { service, writes, getLlmCallCount } = createPolishServiceHarness([advisory, advisory]);
+
+  await assert.rejects(
+    () => service.run('project-1', 'chapter-1', '去 AI 味，但别改结局。'),
+    /未返回可写入的完整正文|缺少完整 <rewrite>/,
+  );
+
+  assert.equal(getLlmCallCount(), 2);
+  assert.equal(writes.length, 0);
+});
+
+test('PolishChapterService 契约失败后重试并只写入 rewrite 正文', async () => {
+  const first = '首先，我会分析原文的 AI 味，并给出修改建议。';
+  const { service, originalText, writes, getLlmCallCount } = createPolishServiceHarness([first, `<rewrite>${POLISH_TEST_ORIGINAL_TEXT}</rewrite>`]);
+
+  const result = await service.run('project-1', 'chapter-1', '去 AI 味，但别改结局。');
+
+  assert.equal(getLlmCallCount(), 2);
+  assert.equal(result.draftId, 'draft-polished');
+  assert.equal(writes.length, 1);
+  assert.equal(writes[0].content, originalText);
+});
+
+test('PolishChapterService 发现 token 截断后重试', async () => {
+  const { service, originalText, writes, getLlmCallCount } = createPolishServiceHarness([`<rewrite>${POLISH_TEST_ORIGINAL_TEXT.slice(0, 80)}TRUNCATED</rewrite>`, `<rewrite>${POLISH_TEST_ORIGINAL_TEXT}</rewrite>`]);
+
+  await service.run('project-1', 'chapter-1', '去 AI 味，但别改结局。');
+
+  assert.equal(getLlmCallCount(), 2);
+  assert.equal(writes.length, 1);
+  assert.equal(writes[0].content, originalText);
 });
 
 test('GenerateChapterService maps pass and warning quality gates to QualityReport payloads', () => {

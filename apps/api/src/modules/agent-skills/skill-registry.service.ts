@@ -9,6 +9,8 @@ export class SkillRegistryService {
   }
 
   select(taskType?: string): AgentSkill {
-    return BUILTIN_SKILLS.find((skill) => skill.taskTypes.includes(taskType ?? 'general')) ?? BUILTIN_SKILLS[0];
+    const targetTaskType = taskType ?? 'general';
+    const matches = BUILTIN_SKILLS.filter((skill) => skill.taskTypes.includes(targetTaskType));
+    return matches.sort((left, right) => left.taskTypes.length - right.taskTypes.length)[0] ?? BUILTIN_SKILLS[0];
   }
 }

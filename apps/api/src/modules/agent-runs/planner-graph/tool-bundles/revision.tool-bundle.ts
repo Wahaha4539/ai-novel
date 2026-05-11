@@ -10,6 +10,7 @@ export const revisionToolBundles: ToolBundleDefinition[] = [
     deniedToolNames: ['write_chapter', 'write_chapter_series', 'rewrite_chapter', 'persist_outline', 'persist_project_assets'],
     plannerGuidance: [
       'Use polish_chapter for local edits, style polishing, or AI-flavor cleanup.',
+      'For AI-flavor cleanup, preserve the user instruction and rely on the project humanizer-polish skill: diagnose remaining AI tells internally, then do a final anti-AI pass without outputting diagnostics.',
       'Do not use rewrite_chapter unless the route explicitly asks to rewrite from scratch or not reuse the old draft.',
     ],
   },
