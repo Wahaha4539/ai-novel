@@ -2513,6 +2513,8 @@ test('PolishChapterService 润色提示接入 humanizer anti-AI 流程', () => {
   assert.match(HUMANIZER_POLISH_GUIDE, /Not only/);
   assert.match(HUMANIZER_POLISH_GUIDE, /不是 X，是 Y/);
   assert.match(HUMANIZER_POLISH_GUIDE, /不是 X，而是 Y/);
+  assert.match(HUMANIZER_POLISH_GUIDE, /低信息短句/);
+  assert.match(HUMANIZER_POLISH_GUIDE, /没人回头看他/);
 
   const service = new PolishChapterService({} as never, {} as never) as unknown as {
     buildUserPrompt: (
@@ -2532,6 +2534,7 @@ test('PolishChapterService 润色提示接入 humanizer anti-AI 流程', () => {
   assert.match(prompt, /Humanizer 去 AI 味流程/);
   assert.match(prompt, /What makes the below so obviously AI generated/);
   assert.match(prompt, /anti-AI pass/);
+  assert.match(prompt, /他没有回答/);
   assert.match(prompt, /去 AI 味，但别改结局/);
 });
 
