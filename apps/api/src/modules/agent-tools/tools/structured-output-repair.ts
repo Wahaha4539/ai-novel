@@ -25,6 +25,12 @@ export interface StructuredOutputRepairOptions<T> {
     validationError: string;
     attempt: number;
   }) => LlmChatMessage[];
+  applyRepair?: (input: {
+    invalidOutput: unknown;
+    repairedData: unknown;
+    validationError: string;
+    attempt: number;
+  }) => MaybePromise<unknown>;
   progress?: {
     phaseMessage: string;
     timeoutMs: number;
@@ -127,8 +133,12 @@ async function repairAfterNormalizeFailure<T>(
       throw error;
     }
 
+    const candidateData = options.applyRepair
+      ? await options.applyRepair({ invalidOutput, repairedData, validationError: validationErrorMessage, attempt })
+      : repairedData;
+
     try {
-      const normalized = await options.normalize(repairedData);
+      const normalized = await options.normalize(candidateData);
       options.context.recordRepairDiagnostic?.({
         toolName: options.toolName,
         attempted: true,
@@ -160,7 +170,7 @@ async function repairAfterNormalizeFailure<T>(
         model: repairModel ?? null,
         tokenUsage,
       });
-      invalidOutput = repairedData;
+      invalidOutput = candidateData;
       validationError = error;
     }
   }

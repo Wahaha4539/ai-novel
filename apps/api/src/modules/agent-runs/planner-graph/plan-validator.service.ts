@@ -48,6 +48,7 @@ const MERGE_CHAPTER_OUTLINE_PREVIEWS_TOOL = 'merge_chapter_outline_previews';
 const SEGMENT_CHAPTER_OUTLINE_BATCHES_TOOL = 'segment_chapter_outline_batches';
 const GENERATE_CHAPTER_OUTLINE_BATCH_PREVIEW_TOOL = 'generate_chapter_outline_batch_preview';
 const MERGE_CHAPTER_OUTLINE_BATCH_PREVIEWS_TOOL = 'merge_chapter_outline_batch_previews';
+const PERSIST_VOLUME_CHARACTER_CANDIDATES_TOOL = 'persist_volume_character_candidates';
 
 interface ChapterRange {
   start: number;
@@ -60,6 +61,7 @@ export class PlanValidatorService {
     const plan = this.rawPlan(input.data);
     if (!plan) return;
     this.assertBundleTools(plan, input.selectedBundle);
+    this.assertVolumeCharacterCandidateSelection(plan);
     this.assertRouteBoundaries(plan, input.route, input.context);
     this.assertImportScope(plan, input.route, input.context);
   }
@@ -67,6 +69,7 @@ export class PlanValidatorService {
   validate(input: PlanValidatorInput): void {
     this.assertBundleTools(input.plan, input.selectedBundle);
     this.assertWriteApproval(input.plan);
+    this.assertVolumeCharacterCandidateSelection(input.plan);
     this.assertRouteBoundaries(input.plan, input.route, input.context);
     this.assertImportScope(input.plan, input.route, input.context);
   }
@@ -83,6 +86,19 @@ export class PlanValidatorService {
   private assertWriteApproval(plan: AgentPlanSpec): void {
     const unsafe = plan.steps.filter((step) => (WRITE_TOOL_NAMES.has(step.tool) || step.tool.startsWith('persist_')) && !step.requiresApproval);
     if (unsafe.length) throw new Error(`PlanValidator blocked write tools without approval: ${unsafe.map((step) => step.tool).join(', ')}`);
+  }
+
+  private assertVolumeCharacterCandidateSelection(plan: AgentPlanSpec): void {
+    const invalid = plan.steps.filter((step) => {
+      if (step.tool !== PERSIST_VOLUME_CHARACTER_CANDIDATES_TOOL) return false;
+      const args = step.args ?? {};
+      return args.approveAll !== true
+        && !this.nonEmptyStringArray(args.approvedCandidateIds).length
+        && !this.nonEmptyStringArray(args.approvedCandidateNames).length;
+    });
+    if (invalid.length) {
+      throw new Error('PlanValidator blocked persist_volume_character_candidates without explicit approvedCandidateIds/approvedCandidateNames or approveAll=true.');
+    }
   }
 
   private assertRouteBoundaries(plan: AgentPlanSpec, route?: RouteDecision, context?: AgentContextV2): void {
@@ -477,6 +493,12 @@ export class PlanValidatorService {
     if (!Array.isArray(value)) return [];
     const normalized = value.filter((item): item is ImportAssetType => typeof item === 'string' && IMPORT_ASSET_TYPES.includes(item as ImportAssetType));
     return [...new Set(normalized)];
+  }
+
+  private nonEmptyStringArray(value: unknown): string[] {
+    return Array.isArray(value)
+      ? value.map((item) => (typeof item === 'string' ? item.trim() : '')).filter(Boolean)
+      : [];
   }
 
   private rawPlan(data: unknown): AgentPlanSpec | undefined {

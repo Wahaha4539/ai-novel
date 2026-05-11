@@ -534,6 +534,7 @@ export class GenerateChapterOutlineBatchPreviewTool implements BaseTool<Generate
       }),
       shouldRepair: ({ error, data }) => this.shouldRepairBatchOutput(data, error, options.chapterRange),
       buildRepairMessages: ({ invalidOutput, validationError }) => this.buildRepairMessages(invalidOutput, validationError, options.args, options.volume, options.volumeNo, options.chapterCount, options.chapterRange, options.characterCatalog, options.allowedStoryUnitIds),
+      applyRepair: ({ invalidOutput, repairedData, validationError }) => this.mergeRepairedChapter(invalidOutput, repairedData, validationError, options.chapterRange),
       progress: {
         phaseMessage: options.phaseMessage,
         timeoutMs: streamPhaseTimeoutMs(CHAPTER_OUTLINE_BATCH_PREVIEW_REPAIR_TIMEOUT_MS),
@@ -557,7 +558,7 @@ export class GenerateChapterOutlineBatchPreviewTool implements BaseTool<Generate
           },
         }),
         temperature: 0.1,
-        jsonSchema: options.jsonSchema,
+        jsonSchema: this.buildChapterRepairJsonSchema(options.allowedStoryUnitIds),
         maxTokens: chapterOutlineBatchOutputTokenBudget(options.chapterRange),
       },
       maxRepairAttempts: CHAPTER_OUTLINE_BATCH_STRUCTURAL_REPAIR_ATTEMPTS,
@@ -676,9 +677,11 @@ export class GenerateChapterOutlineBatchPreviewTool implements BaseTool<Generate
         role: 'system' as const,
         content: [
           'You regenerate a Chinese web-novel chapter-outline batch after LLM semantic quality review.',
+          'Highest priority: return one complete syntactically valid JSON object that closes every array and object; JSON validity outranks narrative richness.',
           'Regenerate the whole target batch, not a prose explanation.',
           'Preserve the target chapter numbers, volumeNo, storyUnitIds, and required JSON shape.',
           'Fix every error-level quality issue. Do not create deterministic placeholders or skeletal template text.',
+          'If output budget is tight, shorten string fields and keep arrays at the required minimum before adding extra detail.',
           'Return compact strict JSON only with batch, chapters, and risks. No Markdown, comments, or prose.',
         ].join('\n'),
       },
@@ -699,6 +702,8 @@ export class GenerateChapterOutlineBatchPreviewTool implements BaseTool<Generate
             minor_temporary: 'Only one-off local function characters; declare in newMinorCharacters with firstAndOnlyUse=true and approvalPolicy=preview_only.',
           },
           hardRules: [
+            'Highest-priority JSON contract: complete and closed JSON first; preserve required keys before prose richness.',
+            'If the answer is getting long, shorten all Chinese string fields immediately; do not omit closing brackets or braces.',
             `Return exactly chapters ${input.chapterRange.start}-${input.chapterRange.end}, continuous and in order.`,
             'Every chapter must include title, objective, conflict, hook, outline, expectedWordCount, and complete craftBrief.',
             'Every craftBrief.actionBeats item must be a concrete executable beat with actor, visible action, object/target, obstacle or result.',
@@ -996,9 +1001,45 @@ export class GenerateChapterOutlineBatchPreviewTool implements BaseTool<Generate
     if (rawChapters.length !== chapterCountForRange(chapterRange)) return false;
     if (rawChapters.some((chapter) => !Object.keys(asRecord(chapter.craftBrief)).length)) return false;
     const message = this.errorMessage(error);
+    if (!this.extractRepairChapterNo(message, data, chapterRange)) return false;
     if (/storyUnit\.unitId does not match|cannot verify storyUnitIds|chapterNo must be|volumeNo must be/.test(message)) return false;
     if (/firstAndOnlyUse|approvalPolicy 声明为 needs_approval|未进入卷级角色候选/.test(message)) return false;
     return /craftBrief|characterExecution|title|objective|conflict|hook|outline|expectedWordCount|cast|relationshipBeats|sceneBeats|participants|source|volume_candidate|minor_temporary|existing/.test(message);
+  }
+
+  private extractRepairChapterNo(validationError: string, invalidOutput: unknown, chapterRange: ChapterRange): number | undefined {
+    const match = validationError.match(/(?:chapter|第)\s*(\d+)\s*(?:章)?/i);
+    const chapterNo = positiveInt(match?.[1]);
+    if (chapterNo && chapterNo >= chapterRange.start && chapterNo <= chapterRange.end) return chapterNo;
+    const rawChapters = asRecordArray(asRecord(invalidOutput).chapters);
+    if (rawChapters.length === 1) {
+      const onlyChapterNo = positiveInt(asRecord(rawChapters[0]).chapterNo);
+      if (onlyChapterNo && onlyChapterNo >= chapterRange.start && onlyChapterNo <= chapterRange.end) return onlyChapterNo;
+    }
+    return undefined;
+  }
+
+  private mergeRepairedChapter(invalidOutput: unknown, repairedData: unknown, validationError: string, chapterRange: ChapterRange): unknown {
+    const repairedRecord = asRecord(repairedData);
+    if (asRecordArray(repairedRecord.chapters).length > 0) return repairedData;
+
+    const targetChapterNo = this.extractRepairChapterNo(validationError, invalidOutput, chapterRange);
+    if (!targetChapterNo) throw new Error('generate_chapter_outline_batch_preview repair response cannot identify target chapter.');
+
+    const repairedChapter = asRecord(repairedRecord.chapter);
+    const repairedChapterNo = positiveInt(repairedRecord.chapterNo) ?? positiveInt(repairedChapter.chapterNo);
+    if (repairedChapterNo !== targetChapterNo) {
+      throw new Error(`generate_chapter_outline_batch_preview repair returned chapter ${repairedChapterNo ?? 'unknown'}, expected chapter ${targetChapterNo}.`);
+    }
+
+    const originalOutput = asRecord(invalidOutput);
+    const rawChapters = asRecordArray(originalOutput.chapters);
+    if (!rawChapters.length) return repairedData;
+    return {
+      ...originalOutput,
+      chapters: rawChapters.map((chapter) => (positiveInt(asRecord(chapter).chapterNo) === targetChapterNo ? repairedChapter : chapter)),
+      risks: [...stringArray(originalOutput.risks), ...stringArray(repairedRecord.risks)],
+    };
   }
 
   private buildRepairMessages(
@@ -1012,18 +1053,24 @@ export class GenerateChapterOutlineBatchPreviewTool implements BaseTool<Generate
     characterCatalog: CharacterReferenceCatalog & { volumeCandidateNames: string[] },
     allowedStoryUnitIds: string[],
   ) {
+    const targetChapterNo = this.extractRepairChapterNo(validationError, invalidOutput, chapterRange);
+    const rawChapters = asRecordArray(asRecord(invalidOutput).chapters);
+    const targetChapter = rawChapters.find((chapter) => positiveInt(asRecord(chapter).chapterNo) === targetChapterNo) ?? null;
     return [
       {
         role: 'system' as const,
         content: [
-          'You repair a novel chapter-outline batch JSON object.',
-          'Repair only local structural errors in existing returned chapters. Do not invent missing chapters or add placeholder craftBrief content.',
+          'You repair exactly one chapter object from a novel chapter-outline batch.',
+          'Highest priority: return one complete syntactically valid JSON object that closes every array and object; JSON validity outranks narrative richness.',
+          'Return only {chapterNo, chapter, risks}; do not return the whole batch.',
+          'Repair only local structural errors in the provided target chapter. Do not invent missing chapters or add placeholder craftBrief content.',
           'If a whole chapter or whole craftBrief is missing, keep failure instead of fabricating content.',
-          'Return compact strict JSON only with batch, chapters, and risks. No Markdown, comments, or prose.',
+          'If output budget is tight, shorten string fields and keep arrays at the required minimum before adding extra detail.',
+          'Return compact strict JSON only. No Markdown, comments, or prose.',
           'Every existing chapter craftBrief.actionBeats and craftBrief.sceneBeats must each contain at least 3 concrete items.',
           'Every sceneBeats object must include sceneArcId, scenePart, location, participants, localGoal, visibleAction, obstacle, turningPoint, partResult, and sensoryAnchor.',
           'characterExecution.cast source must be exactly one of: existing, volume_candidate, minor_temporary.',
-          'When repairing any characterExecution error, scan every chapter in the batch, not only the chapter named by validationError.',
+          'When repairing any characterExecution error, re-check the target chapter, not only the single field named by validationError.',
           'In each chapter, every minor_temporary cast member must have the exact same nameOrLabel in that chapter characterExecution.newMinorCharacters, with firstAndOnlyUse=true and approvalPolicy=preview_only.',
           'In each chapter, every sceneBeats.participants and relationshipBeats.participants value must be covered by that chapter characterExecution.cast.characterName.',
           'characterExecution.relationshipBeats may be [] or complete objects with participants, publicStateBefore, trigger, shift, and publicStateAfter.',
@@ -1032,15 +1079,17 @@ export class GenerateChapterOutlineBatchPreviewTool implements BaseTool<Generate
       {
         role: 'user' as const,
         content: this.safeJson({
-          target: { volumeNo, chapterCount, chapterRange, allowedStoryUnitIds },
+          target: { volumeNo, chapterCount, chapterRange, targetChapterNo, allowedStoryUnitIds },
           validationError,
           repairRules: [
-            `Keep exactly chapters ${chapterRange.start}-${chapterRange.end}; do not add, remove, renumber, or reorder chapters.`,
-            'Repair only incomplete local fields in chapters that are already present.',
-            'Each chapter needs title, objective, conflict, hook, outline, expectedWordCount, complete craftBrief, and characterExecution.',
+            'Highest-priority JSON contract: complete and closed JSON first; preserve required keys before prose richness.',
+            'If the answer is getting long, shorten all Chinese string fields immediately; do not omit closing brackets or braces.',
+            `Return only target chapter ${targetChapterNo}; do not include batch or other chapters.`,
+            'Repair only incomplete local fields in the target chapter already present.',
+            'The chapter needs title, objective, conflict, hook, outline, expectedWordCount, complete craftBrief, and characterExecution.',
             'craftBrief.actionBeats and craftBrief.sceneBeats each need at least 3 concrete items; concreteClues needs at least 1 item.',
             'Each sceneBeats object must include sceneArcId, scenePart, location, participants, localGoal, visibleAction, obstacle, turningPoint, partResult, and sensoryAnchor.',
-            'After fixing the reported validationError, re-check every chapter in this batch for the same characterExecution contract.',
+            'After fixing the reported validationError, re-check the target chapter for the same characterExecution contract.',
             'Every sceneBeats.participants and relationshipBeats.participants item must appear in the same chapter characterExecution.cast.characterName.',
             'Every cast member with source minor_temporary must be declared in the same chapter characterExecution.newMinorCharacters using the exact same nameOrLabel, firstAndOnlyUse=true, and approvalPolicy=preview_only.',
             'relationshipBeats may be empty; if a relationship beat object exists, complete it with participants, publicStateBefore, trigger, shift, and publicStateAfter. Do not leave partial relationship beat objects.',
@@ -1054,8 +1103,24 @@ export class GenerateChapterOutlineBatchPreviewTool implements BaseTool<Generate
           volume: this.volumeRepairSummary(volume),
           storyUnitSlice: args.storyUnitSlice ?? this.storyUnitSliceFromPlan(this.storyUnitPlanForPrompt(args, volume), allowedStoryUnitIds),
           previousBatchTail: args.previousBatchTail ?? null,
-          invalidOutput,
-        }, 60000),
+          nearbyChapters: rawChapters.map((chapter) => {
+            const record = asRecord(chapter);
+            const craftBrief = asRecord(record.craftBrief);
+            return {
+              chapterNo: positiveInt(record.chapterNo),
+              title: text(record.title),
+              objective: text(record.objective),
+              exitState: text(craftBrief.exitState),
+              handoffToNextChapter: text(craftBrief.handoffToNextChapter),
+            };
+          }),
+          targetChapter,
+          responseContract: {
+            chapterNo: targetChapterNo,
+            chapter: 'the complete repaired target chapter object only',
+            risks: [],
+          },
+        }, 50000),
       },
     ];
   }
@@ -1063,9 +1128,12 @@ export class GenerateChapterOutlineBatchPreviewTool implements BaseTool<Generate
   private buildSystemPrompt(): string {
     return [
       'You are a senior Chinese web-novel chapter outline planner.',
+      'Highest priority: return one complete syntactically valid JSON object that closes every array and object; JSON validity outranks narrative richness.',
       'Generate one continuous batch of chapter outlines. Every chapter must include a complete Chapter.craftBrief and characterExecution.',
       'Do not output deterministic placeholders, skeletal templates, or backend-fillable gaps.',
       'Keep JSON string fields compact enough to return one complete valid JSON object; craftBrief and sceneBeats carry the detailed execution contract, so outline must not become prose-length chapter text.',
+      'If output budget is tight, shorten string fields and keep arrays at the required minimum before adding extra detail.',
+      'Never echo source context, never trail off mid-field, and never spend tokens on prose outside the JSON object.',
       'The backend will reject missing chapters, repeated chapters, non-continuous chapter numbers, missing craftBrief, incomplete characterExecution, or invalid character sources.',
       'Return compact strict JSON only. No Markdown, comments, or prose.',
     ].join('\n');
@@ -1115,6 +1183,8 @@ export class GenerateChapterOutlineBatchPreviewTool implements BaseTool<Generate
       this.safeJson(Array.isArray(context.existingChapters) ? context.existingChapters.slice(0, 160) : [], 6000),
       '',
       'Hard output requirements:',
+      '- Highest-priority JSON contract: complete and closed JSON first; preserve required keys before prose richness.',
+      '- If the answer is getting long, shorten all Chinese string fields immediately; do not omit closing brackets or braces.',
       `- Return exactly ${chapterCountForRange(chapterRange)} chapters: chapterNo ${chapterRange.start} through ${chapterRange.end}, continuous and in order.`,
       '- Every chapter must include title, objective, conflict, hook, outline, expectedWordCount, and a complete craftBrief.',
       '- Keep title/objective/conflict/hook/outline concrete but compact; outline should summarize the chapter in a few draftable scene sentences, not a long prose paragraph.',
@@ -1129,6 +1199,26 @@ export class GenerateChapterOutlineBatchPreviewTool implements BaseTool<Generate
       'Required JSON shape:',
       this.buildRequiredJsonShapeExample(volumeNo, chapterRange, allowedStoryUnitIds),
     ].join('\n');
+  }
+
+  private buildChapterRepairJsonSchema(allowedStoryUnitIds: string[]): { name: string; description: string; schema: Record<string, unknown>; strict: boolean } {
+    const batchSchema = this.buildResponseJsonSchema(allowedStoryUnitIds);
+    return {
+      name: 'chapter_outline_batch_chapter_repair',
+      description: 'One repaired chapter object for a generated chapter outline batch.',
+      strict: true,
+      schema: {
+        type: 'object',
+        additionalProperties: false,
+        required: ['chapterNo', 'chapter', 'risks'],
+        properties: {
+          chapterNo: { type: 'integer' },
+          chapter: { $ref: '#/$defs/chapter' },
+          risks: { type: 'array', items: { type: 'string' } },
+        },
+        $defs: asRecord(batchSchema.schema.$defs),
+      },
+    };
   }
 
   private buildResponseJsonSchema(allowedStoryUnitIds: string[]): { name: string; description: string; schema: Record<string, unknown>; strict: boolean } {

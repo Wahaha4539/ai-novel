@@ -596,6 +596,9 @@ test('COB-P2 batch preview generates continuous chapters with source whitelist i
   assert.match(calls[0].messages[1].content, /volume_candidate/);
   assert.match(calls[0].messages[1].content, /minor_temporary/);
   assert.match(calls[0].messages[1].content, /Shao/);
+  assert.match(calls[0].messages[0].content, /JSON validity outranks narrative richness/);
+  assert.match(calls[0].messages[1].content, /Highest-priority JSON contract/);
+  assert.match(calls[0].messages[1].content, /do not omit closing brackets or braces/);
   assert.match(calls[0].messages[0].content, /complete valid JSON object/);
   assert.match(calls[0].messages[1].content, /outline should summarize the chapter in a few draftable scene sentences/);
   assert.match(calls[0].messages[1].content, /sceneBeats array must contain at least 3 concrete scene segments/);
@@ -700,6 +703,8 @@ test('COB-P2 batch preview uses LLM quality issues to regenerate one failed batc
   assert.deepEqual(qualityIssueSchema.required, ['severity', 'chapterNo', 'path', 'message', 'suggestion', 'evidence']);
   assert.deepEqual(qualityIssueSchema.properties.chapterNo, { type: ['integer', 'null'] });
   assert.match(calls[2].messages[1].content, /qualityIssuesToFix/);
+  assert.match(calls[2].messages[0].content, /JSON validity outranks narrative richness/);
+  assert.match(calls[2].messages[1].content, /Highest-priority JSON contract/);
   assert.match(calls[2].messages[1].content, /Action beat lacks a visible actor action and result/);
   assert.match(calls[2].messages[1].content, /rejectedOutput/);
 });
@@ -869,7 +874,10 @@ test('COB-P2 batch preview repairs local craftBrief field omissions', async () =
       if (isQualityReviewCall(options)) return { data: createPassingQualityReview(), result: { model: 'mock-quality-review' } };
       const bad = createBatchOutput([1, 2, 3, 4], { chapters: [createBatchChapter(1), createBatchChapter(2, { craftBrief: badCraftBrief }), createBatchChapter(3), createBatchChapter(4)] });
       const generationCallCount = calls.filter((call) => !isQualityReviewCall(call.options)).length;
-      return { data: generationCallCount === 1 ? bad : createBatchOutput(), result: { model: `mock-repair-${generationCallCount}` } };
+      return {
+        data: generationCallCount === 1 ? bad : { chapterNo: 2, chapter: createBatchChapter(2), risks: [] },
+        result: { model: `mock-repair-${generationCallCount}` },
+      };
     },
   } as never);
   const { context } = createToolContext();
@@ -882,8 +890,11 @@ test('COB-P2 batch preview repairs local craftBrief field omissions', async () =
   assert.equal(calls.length, 3);
   assert.match(calls[1].messages[1].content, /characterShift/);
   assert.match(calls[1].messages[0].content, /compact strict JSON/);
+  assert.match(calls[1].messages[0].content, /Return only \{chapterNo, chapter, risks\}/);
+  assert.doesNotMatch(calls[1].messages[1].content, /invalidOutput/);
+  assert.match(calls[1].messages[1].content, /targetChapter/);
   assert.match(calls[1].messages[1].content, /craftBrief\.actionBeats and craftBrief\.sceneBeats each need at least 3/);
-  assert.equal((calls[1].options.jsonSchema as Record<string, unknown>).name, 'chapter_outline_batch_preview');
+  assert.equal((calls[1].options.jsonSchema as Record<string, unknown>).name, 'chapter_outline_batch_chapter_repair');
   assert.ok(calls[1].messages[1].content.length < 50000, 'repair payload should stay compact for local structural repair');
   assert.equal(result.chapters[1].craftBrief?.characterShift, 'shift 2');
 });
@@ -1045,7 +1056,9 @@ test('COB-OPT batch preview retries cascading local characterExecution repair er
 
   assert.equal(calls.length, 4);
   assert.equal(calls.filter((call) => !isQualityReviewCall(call.options)).every((call) => call.options.maxTokens === 24_500), true);
-  assert.match(calls[1].messages[0].content, /scan every chapter in the batch/);
+  assert.match(calls[1].messages[0].content, /re-check the target chapter/);
+  assert.match(calls[1].messages[0].content, /JSON validity outranks narrative richness/);
+  assert.match(calls[1].messages[1].content, /Highest-priority JSON contract/);
   assert.match(calls[1].messages[1].content, /Every cast member with source minor_temporary/);
   assert.match(calls[2].messages[1].content, /Trial Crew/);
   assert.equal(result.chapters[1].craftBrief?.characterExecution?.newMinorCharacters?.[0]?.nameOrLabel, 'Trial Crew');

@@ -1,6 +1,7 @@
 import { Injectable } from '@nestjs/common';
 import { StructuredLogger } from '../../../common/logging/structured-logger';
-import { LlmGatewayService } from '../../llm/llm-gateway.service';
+import { LlmGatewayService, LlmJsonInvalidError } from '../../llm/llm-gateway.service';
+import type { LlmChatMessage, LlmChatOptions } from '../../llm/dto/llm-chat.dto';
 import { DEFAULT_LLM_TIMEOUT_MS } from '../../llm/llm-timeout.constants';
 import { BaseTool, ToolContext } from '../base-tool';
 import type { ToolManifestV2 } from '../tool-manifest.types';
@@ -22,6 +23,12 @@ import { normalizeWithLlmRepair } from './structured-output-repair';
 const CHAPTER_OUTLINE_PREVIEW_LLM_TIMEOUT_MS = DEFAULT_LLM_TIMEOUT_MS;
 const CHAPTER_OUTLINE_PREVIEW_REPAIR_TIMEOUT_MS = DEFAULT_LLM_TIMEOUT_MS;
 const CHAPTER_OUTLINE_PREVIEW_QUALITY_REGENERATION_ATTEMPTS = 1;
+const CHAPTER_OUTLINE_PREVIEW_OUTPUT_TOKEN_OVERHEAD = 4_000;
+const CHAPTER_OUTLINE_PREVIEW_OUTPUT_TOKENS_PER_CHAPTER = 12_000;
+
+function chapterOutlinePreviewOutputTokenBudget(): number {
+  return CHAPTER_OUTLINE_PREVIEW_OUTPUT_TOKEN_OVERHEAD + CHAPTER_OUTLINE_PREVIEW_OUTPUT_TOKENS_PER_CHAPTER;
+}
 
 interface GenerateChapterOutlinePreviewInput {
   context?: Record<string, unknown>;
@@ -32,6 +39,7 @@ interface GenerateChapterOutlinePreviewInput {
   chapterNo?: number;
   chapterCount?: number;
   previousChapter?: Record<string, unknown>;
+  previousUnitChapters?: unknown[];
 }
 
 interface MergeChapterOutlinePreviewsInput {
@@ -67,6 +75,7 @@ export class GenerateChapterOutlinePreviewTool implements BaseTool<GenerateChapt
       chapterNo: { type: 'number' as const },
       chapterCount: { type: 'number' as const },
       previousChapter: { type: 'object' as const },
+      previousUnitChapters: { type: 'array' as const, items: { type: 'object' as const } },
     },
   };
   outputSchema = {
@@ -94,7 +103,7 @@ export class GenerateChapterOutlinePreviewTool implements BaseTool<GenerateChapt
       'Agent 需要为卷细纲、章节细纲、60 章细纲逐章生成可见步骤时',
       '上一章细纲已经生成，需要用 previousChapter 接力卡生成下一章时',
       '只需要生成某一个 chapterNo 的章节细纲和 craftBrief，不写正文时',
-      '用户只要求基于已有卷纲生成章节细纲时，可直接读取 inspect_project_context.output.volumes 中的 Volume.narrativePlan，不必重新生成卷大纲或单元故事',
+      '用户只要求基于已有卷纲生成、重写或重新生成章节细纲时，可直接读取 inspect_project_context.output.volumes 中的 Volume.narrativePlan，不必重新生成卷大纲或单元故事',
     ],
     whenNotToUse: [
       '用户要求写正文时使用 write_chapter 或 write_chapter_series',
@@ -110,17 +119,16 @@ export class GenerateChapterOutlinePreviewTool implements BaseTool<GenerateChapt
       chapterNo: { source: 'user_message', description: '本次生成的全卷绝对章号。' },
       chapterCount: { source: 'user_message', description: '目标全卷总章节数，用于 volume.chapterCount 和单元故事范围。' },
       previousChapter: { source: 'previous_step', description: '上一章 generate_chapter_outline_preview.output.chapter，用于接力连续性。' },
+      previousUnitChapters: { source: 'runtime', description: '可选；同一 storyUnit 中已生成的前序单章细纲。工具也会从 ToolContext.outputs 自动收集并过滤同单元章节。' },
     },
     examples: [
       {
-        user: '为第一卷生成 60 章细纲。',
+        user: '重写第一卷的章节细纲。',
         plan: [
           { tool: 'inspect_project_context', args: { focus: ['outline', 'volumes', 'chapters', 'characters', 'lorebook'] } },
-          { tool: 'generate_volume_outline_preview', args: { context: '{{steps.1.output}}', volumeNo: 1, chapterCount: 60, instruction: '{{context.userMessage}}' } },
-          { tool: 'generate_story_units_preview', args: { context: '{{steps.1.output}}', volumeOutline: '{{steps.2.output.volume}}', volumeNo: 1, chapterCount: 60, instruction: '{{context.userMessage}}' } },
-          { tool: 'generate_chapter_outline_preview', args: { context: '{{steps.1.output}}', volumeOutline: '{{steps.2.output.volume}}', storyUnitPlan: '{{steps.3.output.storyUnitPlan}}', volumeNo: 1, chapterNo: 1, chapterCount: 60, instruction: '{{context.userMessage}}' } },
-          { tool: 'generate_chapter_outline_preview', args: { context: '{{steps.1.output}}', volumeOutline: '{{steps.2.output.volume}}', storyUnitPlan: '{{steps.3.output.storyUnitPlan}}', volumeNo: 1, chapterNo: 2, chapterCount: 60, previousChapter: '{{steps.4.output.chapter}}', instruction: '{{context.userMessage}}' } },
-          { tool: 'merge_chapter_outline_previews', args: { previews: ['{{steps.4.output}}', '{{steps.5.output}}'], volumeNo: 1, chapterCount: 60 } },
+          { tool: 'generate_chapter_outline_preview', args: { context: '{{steps.1.output}}', volumeNo: 1, chapterNo: 1, chapterCount: 60, instruction: '{{context.userMessage}}' } },
+          { tool: 'generate_chapter_outline_preview', args: { context: '{{steps.1.output}}', volumeNo: 1, chapterNo: 2, chapterCount: 60, previousChapter: '{{steps.2.output.chapter}}', instruction: '{{context.userMessage}}' } },
+          { tool: 'merge_chapter_outline_previews', args: { previews: ['{{steps.2.output}}', '{{steps.3.output}}'], volumeNo: 1, chapterCount: 60 } },
         ],
       },
     ],
@@ -152,10 +160,13 @@ export class GenerateChapterOutlinePreviewTool implements BaseTool<GenerateChapt
       progressTotal: chapterCount,
       timeoutMs: streamPhaseTimeoutMs(CHAPTER_OUTLINE_PREVIEW_LLM_TIMEOUT_MS),
     });
+    const previousUnitChapters = this.collectPreviousUnitChapters(args, context, volumeNo, chapterNo, chapterCount);
     const messages = [
       { role: 'system' as const, content: this.buildSystemPrompt() },
-      { role: 'user' as const, content: this.buildUserPrompt(args, volumeNo, chapterNo, chapterCount) },
+      { role: 'user' as const, content: this.buildUserPrompt(args, volumeNo, chapterNo, chapterCount, previousUnitChapters) },
     ];
+    const maxTokens = chapterOutlinePreviewOutputTokenBudget();
+    const jsonSchema = this.buildResponseJsonSchema();
     const logContext = {
       agentRunId: context.agentRunId,
       projectId: context.projectId,
@@ -164,14 +175,16 @@ export class GenerateChapterOutlinePreviewTool implements BaseTool<GenerateChapt
       chapterNo,
       chapterCount,
       previousChapterNo: Number(this.asRecord(args.previousChapter).chapterNo) || null,
+      previousUnitChapterNos: previousUnitChapters.map((chapter) => Number(this.asRecord(chapter).chapterNo)).filter((item) => Number.isInteger(item)),
       timeoutMs: CHAPTER_OUTLINE_PREVIEW_LLM_TIMEOUT_MS,
       timeoutKind: 'stream_idle',
       streamIdleTimeoutMs: CHAPTER_OUTLINE_PREVIEW_LLM_TIMEOUT_MS,
       streamPhaseTimeoutMs: streamPhaseTimeoutMs(CHAPTER_OUTLINE_PREVIEW_LLM_TIMEOUT_MS),
-      maxTokensSent: null,
-      maxTokensOmitted: true,
+      maxTokensSent: maxTokens,
+      maxTokensOmitted: false,
       messageCount: messages.length,
       totalMessageChars: messages.reduce((sum, message) => sum + message.content.length, 0),
+      jsonSchemaChars: JSON.stringify(jsonSchema).length,
     };
     const startedAt = Date.now();
     const characterCatalog = this.extractCharacterCatalog(args.context);
@@ -187,7 +200,7 @@ export class GenerateChapterOutlinePreviewTool implements BaseTool<GenerateChapt
     });
     this.logger.log('chapter_outline_preview.llm_request.started', logContext);
     try {
-      const response = await this.llm.chatJson<unknown>(
+      const response = await this.chatChapterOutlineJson(
         messages,
         {
           appStep: 'planner',
@@ -197,7 +210,10 @@ export class GenerateChapterOutlinePreviewTool implements BaseTool<GenerateChapt
           onStreamProgress,
           retries: 0,
           jsonMode: true,
+          jsonSchema,
+          maxTokens,
         },
+        { volumeNo, chapterNo, chapterCount, phase: 'initial_generation' },
       );
       recordToolLlmUsage(context, 'planner', response.result);
       let normalized = await normalizeWithLlmRepair({
@@ -209,7 +225,7 @@ export class GenerateChapterOutlinePreviewTool implements BaseTool<GenerateChapt
         normalize: (data) => this.normalize(data, volumeNo, chapterNo, chapterCount, args.context, args.volumeOutline, args.storyUnitPlan, characterCatalog),
         shouldRepair: ({ error, data }) => this.shouldRepairChapterOutlineOutput(data, error),
         buildRepairMessages: ({ invalidOutput, validationError }) =>
-          this.buildRepairMessages(invalidOutput, validationError, args, volumeNo, chapterNo, chapterCount, characterCatalog),
+          this.buildRepairMessages(invalidOutput, validationError, args, volumeNo, chapterNo, chapterCount, characterCatalog, previousUnitChapters),
         progress: {
           phaseMessage: `正在修复第 ${chapterNo} 章细纲结构`,
           timeoutMs: streamPhaseTimeoutMs(CHAPTER_OUTLINE_PREVIEW_REPAIR_TIMEOUT_MS),
@@ -230,6 +246,8 @@ export class GenerateChapterOutlinePreviewTool implements BaseTool<GenerateChapt
             metadata: { volumeNo, chapterNo, chapterCount },
           }),
           temperature: 0.1,
+          jsonSchema,
+          maxTokens,
         },
         maxRepairAttempts: 2,
         initialModel: response.result.model,
@@ -247,8 +265,7 @@ export class GenerateChapterOutlinePreviewTool implements BaseTool<GenerateChapt
           timeoutMs: streamPhaseTimeoutMs(CHAPTER_OUTLINE_PREVIEW_LLM_TIMEOUT_MS),
         });
         const qualityRegenerationPhaseMessage = `Regenerating chapter ${chapterNo} outline from LLM quality issues`;
-        const regenerationResponse = await this.llm.chatJson<unknown>(
-          this.buildQualityRegenerationMessages({
+        const regenerationMessages = this.buildQualityRegenerationMessages({
             args,
             volumeNo,
             chapterNo,
@@ -256,7 +273,10 @@ export class GenerateChapterOutlinePreviewTool implements BaseTool<GenerateChapt
             rejectedOutput: normalized,
             qualityReview,
             characterCatalog,
-          }),
+            previousUnitChapters,
+          });
+        const regenerationResponse = await this.chatChapterOutlineJson(
+          regenerationMessages,
           {
             appStep: 'planner',
             timeoutMs: CHAPTER_OUTLINE_PREVIEW_LLM_TIMEOUT_MS,
@@ -274,8 +294,11 @@ export class GenerateChapterOutlinePreviewTool implements BaseTool<GenerateChapt
             }),
             retries: 0,
             jsonMode: true,
+            jsonSchema,
+            maxTokens,
             temperature: 0.2,
           },
+          { volumeNo, chapterNo, chapterCount, phase: 'quality_regeneration' },
         );
         recordToolLlmUsage(context, 'outline_chapter_quality_regeneration', regenerationResponse.result);
         normalized = await normalizeWithLlmRepair({
@@ -287,7 +310,7 @@ export class GenerateChapterOutlinePreviewTool implements BaseTool<GenerateChapt
           normalize: (data) => this.normalize(data, volumeNo, chapterNo, chapterCount, args.context, args.volumeOutline, args.storyUnitPlan, characterCatalog),
           shouldRepair: ({ error, data }) => this.shouldRepairChapterOutlineOutput(data, error),
           buildRepairMessages: ({ invalidOutput, validationError }) =>
-            this.buildRepairMessages(invalidOutput, validationError, args, volumeNo, chapterNo, chapterCount, characterCatalog),
+            this.buildRepairMessages(invalidOutput, validationError, args, volumeNo, chapterNo, chapterCount, characterCatalog, previousUnitChapters),
           progress: {
             phaseMessage: `正在修复第 ${chapterNo} 章质量重生后的结构`,
             timeoutMs: streamPhaseTimeoutMs(CHAPTER_OUTLINE_PREVIEW_REPAIR_TIMEOUT_MS),
@@ -308,6 +331,8 @@ export class GenerateChapterOutlinePreviewTool implements BaseTool<GenerateChapt
               metadata: { volumeNo, chapterNo, chapterCount, phase: 'quality_regeneration_repair' },
             }),
             temperature: 0.1,
+            jsonSchema,
+            maxTokens,
           },
           maxRepairAttempts: 1,
           initialModel: regenerationResponse.result.model,
@@ -346,6 +371,69 @@ export class GenerateChapterOutlinePreviewTool implements BaseTool<GenerateChapt
     }
   }
 
+  private async chatChapterOutlineJson(
+    messages: LlmChatMessage[],
+    options: LlmChatOptions,
+    retryContext: { volumeNo: number; chapterNo: number; chapterCount: number; phase: string },
+  ) {
+    try {
+      return await this.llm.chatJson<unknown>(messages, options);
+    } catch (error) {
+      if (!(error instanceof LlmJsonInvalidError)) throw error;
+      this.logger.log('chapter_outline_preview.json_parse_retry.started', {
+        volumeNo: retryContext.volumeNo,
+        chapterNo: retryContext.chapterNo,
+        chapterCount: retryContext.chapterCount,
+        phase: retryContext.phase,
+        rawResponseLength: error.rawText.length,
+        maxTokens: options.maxTokens ?? null,
+        jsonSchemaName: options.jsonSchema?.name ?? null,
+        error: error.message,
+      });
+      return this.llm.chatJson<unknown>(
+        this.buildJsonParseRetryMessages(messages, error, retryContext),
+        {
+          ...options,
+          retries: 0,
+          temperature: 0,
+          jsonMode: true,
+        },
+      );
+    }
+  }
+
+  private buildJsonParseRetryMessages(
+    messages: LlmChatMessage[],
+    error: LlmJsonInvalidError,
+    retryContext: { volumeNo: number; chapterNo: number; chapterCount: number; phase: string },
+  ): LlmChatMessage[] {
+    const system = messages.find((message) => message.role === 'system')?.content ?? this.buildSystemPrompt();
+    const originalUser = messages.find((message) => message.role === 'user')?.content ?? '';
+    const rawTail = this.truncateText(error.rawText.slice(-1500), 1500);
+    return [
+      {
+        role: 'system',
+        content: [
+          system,
+          'JSON parse retry contract: the previous answer was invalid or truncated. Regenerate the whole target chapter from scratch as one complete closed JSON object.',
+          'Do not continue the previous partial output. Do not include Markdown. Do not include narrativePlan, storyUnitPlan, chapters, or characterPlan.',
+          'Keep every Chinese string compact. Prefer three sceneBeats, three to five actionBeats, one to three concreteClues, zero to two relationshipBeats, and only cast characters who act in this chapter.',
+        ].join('\n'),
+      },
+      {
+        role: 'user',
+        content: [
+          `Previous JSON parse failed for volume ${retryContext.volumeNo}, chapter ${retryContext.chapterNo}/${retryContext.chapterCount}, phase ${retryContext.phase}.`,
+          `Parser error: ${error.message}`,
+          `Previous invalid tail for diagnosis only; do not continue it: ${rawTail}`,
+          'Regenerate a complete compact JSON object now. Output must parse with JSON.parse.',
+          '',
+          originalUser,
+        ].join('\n'),
+      },
+    ];
+  }
+
   private shouldRepairChapterOutlineOutput(data: unknown, error: unknown): boolean {
     const message = this.errorMessage(error);
     const output = this.asRecord(data);
@@ -377,13 +465,8 @@ export class GenerateChapterOutlinePreviewTool implements BaseTool<GenerateChapt
     return reviewChapterOutlineQuality(this.llm, context, {
       task: 'Review this generated single chapter outline before it can enter approval/write or downstream drafting flow.',
       target: { volumeNo, chapterCount, chapterNo, chapterRange: { start: chapterNo, end: chapterNo } },
-      output,
-      volumeSummary: {
-        title: output.volume.title,
-        synopsis: output.volume.synopsis,
-        objective: output.volume.objective,
-        narrativePlan: output.volume.narrativePlan,
-      },
+      output: this.compactQualityReviewOutput(output),
+      volumeSummary: this.compactVolumeForPrompt(output.volume),
       storyUnitSlice: output.chapter.craftBrief?.storyUnit ?? args.storyUnitPlan ?? {},
       characterSourceWhitelist: {
         existing: characterCatalog.existingCharacterNames ?? [],
@@ -400,6 +483,272 @@ export class GenerateChapterOutlinePreviewTool implements BaseTool<GenerateChapt
     });
   }
 
+  private compactQualityReviewOutput(output: ChapterOutlinePreviewOutput): Record<string, unknown> {
+    return {
+      volume: this.compactVolumeForPrompt(output.volume),
+      chapter: output.chapter,
+      risks: output.risks,
+    };
+  }
+
+  private compactVolumeForPrompt(volume: Record<string, unknown>): Record<string, unknown> {
+    return {
+      volumeNo: volume.volumeNo,
+      title: volume.title,
+      synopsis: volume.synopsis,
+      objective: volume.objective,
+      chapterCount: volume.chapterCount,
+    };
+  }
+
+  private buildResponseJsonSchema(): { name: string; description: string; schema: Record<string, unknown>; strict: boolean } {
+    const stringArraySchema = { type: 'array', items: { type: 'string' } };
+    const integerArraySchema = { type: 'array', items: { type: 'integer' } };
+    const chapterNoOrNullSchema = { type: ['integer', 'null'] };
+
+    return {
+      name: 'chapter_outline_preview',
+      description: 'Validated single Chinese web-novel chapter outline preview with complete craftBrief data.',
+      strict: true,
+      schema: {
+        type: 'object',
+        additionalProperties: false,
+        required: ['volume', 'chapter', 'risks'],
+        properties: {
+          volume: { $ref: '#/$defs/volume' },
+          chapter: { $ref: '#/$defs/chapter' },
+          risks: stringArraySchema,
+        },
+        $defs: {
+          volume: {
+            type: 'object',
+            additionalProperties: false,
+            required: ['volumeNo', 'title', 'synopsis', 'objective', 'chapterCount'],
+            properties: {
+              volumeNo: { type: 'integer' },
+              title: { type: 'string' },
+              synopsis: { type: 'string' },
+              objective: { type: 'string' },
+              chapterCount: { type: 'integer' },
+            },
+          },
+          chapterRange: {
+            type: 'object',
+            additionalProperties: false,
+            required: ['start', 'end'],
+            properties: {
+              start: { type: 'integer' },
+              end: { type: 'integer' },
+            },
+          },
+          chapter: {
+            type: 'object',
+            additionalProperties: false,
+            required: ['chapterNo', 'volumeNo', 'title', 'objective', 'conflict', 'hook', 'outline', 'expectedWordCount', 'craftBrief'],
+            properties: {
+              chapterNo: { type: 'integer' },
+              volumeNo: { type: 'integer' },
+              title: { type: 'string' },
+              objective: { type: 'string' },
+              conflict: { type: 'string' },
+              hook: { type: 'string' },
+              outline: { type: 'string' },
+              expectedWordCount: { type: 'integer' },
+              craftBrief: { $ref: '#/$defs/craftBrief' },
+            },
+          },
+          craftBrief: {
+            type: 'object',
+            additionalProperties: false,
+            required: [
+              'visibleGoal',
+              'hiddenEmotion',
+              'coreConflict',
+              'mainlineTask',
+              'subplotTasks',
+              'storyUnit',
+              'actionBeats',
+              'sceneBeats',
+              'characterExecution',
+              'concreteClues',
+              'dialogueSubtext',
+              'characterShift',
+              'irreversibleConsequence',
+              'progressTypes',
+              'entryState',
+              'exitState',
+              'openLoops',
+              'closedLoops',
+              'handoffToNextChapter',
+              'continuityState',
+            ],
+            properties: {
+              visibleGoal: { type: 'string' },
+              hiddenEmotion: { type: 'string' },
+              coreConflict: { type: 'string' },
+              mainlineTask: { type: 'string' },
+              subplotTasks: stringArraySchema,
+              storyUnit: { $ref: '#/$defs/storyUnit' },
+              actionBeats: stringArraySchema,
+              sceneBeats: { type: 'array', items: { $ref: '#/$defs/sceneBeat' } },
+              characterExecution: { $ref: '#/$defs/characterExecution' },
+              concreteClues: { type: 'array', items: { $ref: '#/$defs/concreteClue' } },
+              dialogueSubtext: { type: 'string' },
+              characterShift: { type: 'string' },
+              irreversibleConsequence: { type: 'string' },
+              progressTypes: stringArraySchema,
+              entryState: { type: 'string' },
+              exitState: { type: 'string' },
+              openLoops: stringArraySchema,
+              closedLoops: stringArraySchema,
+              handoffToNextChapter: { type: 'string' },
+              continuityState: { $ref: '#/$defs/continuityState' },
+            },
+          },
+          storyUnit: {
+            type: 'object',
+            additionalProperties: false,
+            required: [
+              'unitId',
+              'title',
+              'chapterRange',
+              'chapterRole',
+              'localGoal',
+              'localConflict',
+              'serviceFunctions',
+              'mainlineContribution',
+              'characterContribution',
+              'relationshipContribution',
+              'worldOrThemeContribution',
+              'unitPayoff',
+              'stateChangeAfterUnit',
+            ],
+            properties: {
+              unitId: { type: 'string' },
+              title: { type: 'string' },
+              chapterRange: { $ref: '#/$defs/chapterRange' },
+              chapterRole: { type: 'string' },
+              localGoal: { type: 'string' },
+              localConflict: { type: 'string' },
+              serviceFunctions: stringArraySchema,
+              mainlineContribution: { type: 'string' },
+              characterContribution: { type: 'string' },
+              relationshipContribution: { type: 'string' },
+              worldOrThemeContribution: { type: 'string' },
+              unitPayoff: { type: 'string' },
+              stateChangeAfterUnit: { type: 'string' },
+            },
+          },
+          sceneBeat: {
+            type: 'object',
+            additionalProperties: false,
+            required: [
+              'sceneArcId',
+              'scenePart',
+              'continuesFromChapterNo',
+              'continuesToChapterNo',
+              'location',
+              'participants',
+              'localGoal',
+              'visibleAction',
+              'obstacle',
+              'turningPoint',
+              'partResult',
+              'sensoryAnchor',
+            ],
+            properties: {
+              sceneArcId: { type: 'string' },
+              scenePart: { type: 'string' },
+              continuesFromChapterNo: chapterNoOrNullSchema,
+              continuesToChapterNo: chapterNoOrNullSchema,
+              location: { type: 'string' },
+              participants: stringArraySchema,
+              localGoal: { type: 'string' },
+              visibleAction: { type: 'string' },
+              obstacle: { type: 'string' },
+              turningPoint: { type: 'string' },
+              partResult: { type: 'string' },
+              sensoryAnchor: { type: 'string' },
+            },
+          },
+          characterExecution: {
+            type: 'object',
+            additionalProperties: false,
+            required: ['povCharacter', 'cast', 'relationshipBeats', 'newMinorCharacters'],
+            properties: {
+              povCharacter: { type: 'string' },
+              cast: { type: 'array', items: { $ref: '#/$defs/castMember' } },
+              relationshipBeats: { type: 'array', items: { $ref: '#/$defs/relationshipBeat' } },
+              newMinorCharacters: { type: 'array', items: { $ref: '#/$defs/newMinorCharacter' } },
+            },
+          },
+          castMember: {
+            type: 'object',
+            additionalProperties: false,
+            required: ['characterName', 'source', 'functionInChapter', 'visibleGoal', 'pressure', 'actionBeatRefs', 'sceneBeatRefs', 'entryState', 'exitState'],
+            properties: {
+              characterName: { type: 'string' },
+              source: { type: 'string', enum: ['existing', 'volume_candidate', 'minor_temporary'] },
+              functionInChapter: { type: 'string' },
+              visibleGoal: { type: 'string' },
+              pressure: { type: 'string' },
+              actionBeatRefs: integerArraySchema,
+              sceneBeatRefs: stringArraySchema,
+              entryState: { type: 'string' },
+              exitState: { type: 'string' },
+            },
+          },
+          relationshipBeat: {
+            type: 'object',
+            additionalProperties: false,
+            required: ['participants', 'publicStateBefore', 'trigger', 'shift', 'publicStateAfter'],
+            properties: {
+              participants: stringArraySchema,
+              publicStateBefore: { type: 'string' },
+              trigger: { type: 'string' },
+              shift: { type: 'string' },
+              publicStateAfter: { type: 'string' },
+            },
+          },
+          newMinorCharacter: {
+            type: 'object',
+            additionalProperties: false,
+            required: ['nameOrLabel', 'narrativeFunction', 'interactionScope', 'firstAndOnlyUse', 'approvalPolicy'],
+            properties: {
+              nameOrLabel: { type: 'string' },
+              narrativeFunction: { type: 'string' },
+              interactionScope: { type: 'string' },
+              firstAndOnlyUse: { type: 'boolean' },
+              approvalPolicy: { type: 'string', enum: ['preview_only', 'needs_approval'] },
+            },
+          },
+          concreteClue: {
+            type: 'object',
+            additionalProperties: false,
+            required: ['name', 'sensoryDetail', 'laterUse'],
+            properties: {
+              name: { type: 'string' },
+              sensoryDetail: { type: 'string' },
+              laterUse: { type: 'string' },
+            },
+          },
+          continuityState: {
+            type: 'object',
+            additionalProperties: false,
+            required: ['characterPositions', 'activeThreats', 'ownedClues', 'relationshipChanges', 'nextImmediatePressure'],
+            properties: {
+              characterPositions: stringArraySchema,
+              activeThreats: stringArraySchema,
+              ownedClues: stringArraySchema,
+              relationshipChanges: stringArraySchema,
+              nextImmediatePressure: { type: 'string' },
+            },
+          },
+        },
+      },
+    };
+  }
+
   private buildQualityRegenerationMessages(input: {
     args: GenerateChapterOutlinePreviewInput;
     volumeNo: number;
@@ -408,6 +757,7 @@ export class GenerateChapterOutlinePreviewTool implements BaseTool<GenerateChapt
     rejectedOutput: ChapterOutlinePreviewOutput;
     qualityReview: ChapterOutlineBatchQualityReview;
     characterCatalog: CharacterReferenceCatalog;
+    previousUnitChapters: unknown[];
   }): Array<{ role: 'system' | 'user'; content: string }> {
     return [
       {
@@ -427,10 +777,11 @@ export class GenerateChapterOutlinePreviewTool implements BaseTool<GenerateChapt
           target: { volumeNo: input.volumeNo, chapterNo: input.chapterNo, chapterCount: input.chapterCount },
           qualityRubric: buildChapterOutlineQualityRubric(),
           qualityIssuesToFix: input.qualityReview.issues.filter((issue) => issue.severity === 'error'),
-          rejectedOutput: input.rejectedOutput,
-          volume: input.rejectedOutput.volume,
+          rejectedOutput: this.compactQualityReviewOutput(input.rejectedOutput),
+          volume: this.compactVolumeForPrompt(input.rejectedOutput.volume),
           storyUnit: input.rejectedOutput.chapter.craftBrief?.storyUnit ?? input.args.storyUnitPlan ?? null,
           previousChapter: input.args.previousChapter ?? null,
+          previousUnitChapters: this.compactPreviousUnitChapters(input.previousUnitChapters),
           characterSourceWhitelist: {
             existing: input.characterCatalog.existingCharacterNames ?? [],
             volume_candidate: this.extractVolumeCandidateNames(input.rejectedOutput.volume),
@@ -443,7 +794,7 @@ export class GenerateChapterOutlinePreviewTool implements BaseTool<GenerateChapt
             'Every sceneBeats.visibleAction must describe a visible action that can be drafted directly into prose.',
             'Maintain entryState, exitState, handoffToNextChapter, openLoops, closedLoops, and continuityState so adjacent chapters can continue.',
           ],
-          requiredJsonShape: { volume: input.rejectedOutput.volume, chapter: input.rejectedOutput.chapter, risks: [] },
+          requiredJsonShape: { volume: this.compactVolumeForPrompt(input.rejectedOutput.volume), chapter: input.rejectedOutput.chapter, risks: [] },
         }),
       },
     ];
@@ -457,6 +808,7 @@ export class GenerateChapterOutlinePreviewTool implements BaseTool<GenerateChapt
     chapterNo: number,
     chapterCount: number,
     characterCatalog: CharacterReferenceCatalog,
+    previousUnitChapters: unknown[] = [],
   ): Array<{ role: 'system' | 'user'; content: string }> {
     const outlineCandidateNames = this.extractVolumeCandidateNames(args.volumeOutline);
     const volumeCandidateNames = outlineCandidateNames.length ? outlineCandidateNames : this.extractVolumeCandidateNames(this.findContextVolume(args.context, volumeNo));
@@ -485,6 +837,7 @@ export class GenerateChapterOutlinePreviewTool implements BaseTool<GenerateChapt
             existingCharacterAliases: characterCatalog.existingCharacterAliases ?? {},
             volumeCandidateNames,
             previousChapter: args.previousChapter ?? null,
+            previousUnitChapters: this.compactPreviousUnitChapters(previousUnitChapters),
             storyUnitPlan: args.storyUnitPlan ?? null,
             invalidOutput,
             repairContract: {
@@ -589,6 +942,7 @@ export class GenerateChapterOutlinePreviewTool implements BaseTool<GenerateChapt
 
   private buildSystemPrompt(): string {
     return [
+      'Highest priority JSON contract: return exactly one JSON object with keys volume, chapter, and risks. volume must be compact and must not include narrativePlan, storyUnitPlan, any chapter array, or characterPlan; put all chapter detail under chapter.craftBrief.',
       '你是小说单章细纲设计 Agent。只输出严格 JSON，不要 Markdown、解释或代码块。',
       '本工具只生成一个指定 chapterNo 的章节细纲与 Chapter.craftBrief，不写正文。',
       'LLM 输出字段只包含 volume、chapter、risks；不要输出章节数组，工具会在解析通过后自动构造下游合并所需数组。',
@@ -608,12 +962,15 @@ export class GenerateChapterOutlinePreviewTool implements BaseTool<GenerateChapt
       'craftBrief.storyUnit 必须包含 unitId、title、chapterRange、chapterRole、localGoal、localConflict、serviceFunctions、mainlineContribution、characterContribution、relationshipContribution、worldOrThemeContribution、unitPayoff、stateChangeAfterUnit；若上游单元故事含 mainlineSegmentIds/serviceToMainline，必须承接到 mainlineContribution；serviceFunctions 至少 3 项。',
       'craftBrief.continuityState 必须包含角色位置、仍在生效的威胁、已持有线索/资源、关系变化和 nextImmediatePressure。',
       '如果提供 previousChapter，必须承接 previousChapter.craftBrief.exitState、handoffToNextChapter、openLoops、continuityState.nextImmediatePressure；不能让压力凭空消失。',
+      '如果提供 previousUnitChapters 或“同单元故事中已生成的前序单章细纲”，必须承接同一 storyUnit 内前序章节已经建立的局部目标进度、线索、关系变化、openLoops/closedLoops、不可逆后果和单元阶段压力；不能重启单元故事或重复已完成的节点。',
+      'Compactness is a hard requirement: this is an outline, not prose. Keep outline to 3-4 numbered scene sentences, prefer exactly 3 sceneBeats, 3-5 actionBeats, 1-3 concreteClues, and 0-2 relationshipBeats.',
+      'For every long text field, use one or two compact Chinese sentences. Do not spend tokens on decorative prose; preserve required keys and closing braces first.',
       '禁止只写推进、建立、完成、探索、揭示、面对、选择、升级、铺垫、承接等抽象词；必须绑定具体地点、人物、动作、物件和后果。',
       'JSON 骨架：{"volume":{"volumeNo":1,"title":"卷名","synopsis":"卷概要","objective":"卷目标","chapterCount":60,"narrativePlan":{"storyUnits":[],"characterPlan":{"existingCharacterArcs":[],"newCharacterCandidates":[],"relationshipArcs":[],"roleCoverage":{"mainlineDrivers":[],"antagonistPressure":[],"emotionalCounterweights":[],"expositionCarriers":[]}}}},"chapter":{"chapterNo":1,"volumeNo":1,"title":"章节标题","objective":"本章可检验目标","conflict":"阻力来源与方式","hook":"章末交接钩子","outline":"1. 场景段...\\n2. 场景段...\\n3. 场景段...","expectedWordCount":2500,"craftBrief":{"visibleGoal":"表层目标","hiddenEmotion":"隐藏情绪","coreConflict":"核心冲突","mainlineTask":"主线任务","subplotTasks":["支线任务"],"storyUnit":{"unitId":"v1_unit_01","title":"单元故事名","chapterRange":{"start":1,"end":4},"chapterRole":"开局/升级/反转/收束","localGoal":"单元目标","localConflict":"单元阻力","serviceFunctions":["mainline","relationship_shift","foreshadow"],"mainlineContribution":"主线贡献","characterContribution":"人物贡献","relationshipContribution":"关系贡献","worldOrThemeContribution":"世界或主题贡献","unitPayoff":"单元回收","stateChangeAfterUnit":"单元后状态"},"actionBeats":["行动1","行动2","行动3"],"sceneBeats":[{"sceneArcId":"arc","scenePart":"1/3","continuesFromChapterNo":null,"continuesToChapterNo":null,"location":"地点","participants":["角色"],"localGoal":"场景目标","visibleAction":"可见动作","obstacle":"阻力","turningPoint":"转折","partResult":"结果","sensoryAnchor":"感官锚点"}],"characterExecution":{"povCharacter":"角色","cast":[{"characterName":"角色","source":"existing","functionInChapter":"本章功能","visibleGoal":"可见目标","pressure":"压力","actionBeatRefs":[1],"sceneBeatRefs":["arc"],"entryState":"入场状态","exitState":"离场状态"}],"relationshipBeats":[{"participants":["角色A","角色B"],"publicStateBefore":"公开关系旧状态","trigger":"触发关系变化的具体事件","shift":"关系变化","publicStateAfter":"公开关系新状态"}],"newMinorCharacters":[]},"concreteClues":[{"name":"线索","sensoryDetail":"感官细节","laterUse":"后续用途"}],"dialogueSubtext":"潜台词","characterShift":"人物变化","irreversibleConsequence":"不可逆后果","progressTypes":["info"],"entryState":"入场状态","exitState":"离场状态","openLoops":["未解决问题"],"closedLoops":["阶段性解决问题"],"handoffToNextChapter":"下一章交接","continuityState":{"characterPositions":["位置"],"activeThreats":["威胁"],"ownedClues":["线索"],"relationshipChanges":["关系变化"],"nextImmediatePressure":"下一章压力"}}},"risks":[]}',
     ].join('\n');
   }
 
-  private buildUserPrompt(args: GenerateChapterOutlinePreviewInput, volumeNo: number, chapterNo: number, chapterCount: number): string {
+  private buildUserPrompt(args: GenerateChapterOutlinePreviewInput, volumeNo: number, chapterNo: number, chapterCount: number, previousUnitChapters: unknown[] = []): string {
     const context = this.asRecord(args.context);
     const project = this.asRecord(context.project);
     const volumes = Array.isArray(context.volumes) ? context.volumes.map((item) => this.asRecord(item)) : [];
@@ -650,6 +1007,9 @@ export class GenerateChapterOutlinePreviewTool implements BaseTool<GenerateChapt
       '上一章接力卡：',
       this.safeJson(args.previousChapter ?? { previousChapterNo: null, note: '这是本次计划的首章或未提供上一章；从项目和卷上下文开篇。' }, 3000),
       '',
+      '同单元故事中已生成的前序单章细纲（只承接同一 storyUnit 内早于本章的章节；不要重复其已完成节点）：',
+      this.safeJson(this.compactPreviousUnitChapters(previousUnitChapters), 7000),
+      '',
       '已有角色摘要（名称、别名、scope、状态和关系锚点；优先使用既有角色，不要重复造人）：',
       this.safeJson(Array.isArray(context.characters) ? context.characters.slice(0, 30) : [], 4000),
       '',
@@ -674,6 +1034,109 @@ export class GenerateChapterOutlinePreviewTool implements BaseTool<GenerateChapt
       '本章 craftBrief.storyUnit 必须使用上方“本章应承接的单元故事”的 unitId、chapterRange 和主线段服务关系；不要在章节细纲里创造新的单元故事或新的主线段。',
       '若上下文不足，把风险写入 risks，但仍输出完整单章细纲和 craftBrief。',
     ].join('\n');
+  }
+
+  private collectPreviousUnitChapters(args: GenerateChapterOutlinePreviewInput, context: ToolContext, volumeNo: number, chapterNo: number, chapterCount: number): unknown[] {
+    const promptContext = this.asRecord(args.context);
+    const volumes = this.asRecordArray(promptContext.volumes);
+    const upstreamVolumeOutline = this.asRecord(args.volumeOutline);
+    const contextVolume = volumes.find((item) => Number(item.volumeNo) === volumeNo) ?? {};
+    const targetVolume = Object.keys(upstreamVolumeOutline).length ? upstreamVolumeOutline : contextVolume;
+    const targetNarrativePlan = this.asRecord(targetVolume.narrativePlan);
+    const selectedStoryUnit = this.findRequiredStoryUnit(targetNarrativePlan, args.storyUnitPlan, chapterNo, chapterCount);
+    const candidates: unknown[] = [];
+
+    candidates.push(...(Array.isArray(args.previousUnitChapters) ? args.previousUnitChapters : []));
+    if (Object.keys(this.asRecord(args.previousChapter)).length) candidates.push(args.previousChapter);
+
+    for (const [stepNoText, output] of Object.entries(context.outputs ?? {})) {
+      const stepNo = Number(stepNoText);
+      if (context.stepTools?.[stepNo] && context.stepTools[stepNo] !== this.name) continue;
+      const chapter = this.extractChapterFromPreviewOutput(output);
+      if (Object.keys(chapter).length) candidates.push(chapter);
+    }
+
+    const byChapterNo = new Map<number, Record<string, unknown>>();
+    for (const item of candidates) {
+      const chapter = this.extractChapterFromPreviewOutput(item);
+      if (!this.isSameUnitPreviousChapter(chapter, selectedStoryUnit, volumeNo, chapterNo)) continue;
+      const previousChapterNo = Number(chapter.chapterNo);
+      byChapterNo.set(previousChapterNo, chapter);
+    }
+
+    return [...byChapterNo.values()].sort((left, right) => Number(left.chapterNo) - Number(right.chapterNo));
+  }
+
+  private extractChapterFromPreviewOutput(value: unknown): Record<string, unknown> {
+    const record = this.asRecord(value);
+    const chapter = this.asRecord(record.chapter);
+    if (Object.keys(chapter).length) return chapter;
+    const chapters = this.asRecordArray(record.chapters);
+    if (chapters.length === 1) return chapters[0];
+    if (Number.isInteger(Number(record.chapterNo))) return record;
+    return {};
+  }
+
+  private isSameUnitPreviousChapter(chapter: Record<string, unknown>, selectedStoryUnit: Record<string, unknown> | undefined, volumeNo: number, chapterNo: number): boolean {
+    const previousChapterNo = Number(chapter.chapterNo);
+    if (!Number.isInteger(previousChapterNo) || previousChapterNo >= chapterNo) return false;
+    const previousVolumeNo = Number(chapter.volumeNo);
+    if (Number.isInteger(previousVolumeNo) && previousVolumeNo !== volumeNo) return false;
+    if (!selectedStoryUnit) return true;
+
+    const previousStoryUnit = this.asRecord(this.asRecord(chapter.craftBrief).storyUnit);
+    const selectedUnitId = this.text(selectedStoryUnit.unitId, '');
+    const previousUnitId = this.text(previousStoryUnit.unitId, '');
+    if (selectedUnitId && previousUnitId && selectedUnitId === previousUnitId) return true;
+
+    const range = this.asRecord(selectedStoryUnit.chapterRange);
+    const start = Number(range.start);
+    const end = Number(range.end);
+    return Number.isInteger(start) && Number.isInteger(end) && start <= previousChapterNo && previousChapterNo <= end;
+  }
+
+  private compactPreviousUnitChapters(chapters: unknown[]): unknown[] {
+    return this.asRecordArray(chapters).map((chapter) => {
+      const craftBrief = this.asRecord(chapter.craftBrief);
+      const characterExecution = this.asRecord(craftBrief.characterExecution);
+      return {
+        chapterNo: Number(chapter.chapterNo) || null,
+        title: this.truncateText(chapter.title, 80),
+        objective: this.truncateText(chapter.objective, 180),
+        conflict: this.truncateText(chapter.conflict, 180),
+        hook: this.truncateText(chapter.hook, 180),
+        storyUnit: craftBrief.storyUnit ?? null,
+        actionBeats: this.stringArray(craftBrief.actionBeats, []).slice(0, 5).map((beat) => this.truncateText(beat, 120)),
+        sceneBeats: this.asRecordArray(craftBrief.sceneBeats).map((scene) => ({
+          sceneArcId: this.truncateText(scene.sceneArcId, 80),
+          scenePart: this.truncateText(scene.scenePart, 40),
+          location: this.truncateText(scene.location, 80),
+          participants: this.stringArray(scene.participants, []),
+          visibleAction: this.truncateText(scene.visibleAction, 140),
+          turningPoint: this.truncateText(scene.turningPoint, 120),
+          partResult: this.truncateText(scene.partResult, 120),
+        })),
+        characterExecution: {
+          povCharacter: this.truncateText(characterExecution.povCharacter, 80),
+          cast: this.asRecordArray(characterExecution.cast).map((cast) => ({
+            characterName: this.truncateText(cast.characterName, 80),
+            source: this.truncateText(cast.source, 40),
+            functionInChapter: this.truncateText(cast.functionInChapter, 120),
+            exitState: this.truncateText(cast.exitState, 120),
+          })),
+          relationshipBeats: this.asRecordArray(characterExecution.relationshipBeats).slice(0, 2),
+        },
+        concreteClues: this.asRecordArray(craftBrief.concreteClues).slice(0, 3),
+        characterShift: this.truncateText(craftBrief.characterShift, 160),
+        irreversibleConsequence: this.truncateText(craftBrief.irreversibleConsequence, 160),
+        entryState: this.truncateText(craftBrief.entryState, 160),
+        exitState: this.truncateText(craftBrief.exitState, 160),
+        openLoops: this.stringArray(craftBrief.openLoops, []),
+        closedLoops: this.stringArray(craftBrief.closedLoops, []),
+        handoffToNextChapter: this.truncateText(craftBrief.handoffToNextChapter, 180),
+        continuityState: craftBrief.continuityState ?? null,
+      };
+    });
   }
 
   private assertProvidedVolumeStoryUnit(storyUnit: Record<string, unknown> | undefined, chapterNo: number): void {
@@ -895,6 +1358,11 @@ export class GenerateChapterOutlinePreviewTool implements BaseTool<GenerateChapt
     if (typeof value === 'number' || typeof value === 'boolean') return String(value);
     if (value && typeof value === 'object') return JSON.stringify(value);
     return defaultValue;
+  }
+
+  private truncateText(value: unknown, maxLength: number): string {
+    const text = this.text(value, '');
+    return text.length > maxLength ? `${text.slice(0, maxLength)}...` : text;
   }
 
   private stringArray(value: unknown, defaultValue: string[]): string[] {
