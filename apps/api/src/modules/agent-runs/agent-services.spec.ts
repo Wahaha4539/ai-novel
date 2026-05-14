@@ -10068,6 +10068,117 @@ test('Planner 接受 LLM 语义判定的 taskType，不再被后端 baseline 锁
   assert.deepEqual(plan.steps.slice(0, 3).map((step) => step.tool), ['resolve_chapter', 'collect_chapter_context', 'write_chapter']);
 });
 
+test('Planner routes editor passage agent requests to local passage revision tools', async () => {
+  const previousFlag = process.env.AGENT_PLANNER_GRAPH_ENABLED;
+  process.env.AGENT_PLANNER_GRAPH_ENABLED = 'true';
+  try {
+    let capturedMessages: Array<{ role: string; content: string }> = [];
+    const toolList = [
+      createTool({ name: 'collect_chapter_context', requiresApproval: false, riskLevel: 'low', sideEffects: [] }),
+      createTool({ name: 'revise_chapter_passage_preview', requiresApproval: false, riskLevel: 'low', sideEffects: [] }),
+      createTool({ name: 'apply_chapter_passage_revision', requiresApproval: true, riskLevel: 'medium', sideEffects: ['write'] }),
+    ];
+    const tools = {
+      list: () => toolList,
+      listManifestsForPlanner: (toolNames?: string[]) => {
+        const selected = toolNames?.length
+          ? toolList.filter((tool) => toolNames.includes(tool.name))
+          : toolList;
+        return selected.map((tool) => ({
+          name: tool.name,
+          displayName: tool.name,
+          description: tool.description,
+          whenToUse: [],
+          whenNotToUse: [],
+          inputSchema: { type: 'object' },
+          outputSchema: { type: 'object' },
+          allowedModes: tool.allowedModes,
+          riskLevel: tool.riskLevel,
+          requiresApproval: tool.requiresApproval,
+          sideEffects: tool.sideEffects,
+        }));
+      },
+    } as unknown as ToolRegistryService;
+    const llm = {
+      async chatJson(messages: Array<{ role: string; content: string }>) {
+        capturedMessages = messages;
+        return {
+          data: {
+            taskType: 'chapter_passage_revision',
+            summary: '选区局部修订计划',
+            assumptions: [],
+            risks: [],
+            steps: [
+              { stepNo: 1, name: '读取章节上下文', tool: 'collect_chapter_context', mode: 'act', requiresApproval: false, args: { chapterId: '{{context.session.currentChapterId}}' } },
+              {
+                stepNo: 2,
+                name: '生成选区局部修订预览',
+                tool: 'revise_chapter_passage_preview',
+                mode: 'act',
+                requiresApproval: false,
+                args: {
+                  chapterId: '{{context.session.currentChapterId}}',
+                  draftId: '{{context.session.currentDraftId}}',
+                  draftVersion: '{{context.session.currentDraftVersion}}',
+                  selectedRange: '{{context.session.selectedRange}}',
+                  selectedParagraphRange: '{{context.session.selectedParagraphRange}}',
+                  originalText: '{{context.session.selectedText}}',
+                  instruction: '{{context.userMessage}}',
+                },
+              },
+              { stepNo: 3, name: '审批后应用局部修订', tool: 'apply_chapter_passage_revision', mode: 'act', requiresApproval: true, args: { preview: '{{steps.2.output}}' } },
+            ],
+          },
+          result: { model: 'planner-mock' },
+        };
+      },
+    };
+    const planner = new AgentPlannerService(new SkillRegistryService(), tools, new RuleEngineService(), llm as never);
+
+    const plan = await planner.createPlan('把选中的这段压紧一点，保留事实。', {
+      schemaVersion: 2,
+      userMessage: '把选中的这段压紧一点，保留事实。',
+      runtime: { mode: 'plan', locale: 'zh-CN', maxSteps: 20, maxLlmCalls: 8 },
+      session: {
+        currentProjectId: 'project-1',
+        currentChapterId: 'chapter-1',
+        currentDraftId: 'draft-1',
+        currentDraftVersion: 3,
+        selectedText: '她把钥匙扣进掌心，没再回头。',
+        selectedRange: { start: 12, end: 26 },
+        selectedParagraphRange: { start: 4, end: 4, count: 1 },
+        sourcePage: 'editor_passage_agent',
+        selectionIntent: 'chapter_passage_revision',
+      },
+      recentChapters: [],
+      knownCharacters: [],
+      worldFacts: [],
+      memoryHints: [],
+      attachments: [],
+      constraints: { hardRules: [], styleRules: [], approvalRules: [], idPolicy: [] },
+      availableTools: [],
+    });
+
+    const promptPayload = JSON.parse(capturedMessages[1].content);
+    const availableTools = promptPayload.availableTools as Array<{ name: string }>;
+
+    assert.equal(plan.taskType, 'chapter_passage_revision');
+    assert.deepEqual(plan.steps.map((step) => step.tool), ['collect_chapter_context', 'revise_chapter_passage_preview', 'apply_chapter_passage_revision']);
+    assert.equal(plan.steps[2].requiresApproval, true);
+    assert.equal(promptPayload.routeDecision.intent, 'chapter_passage_revision');
+    assert.match(capturedMessages[0].content, /editor_passage_agent/);
+    assert.match(capturedMessages[0].content, /revise_chapter_passage_preview -> apply_chapter_passage_revision/);
+    assert.match(promptPayload.taskTypeGuidance.chapter_passage_revision, /压缩节奏/);
+    assert.ok(availableTools.some((tool) => tool.name === 'revise_chapter_passage_preview'));
+    assert.ok(availableTools.some((tool) => tool.name === 'apply_chapter_passage_revision'));
+    assert.ok(!availableTools.some((tool) => tool.name === 'polish_chapter'));
+    assert.ok(!availableTools.some((tool) => tool.name === 'rewrite_chapter'));
+  } finally {
+    if (previousFlag === undefined) delete process.env.AGENT_PLANNER_GRAPH_ENABLED;
+    else process.env.AGENT_PLANNER_GRAPH_ENABLED = previousFlag;
+  }
+});
+
 test('Planner prompt 将长章节细纲引导到 outline_design 而非正文写作', async () => {
   let capturedMessages: Array<{ role: string; content: string }> = [];
   let capturedOptions: { timeoutMs?: number } | undefined;
@@ -10730,7 +10841,7 @@ test('ToolBundleRegistry resolves core bundles and rejects missing registered to
   const tools = {
     list: () => allBundleToolNames.map((name) => createTool({
       name,
-      requiresApproval: name.startsWith('persist_') || name === 'write_chapter' || name === 'rewrite_chapter' || name === 'write_chapter_series',
+      requiresApproval: name.startsWith('persist_') || name === 'write_chapter' || name === 'rewrite_chapter' || name === 'write_chapter_series' || name === 'apply_chapter_passage_revision',
       riskLevel: name.startsWith('persist_') ? 'high' : 'low',
       sideEffects: name.startsWith('persist_') ? ['write'] : [],
     })),
@@ -10738,7 +10849,7 @@ test('ToolBundleRegistry resolves core bundles and rejects missing registered to
   const registry = new ToolBundleRegistry(tools);
 
   registry.assertAllBundlesRegistered();
-  for (const bundleName of ['outline.volume', 'outline.chapter', 'writing.chapter', 'writing.series', 'revision.polish', 'revision.rewrite', 'import.project_assets', 'guided.step']) {
+  for (const bundleName of ['outline.volume', 'outline.chapter', 'writing.chapter', 'writing.series', 'revision.passage', 'revision.polish', 'revision.rewrite', 'import.project_assets', 'guided.step']) {
     assert.ok(TOOL_BUNDLE_DEFINITIONS.some((definition) => definition.name === bundleName));
     assert.equal(registry.resolveBundle(bundleName).bundleName, bundleName);
   }
@@ -10764,7 +10875,7 @@ test('ASP-P7-001 writing and revision bundles stay separated by intent', () => {
     ...(definition.deniedToolNames ?? []),
   ]))];
   const tools = {
-    list: () => allBundleToolNames.map((name) => createTool({ name, requiresApproval: name.startsWith('write_') || name === 'rewrite_chapter' || name === 'polish_chapter', riskLevel: 'low', sideEffects: [] })),
+    list: () => allBundleToolNames.map((name) => createTool({ name, requiresApproval: name.startsWith('write_') || name === 'rewrite_chapter' || name === 'polish_chapter' || name === 'apply_chapter_passage_revision', riskLevel: 'low', sideEffects: [] })),
   } as unknown as ToolRegistryService;
   const registry = new ToolBundleRegistry(tools);
 
@@ -10783,6 +10894,13 @@ test('ASP-P7-001 writing and revision bundles stay separated by intent', () => {
   assert.equal(rewrite.bundleName, 'revision.rewrite');
   assert.ok(rewrite.strictToolNames.includes('rewrite_chapter'));
   assert.ok(rewrite.deniedToolNames?.includes('polish_chapter'));
+
+  const passage = registry.resolveForRoute({ domain: 'revision', intent: 'chapter_passage_revision' });
+  assert.equal(passage.bundleName, 'revision.passage');
+  assert.ok(passage.strictToolNames.includes('revise_chapter_passage_preview'));
+  assert.ok(passage.strictToolNames.includes('apply_chapter_passage_revision'));
+  assert.ok(passage.deniedToolNames?.includes('polish_chapter'));
+  assert.ok(passage.deniedToolNames?.includes('rewrite_chapter'));
 
   const polish = registry.resolveForRoute({ domain: 'revision', intent: 'chapter_polish' });
   assert.equal(polish.bundleName, 'revision.polish');
@@ -12027,6 +12145,49 @@ test('RootSupervisor classifies planner domains without tool manifests', () => {
   assert.equal(unclear.intent, 'clarify');
   assert.equal(unclear.ambiguity?.needsClarification, true);
   assert.ok(unclear.confidence < 0.5);
+});
+
+test('RootSupervisor prefers passage revision for editor passage selections and only escalates on explicit whole-chapter requests', () => {
+  const supervisor = new RootSupervisor();
+  const completePassageContext = {
+    session: {
+      sourcePage: 'editor_passage_agent',
+      selectionIntent: 'chapter_passage_revision',
+      currentChapterId: 'chapter-1',
+      currentDraftId: 'draft-1',
+      currentDraftVersion: 3,
+      selectedText: '她把钥匙扣进掌心，没再回头。',
+      selectedRange: { start: 24, end: 38 },
+      selectedParagraphRange: { start: 4, end: 4, count: 1 },
+    },
+  } as AgentContextV2;
+
+  for (const goal of ['把这段润色一下，保留事实。', '把这段压缩节奏一点。', '把这段角色口吻调得更像她。', '保留第二句，其他重写。']) {
+    const route = supervisor.classify({ goal, context: completePassageContext });
+    assert.equal(route.domain, 'revision');
+    assert.equal(route.intent, 'chapter_passage_revision');
+    assert.ok(route.confidence >= 0.9);
+  }
+
+  const wholeChapterRewrite = supervisor.classify({
+    goal: '整章重写，不沿用旧稿。',
+    context: completePassageContext,
+  });
+  assert.equal(wholeChapterRewrite.domain, 'revision');
+  assert.equal(wholeChapterRewrite.intent, 'chapter_rewrite');
+
+  const incompleteContext = {
+    session: {
+      ...completePassageContext.session,
+      selectedRange: undefined,
+    },
+  } as AgentContextV2;
+  const fallback = supervisor.classify({
+    goal: '把这段压缩节奏一点。',
+    context: incompleteContext,
+  });
+  assert.equal(fallback.domain, 'revision');
+  assert.equal(fallback.intent, 'chapter_revision');
 });
 
 test('ASP-P6-001 OutlineSupervisor classifies outline sub-intents without tools', () => {

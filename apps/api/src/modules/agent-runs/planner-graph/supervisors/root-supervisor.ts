@@ -43,6 +43,35 @@ export class RootSupervisor {
       return route('timeline', 'timeline_plan', 0.88, ['目标涉及时间线候选、校验或确认。'], { chapterNo, needsApproval: needsPersistence, needsPersistence });
     }
 
+    if (isEditorPassageEntry(input.context)) {
+      const wholeChapterIntent = isExplicitWholeChapterPassageOverride(normalized);
+      if (hasCompletePassageSelection(input.context)) {
+        if (wholeChapterIntent) {
+          return route(
+            'revision',
+            includesAny(normalized, ['重写', '不沿用旧稿', '推倒重来', 'rewrite']) ? 'chapter_rewrite' : 'chapter_revision',
+            0.93,
+            ['当前上下文来自 editor_passage_agent，但用户显式要求整章修改，应转到整章修订链路。'],
+            { chapterNo, needsApproval: true, needsPersistence: true },
+          );
+        }
+        return route(
+          'revision',
+          'chapter_passage_revision',
+          0.95,
+          ['当前上下文来自 editor_passage_agent，且包含完整选区、draftId 与 selectedText，应优先走局部选区修订链路。'],
+          { chapterNo, needsApproval: true, needsPersistence: true },
+        );
+      }
+      return route(
+        'revision',
+        wholeChapterIntent && includesAny(normalized, ['重写', '不沿用旧稿', '推倒重来', 'rewrite']) ? 'chapter_rewrite' : 'chapter_revision',
+        0.78,
+        ['当前入口来自 editor_passage_agent，但缺少完整选区上下文，不能使用局部 passage 工具链。'],
+        { chapterNo, needsApproval: true, needsPersistence: true },
+      );
+    }
+
     if (isOutlineGoal(normalized)) {
       return route('outline', 'outline', 0.9, ['目标属于 outline 领域，交由 OutlineSupervisor 判断子意图。'], { volumeNo, needsApproval: true, needsPersistence: true });
     }
@@ -106,6 +135,30 @@ function route(
 
 function normalizeGoal(goal: string): string {
   return goal.toLowerCase().replace(/\s+/g, ' ');
+}
+
+function isEditorPassageEntry(context?: RootSupervisorInput['context']): boolean {
+  return context?.session.sourcePage === 'editor_passage_agent'
+    && context.session.selectionIntent === 'chapter_passage_revision';
+}
+
+function hasCompletePassageSelection(context?: RootSupervisorInput['context']): boolean {
+  const session = context?.session;
+  if (!session) return false;
+  const selectedText = typeof session.selectedText === 'string' ? session.selectedText.trim() : '';
+  const draftId = typeof session.currentDraftId === 'string' ? session.currentDraftId.trim() : '';
+  const draftVersion = typeof session.currentDraftVersion === 'number' && Number.isInteger(session.currentDraftVersion) && session.currentDraftVersion > 0;
+  const range = session.selectedRange;
+  const hasRange = !!range
+    && Number.isInteger(range.start)
+    && Number.isInteger(range.end)
+    && range.end > range.start;
+  return Boolean(selectedText && draftId && draftVersion && hasRange);
+}
+
+function isExplicitWholeChapterPassageOverride(goal: string): boolean {
+  return includesAny(goal, ['整章', '全章', '整个章节', '全文', '整篇'])
+    && includesAny(goal, ['润色', '重写', '修改', '改写', '修文', 'polish', 'rewrite']);
 }
 
 function includesAny(value: string, keywords: string[]): boolean {

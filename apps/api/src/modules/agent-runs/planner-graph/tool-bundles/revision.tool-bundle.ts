@@ -2,6 +2,19 @@ import type { ToolBundleDefinition } from './tool-bundle.types';
 
 export const revisionToolBundles: ToolBundleDefinition[] = [
   {
+    name: 'revision.passage',
+    domain: 'revision',
+    intents: ['chapter_passage_revision', 'passage_revision'],
+    strictToolNames: ['collect_chapter_context', 'revise_chapter_passage_preview', 'apply_chapter_passage_revision'],
+    deniedToolNames: ['write_chapter', 'write_chapter_series', 'rewrite_chapter', 'polish_chapter', 'persist_outline', 'persist_project_assets'],
+    plannerGuidance: [
+      'When sourcePage=editor_passage_agent and selectionIntent=chapter_passage_revision with selectedText, selectedRange, currentDraftId, and currentDraftVersion, keep the plan on the selected passage only.',
+      'Use revise_chapter_passage_preview to create the local replacement preview, then apply_chapter_passage_revision only after approval.',
+      'Do not switch to polish_chapter or rewrite_chapter unless the user explicitly asks to revise the whole chapter.',
+      'If selectedRange, selectedText, currentDraftId, or currentDraftVersion is missing, do not use passage tools; reselect or fall back to a non-passage revision route.',
+    ],
+  },
+  {
     name: 'revision.polish',
     domain: 'revision',
     intents: ['chapter_revision', 'chapter_polish', 'polish_chapter'],

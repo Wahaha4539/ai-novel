@@ -239,6 +239,7 @@ export class ReviseChapterPassagePreviewTool implements BaseTool<ReviseChapterPa
       draftId: { source: 'context', description: 'Use context.session.currentDraftId from editor passage selection.' },
       draftVersion: { source: 'context', description: 'Use context.session.currentDraftVersion from editor passage selection.' },
       selectedRange: { source: 'context', description: 'Use context.session.selectedRange exactly; do not infer from text.' },
+      selectedParagraphRange: { source: 'context', description: 'Use context.session.selectedParagraphRange when present; do not invent paragraph numbers.' },
       originalText: { source: 'context', description: 'Use context.session.selectedText exactly.' },
       instruction: { source: 'user_message', description: 'The user requested passage-level change.' },
     },

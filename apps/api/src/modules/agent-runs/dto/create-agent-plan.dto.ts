@@ -22,6 +22,8 @@ export interface CreateAgentPlanContextDto {
   currentDraftVersion?: number;
   selectedText?: string;
   selectedRange?: { start: number; end: number };
+  selectedParagraphRange?: { start: number; end: number; count?: number };
+  selectionIntent?: string;
   sourcePage?: string;
   requestedAssetTypes?: ImportAssetTypeDto[];
   importPreviewMode?: ImportPreviewModeDto;

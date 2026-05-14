@@ -51,6 +51,8 @@ export interface AgentContextV2 {
     currentDraftVersion?: number;
     selectedText?: string;
     selectedRange?: { start: number; end: number };
+    selectedParagraphRange?: { start: number; end: number; count?: number };
+    selectionIntent?: string;
     sourcePage?: string;
     requestedAssetTypes?: ImportAssetTypeDto[];
     importPreviewMode?: ImportPreviewModeDto;
@@ -153,6 +155,8 @@ export class AgentContextBuilderService {
         currentDraftVersion: this.numberValue(sessionHints.currentDraftVersion) ?? currentDraft?.versionNo,
         selectedText: this.stringValue(sessionHints.selectedText),
         selectedRange: this.rangeValue(sessionHints.selectedRange),
+        selectedParagraphRange: this.selectedParagraphRangeValue(sessionHints.selectedParagraphRange),
+        selectionIntent: this.stringValue(sessionHints.selectionIntent),
         sourcePage: this.stringValue(sessionHints.sourcePage),
         requestedAssetTypes: this.importAssetTypesValue(sessionHints.requestedAssetTypes),
         importPreviewMode: this.importPreviewModeValue(sessionHints.importPreviewMode),
@@ -325,6 +329,19 @@ export class AgentContextBuilderService {
     const start = this.numberValue(record.start);
     const end = this.numberValue(record.end);
     return start !== undefined && end !== undefined ? { start, end } : undefined;
+  }
+
+  private selectedParagraphRangeValue(value: unknown) {
+    const record = this.asRecord(value);
+    const start = this.numberValue(record.start);
+    const end = this.numberValue(record.end);
+    const count = this.numberValue(record.count);
+    if (start === undefined || end === undefined) return undefined;
+    return {
+      start,
+      end,
+      ...(count !== undefined ? { count } : {}),
+    };
   }
 
   private guidedValue(value: unknown): GuidedAgentContext | undefined {
