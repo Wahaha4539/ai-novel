@@ -263,6 +263,11 @@ export default function HomePage() {
     setVolumeRefreshSignal((value) => value + 1);
   }, [data]);
 
+  const handlePassageRevisionApplied = useCallback(async () => {
+    await refreshSelectedProjectData();
+    setActiveView('editor');
+  }, [refreshSelectedProjectData]);
+
   const handleSubmitPassageAgent = useCallback(async ({ message, context }: { message: string; context: PassageAgentContext }) => {
     setPendingAgentRequest({
       id: `passage-${Date.now().toString(36)}-${context.currentDraftId}-${context.selectedRange.start}-${context.selectedRange.end}`,
@@ -422,6 +427,7 @@ export default function HomePage() {
             projectId={data.selectedProjectId}
             selectedChapterId={data.selectedChapterId !== 'all' ? data.selectedChapterId : undefined}
             onRefresh={refreshSelectedProjectData}
+            onPassageRevisionApplied={handlePassageRevisionApplied}
             initialRequest={pendingAgentRequest}
             onInitialRequestConsumed={() => setPendingAgentRequest(undefined)}
           />

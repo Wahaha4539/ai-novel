@@ -19,6 +19,7 @@ import {
   type ProjectImportTargetSource,
 } from './AgentSharedWidgets';
 import { PlannerDiagnosticsDetails } from './AgentPlanPanel';
+import { buildPassageDiffSegments, parseChapterPassageRevisionPreview } from './chapterPassageRevisionPreview';
 import { TimelineUpdatePreview } from './TimelineUpdatePreview';
 
 // ────────────────────────────────────────────
@@ -258,11 +259,22 @@ interface AgentArtifactPanelProps {
   onQueryChange: (value: string) => void;
   onRequestWorldbuildingPersistSelection?: (titles: string[]) => void | Promise<void>;
   onRequestImportTargetRegeneration?: (assetType: ProjectImportAssetType) => void | Promise<void>;
+  canApplyPassageRevision?: boolean;
+  onApplyPassageRevision?: () => void | Promise<void>;
   actionDisabled?: boolean;
 }
 
 /** 产物预览面板：搜索、去重、按类型渲染业务化摘要 */
-export function AgentArtifactPanel({ run, query, onQueryChange, onRequestWorldbuildingPersistSelection, onRequestImportTargetRegeneration, actionDisabled }: AgentArtifactPanelProps) {
+export function AgentArtifactPanel({
+  run,
+  query,
+  onQueryChange,
+  onRequestWorldbuildingPersistSelection,
+  onRequestImportTargetRegeneration,
+  canApplyPassageRevision,
+  onApplyPassageRevision,
+  actionDisabled,
+}: AgentArtifactPanelProps) {
   const plan = latestPlan(run);
   const targetSources = useMemo(() => projectImportTargetSources(plan), [plan]);
   const writeInfo = useMemo(() => planWriteInfo(plan), [plan]);
@@ -302,6 +314,8 @@ export function AgentArtifactPanel({ run, query, onQueryChange, onRequestWorldbu
                 repairDiagnostics={repairDiagnosticsForArtifact(artifact.artifactType, sourceInfo, repairDiagnosticsByTool)}
                 onRequestWorldbuildingPersistSelection={onRequestWorldbuildingPersistSelection}
                 onRequestImportTargetRegeneration={onRequestImportTargetRegeneration}
+                canApplyPassageRevision={canApplyPassageRevision}
+                onApplyPassageRevision={onApplyPassageRevision}
                 actionDisabled={actionDisabled}
               />
             );
@@ -346,6 +360,8 @@ function ArtifactCard({
   repairDiagnostics,
   onRequestWorldbuildingPersistSelection,
   onRequestImportTargetRegeneration,
+  canApplyPassageRevision,
+  onApplyPassageRevision,
   actionDisabled,
 }: {
   artifactType?: string;
@@ -355,6 +371,8 @@ function ArtifactCard({
   repairDiagnostics?: RepairDiagnosticView[];
   onRequestWorldbuildingPersistSelection?: (titles: string[]) => void | Promise<void>;
   onRequestImportTargetRegeneration?: (assetType: ProjectImportAssetType) => void | Promise<void>;
+  canApplyPassageRevision?: boolean;
+  onApplyPassageRevision?: () => void | Promise<void>;
   actionDisabled?: boolean;
 }) {
   return (
@@ -372,6 +390,8 @@ function ArtifactCard({
           artifactType={artifactType}
           content={content}
           onRequestWorldbuildingPersistSelection={onRequestWorldbuildingPersistSelection}
+          canApplyPassageRevision={canApplyPassageRevision}
+          onApplyPassageRevision={onApplyPassageRevision}
           actionDisabled={actionDisabled}
         />
         <details className="agent-artifact-card__json-toggle">
@@ -452,11 +472,15 @@ function TypedArtifactPreview({
   artifactType,
   content,
   onRequestWorldbuildingPersistSelection,
+  canApplyPassageRevision,
+  onApplyPassageRevision,
   actionDisabled,
 }: {
   artifactType?: string;
   content?: unknown;
   onRequestWorldbuildingPersistSelection?: (titles: string[]) => void | Promise<void>;
+  canApplyPassageRevision?: boolean;
+  onApplyPassageRevision?: () => void | Promise<void>;
   actionDisabled?: boolean;
 }) {
   if (artifactType === 'outline_preview') return <OutlinePreviewSummary content={content} />;
@@ -489,6 +513,16 @@ function TypedArtifactPreview({
   if (artifactType === 'story_units_persist_result') return <StoryUnitsPersistSummary content={content} />;
   if (artifactType === 'volume_character_candidates_preview') return <VolumeCharacterCandidatesPreviewSummary content={content} />;
   if (artifactType === 'volume_character_candidates_persist_result') return <VolumeCharacterCandidatesPersistSummary content={content} />;
+  if (artifactType === 'chapter_passage_revision_preview') {
+    return (
+      <ChapterPassageRevisionPreviewSummary
+        content={content}
+        canApply={canApplyPassageRevision}
+        onApply={onApplyPassageRevision}
+        actionDisabled={actionDisabled}
+      />
+    );
+  }
   if (artifactType === 'import_persist_result') return <PersistSummary content={content} />;
   if (artifactType === 'chapter_draft_result') return <ChapterDraftSummary content={content} />;
   if (artifactType === 'chapter_generation_quality_report') return <GenerationQualitySummary content={content} />;
@@ -502,6 +536,181 @@ function TypedArtifactPreview({
 }
 
 // ── 以下为各类型产物摘要组件 ──
+
+function ChapterPassageRevisionPreviewSummary({
+  content,
+  canApply,
+  onApply,
+  actionDisabled,
+}: {
+  content: unknown;
+  canApply?: boolean;
+  onApply?: () => void | Promise<void>;
+  actionDisabled?: boolean;
+}) {
+  const preview = parseChapterPassageRevisionPreview(content);
+  if (!preview) {
+    return <div className="text-xs" style={{ color: 'var(--text-muted)' }}>章节选区预览结构不完整，请展开原始 JSON 查看。</div>;
+  }
+
+  const diffSegments = buildPassageDiffSegments(preview.originalText, preview.replacementText);
+  const paragraphLabel = preview.selectedParagraphRange
+    ? `${preview.selectedParagraphRange.start}-${preview.selectedParagraphRange.end} / ${preview.selectedParagraphRange.count} 段`
+    : '未记录';
+  const charDelta = preview.replacementText.length - preview.originalText.length;
+  const canApplyNow = Boolean(canApply && onApply && preview.validation.valid);
+
+  return (
+    <div className="space-y-3">
+      <div className="flex flex-wrap items-start justify-between gap-3">
+        <div className="grid flex-1 gap-2 md:grid-cols-4">
+          <Metric label="Draft 版本" value={`v${preview.draftVersion}`} />
+          <Metric label="字符范围" value={`${preview.selectedRange.start}-${preview.selectedRange.end}`} />
+          <Metric label="段落范围" value={paragraphLabel} />
+          <Metric label="字数变化" value={formatSignedDelta(charDelta)} tone={charDelta < 0 ? 'ok' : charDelta > 0 ? 'warn' : undefined} />
+        </div>
+        {canApplyNow ? (
+          <div className="flex min-w-[11rem] flex-col gap-2">
+            <button
+              type="button"
+              className="agent-new-session-btn"
+              onClick={() => void onApply?.()}
+              disabled={actionDisabled}
+              title="审批并应用这段局部修订，后端会创建新的 ChapterDraft 版本。"
+            >
+              应用到正文
+            </button>
+            <span className="text-[11px]" style={{ color: 'var(--text-dim)' }}>
+              审批后会新建 ChapterDraft，不会覆盖当前 draft。
+            </span>
+          </div>
+        ) : null}
+      </div>
+
+      <div className="rounded-lg border p-3" style={{ borderColor: 'rgba(103,232,249,0.18)', background: 'rgba(15,23,42,0.18)' }}>
+        <div className="mb-1 text-xs font-semibold" style={{ color: '#67e8f9' }}>修改摘要</div>
+        <div className="text-sm leading-6" style={{ color: 'var(--text-main)' }}>{preview.editSummary}</div>
+      </div>
+
+      <div className="grid gap-3 md:grid-cols-2">
+        <PassageTextCard title="原文" text={preview.originalText} tone="before" />
+        <PassageTextCard title="替换预览" text={preview.replacementText} tone="after" />
+      </div>
+
+      <div className="rounded-lg border p-3" style={{ borderColor: 'var(--border-dim)', background: 'rgba(15,23,42,0.18)' }}>
+        <div className="mb-2 flex items-center justify-between gap-2">
+          <div className="text-xs font-semibold" style={{ color: 'var(--text-main)' }}>Diff</div>
+          <div className="text-[11px]" style={{ color: 'var(--text-dim)' }}>
+            删除为红色删除线，新增为绿色高亮
+          </div>
+        </div>
+        <div
+          className="rounded-md border px-3 py-2 text-sm leading-6"
+          style={{ borderColor: 'rgba(148,163,184,0.16)', background: 'rgba(2,6,23,0.26)', color: 'var(--text-main)', whiteSpace: 'pre-wrap' }}
+        >
+          {diffSegments.map((segment, index) => (
+            <span
+              key={`${segment.type}-${index}`}
+              style={passageDiffSegmentStyle(segment.type)}
+            >
+              {segment.text}
+            </span>
+          ))}
+        </div>
+      </div>
+
+      <div className="grid gap-3 md:grid-cols-2">
+        <PassageNoteCard
+          title="保留事实"
+          tone="ok"
+          emptyText="未单独标记保留事实。"
+          items={preview.preservedFacts}
+        />
+        <PassageNoteCard
+          title="风险提示"
+          tone={preview.risks.length || preview.validation.issues.length ? 'warn' : 'ok'}
+          emptyText="当前没有额外风险提示。"
+          items={[...preview.risks, ...preview.validation.issues]}
+        />
+      </div>
+    </div>
+  );
+}
+
+function PassageTextCard({ title, text, tone }: { title: string; text: string; tone: 'before' | 'after' }) {
+  const palette = tone === 'after'
+    ? { borderColor: 'rgba(74,222,128,0.24)', background: 'rgba(20,83,45,0.18)', titleColor: '#bbf7d0' }
+    : { borderColor: 'rgba(248,113,113,0.18)', background: 'rgba(69,10,10,0.18)', titleColor: '#fecaca' };
+  return (
+    <div className="rounded-lg border p-3" style={{ borderColor: palette.borderColor, background: palette.background }}>
+      <div className="mb-2 flex items-center justify-between gap-2">
+        <div className="text-xs font-semibold" style={{ color: palette.titleColor }}>{title}</div>
+        <div className="text-[11px]" style={{ color: 'var(--text-dim)' }}>{text.length} 字</div>
+      </div>
+      <div className="text-sm leading-6" style={{ color: 'var(--text-main)', whiteSpace: 'pre-wrap' }}>{text}</div>
+    </div>
+  );
+}
+
+function PassageNoteCard({
+  title,
+  tone,
+  items,
+  emptyText,
+}: {
+  title: string;
+  tone: 'ok' | 'warn';
+  items: string[];
+  emptyText: string;
+}) {
+  const palette = tone === 'warn'
+    ? { borderColor: 'rgba(251,191,36,0.24)', background: 'rgba(120,53,15,0.16)', chipColor: '#fde68a' }
+    : { borderColor: 'rgba(20,184,166,0.24)', background: 'rgba(15,118,110,0.14)', chipColor: '#99f6e4' };
+  return (
+    <div className="rounded-lg border p-3" style={{ borderColor: palette.borderColor, background: palette.background }}>
+      <div className="mb-2 text-xs font-semibold" style={{ color: 'var(--text-main)' }}>{title}</div>
+      {items.length ? (
+        <div className="flex flex-wrap gap-2">
+          {items.map((item, index) => (
+            <span
+              key={`${title}-${index}`}
+              className="rounded-full border px-2 py-1 text-[11px]"
+              style={{ borderColor: 'rgba(148,163,184,0.18)', color: palette.chipColor, background: 'rgba(15,23,42,0.22)' }}
+            >
+              {item}
+            </span>
+          ))}
+        </div>
+      ) : (
+        <div className="text-xs" style={{ color: 'var(--text-dim)' }}>{emptyText}</div>
+      )}
+    </div>
+  );
+}
+
+function passageDiffSegmentStyle(type: 'equal' | 'add' | 'remove') {
+  if (type === 'add') {
+    return {
+      background: 'rgba(74,222,128,0.18)',
+      color: '#dcfce7',
+      borderRadius: 4,
+    } as const;
+  }
+  if (type === 'remove') {
+    return {
+      background: 'rgba(248,113,113,0.14)',
+      color: '#fecaca',
+      textDecorationLine: 'line-through',
+      borderRadius: 4,
+    } as const;
+  }
+  return { color: 'var(--text-main)' } as const;
+}
+
+function formatSignedDelta(value: number) {
+  if (value === 0) return '0';
+  return value > 0 ? `+${value}` : String(value);
+}
 
 function AgentPlanPreviewSummary({ content }: { content: unknown }) {
   const data = asRecord(content);

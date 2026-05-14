@@ -768,6 +768,8 @@ export function AgentMissionWindow({
             onQueryChange={onArtifactQueryChange}
             onRequestWorldbuildingPersistSelection={onRequestWorldbuildingPersistSelection}
             onRequestImportTargetRegeneration={onRequestImportTargetRegeneration}
+            canApplyPassageRevision={canAct && (currentRun?.taskType === 'chapter_passage_revision' || currentRun?.taskType === 'passage_revision')}
+            onApplyPassageRevision={onAct}
             actionDisabled={loading}
           />
           <AgentAuditPanel events={auditEvents} />

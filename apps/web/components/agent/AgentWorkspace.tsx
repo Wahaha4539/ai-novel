@@ -12,6 +12,7 @@ interface AgentWorkspaceProps {
   projectId: string;
   selectedChapterId?: string;
   onRefresh?: () => void | Promise<void>;
+  onPassageRevisionApplied?: () => void | Promise<void>;
   initialRequest?: {
     id: string;
     message: string;
@@ -28,7 +29,14 @@ function areSameStepNos(left: number[], right: number[]) {
  * Agent Workspace 全屏布局组件（备用入口）。
  * 主入口已迁移至 AgentFloatingOrb，此组件保留以支持全屏 Agent 视图场景。
  */
-export function AgentWorkspace({ projectId, selectedChapterId, onRefresh, initialRequest, onInitialRequestConsumed }: AgentWorkspaceProps) {
+export function AgentWorkspace({
+  projectId,
+  selectedChapterId,
+  onRefresh,
+  onPassageRevisionApplied,
+  initialRequest,
+  onInitialRequestConsumed,
+}: AgentWorkspaceProps) {
   const { currentRun, runHistory, auditEvents, loading, error, actionMessage, createPlan, interpretMessage, act, retry, replan, answerClarification, refresh, cancel, listByProject, loadAudit, startNewSession } = useAgentRun();
   const [goal, setGoal] = useState('');
   const [approvedStepNos, setApprovedStepNos] = useState<number[]>([]);
@@ -37,6 +45,7 @@ export function AgentWorkspace({ projectId, selectedChapterId, onRefresh, initia
   const [chatHistory, setChatHistory] = useState<ChatMessage[]>([]);
   const [creativeDocumentAttachments, setCreativeDocumentAttachments] = useState<CreativeDocumentAttachmentItem[]>([]);
   const refreshedRunKeyRef = useRef<string | null>(null);
+  const pendingPassageApplyRunIdRef = useRef<string | null>(null);
   const consumedInitialRequestRef = useRef<string | null>(null);
   const msgIdCounter = useRef(0);
   const attachmentIdCounter = useRef(0);
@@ -80,7 +89,30 @@ export function AgentWorkspace({ projectId, selectedChapterId, onRefresh, initia
     void onRefresh?.();
   }, [currentRun?.id, currentRun?.status, currentRun?.updatedAt, onRefresh]);
 
-  const handleAct = useCallback(async () => { if (!currentRun) return; await act(currentRun.id, approvedScope); await onRefresh?.(); }, [currentRun, act, approvedScope, onRefresh]);
+  useEffect(() => {
+    if (!currentRun || pendingPassageApplyRunIdRef.current !== currentRun.id) return;
+    if (currentRun.status === 'succeeded' && (currentRun.taskType === 'chapter_passage_revision' || currentRun.taskType === 'passage_revision')) {
+      pendingPassageApplyRunIdRef.current = null;
+      void onPassageRevisionApplied?.();
+      return;
+    }
+    if (currentRun.status === 'failed' || currentRun.status === 'cancelled') {
+      pendingPassageApplyRunIdRef.current = null;
+    }
+  }, [currentRun, onPassageRevisionApplied]);
+
+  const handleAct = useCallback(async () => {
+    if (!currentRun) return;
+    const trackPassageApply = currentRun.taskType === 'chapter_passage_revision' || currentRun.taskType === 'passage_revision';
+    if (trackPassageApply) pendingPassageApplyRunIdRef.current = currentRun.id;
+    try {
+      await act(currentRun.id, approvedScope);
+      await onRefresh?.();
+    } catch (error) {
+      if (trackPassageApply) pendingPassageApplyRunIdRef.current = null;
+      throw error;
+    }
+  }, [currentRun, act, approvedScope, onRefresh]);
 
   /** 向聊天历史追加消息 */
   const pushMessage = useCallback((role: ChatMessage['role'], content: string) => {
