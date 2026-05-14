@@ -27,6 +27,7 @@ import { QualityReportPanel } from '../components/QualityReportPanel';
 import { AgentFloatingOrb } from '../components/agent/AgentFloatingOrb';
 import { AgentWorkspace } from '../components/agent/AgentWorkspace';
 import { AgentPageContext } from '../hooks/useAgentRun';
+import type { PassageAgentContext } from '../components/editor/passageSelection';
 
 type ActiveView = 'editor' | 'outline' | 'lore' | 'story-bible' | 'writing-rules' | 'scene-bank' | 'pacing' | 'chapter-patterns' | 'quality-reports' | 'relationships' | 'timeline' | 'character-state' | 'generation-config' | 'projects' | 'volumes' | 'guided' | 'prompts' | 'foreshadow' | 'generate' | 'agent' | 'llm-config';
 
@@ -69,6 +70,7 @@ export default function HomePage() {
   const [selectedVolumeId, setSelectedVolumeId] = useState('');
   const [autoStartGuided, setAutoStartGuided] = useState(false);
   const [guidedAgentContext, setGuidedAgentContext] = useState<AgentPageContext | undefined>();
+  const [pendingAgentRequest, setPendingAgentRequest] = useState<{ id: string; message: string; pageContext: AgentPageContext } | undefined>();
   const [isToastVisible, setIsToastVisible] = useState(false);
   const [volumeRefreshSignal, setVolumeRefreshSignal] = useState(0);
   const [workspaceStateRestored, setWorkspaceStateRestored] = useState(false);
@@ -261,6 +263,15 @@ export default function HomePage() {
     setVolumeRefreshSignal((value) => value + 1);
   }, [data]);
 
+  const handleSubmitPassageAgent = useCallback(async ({ message, context }: { message: string; context: PassageAgentContext }) => {
+    setPendingAgentRequest({
+      id: `passage-${Date.now().toString(36)}-${context.currentDraftId}-${context.selectedRange.start}-${context.selectedRange.end}`,
+      message,
+      pageContext: context,
+    });
+    setActiveView('agent');
+  }, []);
+
   const handleGuidedCreate = useCallback((projectId: string) => {
     data.setSelectedProjectId(projectId);
     data.setSelectedChapterId('all');
@@ -411,17 +422,21 @@ export default function HomePage() {
             projectId={data.selectedProjectId}
             selectedChapterId={data.selectedChapterId !== 'all' ? data.selectedChapterId : undefined}
             onRefresh={refreshSelectedProjectData}
+            initialRequest={pendingAgentRequest}
+            onInitialRequestConsumed={() => setPendingAgentRequest(undefined)}
           />
         ) : (
           <EditorPanel
             selectedProject={selectedProject}
             selectedChapterId={data.selectedChapterId}
             chapters={chapters}
+            volumes={data.volumes}
             draftRefreshKey={data.draftRefreshKey}
             onChapterGenerated={(chapterId) => data.loadProjectData(data.selectedProjectId, chapterId)}
             onChapterSaved={(chapterId) => data.loadProjectData(data.selectedProjectId, chapterId)}
             onRunAutoMaintenance={data.runAutoMaintenance}
             onMarkChapterComplete={data.markChapterComplete}
+            onSubmitPassageAgent={handleSubmitPassageAgent}
           />
         )}
 

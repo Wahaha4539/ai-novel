@@ -10,9 +10,16 @@
  */
 'use client';
 
-import React, { useEffect, useState, useCallback } from 'react';
-import { ProjectSummary, ChapterSummary, ChapterDraft } from '../types/dashboard';
+import React, { useEffect, useState, useCallback, useRef } from 'react';
+import { ProjectSummary, ChapterSummary, ChapterDraft, VolumeSummary } from '../types/dashboard';
 import { useChapterGeneration } from '../hooks/useChapterGeneration';
+import { PassageAgentPopover } from './editor/PassageAgentPopover';
+import { usePassageSelection } from './editor/usePassageSelection';
+import {
+  buildPassageAgentContext,
+  getPassageAgentDisabledReason,
+  type PassageAgentContext,
+} from './editor/passageSelection';
 
 type DraftViewMode = 'draft' | 'polished';
 
@@ -20,6 +27,7 @@ interface Props {
   selectedProject?: ProjectSummary;
   selectedChapterId: string;
   chapters: ChapterSummary[];
+  volumes?: VolumeSummary[];
   draftRefreshKey?: number;
   /** Refresh parent dashboard data after a chapter draft is generated so status badges update immediately. */
   onChapterGenerated?: (chapterId: string) => void | Promise<void>;
@@ -29,12 +37,15 @@ interface Props {
   onRunAutoMaintenance?: (chapterIds?: string[]) => void | Promise<void>;
   /** Mark the current chapter as complete; this only updates chapter metadata for the sidebar status dot. */
   onMarkChapterComplete?: (chapterId: string) => void | Promise<void>;
+  /** Submit a passage-scoped Agent request with exact draft/range context. */
+  onSubmitPassageAgent?: (request: { message: string; context: PassageAgentContext }) => void | Promise<void>;
 }
 
-export function EditorPanel({ selectedProject, selectedChapterId, chapters, draftRefreshKey = 0, onChapterGenerated, onChapterSaved, onRunAutoMaintenance, onMarkChapterComplete }: Props) {
+export function EditorPanel({ selectedProject, selectedChapterId, chapters, volumes = [], draftRefreshKey = 0, onChapterGenerated, onChapterSaved, onRunAutoMaintenance, onMarkChapterComplete, onSubmitPassageAgent }: Props) {
   const isGlobal = selectedChapterId === 'all';
   const chapter = chapters.find((c) => c.id === selectedChapterId);
   const gen = useChapterGeneration();
+  const textareaRef = useRef<HTMLTextAreaElement>(null);
 
   // Local content state for the editor textarea
   const [content, setContent] = useState('');
@@ -47,6 +58,8 @@ export function EditorPanel({ selectedProject, selectedChapterId, chapters, draf
   const [savedDraftContent, setSavedDraftContent] = useState('');
   const [saveError, setSaveError] = useState('');
   const [saveNotice, setSaveNotice] = useState('');
+  const [isSubmittingPassageAgent, setIsSubmittingPassageAgent] = useState(false);
+  const [passageAgentError, setPassageAgentError] = useState('');
 
   const title = isGlobal
     ? selectedProject?.title || '未选择项目'
@@ -59,6 +72,48 @@ export function EditorPanel({ selectedProject, selectedChapterId, chapters, draf
   const activeDraft = activeViewMode === 'polished' ? viewPair.polished : viewPair.draft;
   const hasUnsavedChanges = Boolean(activeDraft && content !== savedDraftContent);
   const canSaveDraft = Boolean(activeDraft && content.trim() && hasUnsavedChanges);
+  const isGenerating = gen.state === 'generating' || gen.state === 'polling';
+  const currentVolume = chapter?.volumeId ? volumes.find((item) => item.id === chapter.volumeId) : undefined;
+  const passageSelection = usePassageSelection({
+    textareaRef,
+    text: content,
+    enabled: !isGlobal && Boolean(selectedProject?.id && chapter && activeDraft),
+  });
+  const passageAgentContext = selectedProject && chapter && activeDraft && passageSelection.selection
+    ? buildPassageAgentContext({
+        project: selectedProject,
+        chapter,
+        volume: currentVolume,
+        draft: activeDraft,
+        draftViewMode: activeViewMode,
+        selection: passageSelection.selection,
+      })
+    : null;
+  const passageAgentDisabledReason = getPassageAgentDisabledReason({
+    hasProject: Boolean(selectedProject?.id),
+    hasChapter: Boolean(!isGlobal && chapter),
+    hasDraft: Boolean(activeDraft),
+    hasSelection: Boolean(passageSelection.selection),
+    hasUnsavedChanges,
+    isGenerating,
+    isAutoMaintaining,
+    isSavingDraft,
+    isMarkingComplete,
+    hasSubmitHandler: Boolean(onSubmitPassageAgent),
+  });
+  const handleSubmitPassageAgent = useCallback(async (message: string, context: PassageAgentContext) => {
+    if (!onSubmitPassageAgent || isSubmittingPassageAgent) return;
+    setIsSubmittingPassageAgent(true);
+    setPassageAgentError('');
+    try {
+      await onSubmitPassageAgent({ message, context });
+      passageSelection.clearSelection();
+    } catch (error) {
+      setPassageAgentError(error instanceof Error ? error.message : '提交正文选区 Agent 任务失败');
+    } finally {
+      setIsSubmittingPassageAgent(false);
+    }
+  }, [isSubmittingPassageAgent, onSubmitPassageAgent, passageSelection]);
 
   // Auto-load draft when chapter selection changes. AI validation repair creates a
   // new current draft for the same chapter, so draftRefreshKey forces a reload.
@@ -193,7 +248,6 @@ export function EditorPanel({ selectedProject, selectedChapterId, chapters, draf
     }
   }, [isGlobal, isMarkingComplete, onMarkChapterComplete, selectedChapterId]);
 
-  const isGenerating = gen.state === 'generating' || gen.state === 'polling';
   const statusText = chapter?.status === 'drafted' ? '已生成' : (draftLoaded ? '有草稿' : '未生成');
   const showFloatingActions = !isGlobal && Boolean(selectedChapterId);
 
@@ -325,6 +379,7 @@ export function EditorPanel({ selectedProject, selectedChapterId, chapters, draf
               </div>
             )}
             <textarea
+              ref={textareaRef}
               className="editor-textarea"
               placeholder="在这里开始撰写属于你的章节故事…… 或点击「AI 生成」自动生成正文。"
               style={{ minHeight: '600px' }}
@@ -333,9 +388,27 @@ export function EditorPanel({ selectedProject, selectedChapterId, chapters, draf
                 setContent(e.target.value);
                 setSaveError('');
                 setSaveNotice('');
+                setPassageAgentError('');
               }}
+              onSelect={passageSelection.textareaSelectionProps.onSelect}
+              onMouseUp={passageSelection.textareaSelectionProps.onMouseUp}
+              onKeyUp={passageSelection.textareaSelectionProps.onKeyUp}
               disabled={isGenerating}
             />
+            {passageAgentContext && passageSelection.selection && (
+              <PassageAgentPopover
+                context={passageAgentContext}
+                position={passageSelection.selection.popoverPosition}
+                disabledReason={passageAgentDisabledReason}
+                submitting={isSubmittingPassageAgent}
+                error={passageAgentError}
+                onSubmit={handleSubmitPassageAgent}
+                onClose={() => {
+                  setPassageAgentError('');
+                  passageSelection.clearSelection();
+                }}
+              />
+            )}
           </div>
         )}
       </div>

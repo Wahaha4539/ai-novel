@@ -4759,3 +4759,171 @@ textarea.input, textarea.input-field {
     min-width: 0;
   }
 }
+
+.passage-agent-popover {
+  z-index: 70;
+  width: min(21rem, calc(100vw - 2rem));
+  max-height: calc(100vh - 2rem);
+  overflow: auto;
+  padding: 0.9rem;
+  border: 1px solid color-mix(in srgb, var(--accent-cyan) 26%, var(--border-light));
+  border-radius: 0.5rem;
+  background: color-mix(in srgb, var(--bg-card) 92%, #020617 8%);
+  color: var(--text-main);
+  box-shadow: 0 24px 70px rgba(0,0,0,0.32), 0 0 0 1px rgba(255,255,255,0.04);
+  backdrop-filter: blur(22px);
+}
+.passage-agent-popover__header {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 0.75rem;
+}
+.passage-agent-popover__eyebrow {
+  font-size: 0.68rem;
+  font-weight: 800;
+  color: var(--accent-cyan);
+}
+.passage-agent-popover__title {
+  margin-top: 0.1rem;
+  font-size: 0.92rem;
+  font-weight: 800;
+}
+.passage-agent-popover__close {
+  width: 1.8rem;
+  height: 1.8rem;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  border: 1px solid var(--border-light);
+  border-radius: 0.45rem;
+  background: var(--bg-hover-subtle);
+  color: var(--text-muted);
+  font-size: 1.1rem;
+  line-height: 1;
+  cursor: pointer;
+}
+.passage-agent-popover__close:hover {
+  color: var(--text-main);
+  border-color: var(--border-hover);
+}
+.passage-agent-popover__meta {
+  margin-top: 0.75rem;
+  display: grid;
+  gap: 0.4rem;
+}
+.passage-agent-popover__meta > div {
+  display: grid;
+  grid-template-columns: 2.2rem minmax(0, 1fr);
+  gap: 0.5rem;
+  font-size: 0.72rem;
+  line-height: 1.45;
+}
+.passage-agent-popover__meta dt {
+  color: var(--text-dim);
+  font-weight: 800;
+}
+.passage-agent-popover__meta dd {
+  min-width: 0;
+  color: var(--text-muted);
+  overflow-wrap: anywhere;
+}
+.passage-agent-popover__quote {
+  margin-top: 0.75rem;
+  max-height: 7.5rem;
+  overflow: auto;
+  padding: 0.65rem 0.75rem;
+  border-left: 3px solid var(--accent-cyan);
+  border-radius: 0.4rem;
+  background: var(--bg-hover-subtle);
+  color: var(--text-muted);
+  font-size: 0.76rem;
+  line-height: 1.75;
+  white-space: pre-wrap;
+}
+.passage-agent-popover__quick {
+  margin-top: 0.75rem;
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.4rem;
+}
+.passage-agent-popover__chip {
+  min-height: 1.9rem;
+  padding: 0 0.55rem;
+  border: 1px solid var(--border-light);
+  border-radius: 999px;
+  background: var(--bg-hover-subtle);
+  color: var(--text-muted);
+  font-family: inherit;
+  font-size: 0.7rem;
+  font-weight: 700;
+  cursor: pointer;
+}
+.passage-agent-popover__chip:hover:not(:disabled),
+.passage-agent-popover__chip--active {
+  border-color: color-mix(in srgb, var(--accent-cyan) 45%, var(--border-light));
+  background: var(--accent-cyan-bg);
+  color: var(--accent-cyan);
+}
+.passage-agent-popover__chip:disabled {
+  cursor: not-allowed;
+  opacity: 0.55;
+}
+.passage-agent-popover__input {
+  width: 100%;
+  margin-top: 0.75rem;
+  padding: 0.65rem 0.7rem;
+  border: 1px solid var(--border-light);
+  border-radius: 0.5rem;
+  background: var(--bg-overlay);
+  color: var(--text-main);
+  font-family: inherit;
+  font-size: 0.78rem;
+  line-height: 1.65;
+  resize: vertical;
+  outline: none;
+}
+.passage-agent-popover__input:focus {
+  border-color: var(--accent-cyan);
+  box-shadow: 0 0 0 3px var(--accent-cyan-bg);
+}
+.passage-agent-popover__input::placeholder {
+  color: var(--text-dim);
+}
+.passage-agent-popover__notice {
+  margin-top: 0.55rem;
+  padding: 0.5rem 0.6rem;
+  border: 1px solid rgba(245,158,11,0.32);
+  border-radius: 0.45rem;
+  background: rgba(245,158,11,0.08);
+  color: #fbbf24;
+  font-size: 0.72rem;
+  line-height: 1.5;
+}
+.passage-agent-popover__notice--error {
+  border-color: rgba(239,68,68,0.34);
+  background: rgba(239,68,68,0.08);
+  color: #f87171;
+}
+.passage-agent-popover__submit {
+  width: 100%;
+  min-height: 2.35rem;
+  margin-top: 0.75rem;
+  border: 1px solid color-mix(in srgb, var(--accent-cyan) 58%, transparent);
+  border-radius: 0.5rem;
+  background: var(--accent-cyan);
+  color: #f8fafc;
+  font-family: inherit;
+  font-size: 0.8rem;
+  font-weight: 900;
+  cursor: pointer;
+  transition: filter 0.2s ease, transform 0.16s ease, opacity 0.2s ease;
+}
+.passage-agent-popover__submit:hover:not(:disabled) {
+  filter: brightness(1.08);
+  transform: translateY(-1px);
+}
+.passage-agent-popover__submit:disabled {
+  cursor: not-allowed;
+  opacity: 0.5;
+}

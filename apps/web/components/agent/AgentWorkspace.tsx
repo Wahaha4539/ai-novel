@@ -1,7 +1,7 @@
 'use client';
 
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
-import { useAgentRun } from '../../hooks/useAgentRun';
+import { type AgentPageContext, useAgentRun } from '../../hooks/useAgentRun';
 import { getCreativeDocumentExtension, uploadCreativeDocument } from '../../lib/uploadCreativeDocument';
 import { AgentInputBox, type AgentInputSubmitOptions, type ChatMessage, type CreativeDocumentAttachmentItem } from './AgentInputBox';
 import { AgentMissionWindow } from './AgentMissionWindow';
@@ -12,6 +12,12 @@ interface AgentWorkspaceProps {
   projectId: string;
   selectedChapterId?: string;
   onRefresh?: () => void | Promise<void>;
+  initialRequest?: {
+    id: string;
+    message: string;
+    pageContext?: AgentPageContext;
+  };
+  onInitialRequestConsumed?: () => void;
 }
 
 function areSameStepNos(left: number[], right: number[]) {
@@ -22,7 +28,7 @@ function areSameStepNos(left: number[], right: number[]) {
  * Agent Workspace 全屏布局组件（备用入口）。
  * 主入口已迁移至 AgentFloatingOrb，此组件保留以支持全屏 Agent 视图场景。
  */
-export function AgentWorkspace({ projectId, selectedChapterId, onRefresh }: AgentWorkspaceProps) {
+export function AgentWorkspace({ projectId, selectedChapterId, onRefresh, initialRequest, onInitialRequestConsumed }: AgentWorkspaceProps) {
   const { currentRun, runHistory, auditEvents, loading, error, actionMessage, createPlan, interpretMessage, act, retry, replan, answerClarification, refresh, cancel, listByProject, loadAudit, startNewSession } = useAgentRun();
   const [goal, setGoal] = useState('');
   const [approvedStepNos, setApprovedStepNos] = useState<number[]>([]);
@@ -31,6 +37,7 @@ export function AgentWorkspace({ projectId, selectedChapterId, onRefresh }: Agen
   const [chatHistory, setChatHistory] = useState<ChatMessage[]>([]);
   const [creativeDocumentAttachments, setCreativeDocumentAttachments] = useState<CreativeDocumentAttachmentItem[]>([]);
   const refreshedRunKeyRef = useRef<string | null>(null);
+  const consumedInitialRequestRef = useRef<string | null>(null);
   const msgIdCounter = useRef(0);
   const attachmentIdCounter = useRef(0);
   const plan = useMemo(() => latestPlan(currentRun), [currentRun]);
@@ -80,6 +87,25 @@ export function AgentWorkspace({ projectId, selectedChapterId, onRefresh }: Agen
     msgIdCounter.current += 1;
     setChatHistory((prev) => [...prev, { id: `msg-${msgIdCounter.current}`, role, content, timestamp: Date.now() }]);
   }, []);
+
+  useEffect(() => {
+    if (!initialRequest || loading) return;
+    if (consumedInitialRequestRef.current === initialRequest.id) return;
+    consumedInitialRequestRef.current = initialRequest.id;
+
+    const requestContext = { ...pageContext, ...(initialRequest.pageContext ?? {}) };
+    pushMessage('user', initialRequest.message);
+    void createPlan(projectId, initialRequest.message, requestContext)
+      .then((run) => {
+        if (run) pushMessage('agent', '已收到正文选区修订任务，正在生成计划…');
+      })
+      .catch((error) => {
+        pushMessage('system', error instanceof Error ? error.message : '正文选区 Agent 任务提交失败');
+      })
+      .finally(() => {
+        onInitialRequestConsumed?.();
+      });
+  }, [createPlan, initialRequest, loading, onInitialRequestConsumed, pageContext, projectId, pushMessage]);
 
   const handleSubmit = useCallback(async (submitOptions?: AgentInputSubmitOptions) => {
     const message = goal.trim();
