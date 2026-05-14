@@ -1041,6 +1041,11 @@ export class AgentRuntimeService {
       return outputs[2] ? [{ artifactType: 'chapter_context_preview', title: '章节上下文与写入预览', content: outputs[2] }] : [];
     }
 
+    if (taskType === 'chapter_passage_revision' || taskType === 'passage_revision') {
+      const preview = this.latestOutputByTools(outputs, steps, ['revise_chapter_passage_preview']);
+      return preview ? [{ artifactType: 'chapter_passage_revision_preview', title: '章节选区局部修订预览', content: preview }] : [];
+    }
+
     if (taskType === 'story_bible_expand') {
       const preview = this.latestOutputByTools(outputs, steps, ['generate_story_bible_preview']);
       const validation = this.latestOutputByTools(outputs, steps, ['validate_story_bible']);
@@ -1078,6 +1083,11 @@ export class AgentRuntimeService {
         ...(preview ? [{ artifactType: 'continuity_preview', title: '关系/时间线变更预览', content: preview }] : []),
         ...(validation ? [{ artifactType: 'continuity_validation_report', title: '关系/时间线校验与写入前 Diff', content: validation }] : []),
       ];
+    }
+
+    if (taskType === 'chapter_passage_revision' || taskType === 'passage_revision') {
+      const preview = this.latestOutputByTools(outputs, steps, ['revise_chapter_passage_preview']);
+      return preview ? [{ artifactType: 'chapter_passage_revision_preview', title: '章节选区局部修订预览', content: preview }] : [];
     }
 
     return [];
@@ -1392,6 +1402,11 @@ export class AgentRuntimeService {
     if (taskType === 'ai_quality_review') {
       const report = this.latestOutputByTools(outputs, steps, ['ai_quality_review']);
       return report ? [{ artifactType: 'ai_quality_report', title: 'AI 审稿质量报告', content: report }] : [];
+    }
+
+    if (taskType === 'chapter_passage_revision' || taskType === 'passage_revision') {
+      const preview = this.latestOutputByTools(outputs, steps, ['revise_chapter_passage_preview']);
+      return preview ? [{ artifactType: 'chapter_passage_revision_preview', title: '章节选区局部修订预览', content: preview }] : [];
     }
 
     if (taskType === 'chapter_write' || taskType === 'multi_chapter_write') {

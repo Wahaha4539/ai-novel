@@ -19827,6 +19827,36 @@ test('AgentRuntime maps chapter craft brief preview and validation artifacts in 
   assert.deepEqual(artifacts.map((item) => item.content), [preview, validation]);
 });
 
+test('AgentRuntime maps chapter passage revision preview artifact in plan mode', () => {
+  const runtime = new AgentRuntimeService({} as never, {} as never, {} as never, {} as never, {} as never, {} as never) as unknown as {
+    buildPreviewArtifacts: (taskType: string, outputs: Record<number, unknown>, steps: Array<{ stepNo: number; tool: string }>) => Array<{ artifactType: string; title: string; content: unknown }>;
+  };
+  const preview = {
+    previewId: 'preview-1',
+    chapterId: 'c3',
+    draftId: 'd3',
+    draftVersion: 4,
+    selectedRange: { start: 10, end: 24 },
+    originalText: '原文',
+    replacementText: '改写后',
+    editSummary: '更凝练',
+    preservedFacts: ['保留动作'],
+    risks: [],
+    validation: { valid: true, issues: [] },
+  };
+  const artifacts = runtime.buildPreviewArtifacts(
+    'chapter_passage_revision',
+    { 2: preview },
+    [
+      { stepNo: 1, tool: 'collect_chapter_context' },
+      { stepNo: 2, tool: 'revise_chapter_passage_preview' },
+    ],
+  );
+
+  assert.deepEqual(artifacts.map((item) => item.artifactType), ['chapter_passage_revision_preview']);
+  assert.deepEqual(artifacts[0].content, preview);
+});
+
 test('AgentRuntime maps chapter craft brief preview, validation and persist artifacts in act mode', () => {
   const runtime = new AgentRuntimeService({} as never, {} as never, {} as never, {} as never, {} as never, {} as never) as unknown as {
     buildExecutionArtifacts: (taskType: string, outputs: Record<number, unknown>, steps: Array<{ stepNo: number; tool: string }>) => Array<{ artifactType: string; title: string; content: unknown }>;
@@ -20072,6 +20102,36 @@ test('VCC validate_guided_step_preview marks guided_chapter supportingCharacters
   assert.equal(supporting[0].action, 'session_only');
   assert.doesNotMatch(String(writePreview.approvalMessage), /重建|create/i);
   assert.match(String(writePreview.approvalMessage), /不会创建正式角色|supportingCharacters/);
+});
+
+test('AgentRuntime maps chapter passage revision preview artifact in act mode', () => {
+  const runtime = new AgentRuntimeService({} as never, {} as never, {} as never, {} as never, {} as never, {} as never) as unknown as {
+    buildExecutionArtifacts: (taskType: string, outputs: Record<number, unknown>, steps: Array<{ stepNo: number; tool: string }>) => Array<{ artifactType: string; title: string; content: unknown }>;
+  };
+  const preview = {
+    previewId: 'preview-2',
+    chapterId: 'c3',
+    draftId: 'd3',
+    draftVersion: 4,
+    selectedRange: { start: 10, end: 24 },
+    originalText: '原文',
+    replacementText: '改写后',
+    editSummary: '更克制',
+    preservedFacts: ['保留事实'],
+    risks: ['角色语气略冷'],
+    validation: { valid: true, issues: [] },
+  };
+  const artifacts = runtime.buildExecutionArtifacts(
+    'chapter_passage_revision',
+    { 2: preview },
+    [
+      { stepNo: 1, tool: 'collect_chapter_context' },
+      { stepNo: 2, tool: 'revise_chapter_passage_preview' },
+    ],
+  );
+
+  assert.deepEqual(artifacts.map((item) => item.artifactType), ['chapter_passage_revision_preview']);
+  assert.deepEqual(artifacts[0].content, preview);
 });
 
 async function main() {
