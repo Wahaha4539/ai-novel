@@ -14,14 +14,14 @@ import React, { useEffect, useState, useCallback, useRef } from 'react';
 import { ProjectSummary, ChapterSummary, ChapterDraft, VolumeSummary } from '../types/dashboard';
 import { useChapterGeneration } from '../hooks/useChapterGeneration';
 import { PassageAgentPopover } from './editor/PassageAgentPopover';
+import { buildDraftViewPair, isPolishedDraft, resolvePreferredDraftViewMode } from './editor/draftVersionState';
 import { usePassageSelection } from './editor/usePassageSelection';
 import {
   buildPassageAgentContext,
   getPassageAgentDisabledReason,
   type PassageAgentContext,
 } from './editor/passageSelection';
-
-type DraftViewMode = 'draft' | 'polished';
+import type { DraftViewMode } from './editor/draftVersionState';
 
 interface Props {
   selectedProject?: ProjectSummary;
@@ -134,7 +134,7 @@ export function EditorPanel({ selectedProject, selectedChapterId, chapters, volu
     // agent_polish result with its source draft via generationContext.originalDraftId.
     void gen.loadDraftVersions(selectedChapterId).then((versions) => {
       const pair = buildDraftViewPair(versions);
-      const initialMode: DraftViewMode = pair.polished ? 'polished' : 'draft';
+      const initialMode: DraftViewMode = resolvePreferredDraftViewMode(pair);
       const initialDraft = initialMode === 'polished' ? pair.polished : pair.draft;
 
       setDraftVersions(versions);
@@ -154,7 +154,7 @@ export function EditorPanel({ selectedProject, selectedChapterId, chapters, volu
     if (gen.state === 'completed' && gen.currentDraft?.content) {
       void gen.loadDraftVersions(gen.currentDraft.chapterId).then((versions) => {
         const pair = buildDraftViewPair(versions);
-        const nextMode: DraftViewMode = pair.polished ? 'polished' : 'draft';
+        const nextMode: DraftViewMode = resolvePreferredDraftViewMode(pair);
         const nextDraft = nextMode === 'polished' ? pair.polished : pair.draft;
 
         setDraftVersions(versions);
@@ -715,35 +715,6 @@ function characterSourceLabel(value: unknown) {
   if (source === 'volume_candidate') return '候选';
   if (source === 'minor_temporary') return '临时';
   return source;
-}
-
-/**
- * Resolve the two-version view model for the editor.
- *
- * The polish pipeline writes a new current ChapterDraft whose generationContext
- * stores originalDraftId. That pointer is more reliable than simply taking the
- * previous version because postprocess/repair flows may also create drafts.
- */
-function buildDraftViewPair(versions: ChapterDraft[]) {
-  const sorted = [...versions].sort((a, b) => b.versionNo - a.versionNo);
-  const current = sorted.find((item) => item.isCurrent) ?? sorted[0];
-  const latestPolished = sorted.find(isPolishedDraft);
-  const polished = current && isPolishedDraft(current) ? current : latestPolished;
-  const originalDraftId = typeof polished?.generationContext?.originalDraftId === 'string'
-    ? polished.generationContext.originalDraftId
-    : undefined;
-
-  return {
-    draft: originalDraftId
-      ? sorted.find((item) => item.id === originalDraftId) ?? sorted.find((item) => !isPolishedDraft(item)) ?? current
-      : sorted.find((item) => !isPolishedDraft(item)) ?? current,
-    polished,
-  };
-}
-
-/** A draft is considered polished when it was created by the polish pipeline. */
-function isPolishedDraft(draft: ChapterDraft) {
-  return draft.source === 'agent_polish' || draft.generationContext?.type === 'polish';
 }
 
 function countDraftWords(draft?: ChapterDraft) {
