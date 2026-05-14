@@ -38,6 +38,15 @@ export type PassagePopoverAnchorRect = {
   height: number;
 };
 
+export type PassagePopoverViewportRect = {
+  top?: number;
+  right?: number;
+  bottom?: number;
+  left?: number;
+  width: number;
+  height: number;
+};
+
 export interface PassageAgentContext extends AgentPageContext {
   sourcePage: 'editor_passage_agent';
   selectionIntent: 'chapter_passage_revision';
@@ -116,7 +125,7 @@ export function formatParagraphRangeLabel(range: SelectedParagraphRange) {
 
 export function computePassagePopoverPosition(
   anchorRect: PassagePopoverAnchorRect,
-  viewport: { width: number; height: number },
+  viewport: PassagePopoverViewportRect,
   options?: {
     popoverWidth?: number;
     popoverHeight?: number;
@@ -128,22 +137,28 @@ export function computePassagePopoverPosition(
   const popoverHeight = options?.popoverHeight ?? 320;
   const viewportPadding = options?.viewportPadding ?? 16;
   const anchorGap = options?.anchorGap ?? 12;
+  const viewportLeft = viewport.left ?? 0;
+  const viewportTop = viewport.top ?? 0;
+  const viewportRight = viewport.right ?? (viewportLeft + viewport.width);
+  const viewportBottom = viewport.bottom ?? (viewportTop + viewport.height);
 
-  const maxLeft = Math.max(viewportPadding, viewport.width - popoverWidth - viewportPadding);
+  const minLeft = viewportLeft + viewportPadding;
+  const maxLeft = Math.max(minLeft, viewportRight - popoverWidth - viewportPadding);
   const left = clampNumber(
     anchorRect.left + (anchorRect.width / 2) - (popoverWidth / 2),
-    viewportPadding,
+    minLeft,
     maxLeft,
   );
 
   const preferredTop = anchorRect.top - popoverHeight - anchorGap;
   const fallbackTop = anchorRect.bottom + anchorGap;
-  const maxTop = Math.max(viewportPadding, viewport.height - popoverHeight - viewportPadding);
-  const fitsAbove = preferredTop >= viewportPadding;
-  const fitsBelow = fallbackTop + popoverHeight <= viewport.height - viewportPadding;
+  const minTop = viewportTop + viewportPadding;
+  const maxTop = Math.max(minTop, viewportBottom - popoverHeight - viewportPadding);
+  const fitsAbove = preferredTop >= minTop;
+  const fitsBelow = fallbackTop + popoverHeight <= viewportBottom - viewportPadding;
   const top = fitsAbove || !fitsBelow
-    ? clampNumber(preferredTop, viewportPadding, maxTop)
-    : clampNumber(fallbackTop, viewportPadding, maxTop);
+    ? clampNumber(preferredTop, minTop, maxTop)
+    : clampNumber(fallbackTop, minTop, maxTop);
 
   return { top, left };
 }

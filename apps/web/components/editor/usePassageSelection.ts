@@ -142,10 +142,7 @@ function getTextareaPopoverPosition(
   text: string,
 ) {
   const anchorRect = getTextareaSelectionAnchorRect(textarea, selectedRange, text) ?? rectToAnchor(textarea.getBoundingClientRect());
-  return computePassagePopoverPosition(anchorRect, {
-    width: window.innerWidth,
-    height: window.innerHeight,
-  });
+  return computePassagePopoverPosition(anchorRect, getPassagePopoverViewportRect(textarea));
 }
 
 function getTextareaSelectionAnchorRect(
@@ -227,5 +224,29 @@ function rectToAnchor(rect: DOMRect | PassagePopoverAnchorRect): PassagePopoverA
     left: rect.left,
     width: rect.width,
     height: rect.height,
+  };
+}
+
+function getPassagePopoverViewportRect(textarea: HTMLTextAreaElement) {
+  const workspaceMain = textarea.closest('.workspace-main');
+  if (workspaceMain instanceof HTMLElement) {
+    const rect = workspaceMain.getBoundingClientRect();
+    return {
+      top: rect.top,
+      right: rect.right,
+      bottom: rect.bottom,
+      left: rect.left,
+      width: rect.width,
+      height: rect.height,
+    };
+  }
+
+  return {
+    top: 0,
+    right: window.innerWidth,
+    bottom: window.innerHeight,
+    left: 0,
+    width: window.innerWidth,
+    height: window.innerHeight,
   };
 }

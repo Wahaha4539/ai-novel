@@ -107,6 +107,16 @@ test('computePassagePopoverPosition falls back below the selection when there is
   assert.deepEqual(position, { top: 108, left: 252 });
 });
 
+test('computePassagePopoverPosition stays inside a bounded workspace area instead of overlapping the inspector', () => {
+  const position = computePassagePopoverPosition(
+    { top: 320, right: 1130, bottom: 344, left: 1090, width: 40, height: 24 },
+    { top: 0, left: 280, right: 1140, bottom: 900, width: 860, height: 900 },
+    { popoverWidth: 336, popoverHeight: 320, viewportPadding: 16, anchorGap: 12 },
+  );
+
+  assert.deepEqual(position, { top: 356, left: 788 });
+});
+
 for (const item of tests) {
   item.run();
   console.log(`ok - ${item.name}`);
