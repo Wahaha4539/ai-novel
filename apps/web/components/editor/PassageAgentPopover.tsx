@@ -5,11 +5,12 @@ import {
   PASSAGE_QUICK_INTENTS,
   formatParagraphRangeLabel,
   type PassageAgentContext,
+  type PassagePopoverPosition,
 } from './passageSelection';
 
 interface PassageAgentPopoverProps {
   context: PassageAgentContext;
-  position?: { top: number; left: number };
+  position?: PassagePopoverPosition;
   disabledReason?: string;
   submitting?: boolean;
   error?: string;
@@ -43,7 +44,7 @@ export function PassageAgentPopover({
   return (
     <div
       className="passage-agent-popover animate-fade-in"
-      style={position ? { position: 'fixed', top: position.top, left: position.left } : undefined}
+      style={position ? { position: position.strategy, top: position.top, left: position.left } : undefined}
       role="dialog"
       aria-label="正文选区 Agent"
     >

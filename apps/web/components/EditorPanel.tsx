@@ -46,6 +46,7 @@ export function EditorPanel({ selectedProject, selectedChapterId, chapters, volu
   const chapter = chapters.find((c) => c.id === selectedChapterId);
   const gen = useChapterGeneration();
   const textareaRef = useRef<HTMLTextAreaElement>(null);
+  const editorBodyRef = useRef<HTMLDivElement>(null);
 
   // Local content state for the editor textarea
   const [content, setContent] = useState('');
@@ -76,6 +77,7 @@ export function EditorPanel({ selectedProject, selectedChapterId, chapters, volu
   const currentVolume = chapter?.volumeId ? volumes.find((item) => item.id === chapter.volumeId) : undefined;
   const passageSelection = usePassageSelection({
     textareaRef,
+    overlayContainerRef: editorBodyRef,
     text: content,
     enabled: !isGlobal && Boolean(selectedProject?.id && chapter && activeDraft),
   });
@@ -348,7 +350,7 @@ export function EditorPanel({ selectedProject, selectedChapterId, chapters, volu
       )}
 
       {/* ── Editor body ── */}
-      <div className="flex-1 px-8 py-10" style={{ overflowY: 'auto', position: 'relative' }}>
+      <div ref={editorBodyRef} className="flex-1 px-8 py-10" style={{ overflowY: 'auto', position: 'relative' }}>
         {isGlobal ? (
           <GlobalPlaceholder />
         ) : (

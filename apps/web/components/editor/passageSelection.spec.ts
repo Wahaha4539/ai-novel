@@ -5,6 +5,8 @@ import {
   computeSelectedParagraphRange,
   getPassageAgentDisabledReason,
   normalizeTextSelection,
+  pickPassageSelectionAnchorRect,
+  toAbsolutePassagePopoverPosition,
 } from './passageSelection';
 
 type TestCase = { name: string; run: () => void };
@@ -115,6 +117,27 @@ test('computePassagePopoverPosition stays inside a bounded workspace area instea
   );
 
   assert.deepEqual(position, { top: 356, left: 788 });
+});
+
+test('pickPassageSelectionAnchorRect follows the active selection edge instead of pinning to the first line', () => {
+  const rects = [
+    { top: 480, right: 640, bottom: 504, left: 520, width: 120, height: 24 },
+    { top: 516, right: 780, bottom: 540, left: 520, width: 260, height: 24 },
+  ];
+
+  assert.deepEqual(pickPassageSelectionAnchorRect(rects, 'forward'), rects[1]);
+  assert.deepEqual(pickPassageSelectionAnchorRect(rects, 'backward'), rects[0]);
+});
+
+test('toAbsolutePassagePopoverPosition keeps the popover aligned inside the scrolling editor surface', () => {
+  const position = toAbsolutePassagePopoverPosition({
+    viewportPosition: { top: 356, left: 788 },
+    containerRect: { top: 72, left: 280 },
+    scrollTop: 420,
+    scrollLeft: 0,
+  });
+
+  assert.deepEqual(position, { top: 704, left: 508, strategy: 'absolute' });
 });
 
 for (const item of tests) {

@@ -4,6 +4,9 @@ import { useCallback, useEffect, useMemo, useRef, useState, type KeyboardEvent, 
 import {
   computePassagePopoverPosition,
   normalizeTextSelection,
+  pickPassageSelectionAnchorRect,
+  toAbsolutePassagePopoverPosition,
+  toFixedPassagePopoverPosition,
   type PassagePopoverAnchorRect,
   type PassageSelectionSnapshot,
   type SelectedTextRange,
@@ -11,11 +14,12 @@ import {
 
 interface UsePassageSelectionOptions {
   textareaRef: RefObject<HTMLTextAreaElement>;
+  overlayContainerRef?: RefObject<HTMLElement>;
   text: string;
   enabled: boolean;
 }
 
-export function usePassageSelection({ textareaRef, text, enabled }: UsePassageSelectionOptions) {
+export function usePassageSelection({ textareaRef, overlayContainerRef, text, enabled }: UsePassageSelectionOptions) {
   const [selection, setSelection] = useState<PassageSelectionSnapshot | null>(null);
   const captureFrameRef = useRef<number | null>(null);
 
@@ -43,9 +47,9 @@ export function usePassageSelection({ textareaRef, text, enabled }: UsePassageSe
 
     setSelection({
       ...snapshot,
-      popoverPosition: getTextareaPopoverPosition(textarea, snapshot.selectedRange, text),
+      popoverPosition: getTextareaPopoverPosition(textarea, snapshot.selectedRange, text, overlayContainerRef?.current ?? null),
     });
-  }, [enabled, text, textareaRef]);
+  }, [enabled, overlayContainerRef, text, textareaRef]);
 
   const scheduleCaptureSelection = useCallback(() => {
     if (typeof window === 'undefined') return;
@@ -73,12 +77,12 @@ export function usePassageSelection({ textareaRef, text, enabled }: UsePassageSe
             ...current,
             selectedParagraphRange: next.selectedParagraphRange,
             popoverPosition: textarea
-              ? getTextareaPopoverPosition(textarea, next.selectedRange, text)
+              ? getTextareaPopoverPosition(textarea, next.selectedRange, text, overlayContainerRef?.current ?? null)
               : current.popoverPosition,
           }
         : null;
     });
-  }, [enabled, text, textareaRef]);
+  }, [enabled, overlayContainerRef, text, textareaRef]);
 
   useEffect(() => {
     if (!enabled) return;
@@ -140,9 +144,20 @@ function getTextareaPopoverPosition(
   textarea: HTMLTextAreaElement,
   selectedRange: SelectedTextRange,
   text: string,
+  overlayContainer: HTMLElement | null,
 ) {
   const anchorRect = getTextareaSelectionAnchorRect(textarea, selectedRange, text) ?? rectToAnchor(textarea.getBoundingClientRect());
-  return computePassagePopoverPosition(anchorRect, getPassagePopoverViewportRect(textarea));
+  const viewportRect = getPassagePopoverViewportRect(textarea, overlayContainer);
+  const viewportPosition = computePassagePopoverPosition(anchorRect, viewportRect);
+  if (overlayContainer) {
+    return toAbsolutePassagePopoverPosition({
+      viewportPosition,
+      containerRect: viewportRect,
+      scrollTop: overlayContainer.scrollTop,
+      scrollLeft: overlayContainer.scrollLeft,
+    });
+  }
+  return toFixedPassagePopoverPosition(viewportPosition);
 }
 
 function getTextareaSelectionAnchorRect(
@@ -205,15 +220,18 @@ function getTextareaSelectionAnchorRect(
   mirror.scrollTop = textarea.scrollTop;
   mirror.scrollLeft = textarea.scrollLeft;
 
-  const firstVisibleRect = Array.from(span.getClientRects()).find((rect) => rect.width > 0 || rect.height > 0);
+  const visibleRects = Array.from(span.getClientRects())
+    .filter((rect) => rect.width > 0 || rect.height > 0)
+    .map((rect) => rectToAnchor(rect));
   const fallbackRect = span.getBoundingClientRect();
   mirror.remove();
 
-  if (!firstVisibleRect && (!fallbackRect.width || !fallbackRect.height)) {
+  const anchorRect = pickPassageSelectionAnchorRect(visibleRects, textarea.selectionDirection);
+  if (!anchorRect && (!fallbackRect.width || !fallbackRect.height)) {
     return null;
   }
 
-  return rectToAnchor(firstVisibleRect ?? fallbackRect);
+  return anchorRect ?? rectToAnchor(fallbackRect);
 }
 
 function rectToAnchor(rect: DOMRect | PassagePopoverAnchorRect): PassagePopoverAnchorRect {
@@ -227,7 +245,19 @@ function rectToAnchor(rect: DOMRect | PassagePopoverAnchorRect): PassagePopoverA
   };
 }
 
-function getPassagePopoverViewportRect(textarea: HTMLTextAreaElement) {
+function getPassagePopoverViewportRect(textarea: HTMLTextAreaElement, overlayContainer: HTMLElement | null) {
+  if (overlayContainer) {
+    const rect = overlayContainer.getBoundingClientRect();
+    return {
+      top: rect.top,
+      right: rect.right,
+      bottom: rect.bottom,
+      left: rect.left,
+      width: rect.width,
+      height: rect.height,
+    };
+  }
+
   const workspaceMain = textarea.closest('.workspace-main');
   if (workspaceMain instanceof HTMLElement) {
     const rect = workspaceMain.getBoundingClientRect();

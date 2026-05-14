@@ -26,7 +26,7 @@ export type PassageSelectionSnapshot = {
   selectedRange: SelectedTextRange;
   selectedParagraphRange: SelectedParagraphRange;
   selectedText: string;
-  popoverPosition?: { top: number; left: number };
+  popoverPosition?: PassagePopoverPosition;
 };
 
 export type PassagePopoverAnchorRect = {
@@ -45,6 +45,12 @@ export type PassagePopoverViewportRect = {
   left?: number;
   width: number;
   height: number;
+};
+
+export type PassagePopoverPosition = {
+  top: number;
+  left: number;
+  strategy: 'fixed' | 'absolute';
 };
 
 export interface PassageAgentContext extends AgentPageContext {
@@ -161,6 +167,35 @@ export function computePassagePopoverPosition(
     : clampNumber(fallbackTop, minTop, maxTop);
 
   return { top, left };
+}
+
+export function pickPassageSelectionAnchorRect(
+  rects: PassagePopoverAnchorRect[],
+  selectionDirection?: string | null,
+) {
+  if (!rects.length) return null;
+  return selectionDirection === 'backward' ? rects[0] : rects[rects.length - 1];
+}
+
+export function toAbsolutePassagePopoverPosition(input: {
+  viewportPosition: { top: number; left: number };
+  containerRect: { top: number; left: number };
+  scrollTop?: number;
+  scrollLeft?: number;
+}): PassagePopoverPosition {
+  return {
+    top: input.viewportPosition.top - input.containerRect.top + (input.scrollTop ?? 0),
+    left: input.viewportPosition.left - input.containerRect.left + (input.scrollLeft ?? 0),
+    strategy: 'absolute',
+  };
+}
+
+export function toFixedPassagePopoverPosition(position: { top: number; left: number }): PassagePopoverPosition {
+  return {
+    top: position.top,
+    left: position.left,
+    strategy: 'fixed',
+  };
 }
 
 export function buildPassageAgentContext(input: {
