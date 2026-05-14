@@ -20,7 +20,7 @@ import { GenerateGuidedStepPreviewTool } from './tools/generate-guided-step-prev
 import { GenerateChapterCraftBriefPreviewTool, PersistChapterCraftBriefTool, ValidateChapterCraftBriefTool } from './tools/chapter-craft-brief-tools.tool';
 import { GenerateChapterOutlineBatchPreviewTool, MergeChapterOutlineBatchPreviewsTool, SegmentChapterOutlineBatchesTool } from './tools/chapter-outline-batch-tools.tool';
 import { GenerateChapterOutlinePreviewTool, MergeChapterOutlinePreviewsTool } from './tools/chapter-outline-preview-tools.tool';
-import { ReviseChapterPassagePreviewTool } from './tools/chapter-passage-revision.tool';
+import { ApplyChapterPassageRevisionTool, ReviseChapterPassagePreviewTool } from './tools/chapter-passage-revision.tool';
 import { GenerateImportCharactersPreviewTool } from './tools/generate-import-characters-preview.tool';
 import { GenerateImportOutlinePreviewTool } from './tools/generate-import-outline-preview.tool';
 import { GenerateImportProjectProfilePreviewTool } from './tools/generate-import-project-profile-preview.tool';
@@ -122,6 +122,7 @@ export class ToolRegistryService implements OnModuleInit {
     private readonly validateChapterCraftBriefTool: ValidateChapterCraftBriefTool,
     private readonly persistChapterCraftBriefTool: PersistChapterCraftBriefTool,
     private readonly reviseChapterPassagePreviewTool: ReviseChapterPassagePreviewTool,
+    private readonly applyChapterPassageRevisionTool: ApplyChapterPassageRevisionTool,
     private readonly listSceneCardsTool: ListSceneCardsTool,
     private readonly generateSceneCardsPreviewTool: GenerateSceneCardsPreviewTool,
     private readonly validateSceneCardsTool: ValidateSceneCardsTool,
@@ -195,6 +196,7 @@ export class ToolRegistryService implements OnModuleInit {
     this.register(this.validateChapterCraftBriefTool);
     this.register(this.persistChapterCraftBriefTool);
     this.register(this.reviseChapterPassagePreviewTool);
+    this.register(this.applyChapterPassageRevisionTool);
     this.register(this.listSceneCardsTool);
     this.register(this.generateSceneCardsPreviewTool);
     this.register(this.validateSceneCardsTool);

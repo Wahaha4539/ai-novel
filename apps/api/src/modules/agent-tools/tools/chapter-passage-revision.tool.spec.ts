@@ -1,5 +1,5 @@
 import assert from 'node:assert/strict';
-import { ReviseChapterPassagePreviewTool } from './chapter-passage-revision.tool';
+import { ApplyChapterPassageRevisionTool, ReviseChapterPassagePreviewTool } from './chapter-passage-revision.tool';
 import type { ToolContext } from '../base-tool';
 
 type TestCase = { name: string; run: () => void | Promise<void> };
@@ -46,6 +46,13 @@ const toolContext: ToolContext = {
   policy: {},
 };
 
+const applyContext: ToolContext = {
+  ...toolContext,
+  mode: 'act',
+  approved: true,
+  userId: 'user-1',
+};
+
 function createPrisma(content = draftContent, versionNo = 3) {
   return {
     chapterDraft: {
@@ -89,6 +96,16 @@ function createPrisma(content = draftContent, versionNo = 3) {
   };
 }
 
+function createCache() {
+  const deletedRecallProjects: string[] = [];
+  return {
+    deletedRecallProjects,
+    async deleteProjectRecallResults(projectId: string) {
+      deletedRecallProjects.push(projectId);
+    },
+  };
+}
+
 function successRevision(text = '他在门前停住，钥匙硌进掌心。') {
   return {
     replacementText: text,
@@ -125,6 +142,163 @@ function createLlm(responses: Array<unknown | Error>) {
 
 function createTool(prisma = createPrisma(), llm = createLlm([successRevision(), validReview()])) {
   return { tool: new ReviseChapterPassagePreviewTool(prisma as never, llm as never), llm };
+}
+
+function createApplyPreview(overrides: Partial<{
+  previewId: string;
+  chapterId: string;
+  draftId: string;
+  draftVersion: number;
+  selectedRange: typeof selectedRange;
+  selectedParagraphRange: { start: number; end: number; count: number };
+  originalText: string;
+  replacementText: string;
+  editSummary: string;
+  preservedFacts: string[];
+  risks: string[];
+}> = {}) {
+  return {
+    previewId: 'preview-1',
+    chapterId: 'chapter-1',
+    draftId: 'draft-1',
+    draftVersion: 3,
+    selectedRange,
+    selectedParagraphRange: { start: 2, end: 2, count: 1 },
+    originalText,
+    replacementText: '他在门前停住，钥匙冷得扎手。',
+    editSummary: '压紧动作并保留门前犹豫。',
+    preservedFacts: ['角色仍停在门前'],
+    risks: [],
+    ...overrides,
+  };
+}
+
+function countChineseLikeWords(content: string) {
+  const cjk = content.match(/[\u4e00-\u9fff]/g)?.length ?? 0;
+  const words = content.match(/[A-Za-z0-9]+/g)?.length ?? 0;
+  return cjk + words;
+}
+
+function createApplyPrisma(options: {
+  previewDraftContent?: string;
+  previewDraftVersion?: number;
+  previewDraftId?: string;
+  currentDraftContent?: string;
+  currentDraftVersion?: number;
+  currentDraftId?: string;
+} = {}) {
+  const calls: Array<{ model: string; method: string; args: any }> = [];
+  const previewDraft = {
+    id: options.previewDraftId ?? 'draft-1',
+    chapterId: 'chapter-1',
+    versionNo: options.previewDraftVersion ?? 3,
+    content: options.previewDraftContent ?? draftContent,
+    createdBy: 'user-preview',
+    chapter: {
+      id: 'chapter-1',
+      projectId: 'project-1',
+      volumeId: 'volume-1',
+      chapterNo: 7,
+      title: '雨夜',
+      objective: '逼近真相',
+      conflict: '门内有人隐瞒',
+      outline: '角色在门前犹豫后进入。',
+      craftBrief: { actionBeats: ['停在门前', '听见脚步'] },
+      volume: {
+        id: 'volume-1',
+        volumeNo: 1,
+        title: '第一卷',
+        synopsis: '城中迷案。',
+        objective: '揭开旧案。',
+        narrativePlan: {},
+      },
+    },
+  };
+  const currentDraft = {
+    id: options.currentDraftId ?? previewDraft.id,
+    chapterId: 'chapter-1',
+    versionNo: options.currentDraftVersion ?? previewDraft.versionNo,
+    content: options.currentDraftContent ?? previewDraft.content,
+    createdBy: 'user-current',
+  };
+  const latestDraft = {
+    id: currentDraft.id,
+    chapterId: 'chapter-1',
+    versionNo: currentDraft.versionNo,
+    content: currentDraft.content,
+    createdBy: currentDraft.createdBy,
+  };
+
+  const tx = {
+    chapterDraft: {
+      async findFirst(args: any) {
+        calls.push({ model: 'chapterDraft', method: 'tx.findFirst', args });
+        if (args.where?.chapterId === 'chapter-1' && args.where?.isCurrent) {
+          return { ...currentDraft };
+        }
+        if (args.where?.chapterId === 'chapter-1') {
+          return { ...latestDraft };
+        }
+        return null;
+      },
+      async updateMany(args: any) {
+        calls.push({ model: 'chapterDraft', method: 'updateMany', args });
+        return { count: 1 };
+      },
+      async create(args: any) {
+        calls.push({ model: 'chapterDraft', method: 'create', args });
+        return {
+          id: 'draft-4',
+          chapterId: args.data.chapterId,
+          versionNo: args.data.versionNo,
+        };
+      },
+    },
+    chapter: {
+      async update(args: any) {
+        calls.push({ model: 'chapter', method: 'update', args });
+        return { id: 'chapter-1' };
+      },
+    },
+  };
+
+  const prisma = {
+    chapterDraft: {
+      async findUnique(args: any) {
+        calls.push({ model: 'chapterDraft', method: 'findUnique', args });
+        return { ...previewDraft };
+      },
+      async findFirst(args: any) {
+        calls.push({ model: 'chapterDraft', method: 'findFirst', args });
+        if (args.where?.chapterId === 'chapter-1' && args.where?.isCurrent) {
+          return { ...currentDraft };
+        }
+        return null;
+      },
+    },
+    chapter: {
+      async update(args: any) {
+        calls.push({ model: 'chapter', method: 'root.update', args });
+        return { id: 'chapter-1' };
+      },
+    },
+    async $transaction(callback: (transaction: typeof tx) => Promise<unknown>) {
+      return callback(tx);
+    },
+  };
+
+  return { prisma, calls };
+}
+
+function createApplyTool(
+  prismaSetup = createApplyPrisma(),
+  cache = createCache(),
+) {
+  return {
+    tool: new ApplyChapterPassageRevisionTool(prismaSetup.prisma as never, cache as never),
+    cache,
+    calls: prismaSetup.calls,
+  };
 }
 
 test('revise_chapter_passage_preview returns a strict local preview', async () => {
@@ -202,6 +376,95 @@ test('revise_chapter_passage_preview throws after quality retry still fails', as
 
   await assert.rejects(() => tool.run(baseInput, toolContext), /quality review failed/i);
   assert.equal(llm.calls.length, 4);
+});
+
+test('apply_chapter_passage_revision rejects plan mode', async () => {
+  const { tool } = createApplyTool();
+
+  await assert.rejects(
+    () => tool.run({ preview: createApplyPreview() }, toolContext),
+    /must run in act mode/i,
+  );
+});
+
+test('apply_chapter_passage_revision rejects missing approval', async () => {
+  const { tool } = createApplyTool();
+
+  await assert.rejects(
+    () => tool.run({ preview: createApplyPreview() }, { ...applyContext, approved: false }),
+    /requires explicit user approval/i,
+  );
+});
+
+test('apply_chapter_passage_revision rejects empty replacement text', async () => {
+  const { tool } = createApplyTool();
+
+  await assert.rejects(
+    () => tool.run({ preview: createApplyPreview({ replacementText: '   ' }) }, applyContext),
+    /replacementText/i,
+  );
+});
+
+test('apply_chapter_passage_revision rejects when a newer current draft exists', async () => {
+  const { tool } = createApplyTool(createApplyPrisma({
+    currentDraftId: 'draft-2',
+    currentDraftVersion: 4,
+  }));
+
+  await assert.rejects(
+    () => tool.run({ preview: createApplyPreview() }, applyContext),
+    /Draft version conflict/i,
+  );
+});
+
+test('apply_chapter_passage_revision rejects when the selected range no longer matches the draft content', async () => {
+  const changedContent = draftContent.replace(originalText, '他已经推门进去。');
+  const { tool } = createApplyTool(createApplyPrisma({
+    previewDraftContent: changedContent,
+    currentDraftContent: changedContent,
+  }));
+
+  await assert.rejects(
+    () => tool.run({ preview: createApplyPreview() }, applyContext),
+    /reselect the passage|range/i,
+  );
+});
+
+test('apply_chapter_passage_revision creates a new chapter draft version and marks the old one non-current', async () => {
+  const cache = createCache();
+  const prismaSetup = createApplyPrisma();
+  const { tool, calls } = createApplyTool(prismaSetup, cache);
+
+  const result = await tool.run({ preview: createApplyPreview() }, applyContext);
+
+  const expectedContent = draftContent.replace(originalText, '他在门前停住，钥匙冷得扎手。');
+  assert.equal(result.draftId, 'draft-4');
+  assert.equal(result.chapterId, 'chapter-1');
+  assert.equal(result.versionNo, 4);
+  assert.equal(result.actualWordCount, countChineseLikeWords(expectedContent));
+  assert.deepEqual(result.selectedRange, selectedRange);
+  assert.equal(result.sourceDraftId, 'draft-1');
+  assert.equal(result.sourceDraftVersion, 3);
+  assert.equal(result.previewId, 'preview-1');
+  assert.deepEqual(cache.deletedRecallProjects, ['project-1']);
+  assert.deepEqual(
+    calls.find((item) => item.model === 'chapterDraft' && item.method === 'updateMany')?.args,
+    { where: { chapterId: 'chapter-1', isCurrent: true }, data: { isCurrent: false } },
+  );
+  const createCall = calls.find((item) => item.model === 'chapterDraft' && item.method === 'create');
+  assert.equal(createCall?.args.data.versionNo, 4);
+  assert.equal(createCall?.args.data.source, 'agent_passage_revision');
+  assert.equal(createCall?.args.data.generationContext.type, 'passage_revision');
+  assert.equal(createCall?.args.data.generationContext.originalDraftId, 'draft-1');
+  assert.equal(createCall?.args.data.generationContext.originalDraftVersion, 3);
+  assert.deepEqual(createCall?.args.data.generationContext.selectedRange, selectedRange);
+  assert.equal(createCall?.args.data.generationContext.originalText, originalText);
+  assert.equal(createCall?.args.data.generationContext.replacementText, '他在门前停住，钥匙冷得扎手。');
+  assert.equal(createCall?.args.data.generationContext.editSummary, '压紧动作并保留门前犹豫。');
+  assert.equal(
+    calls.find((item) => item.model === 'chapter' && item.method === 'update')?.args.data.actualWordCount,
+    countChineseLikeWords(expectedContent),
+  );
 });
 
 async function main() {

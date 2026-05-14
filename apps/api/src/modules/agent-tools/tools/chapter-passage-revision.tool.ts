@@ -1,6 +1,7 @@
 import { BadRequestException, Injectable, NotFoundException } from '@nestjs/common';
 import { randomUUID } from 'node:crypto';
 import { Prisma } from '@prisma/client';
+import { NovelCacheService } from '../../../common/cache/novel-cache.service';
 import { PrismaService } from '../../../prisma/prisma.service';
 import { DEFAULT_LLM_TIMEOUT_MS } from '../../llm/llm-timeout.constants';
 import { LlmGatewayService } from '../../llm/llm-gateway.service';
@@ -83,11 +84,44 @@ interface ChapterPassageRevisionPreview {
   };
 }
 
+interface ApplyChapterPassageRevisionInput {
+  preview?: {
+    previewId?: string;
+    chapterId: string;
+    draftId: string;
+    draftVersion: number;
+    selectedRange: TextRange;
+    selectedParagraphRange?: SelectedParagraphRange;
+    originalText: string;
+    replacementText: string;
+    editSummary: string;
+    preservedFacts?: string[];
+    risks?: string[];
+    validation?: {
+      valid: boolean;
+      issues: string[];
+    };
+  };
+}
+
+interface ChapterPassageRevisionApplyResult {
+  draftId: string;
+  chapterId: string;
+  versionNo: number;
+  actualWordCount: number;
+  selectedRange: TextRange;
+  selectedParagraphRange?: SelectedParagraphRange;
+  sourceDraftId: string;
+  sourceDraftVersion: number;
+  previewId?: string;
+}
+
 type LoadedDraft = {
   id: string;
   chapterId: string;
   versionNo: number;
   content: string;
+  createdBy: string | null;
   chapter: {
     id: string;
     projectId: string;
@@ -698,5 +732,408 @@ export class ReviseChapterPassagePreviewTool implements BaseTool<ReviseChapterPa
 
   private asRecord(value: unknown): Record<string, unknown> {
     return Boolean(value) && typeof value === 'object' && !Array.isArray(value) ? value as Record<string, unknown> : {};
+  }
+}
+
+@Injectable()
+export class ApplyChapterPassageRevisionTool implements BaseTool<ApplyChapterPassageRevisionInput, ChapterPassageRevisionApplyResult> {
+  name = 'apply_chapter_passage_revision';
+  description = 'After explicit approval, replace only the selected range in the current chapter draft and persist it as a new draft version.';
+  inputSchema = {
+    type: 'object' as const,
+    required: ['preview'],
+    additionalProperties: false,
+    properties: {
+      preview: {
+        type: 'object' as const,
+        required: ['chapterId', 'draftId', 'draftVersion', 'selectedRange', 'originalText', 'replacementText', 'editSummary'],
+        additionalProperties: false,
+        properties: {
+          previewId: { type: 'string' as const, minLength: 1 },
+          chapterId: { type: 'string' as const, minLength: 1 },
+          draftId: { type: 'string' as const, minLength: 1 },
+          draftVersion: { type: 'number' as const, minimum: 1, integer: true },
+          selectedRange: {
+            type: 'object' as const,
+            required: ['start', 'end'],
+            additionalProperties: false,
+            properties: {
+              start: { type: 'number' as const, minimum: 0, integer: true },
+              end: { type: 'number' as const, minimum: 1, integer: true },
+            },
+          },
+          selectedParagraphRange: {
+            type: 'object' as const,
+            required: ['start', 'end'],
+            additionalProperties: false,
+            properties: {
+              start: { type: 'number' as const, minimum: 1, integer: true },
+              end: { type: 'number' as const, minimum: 1, integer: true },
+              count: { type: 'number' as const, minimum: 1, integer: true },
+            },
+          },
+          originalText: { type: 'string' as const, minLength: 1 },
+          replacementText: { type: 'string' as const, minLength: 1 },
+          editSummary: { type: 'string' as const, minLength: 1 },
+          preservedFacts: { type: 'array' as const, items: { type: 'string' as const } },
+          risks: { type: 'array' as const, items: { type: 'string' as const } },
+          validation: {
+            type: 'object' as const,
+            required: ['valid', 'issues'],
+            additionalProperties: false,
+            properties: {
+              valid: { type: 'boolean' as const },
+              issues: { type: 'array' as const, items: { type: 'string' as const } },
+            },
+          },
+        },
+      },
+    },
+  };
+  outputSchema = {
+    type: 'object' as const,
+    required: ['draftId', 'chapterId', 'versionNo', 'actualWordCount', 'selectedRange', 'sourceDraftId', 'sourceDraftVersion'],
+    additionalProperties: false,
+    properties: {
+      draftId: { type: 'string' as const, minLength: 1 },
+      chapterId: { type: 'string' as const, minLength: 1 },
+      versionNo: { type: 'number' as const, minimum: 1, integer: true },
+      actualWordCount: { type: 'number' as const, minimum: 0, integer: true },
+      selectedRange: {
+        type: 'object' as const,
+        required: ['start', 'end'],
+        additionalProperties: false,
+        properties: {
+          start: { type: 'number' as const, minimum: 0, integer: true },
+          end: { type: 'number' as const, minimum: 1, integer: true },
+        },
+      },
+      selectedParagraphRange: { type: 'object' as const },
+      sourceDraftId: { type: 'string' as const, minLength: 1 },
+      sourceDraftVersion: { type: 'number' as const, minimum: 1, integer: true },
+      previewId: { type: 'string' as const, minLength: 1 },
+    },
+  };
+  allowedModes: Array<'act'> = ['act'];
+  riskLevel: 'medium' = 'medium';
+  requiresApproval = true;
+  sideEffects = ['create_chapter_draft', 'update_chapter_status'];
+  manifest: ToolManifestV2 = {
+    name: this.name,
+    displayName: '应用章节选区局部修订',
+    description: 'After explicit approval, deterministically applies a previously reviewed passage revision preview by creating a new current draft version.',
+    whenToUse: [
+      'The user explicitly approves a revise_chapter_passage_preview result and wants it written into the chapter draft.',
+      'A passage-level revision preview already exists and only the selected range should be replaced.',
+    ],
+    whenNotToUse: [
+      'Do not use without an approved passage preview.',
+      'Do not use in plan mode.',
+      'Do not use for whole-chapter rewrites or whole-chapter polishing.',
+      'Do not guess a new range when the current draft or selected text drifted; fail and ask the user to reselect.',
+    ],
+    inputSchema: this.inputSchema,
+    outputSchema: this.outputSchema,
+    parameterHints: {
+      preview: { source: 'previous_step', description: 'Use the full output of revise_chapter_passage_preview.' },
+    },
+    examples: [
+      {
+        user: '这版可以，应用到正文。',
+        context: { sourcePage: 'editor_passage_agent', selectionIntent: 'chapter_passage_revision' },
+        plan: [
+          {
+            tool: 'apply_chapter_passage_revision',
+            args: {
+              preview: '{{steps.1.output}}',
+            },
+          },
+        ],
+      },
+    ],
+    failureHints: [
+      { code: 'APPROVAL_REQUIRED', meaning: 'The write step requires explicit approval and act mode.', suggestedRepair: 'Ask the user to approve the passage revision before applying it.' },
+      { code: 'DRAFT_VERSION_CONFLICT', meaning: 'The current chapter draft changed after the preview was generated.', suggestedRepair: 'Ask the user to save or reselect the passage and generate a fresh preview.' },
+      { code: 'RANGE_CONFLICT', meaning: 'The current draft text no longer matches originalText at selectedRange.', suggestedRepair: 'Ask the user to reselect the passage instead of guessing a replacement location.' },
+    ],
+    allowedModes: this.allowedModes,
+    riskLevel: this.riskLevel,
+    requiresApproval: this.requiresApproval,
+    sideEffects: this.sideEffects,
+  };
+
+  constructor(
+    private readonly prisma: PrismaService,
+    private readonly cacheService: NovelCacheService,
+  ) {}
+
+  async run(args: ApplyChapterPassageRevisionInput, context: ToolContext): Promise<ChapterPassageRevisionApplyResult> {
+    if (context.mode !== 'act') {
+      throw new BadRequestException('apply_chapter_passage_revision must run in act mode.');
+    }
+    if (!context.approved) {
+      throw new BadRequestException('apply_chapter_passage_revision requires explicit user approval.');
+    }
+
+    const preview = this.normalizePreview(args.preview);
+    const draft = await this.loadDraft(preview.draftId);
+    this.assertDraftMatchesPreview(draft, preview, context.projectId);
+
+    const currentDraft = await this.loadCurrentDraft(preview.chapterId);
+    this.assertCurrentDraftMatchesPreview(currentDraft, preview);
+    this.assertRangeMatchesOriginalText(currentDraft.content, preview.selectedRange, preview.originalText);
+
+    const persisted = await this.prisma.$transaction(async (tx) => {
+      const currentInTransaction = await tx.chapterDraft.findFirst({
+        where: { chapterId: preview.chapterId, isCurrent: true },
+        orderBy: { versionNo: 'desc' },
+      });
+      if (!currentInTransaction) {
+        throw new NotFoundException(`Current chapter draft not found for chapter: ${preview.chapterId}`);
+      }
+      this.assertCurrentDraftMatchesPreview(currentInTransaction, preview);
+      this.assertRangeMatchesOriginalText(currentInTransaction.content, preview.selectedRange, preview.originalText);
+
+      const latestInTransaction = await tx.chapterDraft.findFirst({
+        where: { chapterId: preview.chapterId },
+        orderBy: { versionNo: 'desc' },
+      });
+      const nextContent = this.applyReplacement(currentInTransaction.content, preview.selectedRange, preview.replacementText);
+      const actualWordCount = this.countChineseLikeWords(nextContent);
+
+      await tx.chapterDraft.updateMany({
+        where: { chapterId: preview.chapterId, isCurrent: true },
+        data: { isCurrent: false },
+      });
+
+      const created = await tx.chapterDraft.create({
+        data: {
+          chapterId: preview.chapterId,
+          versionNo: (latestInTransaction?.versionNo ?? 0) + 1,
+          content: nextContent,
+          source: 'agent_passage_revision',
+          modelInfo: {} as Prisma.InputJsonValue,
+          generationContext: {
+            type: 'passage_revision',
+            agentRunId: context.agentRunId,
+            previewId: preview.previewId,
+            originalDraftId: currentInTransaction.id,
+            originalDraftVersion: currentInTransaction.versionNo,
+            selectedRange: preview.selectedRange,
+            selectedParagraphRange: preview.selectedParagraphRange,
+            originalText: preview.originalText,
+            replacementText: preview.replacementText,
+            editSummary: preview.editSummary,
+            preservedFacts: preview.preservedFacts,
+            risks: preview.risks,
+          } as unknown as Prisma.InputJsonValue,
+          isCurrent: true,
+          createdBy: currentInTransaction.createdBy ?? context.userId,
+        },
+      });
+
+      await tx.chapter.update({
+        where: { id: preview.chapterId },
+        data: {
+          status: 'drafted',
+          actualWordCount,
+        },
+      });
+
+      return {
+        draftId: created.id,
+        chapterId: created.chapterId,
+        versionNo: created.versionNo,
+        actualWordCount,
+      };
+    }, { timeout: 30_000, maxWait: 10_000 });
+
+    await this.cacheService.deleteProjectRecallResults(context.projectId);
+
+    return {
+      ...persisted,
+      selectedRange: { start: preview.selectedRange.start, end: preview.selectedRange.end },
+      ...(preview.selectedParagraphRange ? { selectedParagraphRange: preview.selectedParagraphRange } : {}),
+      sourceDraftId: preview.draftId,
+      sourceDraftVersion: preview.draftVersion,
+      ...(preview.previewId ? { previewId: preview.previewId } : {}),
+    };
+  }
+
+  private async loadDraft(draftId: string): Promise<LoadedDraft> {
+    const draft = await this.prisma.chapterDraft.findUnique({
+      where: { id: draftId },
+      include: {
+        chapter: {
+          include: {
+            volume: true,
+          },
+        },
+      },
+    });
+    if (!draft) throw new NotFoundException(`Chapter draft not found: ${draftId}`);
+    return draft as LoadedDraft;
+  }
+
+  private async loadCurrentDraft(chapterId: string): Promise<{ id: string; chapterId: string; versionNo: number; content: string; createdBy: string | null }> {
+    const draft = await this.prisma.chapterDraft.findFirst({
+      where: { chapterId, isCurrent: true },
+      orderBy: { versionNo: 'desc' },
+    });
+    if (!draft) throw new NotFoundException(`Current chapter draft not found for chapter: ${chapterId}`);
+    return draft;
+  }
+
+  private normalizePreview(value: ApplyChapterPassageRevisionInput['preview']) {
+    const preview = this.asRecord(value);
+    const selectedRange = this.normalizeRange(preview.selectedRange);
+    const selectedParagraphRange = preview.selectedParagraphRange === undefined
+      ? undefined
+      : this.normalizeSelectedParagraphRange(preview.selectedParagraphRange);
+    const preservedFacts = preview.preservedFacts === undefined
+      ? undefined
+      : this.requiredStringArray(preview.preservedFacts, 'preview.preservedFacts');
+    const risks = preview.risks === undefined
+      ? undefined
+      : this.requiredStringArray(preview.risks, 'preview.risks');
+
+    return {
+      previewId: preview.previewId === undefined ? undefined : this.requiredString(preview.previewId, 'preview.previewId'),
+      chapterId: this.requiredString(preview.chapterId, 'preview.chapterId'),
+      draftId: this.requiredString(preview.draftId, 'preview.draftId'),
+      draftVersion: this.requiredPositiveInteger(preview.draftVersion, 'preview.draftVersion'),
+      selectedRange,
+      ...(selectedParagraphRange ? { selectedParagraphRange } : {}),
+      originalText: this.requiredString(preview.originalText, 'preview.originalText', { preserveWhitespace: true }),
+      replacementText: this.requiredString(preview.replacementText, 'preview.replacementText', { preserveWhitespace: true }),
+      editSummary: this.requiredString(preview.editSummary, 'preview.editSummary'),
+      ...(preservedFacts ? { preservedFacts } : {}),
+      ...(risks ? { risks } : {}),
+    };
+  }
+
+  private assertDraftMatchesPreview(
+    draft: LoadedDraft,
+    preview: {
+      chapterId: string;
+      draftId: string;
+      draftVersion: number;
+      selectedRange: TextRange;
+      originalText: string;
+    },
+    projectId: string,
+  ): void {
+    if (draft.chapter.projectId !== projectId) {
+      throw new BadRequestException('Draft does not belong to the current project.');
+    }
+    if (draft.chapterId !== preview.chapterId) {
+      throw new BadRequestException('Draft does not belong to the requested chapter.');
+    }
+    if (draft.id !== preview.draftId) {
+      throw new BadRequestException('Preview draft id does not match the stored draft.');
+    }
+    if (draft.versionNo !== preview.draftVersion) {
+      throw new BadRequestException(`Draft version conflict: current v${draft.versionNo}, requested v${preview.draftVersion}.`);
+    }
+  }
+
+  private assertCurrentDraftMatchesPreview(
+    currentDraft: { id: string; chapterId: string; versionNo: number },
+    preview: { chapterId: string; draftId: string; draftVersion: number },
+  ): void {
+    if (currentDraft.chapterId !== preview.chapterId) {
+      throw new BadRequestException('Current draft does not belong to the requested chapter.');
+    }
+    if (currentDraft.id !== preview.draftId || currentDraft.versionNo !== preview.draftVersion) {
+      throw new BadRequestException(`Draft version conflict: current draft is v${currentDraft.versionNo}. Please reselect the passage.`);
+    }
+  }
+
+  private applyReplacement(content: string, range: TextRange, replacementText: string): string {
+    return `${content.slice(0, range.start)}${replacementText}${content.slice(range.end)}`;
+  }
+
+  private assertRangeMatchesOriginalText(content: string, range: TextRange, originalText: string): void {
+    this.assertValidRange(content, range);
+    if (content.slice(range.start, range.end) !== originalText) {
+      throw new BadRequestException('Selected range no longer matches the current draft. Please reselect the passage.');
+    }
+  }
+
+  private normalizeRange(value: unknown): TextRange {
+    const record = this.asRecord(value);
+    const start = record.start;
+    const end = record.end;
+    if (!Number.isInteger(start) || Number(start) < 0) {
+      throw new BadRequestException('preview.selectedRange.start must be a non-negative integer.');
+    }
+    if (!Number.isInteger(end) || Number(end) <= 0) {
+      throw new BadRequestException('preview.selectedRange.end must be a positive integer.');
+    }
+    if (Number(end) <= Number(start)) {
+      throw new BadRequestException('preview.selectedRange.end must be greater than start.');
+    }
+    return { start: Number(start), end: Number(end) };
+  }
+
+  private assertValidRange(content: string, range: TextRange): void {
+    if (!Number.isInteger(range.start) || range.start < 0) {
+      throw new BadRequestException('selectedRange.start must be a non-negative integer.');
+    }
+    if (!Number.isInteger(range.end) || range.end <= 0) {
+      throw new BadRequestException('selectedRange.end must be a positive integer.');
+    }
+    if (range.end <= range.start) {
+      throw new BadRequestException('selectedRange.end must be greater than selectedRange.start.');
+    }
+    if (range.end > content.length) {
+      throw new BadRequestException('selectedRange is outside the current draft content.');
+    }
+  }
+
+  private normalizeSelectedParagraphRange(value: unknown): SelectedParagraphRange {
+    const record = this.asRecord(value);
+    const start = this.requiredPositiveInteger(record.start, 'preview.selectedParagraphRange.start');
+    const end = this.requiredPositiveInteger(record.end, 'preview.selectedParagraphRange.end');
+    if (end < start) {
+      throw new BadRequestException('preview.selectedParagraphRange.end must be greater than or equal to start.');
+    }
+    const count = record.count === undefined
+      ? undefined
+      : this.requiredPositiveInteger(record.count, 'preview.selectedParagraphRange.count');
+    return { start, end, ...(count !== undefined ? { count } : {}) };
+  }
+
+  private requiredPositiveInteger(value: unknown, field: string): number {
+    if (!Number.isInteger(value) || Number(value) <= 0) {
+      throw new BadRequestException(`${field} must be a positive integer.`);
+    }
+    return Number(value);
+  }
+
+  private requiredString(value: unknown, field: string, options: { preserveWhitespace?: boolean } = {}): string {
+    if (typeof value !== 'string' || !value.trim()) {
+      throw new BadRequestException(`${field} is required.`);
+    }
+    return options.preserveWhitespace ? value : value.trim();
+  }
+
+  private requiredStringArray(value: unknown, field: string): string[] {
+    if (!Array.isArray(value)) {
+      throw new BadRequestException(`${field} must be an array.`);
+    }
+    return value.map((item, index) => this.requiredString(item, `${field}[${index}]`));
+  }
+
+  private countChineseLikeWords(content: string): number {
+    const cjk = content.match(/[\u4e00-\u9fff]/g)?.length ?? 0;
+    const words = content.match(/[A-Za-z0-9]+/g)?.length ?? 0;
+    return cjk + words;
+  }
+
+  private asRecord(value: unknown): Record<string, unknown> {
+    return Boolean(value) && typeof value === 'object' && !Array.isArray(value)
+      ? value as Record<string, unknown>
+      : {};
   }
 }
