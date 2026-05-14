@@ -89,8 +89,32 @@ function isChapterOutlineGoal(goal: string): boolean {
 }
 
 function isStoryUnitsGoal(goal: string): boolean {
+  if (hasNegatedStoryUnitsGoal(goal)) return false;
   return includesAny(goal, ['单元故事', '故事单元', '支线故事', '人物登场', '人物情感', '人物刻画', '背景故事', '丰富单元', '单元分类', 'storyunit', 'story unit'])
     && !isChapterOutlineGoal(goal);
+}
+
+function hasNegatedStoryUnitsGoal(goal: string): boolean {
+  return includesAny(goal, [
+    '不生成单元故事',
+    '不要生成单元故事',
+    '不需要单元故事',
+    '无需单元故事',
+    '不用单元故事',
+    '不要单元故事',
+    '不生成故事单元',
+    '不要生成故事单元',
+    '不需要故事单元',
+    '无需故事单元',
+    '不用故事单元',
+    '不要故事单元',
+    '不生成 storyunit',
+    '不要生成 storyunit',
+    '不需要 storyunit',
+    '无需 storyunit',
+    '不用 storyunit',
+    '不要 storyunit',
+  ]);
 }
 
 function hasNegatedChapterOutlineGoal(goal: string): boolean {

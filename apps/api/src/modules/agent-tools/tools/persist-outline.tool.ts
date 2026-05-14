@@ -70,11 +70,25 @@ export class PersistOutlineTool implements BaseTool<PersistOutlineInput, Record<
         create: { projectId: context.projectId, volumeNo: preview.volume.volumeNo, ...volumeData },
       });
 
+      const existingChapters = await tx.chapter.findMany({
+        where: { projectId: context.projectId, volumeId: volume.id },
+        orderBy: { chapterNo: 'asc' },
+      });
+      const existingByChapterNo = new Map(existingChapters.map((chapter) => [chapter.chapterNo, chapter]));
+      const usesGlobalChapterNo = existingChapters.some((chapter) => chapter.chapterNo > preview.volume.chapterCount);
+      const maxChapter = await tx.chapter.aggregate({
+        where: { projectId: context.projectId },
+        _max: { chapterNo: true },
+      });
+      let nextChapterNo = (maxChapter._max.chapterNo ?? 0) + 1;
+
       let createdCount = 0;
       let updatedCount = 0;
       let skippedCount = 0;
-      for (const chapter of preview.chapters) {
-        const existing = await tx.chapter.findUnique({ where: { projectId_chapterNo: { projectId: context.projectId, chapterNo: chapter.chapterNo } } });
+      for (const [index, chapter] of preview.chapters.entries()) {
+        const existing = usesGlobalChapterNo
+          ? existingChapters[index]
+          : existingByChapterNo.get(chapter.chapterNo);
         const craftBrief = this.asInputJsonObject(chapter.craftBrief);
         const data = {
           volumeId: volume.id,
@@ -87,7 +101,7 @@ export class PersistOutlineTool implements BaseTool<PersistOutlineInput, Record<
           ...(craftBrief ? { craftBrief } : {}),
         };
         if (!existing) {
-          await tx.chapter.create({ data: { projectId: context.projectId, chapterNo: chapter.chapterNo, ...data } });
+          await tx.chapter.create({ data: { projectId: context.projectId, chapterNo: nextChapterNo++, ...data } });
           createdCount += 1;
         } else if (existing.status === 'planned') {
           await tx.chapter.update({ where: { id: existing.id }, data });

@@ -4,6 +4,7 @@ import { NovelCacheService } from '../../common/cache/novel-cache.service';
 import { StructuredLogger } from '../../common/logging/structured-logger';
 import { PrismaService } from '../../prisma/prisma.service';
 import { buildGenerationProfileSnapshot, GenerationProfileSnapshot } from '../generation-profile/generation-profile.defaults';
+import { LlmChatResult } from '../llm/dto/llm-chat.dto';
 import { LlmGatewayService } from '../llm/llm-gateway.service';
 import { DEFAULT_LLM_TIMEOUT_MS } from '../llm/llm-timeout.constants';
 import { RetrievalBundle, RetrievalBundleWithCacheMeta, RetrievalService } from '../memory/retrieval.service';
@@ -46,6 +47,15 @@ interface ChapterGenerationProgressReporter {
 const GENERATE_CHAPTER_LLM_TIMEOUT_MS = DEFAULT_LLM_TIMEOUT_MS;
 const GENERATE_CHAPTER_LLM_RETRIES = 1;
 const GENERATE_CHAPTER_LLM_PHASE_TIMEOUT_MS = GENERATE_CHAPTER_LLM_TIMEOUT_MS * (GENERATE_CHAPTER_LLM_RETRIES + 1) + 5_000;
+const GENERATE_CHAPTER_MAX_TOKEN_FLOOR = 1_400;
+const GENERATE_CHAPTER_MAX_TOKEN_CEILING = 12_000;
+const GENERATE_CHAPTER_LENGTH_REPAIR_RETRIES = 0;
+const PREVIOUS_CHAPTER_CONTEXT_TAKE = 2;
+const PREVIOUS_CHAPTER_CONTEXT_CHAR_LIMIT = 2_200;
+const GENERATED_DRAFT_WORD_COUNT_MIN_RATIO = 0.85;
+const GENERATED_DRAFT_WORD_COUNT_MAX_RATIO = 1.3;
+const GENERATED_DRAFT_WORD_COUNT_WARN_MIN_RATIO = 0.85;
+const GENERATED_DRAFT_WORD_COUNT_WARN_MAX_RATIO = 1.15;
 
 export interface OutlineDensityCheckResult {
   valid: boolean;
@@ -337,24 +347,52 @@ export class GenerateChapterService {
       progressTotal: 1,
       timeoutMs: GENERATE_CHAPTER_LLM_PHASE_TIMEOUT_MS,
     });
-    const llmResult = await this.llm.chat(
+    let llmResult = await this.llm.chat(
       [
         { role: 'system', content: prompt.system },
         { role: 'user', content: prompt.user },
       ],
-      { appStep: 'generate', maxTokens: Math.min(10_000, Math.max(1800, Math.ceil(targetWordCount * 1.8))), timeoutMs: GENERATE_CHAPTER_LLM_TIMEOUT_MS, retries: GENERATE_CHAPTER_LLM_RETRIES, temperature: 0.45 },
+      { appStep: 'generate', maxTokens: this.estimateGenerateMaxTokens(targetWordCount), timeoutMs: GENERATE_CHAPTER_LLM_TIMEOUT_MS, retries: GENERATE_CHAPTER_LLM_RETRIES, temperature: 0.45 },
     );
     this.logger.log('generation.llm.completed', { ...logContext, stage: 'generating_draft', model: llmResult.model, tokenUsage: llmResult.usage, elapsedMs: Date.now() - llmStartedAt });
-    const content = this.stripWrapperTags(llmResult.text);
+    if (this.isLengthFinishReason(llmResult.rawPayloadSummary.finishReason)) {
+      throw new BadRequestException('write_chapter LLM 输出被提供商截断，未写入章节正文；请重试或检查模型输出上限配置。');
+    }
+    let content = this.stripWrapperTags(llmResult.text);
     if (!content) throw new BadRequestException('write_chapter 生成正文为空');
 
-    const actualWordCount = this.countChineseLikeWords(content);
+    let actualWordCount = this.countChineseLikeWords(content);
     await input.progress?.heartbeat?.({ phase: 'validating', phaseMessage: '正在校验生成章节质量', progressCurrent: 1, progressTotal: 1 });
-    const qualityGate = this.assessGeneratedDraftQuality(content, actualWordCount, targetWordCount, chapter, contextPack.planningContext?.sceneCards ?? []);
+    let qualityGate = this.assessGeneratedDraftQuality(content, actualWordCount, targetWordCount, chapter, contextPack.planningContext?.sceneCards ?? []);
+    let lengthRepair: Record<string, unknown> | undefined;
+    if (qualityGate.blocked && this.canRepairGeneratedDraftLength(qualityGate)) {
+      await input.progress?.heartbeat?.({ phase: 'validating', phaseMessage: '正在重写字数失衡的章节正文', progressCurrent: 1, progressTotal: 1 });
+      const repair = await this.repairGeneratedDraftLength({
+        content,
+        targetWordCount,
+        chapter,
+        sceneCards: contextPack.planningContext?.sceneCards ?? [],
+        blockers: qualityGate.blockers,
+      });
+      lengthRepair = {
+        initialActualWordCount: actualWordCount,
+        initialTargetRatio: qualityGate.metrics.targetRatio,
+        blockers: qualityGate.blockers,
+        repairedActualWordCount: repair.actualWordCount,
+        repairedTargetRatio: repair.qualityGate.metrics.targetRatio,
+        model: repair.result.model,
+        usage: repair.result.usage,
+        rawPayloadSummary: repair.result.rawPayloadSummary,
+      };
+      llmResult = repair.result;
+      content = repair.content;
+      actualWordCount = repair.actualWordCount;
+      qualityGate = repair.qualityGate;
+    }
     if (qualityGate.blocked) {
       throw new BadRequestException(`生成后质量门禁未通过：${qualityGate.blockers.join('；')}`);
     }
-    const modelInfo = { model: llmResult.model, usage: llmResult.usage, rawPayloadSummary: llmResult.rawPayloadSummary };
+    const modelInfo = { model: llmResult.model, usage: llmResult.usage, rawPayloadSummary: llmResult.rawPayloadSummary, lengthRepair };
     const retrievalPayload = { contextPack, generationProfile, retrievalPlan: retrievalPlanResult.plan, plannerDiagnostics: retrievalPlanResult.diagnostics, retrievalCache: retrievalBundle.cache, lorebookHits: retrievalBundle.lorebookHits, memoryHits: retrievalBundle.memoryHits, structuredHits: retrievalBundle.structuredHits, rankedHits: retrievalBundle.rankedHits, diagnostics: retrievalBundle.diagnostics, preflight, qualityGate, rewriteCleanup };
 
     await input.progress?.updateProgress?.({ phase: 'persisting', phaseMessage: '正在写入章节草稿与质量报告', progressCurrent: 0, progressTotal: 1, timeoutMs: 60_000 });
@@ -483,6 +521,72 @@ export class GenerateChapterService {
     return input.wordCount ?? chapter.expectedWordCount ?? chapter.project.creativeProfile?.chapterWordCount ?? generationProfile.defaultChapterWordCount ?? 3500;
   }
 
+  private estimateGenerateMaxTokens(targetWordCount: number): number {
+    const normalizedTarget = Number.isFinite(targetWordCount) && targetWordCount > 0 ? targetWordCount : 3500;
+    const fullChapterTokenFloor = normalizedTarget >= 2800 ? 6_500 : GENERATE_CHAPTER_MAX_TOKEN_FLOOR;
+    const estimated =
+      normalizedTarget >= 1_000
+        ? Math.ceil(normalizedTarget * 1.85 + 1_300)
+        : Math.ceil(normalizedTarget * 1.6 + 800);
+    return Math.min(GENERATE_CHAPTER_MAX_TOKEN_CEILING, Math.max(fullChapterTokenFloor, estimated));
+  }
+
+  private canRepairGeneratedDraftLength(qualityGate: GeneratedDraftQualityGateResult): boolean {
+    return qualityGate.blocked && qualityGate.blockers.length > 0 && qualityGate.blockers.every((message) => message.startsWith('正文长度'));
+  }
+
+  private async repairGeneratedDraftLength(input: {
+    content: string;
+    targetWordCount: number;
+    chapter: { chapterNo: number; title: string | null; outline: string | null; craftBrief?: Prisma.JsonValue | null };
+    sceneCards: SceneExecutionPlan[];
+    blockers: string[];
+  }): Promise<{ result: LlmChatResult; content: string; actualWordCount: number; qualityGate: GeneratedDraftQualityGateResult }> {
+    const hardMin = Math.round(input.targetWordCount * GENERATED_DRAFT_WORD_COUNT_MIN_RATIO);
+    const hardMax = Math.round(input.targetWordCount * GENERATED_DRAFT_WORD_COUNT_MAX_RATIO);
+    const preferredMin = Math.round(input.targetWordCount * 0.94);
+    const preferredMax = Math.round(input.targetWordCount * 1.12);
+    const result = await this.llm.chat(
+      [
+        {
+          role: 'system',
+          content: [
+            '你是长篇小说章节正文修订器。',
+            '任务：只在不改变剧情事实、人物关系、时间线、叙事视角、关键结果和已给线索的前提下，重写一版字数合格的完整章节正文。',
+            '严禁输出标题、摘要、解释、Markdown、检查清单或标签；只输出正文。',
+            '不得用提纲、占位、跳写或“略写”替代完整正文。',
+          ].join('\n'),
+        },
+        {
+          role: 'user',
+          content: [
+            `第${input.chapter.chapterNo}章「${input.chapter.title || '未命名'}」上一版不能写入，因为：${input.blockers.join('；')}。`,
+            `目标字数：${input.targetWordCount} 字；硬性可接受范围：${hardMin}-${hardMax} 字；优先范围：${preferredMin}-${preferredMax} 字。`,
+            '修订策略：只保留本章 3 个主场景；压缩背景解释、重复心理、额外争执、复述前文和环境铺陈；如果原文过短，则只补足场景中的可见动作、阻力、转折和结果。',
+            '必须保持章节细纲、Chapter.craftBrief、角色关系、时间线、伏笔和结局不变，不新增无审批的重要长期角色或主线设定。',
+            '下面是需要修订的上一版正文。请直接输出修订后的完整正文：',
+            input.content,
+          ].join('\n\n'),
+        },
+      ],
+      {
+        appStep: 'generate.length_repair',
+        maxTokens: this.estimateGenerateMaxTokens(input.targetWordCount),
+        timeoutMs: GENERATE_CHAPTER_LLM_TIMEOUT_MS,
+        retries: GENERATE_CHAPTER_LENGTH_REPAIR_RETRIES,
+        temperature: 0.25,
+      },
+    );
+    if (this.isLengthFinishReason(result.rawPayloadSummary.finishReason)) {
+      throw new BadRequestException('write_chapter 字数修订输出被提供商截断，未写入章节正文；请重试或检查模型输出上限配置。');
+    }
+    const content = this.stripWrapperTags(result.text);
+    if (!content) throw new BadRequestException('write_chapter 字数修订正文为空');
+    const actualWordCount = this.countChineseLikeWords(content);
+    const qualityGate = this.assessGeneratedDraftQuality(content, actualWordCount, input.targetWordCount, input.chapter, input.sceneCards);
+    return { result, content, actualWordCount, qualityGate };
+  }
+
   private buildGenerationQualityReportData(input: {
     projectId: string;
     chapterId: string;
@@ -566,16 +670,21 @@ export class GenerateChapterService {
     const hasRefusalPattern = /作为(?:一个)?AI|我无法|不能完成(?:该|这个)?请求|以下是(?:你要的)?章节|当然可以/im.test(content);
     const hasTemplateMarker = /{{[^}]+}}|\[[^\]]*(?:待补充|TODO|占位)[^\]]*\]|TODO|待补充/im.test(content);
     const aiTaste = this.assessAiTaste(content, paragraphs);
+    const belowProductionFloor = actualWordCount < Math.min(500, Math.max(120, targetWordCount * 0.18));
+    const belowTargetRange = targetRatio < GENERATED_DRAFT_WORD_COUNT_MIN_RATIO;
+    const aboveTargetRange = targetRatio > GENERATED_DRAFT_WORD_COUNT_MAX_RATIO;
 
     const blockers = [
-      ...(actualWordCount < Math.min(500, Math.max(120, targetWordCount * 0.18)) ? [`正文过短：${actualWordCount} 字，低于生产写入下限。`] : []),
+      ...(belowProductionFloor ? [`正文过短：${actualWordCount} 字，低于生产写入下限。`] : []),
+      ...(belowTargetRange ? [`正文长度仅达到目标的 ${(targetRatio * 100).toFixed(0)}%，低于允许下限 ${Math.round(GENERATED_DRAFT_WORD_COUNT_MIN_RATIO * 100)}%。`] : []),
+      ...(aboveTargetRange ? [`正文长度达到目标的 ${(targetRatio * 100).toFixed(0)}%，超过允许上限 ${Math.round(GENERATED_DRAFT_WORD_COUNT_MAX_RATIO * 100)}%。`] : []),
       ...(hasRefusalPattern ? ['输出疑似包含模型拒答或说明性话术。'] : []),
       ...(duplicateParagraphRatio >= 0.35 && duplicateParagraphCount >= 3 ? ['重复段落比例过高，疑似生成退化。'] : []),
       ...(hasTemplateMarker ? ['输出包含模板占位符或待补充标记。'] : []),
     ];
     const warnings = [
-      ...(targetRatio < 0.6 ? [`正文长度仅达到目标的 ${(targetRatio * 100).toFixed(0)}%，建议人工复核或重试。`] : []),
-      ...(targetRatio > 1.8 ? [`正文长度达到目标的 ${(targetRatio * 100).toFixed(0)}%，可能超出章节节奏。`] : []),
+      ...(!belowTargetRange && targetRatio < GENERATED_DRAFT_WORD_COUNT_WARN_MIN_RATIO ? [`正文长度仅达到目标的 ${(targetRatio * 100).toFixed(0)}%，建议人工复核或重试。`] : []),
+      ...(!aboveTargetRange && targetRatio > GENERATED_DRAFT_WORD_COUNT_WARN_MAX_RATIO ? [`正文长度达到目标的 ${(targetRatio * 100).toFixed(0)}%，可能超出章节节奏。`] : []),
       ...(duplicateParagraphRatio >= 0.18 && duplicateParagraphRatio < 0.35 ? ['存在一定比例重复段落，建议检查节奏和表达。'] : []),
       ...(hasWrapperOrMarkdown ? ['输出包含 Markdown/包裹标签痕迹，后处理可能需要清理。'] : []),
       ...aiTaste.warnings,
@@ -660,6 +769,11 @@ export class GenerateChapterService {
       ornamentalParagraphCount,
       hasScenicOpeningRisk,
     };
+  }
+
+  private isLengthFinishReason(finishReason: unknown): boolean {
+    const value = Array.isArray(finishReason) ? finishReason.join(' ') : String(finishReason ?? '');
+    return /length|max[_ -]?tokens?|token[_ -]?limit/i.test(value);
   }
 
   /**
@@ -1150,13 +1264,20 @@ export class GenerateChapterService {
     const chapters = await this.prisma.chapter.findMany({
       where: { projectId, chapterNo: { lt: chapterNo } },
       orderBy: { chapterNo: 'desc' },
-      take: 3,
+      take: PREVIOUS_CHAPTER_CONTEXT_TAKE,
       include: { drafts: { where: { isCurrent: true }, orderBy: { versionNo: 'desc' }, take: 1 } },
     });
     return chapters
       .reverse()
-      .map((item) => ({ chapterNo: item.chapterNo, title: item.title, content: item.drafts[0]?.content.slice(0, 6000) ?? '' }))
+      .map((item) => ({ chapterNo: item.chapterNo, title: item.title, content: this.extractPreviousChapterContext(item.drafts[0]?.content) }))
       .filter((item) => item.content);
+  }
+
+  private extractPreviousChapterContext(content: string | null | undefined): string {
+    const text = content?.trim();
+    if (!text) return '';
+    if (text.length <= PREVIOUS_CHAPTER_CONTEXT_CHAR_LIMIT) return text;
+    return `（前文仅保留结尾摘录，完整正文请依赖记忆召回与事实层校准。）\n${text.slice(-PREVIOUS_CHAPTER_CONTEXT_CHAR_LIMIT)}`;
   }
 
   private buildHardFacts(chapter: { conflict: string | null }, characters: Array<{ name: string }>, styleProfile?: { pov: string | null } | null): string[] {

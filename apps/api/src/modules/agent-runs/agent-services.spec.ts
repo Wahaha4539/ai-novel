@@ -713,12 +713,50 @@ test('generate_story_units_preview 生成丰富单元故事计划和章节分配
   assert.equal(receivedOptions?.stream, true);
   assert.equal(receivedOptions?.streamIdleTimeoutMs, DEFAULT_LLM_TIMEOUT_MS);
   assert.equal(typeof receivedOptions?.onStreamProgress, 'function');
+  assert.equal(receivedOptions?.maxTokens, 16000);
   assert.match(receivedMessages[0].content, /人物登场/);
   assert.match(receivedMessages[0].content, /mainlineSegments/);
   assert.match(receivedMessages[0].content, /chapterAllocation/);
   assert.match(receivedMessages[0].content, /不生成 chapters/);
   assert.match(receivedMessages[0].content, /不要在 storyUnitPlan 里偷偷发明未持久化的重要角色/);
   assert.match(receivedMessages[1].content, /上游卷级候选人物/);
+});
+
+test('generate_story_units_preview retries once when initial JSON is truncated', async () => {
+  let calls = 0;
+  let retryMessages: Array<{ role: string; content: string }> = [];
+  const storyUnitPlan = createVccStoryUnitPlan(4);
+  const llm = {
+    async chatJson(messages: Array<{ role: string; content: string }>, options: Record<string, unknown>) {
+      calls += 1;
+      if (calls === 1) {
+        assert.equal(options.maxTokens, 16000);
+        throw new LlmJsonInvalidError('LLM JSON 解析失败：Unterminated string in JSON at position 12', 'planner', '{"storyUnitPlan":{"units":["partial');
+      }
+      retryMessages = messages;
+      return {
+        data: { volumeNo: 1, chapterCount: 4, storyUnitPlan, risks: [] },
+        result: { model: 'mock-story-units-retry', usage: { total_tokens: 67 } },
+      };
+    },
+  };
+  const tool = new GenerateStoryUnitsPreviewTool(llm as never);
+
+  const result = await tool.run(
+    {
+      context: { project: { title: '旧档案' }, characters: [{ name: '林澈' }, { name: '沈栖' }] },
+      volumeOutline: { volumeNo: 1, title: '旧闸棚账册', chapterCount: 4, narrativePlan: createVccNarrativePlanForChapterCount(4, { storyUnits: undefined }) },
+      instruction: '生成单元故事计划',
+      volumeNo: 1,
+      chapterCount: 4,
+    },
+    { agentRunId: 'run-story-units-json-retry', projectId: 'p1', mode: 'plan', approved: false, outputs: {}, policy: {} },
+  );
+
+  assert.equal(result.storyUnitPlan.units.length, 1);
+  assert.equal(calls, 2);
+  assert.match(retryMessages[0].content, /JSON parse retry contract/);
+  assert.match(retryMessages[1].content, /Previous JSON parse failed/);
 });
 
 test('generate_story_units_preview 未传 volumeOutline 时从 inspect context 读取目标卷大纲', async () => {
@@ -2491,6 +2529,120 @@ test('GenerateChapterService 生成后质量门禁标记重复段落退化', () 
   assert.match(result.blockers.join('；'), /重复段落/);
 });
 
+test('GenerateChapterService 生成后质量门禁阻断明显超出目标字数的正文', () => {
+  const service = new GenerateChapterService({} as never, {} as never, {} as never, {} as never, {} as never, {} as never) as unknown as {
+    assessGeneratedDraftQuality: (content: string, actualWordCount: number, targetWordCount: number) => { blocked: boolean; blockers: string[]; metrics: { targetRatio: number } };
+  };
+  const content = Array.from({ length: 20 }, (_, index) => `陆沉舟第${index}次检查桥桩，确认暗榫没有继续下沉。`).join('\n');
+  const result = service.assessGeneratedDraftQuality(content, 5935, 3500);
+
+  assert.equal(result.blocked, true);
+  assert.equal(result.metrics.targetRatio > 1.6, true);
+  assert.match(result.blockers.join('；'), /超过允许上限/);
+});
+
+test('GenerateChapterService 生成后质量门禁阻断明显低于目标字数的正文', () => {
+  const service = new GenerateChapterService({} as never, {} as never, {} as never, {} as never, {} as never, {} as never) as unknown as {
+    assessGeneratedDraftQuality: (content: string, actualWordCount: number, targetWordCount: number) => { blocked: boolean; blockers: string[]; metrics: { targetRatio: number } };
+  };
+  const content = Array.from({ length: 20 }, (_, index) => `陆沉舟第${index}次检查桥桩，确认暗榫没有继续下沉。`).join('\n');
+  const result = service.assessGeneratedDraftQuality(content, 2621, 3500);
+
+  assert.equal(result.blocked, true);
+  assert.equal(result.metrics.targetRatio < 0.85, true);
+  assert.match(result.blockers.join('；'), /低于允许下限/);
+});
+
+test('GenerateChapterService 识别正文生成被 token 上限截断', () => {
+  const service = new GenerateChapterService({} as never, {} as never, {} as never, {} as never, {} as never, {} as never) as unknown as {
+    isLengthFinishReason: (finishReason: unknown) => boolean;
+  };
+
+  assert.equal(service.isLengthFinishReason('length'), true);
+  assert.equal(service.isLengthFinishReason('max_tokens'), true);
+  assert.equal(service.isLengthFinishReason('stop'), false);
+});
+
+test('GenerateChapterService 为正文生成设置动态输出预算', () => {
+  const service = new GenerateChapterService({} as never, {} as never, {} as never, {} as never, {} as never, {} as never) as unknown as {
+    estimateGenerateMaxTokens: (targetWordCount: number) => number;
+  };
+
+  assert.equal(service.estimateGenerateMaxTokens(3000), 6850);
+  assert.equal(service.estimateGenerateMaxTokens(3500), 7775);
+  assert.equal(service.estimateGenerateMaxTokens(360), 1400);
+  assert.equal(service.estimateGenerateMaxTokens(20000), 12000);
+});
+
+test('GenerateChapterService loads recent previous chapters as tail excerpts', async () => {
+  let receivedArgs: Record<string, unknown> | undefined;
+  const longPrevious = `BEGIN-${'乙'.repeat(3000)}-TAIL`;
+  const prisma = {
+    chapter: {
+      async findMany(args: Record<string, unknown>) {
+        receivedArgs = args;
+        return [
+          { chapterNo: 9, title: 'Newest', drafts: [{ content: longPrevious }] },
+          { chapterNo: 8, title: 'Older', drafts: [{ content: 'short previous' }] },
+        ];
+      },
+    },
+  };
+  const service = new GenerateChapterService(prisma as never, {} as never, {} as never, {} as never, {} as never, {} as never) as unknown as {
+    loadPreviousChapters: (projectId: string, chapterNo: number) => Promise<Array<{ chapterNo: number; title: string | null; content: string }>>;
+  };
+
+  const result = await service.loadPreviousChapters('p1', 10);
+
+  assert.equal((receivedArgs as { take?: number } | undefined)?.take, 2);
+  assert.deepEqual(result.map((item) => item.chapterNo), [8, 9]);
+  assert.match(result[1].content, /前文仅保留结尾摘录/);
+  assert.doesNotMatch(result[1].content, /BEGIN-/);
+  assert.match(result[1].content, /-TAIL/);
+});
+
+test('GenerateChapterService rewrites length-only failed draft through LLM repair', async () => {
+  let receivedMessages: Array<{ role: string; content: string }> = [];
+  let receivedOptions: Record<string, unknown> | undefined;
+  const llm = {
+    async chat(messages: Array<{ role: string; content: string }>, options: Record<string, unknown>) {
+      receivedMessages = messages;
+      receivedOptions = options;
+      return {
+        text: '陆'.repeat(3300),
+        model: 'mock-length-repair',
+        usage: { total_tokens: 1200 },
+        rawPayloadSummary: { finishReason: 'stop' },
+      };
+    },
+  };
+  const service = new GenerateChapterService({} as never, llm as never, {} as never, {} as never, {} as never, {} as never) as unknown as {
+    repairGeneratedDraftLength: (input: {
+      content: string;
+      targetWordCount: number;
+      chapter: { chapterNo: number; title: string | null; outline: string | null; craftBrief?: unknown };
+      sceneCards: unknown[];
+      blockers: string[];
+    }) => Promise<{ actualWordCount: number; qualityGate: { blocked: boolean; metrics: { targetRatio: number } }; result: { model: string } }>;
+  };
+
+  const result = await service.repairGeneratedDraftLength({
+    content: '陆'.repeat(5200),
+    targetWordCount: 3500,
+    chapter: { chapterNo: 68, title: '改押铃牌', outline: null, craftBrief: {} },
+    sceneCards: [],
+    blockers: ['正文长度达到目标的 150%，超过允许上限 130%。'],
+  });
+
+  assert.equal(result.actualWordCount, 3300);
+  assert.equal(result.qualityGate.blocked, false);
+  assert.equal(result.result.model, 'mock-length-repair');
+  assert.equal(receivedOptions?.appStep, 'generate.length_repair');
+  assert.equal(receivedOptions?.maxTokens, 7775);
+  assert.match(receivedMessages[1].content, /硬性可接受范围：2975-4550/);
+  assert.match(receivedMessages[1].content, /只保留本章 3 个主场景/);
+});
+
 test('GenerateChapterService 生成后质量门禁提示修辞堆叠的 AI 味', () => {
   const service = new GenerateChapterService({} as never, {} as never, {} as never, {} as never, {} as never, {} as never) as unknown as {
     assessGeneratedDraftQuality: (content: string, actualWordCount: number, targetWordCount: number) => { warnings: string[]; metrics: { aiTasteHitCount: number; ornamentalParagraphCount: number } };
@@ -2626,6 +2778,21 @@ test('PolishChapterService 发现 token 截断后重试', async () => {
   assert.equal(getLlmCallCount(), 2);
   assert.equal(writes.length, 1);
   assert.equal(writes[0].content, originalText);
+});
+
+test('PolishChapterService 阻断润色后低于目标字数的正文', async () => {
+  const { service, writes, getLlmCallCount } = createPolishServiceHarness([
+    `<rewrite>${POLISH_TEST_ORIGINAL_TEXT}</rewrite>`,
+    `<rewrite>${POLISH_TEST_ORIGINAL_TEXT}</rewrite>`,
+  ]);
+
+  await assert.rejects(
+    () => service.run('project-1', 'chapter-1', '去 AI 味，但别改结局。', undefined, { targetWordCount: 350 }),
+    /低于允许下限|未返回可写入的完整正文/,
+  );
+
+  assert.equal(getLlmCallCount(), 2);
+  assert.equal(writes.length, 0);
 });
 
 test('GenerateChapterService maps pass and warning quality gates to QualityReport payloads', () => {
@@ -2771,7 +2938,7 @@ test('GenerateChapterService 生成后执行卡覆盖检查标记漏写关键项
     ) => { blocked: boolean; warnings: string[]; executionCardCoverage?: { missing: { clueNames: string[]; irreversibleConsequence?: string } } };
   };
   const content = '主角绕过祠堂后院，和守井人短暂交锋，最后带着一身泥水离开。';
-  const result = service.assessGeneratedDraftQuality(content, 1200, 1600, {
+  const result = service.assessGeneratedDraftQuality(content, 1500, 1600, {
     outline: null,
     craftBrief: {
       concreteClues: [{ name: '湿红线', sensoryDetail: '冰凉，带井水泥腥味', laterUse: '证明失踪者来过井边' }],
@@ -2812,7 +2979,7 @@ test('GenerateChapterService scene card coverage adds traceable warnings without
     sourceTrace: { sourceType: 'scene_card', sourceId: 'scene-1', projectId: 'p1', chapterId: 'c4', chapterNo: 4, sceneNo: 1 },
   }];
 
-  const result = service.assessGeneratedDraftQuality('Lin Che waits in the rain and leaves before anyone opens the gate.', 900, 1200, { outline: null, craftBrief: {} }, sceneCards);
+  const result = service.assessGeneratedDraftQuality('Lin Che waits in the rain and leaves before anyone opens the gate.', 1100, 1200, { outline: null, craftBrief: {} }, sceneCards);
 
   assert.equal(result.blocked, false);
   assert.match(result.warnings.join(' | '), /SceneCard coverage warning/);
@@ -2861,6 +3028,7 @@ test('GenerateChapterService run carries current chapter SceneCards and planned 
   let draftCreateData: Record<string, unknown> | undefined;
   let qualityReportData: Record<string, unknown> | undefined;
   let llmUserPrompt = '';
+  let generateLlmOptions: Record<string, unknown> | undefined;
   const chapter = {
     id: 'c1',
     chapterNo: 4,
@@ -2871,7 +3039,7 @@ test('GenerateChapterService run carries current chapter SceneCards and planned 
     revealPoints: null,
     foreshadowPlan: null,
     craftBrief: {},
-    expectedWordCount: 240,
+    expectedWordCount: 360,
     status: 'planned',
     project: {
       id: 'p1',
@@ -3058,8 +3226,9 @@ test('GenerateChapterService run carries current chapter SceneCards and planned 
     },
   };
   const llm = {
-    async chat(messages: Array<{ role: string; content: string }>) {
+    async chat(messages: Array<{ role: string; content: string }>, options: Record<string, unknown>) {
       llmUserPrompt = messages.find((message) => message.role === 'user')?.content ?? '';
+      generateLlmOptions = options;
       return {
         text: 'Lin Che reaches the Old archive. The ledger has a missing page. Lin Che gets a false key. '.repeat(20),
         model: 'mock-generate-model',
@@ -3095,6 +3264,7 @@ test('GenerateChapterService run carries current chapter SceneCards and planned 
   assert.equal(contextPack.verifiedContext.structuredHits.some((hit) => hit.sourceType === 'timeline_event'), false);
   assert.equal(result.promptDebug.verifiedTimelineEventCount, 0);
   assert.equal(result.promptDebug.plannedTimelineEventCount, 1);
+  assert.equal(generateLlmOptions?.maxTokens, 1400);
   assert.match(llmUserPrompt, /current_chapter_planned_timeline/);
   assert.match(llmUserPrompt, /Planned archive gate breach/);
   assert.match(llmUserPrompt, /sourceId=timeline-plan-current/);
@@ -7595,6 +7765,8 @@ test('VCC persist_outline does not create Character', async () => {
           async upsert() { return { id: 'v1' }; },
         },
         chapter: {
+          async findMany() { return []; },
+          async aggregate() { return { _max: { chapterNo: 0 } }; },
           async findUnique() { return null; },
           async create(args: { data: Record<string, unknown> }) {
             createdChapters.push(args.data);
@@ -7885,6 +8057,15 @@ test('PersistOutlineTool 写入新建和 planned 章节 craftBrief 并跳过 dra
           },
         },
         chapter: {
+          async findMany() {
+            return [
+              { id: 'c2', chapterNo: 2, status: 'planned' },
+              { id: 'c3', chapterNo: 3, status: 'drafted', craftBrief: { visibleGoal: 'old craft brief' } },
+            ];
+          },
+          async aggregate() {
+            return { _max: { chapterNo: 3 } };
+          },
           async findUnique(args: { where: { projectId_chapterNo: { chapterNo: number } } }) {
             const chapterNo = args.where.projectId_chapterNo.chapterNo;
             if (chapterNo === 2) return { id: 'c2', status: 'planned' };
@@ -7954,6 +8135,44 @@ test('PersistOutlineTool 拒绝旧 outline_preview 缺 craftBrief', async () => 
   );
 
   assert.equal(updatedChapters.length, 0);
+});
+
+test('PersistOutlineTool creates later-volume chapters after current max project chapterNo', async () => {
+  const createdChapters: Array<Record<string, unknown>> = [];
+  const prisma = {
+    character: { async findMany() { return [{ name: '\u6797\u6f88', alias: [] }, { name: '\u6c88\u6816', alias: [] }]; } },
+    async $transaction(callback: (tx: Record<string, unknown>) => Promise<unknown>) {
+      return callback({
+        volume: {
+          async upsert() { return { id: 'v2' }; },
+        },
+        chapter: {
+          async findMany() { return []; },
+          async aggregate() { return { _max: { chapterNo: 60 } }; },
+          async create(args: { data: Record<string, unknown> }) {
+            createdChapters.push(args.data);
+            return { id: `c${args.data.chapterNo}` };
+          },
+          async update() { throw new Error('should not update existing volume 1 chapters'); },
+        },
+      });
+    },
+  };
+  const tool = new PersistOutlineTool(prisma as never);
+  const preview = createVccOutlinePreview(2, {
+    volume: { volumeNo: 2, title: 'v2', chapterCount: 2, narrativePlan: createVccNarrativePlanForChapterCount(2) },
+    chapters: [createOutlineChapter(1, 2), createOutlineChapter(2, 2)],
+  });
+  const result = await tool.run(
+    { preview },
+    { agentRunId: 'run-v2-outline', projectId: 'p1', mode: 'act', approved: true, outputs: {}, policy: {} },
+  );
+
+  assert.equal(result.createdCount, 2);
+  assert.equal(result.updatedCount, 0);
+  assert.equal(result.skippedCount, 0);
+  assert.deepEqual(createdChapters.map((chapter) => chapter.chapterNo), [61, 62]);
+  assert.deepEqual(createdChapters.map((chapter) => chapter.volumeId), ['v2', 'v2']);
 });
 
 test('VCC validate_outline and persist_outline reject incomplete volume narrativePlan', async () => {
@@ -10674,6 +10893,12 @@ test('selectToolBundleNode selects outline and guided bundles with diagnostics',
   assert.equal(chapter.selectedBundle?.bundleName, 'outline.chapter');
   assert.ok(chapter.selectedTools?.some((tool) => tool.name === 'generate_chapter_outline_preview'));
 
+  const storyUnits = await node({ ...baseState, route: { domain: 'outline', intent: 'story_units', confidence: 0.9, reasons: ['test'] } });
+  assert.equal(storyUnits.selectedBundle?.bundleName, 'outline.story_units');
+  assert.ok(storyUnits.selectedTools?.some((tool) => tool.name === 'generate_story_units_preview'));
+  assert.ok(storyUnits.selectedTools?.some((tool) => tool.name === 'generate_volume_outline_preview'));
+  assert.ok(!storyUnits.selectedBundle?.deniedToolNames?.includes('generate_volume_outline_preview'));
+
   const guided = await node({
     ...baseState,
     route: { domain: 'writing', intent: 'chapter_write', confidence: 0.9, reasons: ['test'] },
@@ -11808,6 +12033,8 @@ test('ASP-P6-001 OutlineSupervisor classifies outline sub-intents without tools'
   const supervisor = new OutlineSupervisor();
   const cases: Array<{ goal: string; outlineIntent: string; intent: string }> = [
     { goal: '帮我重写第一卷大纲。', outlineIntent: 'volume_outline', intent: 'generate_volume_outline' },
+    { goal: '请只完成第 2 卷《盐风峡路》的卷大纲。不要生成 storyUnitPlan、不要生成章节细纲、不要写正文。', outlineIntent: 'volume_outline', intent: 'generate_volume_outline' },
+    { goal: '请完成第 2 卷《盐风峡路》的卷大纲和故事单元。', outlineIntent: 'story_units', intent: 'story_units' },
     { goal: '把第一卷拆成 30 章。', outlineIntent: 'chapter_outline', intent: 'split_volume_to_chapters' },
     { goal: '给第十二章补一张 Chapter.craftBrief 推进卡。', outlineIntent: 'craft_brief', intent: 'chapter_craft_brief' },
     { goal: '把第十二章拆成场景卡。', outlineIntent: 'scene_card', intent: 'scene_card_planning' },
@@ -14681,6 +14908,46 @@ test('PromptBuilderService renders dedicated relationship timeline and writing r
   assert.deepEqual(result.debug.timelineLayerCounts, { verifiedActive: 1, plannedCurrent: 1 });
   assert.equal((result.debug.verifiedTimelineSourceTrace as Array<Record<string, unknown>>)[0].sourceId, 'time-1');
   assert.equal((result.debug.plannedTimelineSourceTrace as Array<Record<string, unknown>>)[0].sourceId, 'planned-time-1');
+});
+
+test('PromptBuilderService renders previous chapters as bounded tail excerpts', async () => {
+  const prisma = {
+    promptTemplate: {
+      async findFirst() {
+        return {
+          systemPrompt: 'system prompt',
+          userTemplate: 'user template',
+        };
+      },
+    },
+  };
+  const service = new PromptBuilderService(prisma as never);
+  const longPrevious = `BEGIN-${'甲'.repeat(2400)}-TAIL`;
+  const context = {
+    project: { id: 'p1', title: 'Novel', genre: null, tone: null, synopsis: null, outline: null },
+    chapter: { chapterNo: 3, title: 'Archive Night', objective: 'Find the key', conflict: 'Trust breaks', outline: 'Outline', expectedWordCount: 3000 },
+    characters: [],
+    plannedForeshadows: [],
+    previousChapters: [{ chapterNo: 2, title: 'Before', content: longPrevious }],
+    hardFacts: [],
+    contextPack: {
+      schemaVersion: 1,
+      verifiedContext: { lorebookHits: [], memoryHits: [], structuredHits: [] },
+      userIntent: {},
+      retrievalDiagnostics: {
+        includeLorebook: true,
+        includeMemory: true,
+        diagnostics: { searchMethod: 'disabled', qualityScore: 0.5, qualityStatus: 'ok', memoryAvailableCount: 0, warnings: [] },
+      },
+    },
+  };
+
+  const result = await service.buildChapterPrompt(context as never);
+
+  assert.match(result.user, /只读结尾摘录/);
+  assert.match(result.user, /仅保留本章结尾摘录/);
+  assert.doesNotMatch(result.user, /BEGIN-/);
+  assert.match(result.user, /-TAIL/);
 });
 
 test('PromptBuilderService renders GenerationProfile new entity boundaries', async () => {
@@ -17689,8 +17956,85 @@ test('generate_volume_outline_preview 只生成卷纲且不固定单元故事章
   assert.equal(receivedOptions?.stream, true);
   assert.equal(receivedOptions?.streamIdleTimeoutMs, DEFAULT_LLM_TIMEOUT_MS);
   assert.equal(typeof receivedOptions?.onStreamProgress, 'function');
+  assert.equal(receivedOptions?.maxTokens, 16000);
   assert.match(receivedMessages[0].content, /故事性要求/);
   assert.match(receivedMessages[0].content, /不要在本工具中生成 narrativePlan\.storyUnits/);
+});
+
+test('generate_volume_outline_preview retries once when initial JSON is truncated', async () => {
+  let calls = 0;
+  let retryMessages: Array<{ role: string; content: string }> = [];
+  const llm = {
+    async chatJson(messages: Array<{ role: string; content: string }>, options: Record<string, unknown>) {
+      calls += 1;
+      if (calls === 1) {
+        assert.equal(options.maxTokens, 16000);
+        throw new LlmJsonInvalidError('LLM JSON 解析失败：Unterminated string in JSON at position 12', 'planner', '{"volume":{"title":"partial');
+      }
+      retryMessages = messages;
+      return {
+        data: {
+          volume: {
+            volumeNo: 1,
+            title: '罪桥初潮',
+            synopsis: '## 全书主线阶段\n阶段\n## 本卷主线\n主线\n## 本卷戏剧问题\n问题\n## 卷内支线\n支线\n## 角色与势力功能\n角色\n## 伏笔分配\n伏笔\n## 支线交叉点\n交叉\n## 卷末交接\n交接',
+            objective: '完成卷目标',
+            chapterCount: 3,
+            narrativePlan: createVccNarrativePlanForChapterCount(3, { storyUnits: undefined }),
+          },
+          risks: [],
+        },
+        result: { model: 'mock-volume-outline-retry', usage: { total_tokens: 42 } },
+      };
+    },
+  };
+  const tool = new GenerateVolumeOutlinePreviewTool(llm as never);
+
+  const result = await tool.run(
+    { context: { project: { title: '逆潮脊梁' }, characters: [{ name: '林澈' }, { name: '沈栖' }] }, instruction: '生成第一卷卷大纲', volumeNo: 1, chapterCount: 3 },
+    { agentRunId: 'run-volume-json-retry', projectId: 'p1', mode: 'plan', approved: false, outputs: {}, policy: {} },
+  );
+
+  assert.equal(result.volume.chapterCount, 3);
+  assert.equal(calls, 2);
+  assert.match(retryMessages[0].content, /JSON parse retry contract/);
+  assert.match(retryMessages[1].content, /Previous JSON parse failed/);
+  assert.match(retryMessages[1].content, /短卷紧凑要求/);
+});
+
+test('generate_volume_outline_preview uses compact short-volume prompt without chapters output', async () => {
+  let userPrompt = '';
+  const llm = {
+    async chatJson(messages: Array<{ role: string; content: string }>, options: Record<string, unknown>) {
+      assert.equal(options.maxTokens, 16000);
+      userPrompt = messages[1].content;
+      return {
+        data: {
+          volume: {
+            volumeNo: 2,
+            title: '盐风峡路',
+            synopsis: '## 全书主线阶段\n阶段\n## 本卷主线\n主线\n## 本卷戏剧问题\n问题\n## 卷内支线\n支线\n## 角色与势力功能\n角色\n## 伏笔分配\n伏笔\n## 支线交叉点\n交叉\n## 卷末交接\n交接',
+            objective: '赢下盐风峡通路权',
+            chapterCount: 3,
+            narrativePlan: createVccNarrativePlanForChapterCount(3, { storyUnits: undefined }),
+          },
+          risks: [],
+        },
+        result: { model: 'mock-volume-outline-short' },
+      };
+    },
+  };
+  const tool = new GenerateVolumeOutlinePreviewTool(llm as never);
+
+  const result = await tool.run(
+    { context: { project: { title: '逆潮脊梁' }, volumes: [{ volumeNo: 2, title: '盐风峡路', chapterCount: 3 }], characters: [{ name: '林澈' }, { name: '沈栖' }] }, instruction: '只生成第2卷卷大纲，不要章节细纲。', volumeNo: 2, chapterCount: 3 },
+    { agentRunId: 'run-volume-compact-short', projectId: 'p1', mode: 'plan', approved: false, outputs: {}, policy: {} },
+  );
+
+  assert.equal(result.volume.chapterCount, 3);
+  assert.match(userPrompt, /短卷紧凑要求/);
+  assert.match(userPrompt, /不要返回 chapters 或 chapter/);
+  assert.doesNotMatch(userPrompt, /生成章节细纲/);
 });
 
 test('generate_volume_outline_preview 未传 chapterCount 时沿用目标卷章节数', async () => {

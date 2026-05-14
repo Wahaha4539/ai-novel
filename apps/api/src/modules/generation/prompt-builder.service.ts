@@ -25,8 +25,20 @@ export interface BuiltChapterPrompt {
   debug: Record<string, unknown>;
 }
 
-const MAX_PREVIOUS_CONTEXT_TOTAL = 15_000;
+const MAX_PREVIOUS_CONTEXT_TOTAL = 4_500;
+const MAX_PREVIOUS_CHAPTER_EXCERPT = 1_600;
 const MAX_SCENE_CARDS_IN_PROMPT = 8;
+const PROJECT_SYNOPSIS_PROMPT_LIMIT = 1_200;
+const PROJECT_OUTLINE_PROMPT_LIMIT = 1_200;
+const VOLUME_OBJECTIVE_PROMPT_LIMIT = 700;
+const VOLUME_SYNOPSIS_PROMPT_LIMIT = 1_600;
+const VOLUME_NARRATIVE_PLAN_PROMPT_LIMIT = 1_200;
+const LOREBOOK_HITS_IN_PROMPT = 5;
+const MEMORY_HITS_IN_PROMPT = 4;
+const STRUCTURED_HITS_IN_PROMPT = 6;
+const LOREBOOK_HIT_CONTENT_LIMIT = 500;
+const MEMORY_HIT_CONTENT_LIMIT = 700;
+const STRUCTURED_HIT_CONTENT_LIMIT = 700;
 
 /**
  * API 内章节提示词构建服务，迁移 Worker PromptBuilder 的上下文拼装能力。
@@ -50,6 +62,7 @@ export class PromptBuilderService {
       this.buildProjectSection(context),
       this.buildVolumeSection(context),
       this.buildStyleSection(context),
+      this.buildLengthContractSection(context),
       this.buildNaturalProseSection(),
       this.buildCharacterSection(context),
       this.buildChapterSection(context),
@@ -68,6 +81,7 @@ export class PromptBuilderService {
       this.buildWritingRulesSection(context),
       this.buildStructuredContextSection(context),
       this.buildPreviousChaptersSection(context),
+      this.buildFinalOutputContractSection(context),
     ].join('\n\n');
     const verifiedTimelineHits = context.contextPack.verifiedContext.structuredHits.filter((hit) => hit.sourceType === 'timeline_event');
     const plannedTimelineEvents = context.contextPack.planningContext?.plannedTimelineEvents ?? [];
@@ -110,18 +124,25 @@ export class PromptBuilderService {
 
   private buildProjectSection(data: ChapterPromptContext): string {
     const project = data.project;
-    return ['【项目概览】', `标题：${project.title}`, `类型：${project.genre || '未指定'}`, `基调：${project.tone || '未指定'}`, project.synopsis ? `故事简介：${project.synopsis}` : '', project.outline ? `故事总纲：${project.outline.slice(0, 3000)}` : ''].filter(Boolean).join('\n');
+    return [
+      '【项目概览】',
+      `标题：${project.title}`,
+      `类型：${project.genre || '未指定'}`,
+      `基调：${project.tone || '未指定'}`,
+      project.synopsis ? `故事简介：${this.compactText(project.synopsis, PROJECT_SYNOPSIS_PROMPT_LIMIT)}` : '',
+      project.outline ? `故事总纲：${this.compactText(project.outline, PROJECT_OUTLINE_PROMPT_LIMIT)}` : '',
+    ].filter(Boolean).join('\n');
   }
 
   private buildVolumeSection(data: ChapterPromptContext): string {
     const volume = data.volume;
     if (!volume) return '【所属卷】\n未指定分卷';
-    const narrativePlan = this.formatJsonObject(volume.narrativePlan, 2500);
+    const narrativePlan = this.formatJsonObject(volume.narrativePlan, VOLUME_NARRATIVE_PLAN_PROMPT_LIMIT);
     return [
       '【所属卷】',
       `第${volume.volumeNo}卷「${volume.title || '未命名'}」`,
-      volume.objective ? `本卷叙事目标：${volume.objective}` : '',
-      volume.synopsis ? `本卷概要：${volume.synopsis}` : '',
+      volume.objective ? `本卷叙事目标：${this.compactText(volume.objective, VOLUME_OBJECTIVE_PROMPT_LIMIT)}` : '',
+      volume.synopsis ? `本卷概要：${this.compactText(volume.synopsis, VOLUME_SYNOPSIS_PROMPT_LIMIT)}` : '',
       narrativePlan ? `本卷结构化叙事计划：${narrativePlan}` : '',
     ].filter(Boolean).join('\n');
   }
@@ -129,6 +150,25 @@ export class PromptBuilderService {
   private buildStyleSection(data: ChapterPromptContext): string {
     const style = data.styleProfile ?? {};
     return ['【文风设定】', `视角：${style.pov || '第三人称限制'}`, `时态：${style.tense || '过去时'}`, `文风：${style.proseStyle || '冷峻、克制'}`, `节奏：${style.pacing || 'medium'}`].join('\n');
+  }
+
+  private buildLengthContractSection(data: ChapterPromptContext): string {
+    const targetWordCount = data.targetWordCount ?? data.chapter.expectedWordCount ?? 3500;
+    const preferredMin = Math.max(200, Math.round(targetWordCount * 0.9));
+    const preferredMax = Math.round(targetWordCount * 1.12);
+    const hardMax = Math.round(targetWordCount * 1.2);
+    const sceneBudgetMin = Math.max(500, Math.round(targetWordCount * 0.24));
+    const sceneBudgetMax = Math.max(sceneBudgetMin + 120, Math.round(targetWordCount * 0.3));
+    const closingBudgetMax = Math.max(180, Math.round(targetWordCount * 0.12));
+    return [
+      '【硬性字数契约】',
+      `- 本章目标字数：约 ${targetWordCount} 字；优先落在 ${preferredMin}-${preferredMax} 字。`,
+      `- 后端会统计正文实际字数；超过 ${hardMax} 字视为失控扩写，会被拒绝并要求重写。`,
+      `- 结构配额：正文只写 3 个主场景；每个主场景约 ${sceneBudgetMin}-${sceneBudgetMax} 字，必要收束不超过 ${closingBudgetMax} 字。`,
+      '- 如执行卡或场景卡超过 3 个节点，请合并相邻小节点，不要一张卡扩成一整场。',
+      '- 每个场景只写完成本章执行卡所需的行动、阻力、转折和结果；不要扩写背景、世界观解释、回忆或旁支对话。',
+      '- 写满第三个核心结果后立即收束到本章不可逆后果和下一章钩子；不要为了气氛继续加场、复盘或人物长谈。',
+    ].join('\n');
   }
 
   private buildNaturalProseSection(): string {
@@ -140,6 +180,23 @@ export class PromptBuilderService {
       '- 压低修辞密度：少用“像、仿佛、似乎、好像、宛如、如同、细如”；能用器物反应、动作后果表达，就不用比喻。',
       '- 避免独立成段的戏剧化反转短句，如“不是雨。”这类句式；如果必须保留，后一句必须立刻推动行动或选择。',
       '- 语言允许粗粝、短促、不对称和口语化；不要让每句都像精修文案。',
+    ].join('\n');
+  }
+
+  private buildFinalOutputContractSection(data: ChapterPromptContext): string {
+    const targetWordCount = data.targetWordCount ?? data.chapter.expectedWordCount ?? 3500;
+    const preferredMin = Math.max(200, Math.round(targetWordCount * 0.9));
+    const preferredMax = Math.round(targetWordCount * 1.12);
+    const hardMin = Math.round(targetWordCount * 0.85);
+    const hardMax = Math.round(targetWordCount * 1.3);
+    const sceneMax = Math.max(650, Math.round(targetWordCount * 0.3));
+    return [
+      '【最终输出契约-最后检查】',
+      '- 现在开始写正文；不要输出标题、摘要、解释、Markdown、标签或检查清单。',
+      `- 目标 ${targetWordCount} 字，优先 ${preferredMin}-${preferredMax} 字；后端接受范围 ${hardMin}-${hardMax} 字，超出会直接失败重写。`,
+      `- 只写 3 个主场景；每个主场景控制在 ${sceneMax} 字以内。超过第三个核心结果后立刻收束到本章不可逆后果和下一章钩子。`,
+      '- 召回材料和前文只用于事实校准，不要续写或复述召回原文，不要把每条线索都展开成单独长场。',
+      `- 如果内部估计正文超过 ${preferredMax} 字，请先删除背景解释、重复心理、额外争执和环境铺陈，再输出。`,
     ].join('\n');
   }
 
@@ -323,13 +380,13 @@ export class PromptBuilderService {
   }
 
   private buildLorebookSection(data: ChapterPromptContext): string {
-    const hits = data.contextPack.verifiedContext.lorebookHits;
-    return hits.length ? ['【Lorebook 命中】', ...hits.map((hit) => this.formatRetrievalHit(hit))].join('\n') : '【Lorebook 命中】\n- 无';
+    const hits = data.contextPack.verifiedContext.lorebookHits.slice(0, LOREBOOK_HITS_IN_PROMPT);
+    return hits.length ? ['【Lorebook 命中】', ...hits.map((hit) => this.formatRetrievalHit(hit, LOREBOOK_HIT_CONTENT_LIMIT))].join('\n') : '【Lorebook 命中】\n- 无';
   }
 
   private buildMemorySection(data: ChapterPromptContext): string {
-    const hits = data.contextPack.verifiedContext.memoryHits;
-    return hits.length ? ['【记忆召回】', ...hits.map((hit) => this.formatRetrievalHit(hit))].join('\n') : '【记忆召回】\n- 无';
+    const hits = data.contextPack.verifiedContext.memoryHits.slice(0, MEMORY_HITS_IN_PROMPT);
+    return hits.length ? ['【记忆召回】', ...hits.map((hit) => this.formatRetrievalHit(hit, MEMORY_HIT_CONTENT_LIMIT))].join('\n') : '【记忆召回】\n- 无';
   }
 
   private buildRelationshipSection(data: ChapterPromptContext): string {
@@ -348,8 +405,10 @@ export class PromptBuilderService {
   }
 
   private buildStructuredContextSection(data: ChapterPromptContext): string {
-    const hits = data.contextPack.verifiedContext.structuredHits.filter((hit) => !['relationship_edge', 'timeline_event', 'writing_rule'].includes(hit.sourceType));
-    return hits.length ? ['【结构化事实召回】', ...hits.map((hit) => this.formatRetrievalHit(hit))].join('\n') : '【结构化事实召回】\n- 无';
+    const hits = data.contextPack.verifiedContext.structuredHits
+      .filter((hit) => !['relationship_edge', 'timeline_event', 'writing_rule'].includes(hit.sourceType))
+      .slice(0, STRUCTURED_HITS_IN_PROMPT);
+    return hits.length ? ['【结构化事实召回】', ...hits.map((hit) => this.formatRetrievalHit(hit, STRUCTURED_HIT_CONTENT_LIMIT))].join('\n') : '【结构化事实召回】\n- 无';
   }
 
   private formatSceneCard(scene: NonNullable<ChapterContextPack['planningContext']>['sceneCards'][number]): string {
@@ -415,20 +474,30 @@ export class PromptBuilderService {
 
   private buildPreviousChaptersSection(data: ChapterPromptContext): string {
     if (!data.previousChapters.length) return '【前文回顾】\n本章为首章或前文尚未生成。';
-    const lines = ['【前文回顾（前几章正文）】'];
+    const lines = ['【前文回顾（只读结尾摘录，禁止续写或复述）】'];
     let totalChars = 0;
     let included = 0;
     for (const chapter of data.previousChapters) {
-      if (totalChars + chapter.content.length > MAX_PREVIOUS_CONTEXT_TOTAL && included > 0) {
+      const content = this.buildPreviousChapterExcerpt(chapter.content, MAX_PREVIOUS_CONTEXT_TOTAL - totalChars);
+      if (!content) continue;
+      if (totalChars + content.length > MAX_PREVIOUS_CONTEXT_TOTAL && included > 0) {
         lines.push(`（后续 ${data.previousChapters.length - included} 章因篇幅省略，请参考记忆召回摘要）`);
         break;
       }
       lines.push(`\n=== 第${chapter.chapterNo}章「${chapter.title || '未命名'}」===`);
-      lines.push(chapter.content);
-      totalChars += chapter.content.length;
+      lines.push(content);
+      totalChars += content.length;
       included += 1;
     }
     return lines.join('\n');
+  }
+
+  private buildPreviousChapterExcerpt(content: string, remainingBudget: number): string {
+    const text = content.trim();
+    if (!text || remainingBudget <= 0) return '';
+    const limit = Math.max(400, Math.min(MAX_PREVIOUS_CHAPTER_EXCERPT, remainingBudget));
+    if (text.length <= limit) return text;
+    return `（仅保留本章结尾摘录；不要把此段当作可续写正文。）\n${text.slice(-limit)}`;
   }
 
   private asRecord(value: unknown): Record<string, unknown> | undefined {
@@ -464,7 +533,13 @@ export class PromptBuilderService {
     const record = this.asRecord(value);
     if (!record || Object.keys(record).length === 0) return undefined;
     const text = JSON.stringify(record);
-    return text.length > limit ? `${text.slice(0, limit)}...` : text;
+    return this.compactText(text, limit);
+  }
+
+  private compactText(value: string, limit: number): string {
+    const text = value.trim();
+    if (text.length <= limit) return text;
+    return `${text.slice(0, limit)}...`;
   }
 
   private extractExecutionCardMarkdown(outline: string | null | undefined): string | undefined {

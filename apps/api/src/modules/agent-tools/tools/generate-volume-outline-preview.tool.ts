@@ -1,6 +1,7 @@
 import { Injectable } from '@nestjs/common';
 import { StructuredLogger } from '../../../common/logging/structured-logger';
-import { LlmGatewayService } from '../../llm/llm-gateway.service';
+import { LlmGatewayService, LlmJsonInvalidError } from '../../llm/llm-gateway.service';
+import type { LlmChatMessage, LlmChatOptions } from '../../llm/dto/llm-chat.dto';
 import { DEFAULT_LLM_TIMEOUT_MS } from '../../llm/llm-timeout.constants';
 import { BaseTool, ToolContext } from '../base-tool';
 import type { ToolManifestV2 } from '../tool-manifest.types';
@@ -13,6 +14,7 @@ import { normalizeWithLlmRepair } from './structured-output-repair';
 
 const VOLUME_OUTLINE_PREVIEW_LLM_TIMEOUT_MS = DEFAULT_LLM_TIMEOUT_MS;
 const VOLUME_OUTLINE_PREVIEW_REPAIR_TIMEOUT_MS = DEFAULT_LLM_TIMEOUT_MS;
+const VOLUME_OUTLINE_PREVIEW_MAX_TOKENS = 16_000;
 
 interface GenerateVolumeOutlinePreviewInput {
   context?: Record<string, unknown>;
@@ -113,6 +115,7 @@ export class GenerateVolumeOutlinePreviewTool implements BaseTool<GenerateVolume
       { role: 'system' as const, content: this.buildSystemPrompt() },
       { role: 'user' as const, content: this.buildUserPrompt(args, volumeNo, chapterCount) },
     ];
+    const maxTokens = VOLUME_OUTLINE_PREVIEW_MAX_TOKENS;
     const logContext = {
       agentRunId: context.agentRunId,
       projectId: context.projectId,
@@ -123,8 +126,8 @@ export class GenerateVolumeOutlinePreviewTool implements BaseTool<GenerateVolume
       timeoutKind: 'stream_idle',
       streamIdleTimeoutMs: VOLUME_OUTLINE_PREVIEW_LLM_TIMEOUT_MS,
       streamPhaseTimeoutMs: streamPhaseTimeoutMs(VOLUME_OUTLINE_PREVIEW_LLM_TIMEOUT_MS),
-      maxTokensSent: null,
-      maxTokensOmitted: true,
+      maxTokensSent: maxTokens,
+      maxTokensOmitted: false,
       messageCount: messages.length,
       totalMessageChars: messages.reduce((sum, message) => sum + message.content.length, 0),
     };
@@ -140,7 +143,7 @@ export class GenerateVolumeOutlinePreviewTool implements BaseTool<GenerateVolume
     });
     this.logger.log('volume_outline_preview.llm_request.started', logContext);
     try {
-      const response = await this.llm.chatJson<unknown>(
+      const response = await this.chatVolumeOutlineJson(
         messages,
         {
           appStep: 'planner',
@@ -150,7 +153,9 @@ export class GenerateVolumeOutlinePreviewTool implements BaseTool<GenerateVolume
           onStreamProgress,
           retries: 0,
           jsonMode: true,
+          maxTokens,
         },
+        { volumeNo, chapterCount },
       );
       recordToolLlmUsage(context, 'planner', response.result);
       this.logger.log('volume_outline_preview.llm_response.received', {
@@ -189,6 +194,7 @@ export class GenerateVolumeOutlinePreviewTool implements BaseTool<GenerateVolume
             metadata: { volumeNo, chapterCount },
           }),
           temperature: 0.1,
+          maxTokens,
         },
         maxRepairAttempts: 1,
         initialModel: response.result.model,
@@ -208,6 +214,66 @@ export class GenerateVolumeOutlinePreviewTool implements BaseTool<GenerateVolume
       });
       throw error;
     }
+  }
+
+  private async chatVolumeOutlineJson(
+    messages: LlmChatMessage[],
+    options: LlmChatOptions,
+    retryContext: { volumeNo: number; chapterCount: number },
+  ) {
+    try {
+      return await this.llm.chatJson<unknown>(messages, options);
+    } catch (error) {
+      if (!(error instanceof LlmJsonInvalidError)) throw error;
+      this.logger.log('volume_outline_preview.json_parse_retry.started', {
+        volumeNo: retryContext.volumeNo,
+        chapterCount: retryContext.chapterCount,
+        rawResponseLength: error.rawText.length,
+        maxTokens: options.maxTokens ?? null,
+        error: error.message,
+      });
+      return this.llm.chatJson<unknown>(
+        this.buildJsonParseRetryMessages(messages, error, retryContext),
+        {
+          ...options,
+          retries: 0,
+          temperature: 0,
+          jsonMode: true,
+        },
+      );
+    }
+  }
+
+  private buildJsonParseRetryMessages(
+    messages: LlmChatMessage[],
+    error: LlmJsonInvalidError,
+    retryContext: { volumeNo: number; chapterCount: number },
+  ): LlmChatMessage[] {
+    const system = messages.find((message) => message.role === 'system')?.content ?? this.buildSystemPrompt();
+    const originalUser = messages.find((message) => message.role === 'user')?.content ?? '';
+    const rawTail = this.truncateText(error.rawText.slice(-1500), 1500);
+    return [
+      {
+        role: 'system',
+        content: [
+          system,
+          'JSON parse retry contract: the previous answer was invalid or truncated. Regenerate the whole target volume outline from scratch as one complete closed JSON object.',
+          'Do not continue the previous partial output. Do not include Markdown fences. Do not include chapters, chapter outlines, prose, or narrativePlan.storyUnits.',
+          'Keep every Chinese string compact while preserving concrete goals, pressure, choices, costs, reversals, state changes, character plan, foreshadow plan, ending hook, and next-volume handoff.',
+        ].join('\n'),
+      },
+      {
+        role: 'user',
+        content: [
+          `Previous JSON parse failed for volume ${retryContext.volumeNo}, chapterCount ${retryContext.chapterCount}.`,
+          `Parser error: ${error.message}`,
+          `Previous invalid tail for diagnosis only; do not continue it: ${rawTail}`,
+          'Regenerate a complete compact JSON object now. Output must parse with JSON.parse.',
+          '',
+          originalUser,
+        ].join('\n'),
+      },
+    ];
   }
 
   private shouldRepairVolumeOutlineOutput(data: unknown, error: unknown): boolean {
@@ -342,6 +408,7 @@ export class GenerateVolumeOutlinePreviewTool implements BaseTool<GenerateVolume
       '重要新增角色只能作为 narrativePlan.characterPlan.newCharacterCandidates 候选进入预览，不能在章节细纲里临时发明 supporting/protagonist/antagonist 等重要角色。',
       'newCharacterCandidates.name 可以被 subStoryLines.relatedCharacters、relationshipArcs.participants、roleCoverage 和后续单元故事引用，但不得同时出现在 existingCharacterArcs。',
       '角色内容失败即失败：不要生成占位角色、未命名角色或模板角色；如果缺上下文，把风险写入 risks，但仍必须返回完整合法 characterPlan。',
+      '短卷输出体量控制：若 chapterCount 不超过 5，synopsis 每个 Markdown 小节写 1-2 句；mainlineMilestones 3-5 项；subStoryLines 2-3 条；foreshadowPlan 3-5 项；existingCharacterArcs 只写本卷关键既有角色；newCharacterCandidates 和 relationshipArcs 只写必要项。',
       'synopsis 必须写成结构化 Markdown 卷纲，至少包含：## 全书主线阶段、## 本卷主线、## 本卷戏剧问题、## 卷内支线、## 角色与势力功能、## 伏笔分配、## 支线交叉点、## 卷末交接。',
       '故事性要求：每条主线/支线都要有“欲望目标 -> 阻力升级 -> 选择代价 -> 阶段反转/回收 -> 状态变化”，不能只写功能标签。',
       '不要在本工具中生成 narrativePlan.storyUnits，也不要把单元故事固定为第几章到第几章；单元故事由后续 generate_story_units_preview 独立生成。',
@@ -379,6 +446,9 @@ export class GenerateVolumeOutlinePreviewTool implements BaseTool<GenerateVolume
       `用户目标：${args.instruction ?? '生成卷大纲'}`,
       `目标卷：第 ${volumeNo} 卷`,
       `全卷章节数：${chapterCount}`,
+      chapterCount <= 5
+        ? '短卷紧凑要求：这是 5 章以内短卷，请输出完整但克制的卷纲，避免长篇幅人物传记或逐章细纲；每个文本字段优先 1-3 句。'
+        : '',
       '',
       '项目概览：',
       this.safeJson({ title: project.title, genre: project.genre, tone: project.tone, synopsis: project.synopsis, outline: project.outline }, 5000),
@@ -402,7 +472,7 @@ export class GenerateVolumeOutlinePreviewTool implements BaseTool<GenerateVolume
       this.safeJson(lorebookEntries, 4000),
       '',
       '请严格只返回 volume 和 risks；不要返回 chapters 或 chapter。',
-    ].join('\n');
+    ].filter(Boolean).join('\n');
   }
 
   private requiredText(value: unknown, label: string): string {
@@ -449,6 +519,11 @@ export class GenerateVolumeOutlinePreviewTool implements BaseTool<GenerateVolume
 
   private safeJson(value: unknown, limit: number): string {
     const text = JSON.stringify(value ?? {}, null, 2);
+    return text.length > limit ? `${text.slice(0, limit)}...` : text;
+  }
+
+  private truncateText(value: unknown, limit: number): string {
+    const text = this.text(value);
     return text.length > limit ? `${text.slice(0, limit)}...` : text;
   }
 

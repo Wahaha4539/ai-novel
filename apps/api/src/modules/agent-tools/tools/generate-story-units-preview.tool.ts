@@ -2,7 +2,8 @@ import { BadRequestException, Injectable } from '@nestjs/common';
 import { Prisma } from '@prisma/client';
 import { PrismaService } from '../../../prisma/prisma.service';
 import { StructuredLogger } from '../../../common/logging/structured-logger';
-import { LlmGatewayService } from '../../llm/llm-gateway.service';
+import { LlmGatewayService, LlmJsonInvalidError } from '../../llm/llm-gateway.service';
+import type { LlmChatMessage, LlmChatOptions } from '../../llm/dto/llm-chat.dto';
 import { DEFAULT_LLM_TIMEOUT_MS } from '../../llm/llm-timeout.constants';
 import { BaseTool, ToolContext } from '../base-tool';
 import type { ToolManifestV2 } from '../tool-manifest.types';
@@ -18,6 +19,7 @@ import {
 
 const STORY_UNITS_PREVIEW_LLM_TIMEOUT_MS = DEFAULT_LLM_TIMEOUT_MS;
 const STORY_UNITS_PREVIEW_REPAIR_TIMEOUT_MS = DEFAULT_LLM_TIMEOUT_MS;
+const STORY_UNITS_PREVIEW_MAX_TOKENS = 16_000;
 
 interface GenerateStoryUnitsPreviewInput {
   context?: Record<string, unknown>;
@@ -145,6 +147,7 @@ export class GenerateStoryUnitsPreviewTool implements BaseTool<GenerateStoryUnit
       { role: 'system' as const, content: this.buildSystemPrompt(chapterCount) },
       { role: 'user' as const, content: this.buildUserPrompt(args, volumeNo, chapterCount, volumeOutline) },
     ];
+    const maxTokens = STORY_UNITS_PREVIEW_MAX_TOKENS;
     const logContext = {
       agentRunId: context.agentRunId,
       projectId: context.projectId,
@@ -155,6 +158,8 @@ export class GenerateStoryUnitsPreviewTool implements BaseTool<GenerateStoryUnit
       timeoutKind: 'stream_idle',
       streamIdleTimeoutMs: STORY_UNITS_PREVIEW_LLM_TIMEOUT_MS,
       streamPhaseTimeoutMs: streamPhaseTimeoutMs(STORY_UNITS_PREVIEW_LLM_TIMEOUT_MS),
+      maxTokensSent: maxTokens,
+      maxTokensOmitted: false,
       messageCount: messages.length,
       totalMessageChars: messages.reduce((sum, message) => sum + message.content.length, 0),
     };
@@ -169,7 +174,7 @@ export class GenerateStoryUnitsPreviewTool implements BaseTool<GenerateStoryUnit
     });
     this.logger.log('story_units_preview.llm_request.started', logContext);
     try {
-      const response = await this.llm.chatJson<unknown>(
+      const response = await this.chatStoryUnitsJson(
         messages,
         {
           appStep: 'planner',
@@ -179,7 +184,9 @@ export class GenerateStoryUnitsPreviewTool implements BaseTool<GenerateStoryUnit
           onStreamProgress,
           retries: 0,
           jsonMode: true,
+          maxTokens,
         },
+        { volumeNo, chapterCount },
       );
       recordToolLlmUsage(context, 'planner', response.result);
       const normalized = await normalizeWithLlmRepair({
@@ -210,6 +217,7 @@ export class GenerateStoryUnitsPreviewTool implements BaseTool<GenerateStoryUnit
             metadata: { volumeNo, chapterCount },
           }),
           temperature: 0.1,
+          maxTokens,
         },
         maxRepairAttempts: 1,
         initialModel: response.result.model,
@@ -229,6 +237,66 @@ export class GenerateStoryUnitsPreviewTool implements BaseTool<GenerateStoryUnit
       });
       throw error;
     }
+  }
+
+  private async chatStoryUnitsJson(
+    messages: LlmChatMessage[],
+    options: LlmChatOptions,
+    retryContext: { volumeNo: number; chapterCount: number },
+  ) {
+    try {
+      return await this.llm.chatJson<unknown>(messages, options);
+    } catch (error) {
+      if (!(error instanceof LlmJsonInvalidError)) throw error;
+      this.logger.log('story_units_preview.json_parse_retry.started', {
+        volumeNo: retryContext.volumeNo,
+        chapterCount: retryContext.chapterCount,
+        rawResponseLength: error.rawText.length,
+        maxTokens: options.maxTokens ?? null,
+        error: error.message,
+      });
+      return this.llm.chatJson<unknown>(
+        this.buildJsonParseRetryMessages(messages, error, retryContext),
+        {
+          ...options,
+          retries: 0,
+          temperature: 0,
+          jsonMode: true,
+        },
+      );
+    }
+  }
+
+  private buildJsonParseRetryMessages(
+    messages: LlmChatMessage[],
+    error: LlmJsonInvalidError,
+    retryContext: { volumeNo: number; chapterCount: number },
+  ): LlmChatMessage[] {
+    const system = messages.find((message) => message.role === 'system')?.content ?? this.buildSystemPrompt(retryContext.chapterCount);
+    const originalUser = messages.find((message) => message.role === 'user')?.content ?? '';
+    const rawTail = this.truncateText(error.rawText.slice(-1500), 1500);
+    return [
+      {
+        role: 'system',
+        content: [
+          system,
+          'JSON parse retry contract: the previous answer was invalid or truncated. Regenerate the whole storyUnitPlan from scratch as one complete closed JSON object.',
+          'Do not continue the previous partial output. Do not include Markdown fences. Do not include chapters, Chapter.craftBrief, scene cards, or prose.',
+          'Keep every Chinese string compact while preserving mainlineSegments, units, chapterAllocation coverage, concrete deliveries, character focus, clues, payoffs, and state changes.',
+        ].join('\n'),
+      },
+      {
+        role: 'user',
+        content: [
+          `Previous JSON parse failed for volume ${retryContext.volumeNo}, chapterCount ${retryContext.chapterCount}.`,
+          `Parser error: ${error.message}`,
+          `Previous invalid tail for diagnosis only; do not continue it: ${rawTail}`,
+          'Regenerate a complete compact JSON object now. Output must parse with JSON.parse.',
+          '',
+          originalUser,
+        ].join('\n'),
+      },
+    ];
   }
 
   private buildRepairMessages(invalidOutput: unknown, validationError: string, volumeNo: number, chapterCount?: number): Array<{ role: 'system' | 'user'; content: string }> {
@@ -405,6 +473,11 @@ export class GenerateStoryUnitsPreviewTool implements BaseTool<GenerateStoryUnit
 
   private safeJson(value: unknown, limit: number): string {
     const text = JSON.stringify(value ?? {}, null, 2);
+    return text.length > limit ? `${text.slice(0, limit)}...` : text;
+  }
+
+  private truncateText(value: unknown, limit: number): string {
+    const text = this.text(value);
     return text.length > limit ? `${text.slice(0, limit)}...` : text;
   }
 }

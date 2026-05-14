@@ -90,7 +90,11 @@ export class GenerationService {
       const postprocess = await this.postProcessChapterService.run(chapter.projectId, chapterId, draft.draftId);
       // “完整生成流程”的最终正文应是润色稿；事实抽取、校验和记忆重建都必须基于最终稿，
       // 否则 UI 会只有草稿版本，右侧事实层也可能记录未润色的中间文本。
-      const polish = await this.polishChapterService.run(chapter.projectId, chapterId, AUTO_POLISH_INSTRUCTION, postprocess.draftId);
+      const targetWordCount = draft.qualityGate?.metrics?.targetWordCount ?? dto.wordCount ?? chapter.expectedWordCount ?? 3500;
+      const polishInstruction = `${AUTO_POLISH_INSTRUCTION}\n本章目标字数为 ${targetWordCount} 字；润色后正文必须保持在 ${Math.round(targetWordCount * 0.85)}-${Math.round(targetWordCount * 1.3)} 字之间，不得把合格初稿压缩成短稿。`;
+      const polish = await this.polishChapterService.run(chapter.projectId, chapterId, polishInstruction, postprocess.draftId, {
+        targetWordCount,
+      });
       const finalDraftId = polish.draftId;
       const facts = await this.factExtractorService.extractChapterFacts(chapter.projectId, chapterId, finalDraftId);
       const generationProfile = await this.generateChapterService.loadGenerationProfileSnapshot(chapter.projectId);

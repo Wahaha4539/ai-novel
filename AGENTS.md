@@ -27,6 +27,12 @@
 
 关键词或启发式规则只可用于不影响小说内容审批/写入的低风险场景，例如日志分类、诊断提示、检索候选排序、UI 展示标签或测试断言；若可能影响审批、写入、持久化或后续生成输入，必须改为 LLM 语义判断 + 显式结构字段 + 后端结构校验。
 
+## 章节细纲生成链路约束
+
+当前项目的章节细纲生成链路保持逐章生成，本节优先级高于下方任何关于“长章节细纲批次生成链路”的旧说明。为整卷或长卷生成章节细纲时，应保留既有的 `generate_chapter_outline_preview` 逐章调用、`merge_chapter_outline_previews` 合并、`persist_outline` 审批写入流程；不得为了 60 章或长卷任务，擅自把 Planner、工具包或默认工具列表改回 `segment_chapter_outline_batches`、`generate_chapter_outline_batch_preview`、`merge_chapter_outline_batch_previews` 批次链路，除非用户明确要求修改生成架构。
+
+如果现有代码或说明里保留了批次工具相关历史描述，只能按用户明确授权修改；执行具体创作任务时不要主动重构章节细纲链路。
+
 ## 长章节细纲批次校验位置
 
 长章节细纲、卷细纲或 60 章级别的批次生成链路，不得把全量 `validate_outline` 作为所有批次完成后的末尾兜底闸门。章节数、`chapterCount`、`chapterRange` 覆盖、批次是否连续、merge 引用是否完整、写入步骤是否审批等确定性问题，必须在 PlanValidator 或批次切分步骤中前置失败；不要让用户跑完整个批次后才在最后一关发现计划形状错误。
