@@ -7,6 +7,7 @@ import { AgentInputBox, type AgentInputSubmitOptions, type ChatMessage, type Cre
 import { AgentMissionWindow } from './AgentMissionWindow';
 import { AgentRunHistoryPanel } from './AgentRunHistoryPanel';
 import { PROJECT_IMPORT_ASSET_LABELS, StatusBadge, approvalRiskSummary, latestPlan, latestPlanVersion, type ProjectImportAssetType } from './AgentSharedWidgets';
+import { buildPassageRevisionContextPatch, isPassageRevisionTaskType } from './passageRevisionSession';
 
 interface AgentWorkspaceProps {
   projectId: string;
@@ -64,6 +65,7 @@ export function AgentWorkspace({
     [creativeDocumentAttachments],
   );
   const hasUploadingCreativeDocument = creativeDocumentAttachments.some((item) => item.status === 'uploading');
+  const passageRevisionContextPatch = useMemo(() => buildPassageRevisionContextPatch(currentRun), [currentRun]);
   const approvedScope = useMemo(() => {
     // 全部要求审批的步骤均已勾选时，不传具体范围，让后端按“整份计划已审批”处理。
     // 这样可避免新增后置质量门禁后，旧审批范围导致 retry/act 误判后续 Tool 未审批。
@@ -163,13 +165,19 @@ export function AgentWorkspace({
         await handleAct();
         return;
       }
+      if (isPassageRevisionTaskType(currentRun.taskType) && passageRevisionContextPatch) {
+        await replan(currentRun.id, message, { contextPatch: passageRevisionContextPatch });
+        await listByProject(projectId);
+        pushMessage('agent', '已保留当前选区和上一版预览，正在基于你的反馈重新规划。');
+        return;
+      }
       const run = await createPlan(projectId, message, requestContext, uploadedCreativeDocumentAttachments);
       if (run) pushMessage('agent', '已收到新任务，正在生成计划…');
       return;
     }
     const run = await createPlan(projectId, message, requestContext, uploadedCreativeDocumentAttachments);
     if (run) pushMessage('agent', '已收到任务，正在生成计划…');
-  }, [goal, loading, hasUploadingCreativeDocument, uploadedCreativeDocumentAttachments, canAct, currentRun, interpretMessage, handleAct, createPlan, projectId, pageContext, pushMessage]);
+  }, [goal, loading, hasUploadingCreativeDocument, uploadedCreativeDocumentAttachments, canAct, currentRun, interpretMessage, handleAct, replan, listByProject, passageRevisionContextPatch, createPlan, projectId, pageContext, pushMessage]);
 
   const handleCreativeDocumentSelect = useCallback(async (file: File) => {
     attachmentIdCounter.current += 1;
@@ -212,7 +220,11 @@ export function AgentWorkspace({
     setCreativeDocumentAttachments((current) => current.filter((item) => item.id !== id));
   }, []);
   const handleRetry = useCallback(async () => { if (!currentRun) return; await retry(currentRun.id, approvedScope); await onRefresh?.(); }, [currentRun, retry, approvedScope, onRefresh]);
-  const handleReplan = useCallback(async () => { if (!currentRun) return; await replan(currentRun.id, goal.trim() || undefined); await listByProject(projectId); }, [currentRun, replan, goal, listByProject, projectId]);
+  const handleReplan = useCallback(async () => {
+    if (!currentRun) return;
+    await replan(currentRun.id, goal.trim() || undefined, passageRevisionContextPatch ? { contextPatch: passageRevisionContextPatch } : undefined);
+    await listByProject(projectId);
+  }, [currentRun, replan, goal, passageRevisionContextPatch, listByProject, projectId]);
   const handleClarification = useCallback(async (choice: Parameters<typeof answerClarification>[1]) => {
     if (!currentRun) return;
     await answerClarification(currentRun.id, choice);

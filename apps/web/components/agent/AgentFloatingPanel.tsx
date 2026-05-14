@@ -7,6 +7,7 @@ import { AgentInputBox, type AgentInputSubmitOptions, type ChatMessage, type Cre
 import { AgentMissionWindow } from './AgentMissionWindow';
 import { AgentRunHistoryPanel } from './AgentRunHistoryPanel';
 import { PROJECT_IMPORT_ASSET_LABELS, StatusBadge, approvalRiskSummary, latestPlan, latestPlanVersion, type ProjectImportAssetType } from './AgentSharedWidgets';
+import { buildPassageRevisionContextPatch, isPassageRevisionTaskType } from './passageRevisionSession';
 
 type PanelTab = 'task' | 'detail' | 'history';
 type AgentMode = 'plan' | 'act';
@@ -78,6 +79,7 @@ export function AgentFloatingPanel({
   const canAct = !!currentRun && (currentRun.status === 'waiting_approval' || currentRun.status === 'waiting_review');
   const canRetry = !!currentRun && currentRun.status === 'failed';
   const canReplan = !!currentRun && !['planning', 'acting', 'running'].includes(currentRun.status);
+  const passageRevisionContextPatch = useMemo(() => buildPassageRevisionContextPatch(currentRun), [currentRun]);
   const riskSummary = useMemo(
     () => (canAct || canRetry ? approvalRiskSummary(plan, approvedStepNos) : []),
     [canAct, canRetry, plan, approvedStepNos],
@@ -156,6 +158,13 @@ export function AgentFloatingPanel({
         await handleAct();
         return;
       }
+      if (isPassageRevisionTaskType(currentRun.taskType) && passageRevisionContextPatch) {
+        await replan(currentRun.id, message, { contextPatch: passageRevisionContextPatch });
+        await listByProject(projectId);
+        pushMessage('agent', '已保留当前选区和上一版预览，正在基于你的反馈重新规划。');
+        setActiveTab('detail');
+        return;
+      }
       const run = await createPlan(projectId, message, requestContext, uploadedCreativeDocumentAttachments);
       if (run?.id) {
         pushMessage('agent', '已收到新任务，正在生成计划…');
@@ -177,7 +186,7 @@ export function AgentFloatingPanel({
       await act(run.id, allStepNos.length ? allStepNos : undefined);
       await onRefresh?.();
     }
-  }, [goal, loading, hasUploadingCreativeDocument, uploadedCreativeDocumentAttachments, canAct, currentRun, interpretMessage, handleAct, createPlan, projectId, pageContext, agentMode, act, onRefresh, pushMessage]);
+  }, [goal, loading, hasUploadingCreativeDocument, uploadedCreativeDocumentAttachments, canAct, currentRun, interpretMessage, handleAct, replan, listByProject, passageRevisionContextPatch, createPlan, projectId, pageContext, agentMode, act, onRefresh, pushMessage]);
 
   const handleCreativeDocumentSelect = useCallback(async (file: File) => {
     attachmentIdCounter.current += 1;
@@ -228,9 +237,9 @@ export function AgentFloatingPanel({
 
   const handleReplan = useCallback(async () => {
     if (!currentRun) return;
-    await replan(currentRun.id, goal.trim() || undefined);
+    await replan(currentRun.id, goal.trim() || undefined, passageRevisionContextPatch ? { contextPatch: passageRevisionContextPatch } : undefined);
     await listByProject(projectId);
-  }, [currentRun, replan, goal, listByProject, projectId]);
+  }, [currentRun, replan, goal, passageRevisionContextPatch, listByProject, projectId]);
 
   const handleClarification = useCallback(async (choice: Parameters<typeof answerClarification>[1]) => {
     if (!currentRun) return;

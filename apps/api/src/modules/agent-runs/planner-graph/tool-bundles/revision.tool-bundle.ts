@@ -10,6 +10,7 @@ export const revisionToolBundles: ToolBundleDefinition[] = [
     plannerGuidance: [
       'When sourcePage=editor_passage_agent and selectionIntent=chapter_passage_revision with selectedText, selectedRange, currentDraftId, and currentDraftVersion, keep the plan on the selected passage only.',
       'Use revise_chapter_passage_preview to create the local replacement preview, then apply_chapter_passage_revision only after approval.',
+      'If context.session.passageRevision.previewId or previousReplacementText exists, keep the same selection and pass that previous preview into revise_chapter_passage_preview.context.previousPreview before generating the next preview.',
       'Do not switch to polish_chapter or rewrite_chapter unless the user explicitly asks to revise the whole chapter.',
       'If selectedRange, selectedText, currentDraftId, or currentDraftVersion is missing, do not use passage tools; reselect or fall back to a non-passage revision route.',
     ],

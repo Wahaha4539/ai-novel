@@ -6,7 +6,7 @@ import { buildChapterOutlineBatchesFromStoryUnitPlan, type ChapterOutlineBatch }
 import { assertVolumeStoryUnitPlan } from '../agent-tools/tools/story-unit-contracts';
 import { ToolManifestForPlanner } from '../agent-tools/tool-manifest.types';
 import { ToolRegistryService } from '../agent-tools/tool-registry.service';
-import { ImportAssetTypeDto, ImportPreviewModeDto } from './dto/create-agent-plan.dto';
+import { ImportAssetTypeDto, ImportPreviewModeDto, PassageRevisionContextDto } from './dto/create-agent-plan.dto';
 
 export interface GuidedAgentContext {
   currentStep?: string;
@@ -53,6 +53,7 @@ export interface AgentContextV2 {
     selectedRange?: { start: number; end: number };
     selectedParagraphRange?: { start: number; end: number; count?: number };
     selectionIntent?: string;
+    passageRevision?: PassageRevisionContextDto;
     sourcePage?: string;
     requestedAssetTypes?: ImportAssetTypeDto[];
     importPreviewMode?: ImportPreviewModeDto;
@@ -157,6 +158,7 @@ export class AgentContextBuilderService {
         selectedRange: this.rangeValue(sessionHints.selectedRange),
         selectedParagraphRange: this.selectedParagraphRangeValue(sessionHints.selectedParagraphRange),
         selectionIntent: this.stringValue(sessionHints.selectionIntent),
+        passageRevision: this.passageRevisionValue(sessionHints.passageRevision),
         sourcePage: this.stringValue(sessionHints.sourcePage),
         requestedAssetTypes: this.importAssetTypesValue(sessionHints.requestedAssetTypes),
         importPreviewMode: this.importPreviewModeValue(sessionHints.importPreviewMode),
@@ -342,6 +344,21 @@ export class AgentContextBuilderService {
       end,
       ...(count !== undefined ? { count } : {}),
     };
+  }
+
+  private passageRevisionValue(value: unknown): PassageRevisionContextDto | undefined {
+    const record = this.asRecord(value);
+    const previewId = this.stringValue(record.previewId);
+    const previousReplacementText = this.stringValue(record.previousReplacementText);
+    const previousEditSummary = this.stringValue(record.previousEditSummary);
+    const previousRisks = this.stringArray(record.previousRisks);
+    const payload: PassageRevisionContextDto = {
+      ...(previewId ? { previewId } : {}),
+      ...(previousReplacementText ? { previousReplacementText } : {}),
+      ...(previousEditSummary ? { previousEditSummary } : {}),
+      ...(previousRisks.length ? { previousRisks } : {}),
+    };
+    return Object.keys(payload).length ? payload : undefined;
   }
 
   private guidedValue(value: unknown): GuidedAgentContext | undefined {

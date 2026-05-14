@@ -109,6 +109,7 @@ export interface ReplanClarificationChoice {
 export interface AgentRunReplanOptions {
   worldbuildingSelection?: { selectedTitles: string[] };
   importTargetRegeneration?: { assetType: AgentImportAssetType };
+  contextPatch?: AgentPageContext;
 }
 
 export interface ReplanPatchPayload {
@@ -239,6 +240,14 @@ export interface AgentPageContext {
   currentDraftVersion?: number;
   selectedText?: string;
   selectedRange?: { start: number; end: number };
+  selectedParagraphRange?: { start: number; end: number; count?: number };
+  selectionIntent?: string;
+  passageRevision?: {
+    previewId?: string;
+    previousReplacementText?: string;
+    previousEditSummary?: string;
+    previousRisks?: string[];
+  };
   sourcePage?: string;
   requestedAssetTypes?: AgentImportAssetType[];
   importPreviewMode?: AgentImportPreviewMode;

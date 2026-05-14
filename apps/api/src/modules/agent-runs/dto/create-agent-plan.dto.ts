@@ -11,6 +11,13 @@ export interface GuidedAgentPlanContextDto {
 export type ImportAssetTypeDto = 'projectProfile' | 'outline' | 'characters' | 'worldbuilding' | 'writingRules';
 export type ImportPreviewModeDto = 'auto' | 'quick' | 'deep';
 
+export interface PassageRevisionContextDto {
+  previewId?: string;
+  previousReplacementText?: string;
+  previousEditSummary?: string;
+  previousRisks?: string[];
+}
+
 export interface CreateAgentPlanContextDto {
   currentProjectId?: string;
   currentVolumeId?: string;
@@ -24,6 +31,7 @@ export interface CreateAgentPlanContextDto {
   selectedRange?: { start: number; end: number };
   selectedParagraphRange?: { start: number; end: number; count?: number };
   selectionIntent?: string;
+  passageRevision?: PassageRevisionContextDto;
   sourcePage?: string;
   requestedAssetTypes?: ImportAssetTypeDto[];
   importPreviewMode?: ImportPreviewModeDto;
@@ -78,6 +86,10 @@ export class ReplanAgentRunDto {
   @IsString()
   @MinLength(2)
   message?: string;
+
+  @IsOptional()
+  @IsObject()
+  contextPatch?: CreateAgentPlanContextDto;
 
   @IsOptional()
   @IsObject()

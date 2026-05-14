@@ -317,6 +317,30 @@ test('revise_chapter_passage_preview returns a strict local preview', async () =
   assert.equal(llm.calls[1].options.appStep, 'revise_chapter_passage_quality_review');
 });
 
+test('revise_chapter_passage_preview forwards previous preview context for follow-up feedback', async () => {
+  const { tool, llm } = createTool();
+  await tool.run({
+    ...baseInput,
+    instruction: '保留第二句，其他重写。',
+    context: {
+      previousPreview: {
+        previewId: 'preview-2',
+        replacementText: '他停在门前，钥匙冷得扎手。第二句保留。',
+        editSummary: '上一版更冷硬。',
+        risks: ['第二句和后文衔接偏硬'],
+      },
+    },
+  }, toolContext);
+
+  const payload = JSON.parse((llm.calls[0].messages as Array<{ role: string; content: string }>)[1].content) as Record<string, any>;
+  assert.deepEqual(payload.localContext.previousPreview, {
+    previewId: 'preview-2',
+    replacementText: '他停在门前，钥匙冷得扎手。第二句保留。',
+    editSummary: '上一版更冷硬。',
+    risks: ['第二句和后文衔接偏硬'],
+  });
+});
+
 test('revise_chapter_passage_preview throws when LLM generation fails', async () => {
   const llm = createLlm([new Error('LLM timeout')]);
   const { tool } = createTool(createPrisma(), llm);

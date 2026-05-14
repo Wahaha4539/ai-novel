@@ -23,6 +23,13 @@ interface SelectedParagraphRange {
   count?: number;
 }
 
+interface PreviousPassagePreview {
+  previewId?: string;
+  replacementText?: string;
+  editSummary?: string;
+  risks?: string[];
+}
+
 interface ReviseChapterPassagePreviewInput {
   chapterId?: string;
   draftId: string;
@@ -38,6 +45,7 @@ interface ReviseChapterPassagePreviewInput {
     craftBrief?: unknown;
     volumeSummary?: string;
     characterHints?: unknown[];
+    previousPreview?: PreviousPassagePreview;
   };
 }
 
@@ -242,6 +250,7 @@ export class ReviseChapterPassagePreviewTool implements BaseTool<ReviseChapterPa
       selectedParagraphRange: { source: 'context', description: 'Use context.session.selectedParagraphRange when present; do not invent paragraph numbers.' },
       originalText: { source: 'context', description: 'Use context.session.selectedText exactly.' },
       instruction: { source: 'user_message', description: 'The user requested passage-level change.' },
+      context: { source: 'context', description: 'When continuing feedback on an earlier passage preview, pass context.session.passageRevision as context.previousPreview while keeping the same selectedRange and originalText.' },
     },
     examples: [
       {
@@ -377,6 +386,7 @@ export class ReviseChapterPassagePreviewTool implements BaseTool<ReviseChapterPa
       beforeText: args.context?.beforeText ?? nearbyParagraphs.beforeText,
       afterText: args.context?.afterText ?? nearbyParagraphs.afterText,
       selectedParagraphRange: computedParagraphRange,
+      previousPreview: this.previousPreviewValue(args.context?.previousPreview),
       chapter: {
         chapterNo: draft.chapter.chapterNo,
         title: draft.chapter.title,
@@ -464,6 +474,7 @@ export class ReviseChapterPassagePreviewTool implements BaseTool<ReviseChapterPa
           'You are a Chinese web-novel passage revision agent.',
           'Return strict JSON only. No Markdown.',
           'Revise only the selected passage. Do not rewrite the whole chapter.',
+          'When localContext.previousPreview is present, treat the user feedback as edits against that prior replacement while still outputting text that replaces originalText at the same selectedRange.',
           'Do not output placeholders, deterministic templates, or skeletal filler.',
           'If the instruction cannot be satisfied with the available local context, return a direct risk in risks but still provide a concrete replacement only when it is genuinely usable.',
           'The replacementText must be the exact text that can replace originalText at selectedRange.',
@@ -702,6 +713,21 @@ export class ReviseChapterPassagePreviewTool implements BaseTool<ReviseChapterPa
     if (value.end < value.start) throw new BadRequestException('selectedParagraphRange.end must be greater than or equal to start.');
     if (value.count !== undefined) this.assertPositiveInteger(value.count, 'selectedParagraphRange.count');
     return { start: value.start, end: value.end, ...(value.count !== undefined ? { count: value.count } : {}) };
+  }
+
+  private previousPreviewValue(value: PreviousPassagePreview | undefined) {
+    if (!value) return undefined;
+    const record = this.asRecord(value);
+    const replacementText = this.requiredString(record.replacementText, 'context.previousPreview.replacementText', { preserveWhitespace: true });
+    const previewId = record.previewId === undefined ? undefined : this.requiredString(record.previewId, 'context.previousPreview.previewId');
+    const editSummary = record.editSummary === undefined ? undefined : this.requiredString(record.editSummary, 'context.previousPreview.editSummary');
+    const risks = record.risks === undefined ? [] : this.requiredStringArray(record.risks, 'context.previousPreview.risks');
+    return {
+      ...(previewId ? { previewId } : {}),
+      replacementText,
+      ...(editSummary ? { editSummary } : {}),
+      ...(risks.length ? { risks } : {}),
+    };
   }
 
   private assertPositiveInteger(value: unknown, field: string): asserts value is number {

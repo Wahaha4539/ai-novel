@@ -10124,6 +10124,14 @@ test('Planner routes editor passage agent requests to local passage revision too
                   selectedParagraphRange: '{{context.session.selectedParagraphRange}}',
                   originalText: '{{context.session.selectedText}}',
                   instruction: '{{context.userMessage}}',
+                  context: {
+                    previousPreview: {
+                      previewId: '{{context.session.passageRevision.previewId}}',
+                      replacementText: '{{context.session.passageRevision.previousReplacementText}}',
+                      editSummary: '{{context.session.passageRevision.previousEditSummary}}',
+                      risks: '{{context.session.passageRevision.previousRisks}}',
+                    },
+                  },
                 },
               },
               { stepNo: 3, name: '审批后应用局部修订', tool: 'apply_chapter_passage_revision', mode: 'act', requiresApproval: true, args: { preview: '{{steps.2.output}}' } },
@@ -10147,6 +10155,12 @@ test('Planner routes editor passage agent requests to local passage revision too
         selectedText: '她把钥匙扣进掌心，没再回头。',
         selectedRange: { start: 12, end: 26 },
         selectedParagraphRange: { start: 4, end: 4, count: 1 },
+        passageRevision: {
+          previewId: 'preview-2',
+          previousReplacementText: '她把钥匙扣进掌心，只短暂沉默了一瞬。',
+          previousEditSummary: '上一版预览更冷硬。',
+          previousRisks: ['后句承接需注意'],
+        },
         sourcePage: 'editor_passage_agent',
         selectionIntent: 'chapter_passage_revision',
       },
@@ -10165,9 +10179,16 @@ test('Planner routes editor passage agent requests to local passage revision too
     assert.equal(plan.taskType, 'chapter_passage_revision');
     assert.deepEqual(plan.steps.map((step) => step.tool), ['collect_chapter_context', 'revise_chapter_passage_preview', 'apply_chapter_passage_revision']);
     assert.equal(plan.steps[2].requiresApproval, true);
+    assert.deepEqual((plan.steps[1].args as Record<string, any>).context.previousPreview, {
+      previewId: '{{context.session.passageRevision.previewId}}',
+      replacementText: '{{context.session.passageRevision.previousReplacementText}}',
+      editSummary: '{{context.session.passageRevision.previousEditSummary}}',
+      risks: '{{context.session.passageRevision.previousRisks}}',
+    });
     assert.equal(promptPayload.routeDecision.intent, 'chapter_passage_revision');
     assert.match(capturedMessages[0].content, /editor_passage_agent/);
     assert.match(capturedMessages[0].content, /revise_chapter_passage_preview -> apply_chapter_passage_revision/);
+    assert.match(capturedMessages[0].content, /previousReplacementText/);
     assert.match(promptPayload.taskTypeGuidance.chapter_passage_revision, /压缩节奏/);
     assert.ok(availableTools.some((tool) => tool.name === 'revise_chapter_passage_preview'));
     assert.ok(availableTools.some((tool) => tool.name === 'apply_chapter_passage_revision'));
@@ -17493,6 +17514,72 @@ test('AgentRunsService rejects invalid importTargetRegeneration assetType', asyn
     /importTargetRegeneration\.assetType/,
   );
   assert.equal(runtimeCalled, false);
+});
+
+test('AgentRunsService replan merges passage revision contextPatch back into run input', async () => {
+  let updatedInput: Record<string, unknown> | undefined;
+  let runtimeCalled = false;
+  const prisma = {
+    agentRun: {
+      async findUnique() {
+        return {
+          id: 'run1',
+          status: 'waiting_approval',
+          input: {
+            context: {
+              currentProjectId: 'project-1',
+              currentChapterId: 'chapter-1',
+              currentDraftId: 'draft-2',
+              currentDraftVersion: 6,
+              selectedText: '原选区文本',
+              selectedRange: { start: 10, end: 18 },
+              selectionIntent: 'chapter_passage_revision',
+              sourcePage: 'editor_passage_agent',
+            },
+          },
+        };
+      },
+      async update(args: { data: { input: Record<string, unknown> } }) {
+        updatedInput = args.data.input;
+        return { id: 'run1', input: updatedInput };
+      },
+    },
+  };
+  const runtime = {
+    async replan() {
+      runtimeCalled = true;
+    },
+  };
+  const service = new AgentRunsService(prisma as never, runtime as never, {} as never);
+  (service as unknown as { get: (id: string) => Promise<unknown> }).get = async () => ({ id: 'run1', status: 'waiting_approval' });
+
+  await service.replan('run1', {
+    message: '保留第二句，其他重写',
+    contextPatch: {
+      selectedText: '原选区文本',
+      selectedRange: { start: 10, end: 18 },
+      selectedParagraphRange: { start: 2, end: 2, count: 1 },
+      selectionIntent: 'chapter_passage_revision',
+      sourcePage: 'editor_passage_agent',
+      passageRevision: {
+        previewId: 'preview-3',
+        previousReplacementText: '上一版替换文本',
+        previousEditSummary: '上一版摘要',
+        previousRisks: ['注意后句承接'],
+      },
+    },
+  });
+
+  const context = updatedInput?.context as Record<string, unknown> | undefined;
+  assert.equal(runtimeCalled, true);
+  assert.deepEqual(context?.selectedRange, { start: 10, end: 18 });
+  assert.deepEqual(context?.selectedParagraphRange, { start: 2, end: 2, count: 1 });
+  assert.deepEqual(context?.passageRevision, {
+    previewId: 'preview-3',
+    previousReplacementText: '上一版替换文本',
+    previousEditSummary: '上一版摘要',
+    previousRisks: ['注意后句承接'],
+  });
 });
 
 test('Executor 将 LLM timeout 分类为 LLM_TIMEOUT Observation', () => {

@@ -2,7 +2,7 @@ import { BadRequestException, Injectable, NotFoundException } from '@nestjs/comm
 import { Prisma } from '@prisma/client';
 import { PrismaService } from '../../prisma/prisma.service';
 import { StructuredLogger } from '../../common/logging/structured-logger';
-import { AgentCreativeDocumentAttachmentDto, AgentCreativeDocumentExtensionDto, CreateAgentPlanContextDto, CreateAgentPlanDto, ImportAssetTypeDto, ImportPreviewModeDto, ReplanAgentRunDto, SubmitAgentClarificationChoiceDto } from './dto/create-agent-plan.dto';
+import { AgentCreativeDocumentAttachmentDto, AgentCreativeDocumentExtensionDto, CreateAgentPlanContextDto, CreateAgentPlanDto, ImportAssetTypeDto, ImportPreviewModeDto, PassageRevisionContextDto, ReplanAgentRunDto, SubmitAgentClarificationChoiceDto } from './dto/create-agent-plan.dto';
 import { ExecuteAgentRunDto } from './dto/execute-agent-run.dto';
 import { InterpretAgentMessageDto } from './dto/interpret-agent-message.dto';
 import { AgentMessageIntentService } from './agent-message-intent.service';
@@ -162,6 +162,13 @@ export class AgentRunsService {
     return typeof value === 'string' && value.trim() ? value.trim() : undefined;
   }
 
+  private readOptionalContextString(record: Record<string, unknown>, key: string) {
+    const value = record[key];
+    if (value === undefined || value === null || value === '') return undefined;
+    if (typeof value !== 'string' || !value.trim()) throw new BadRequestException(`context.passageRevision.${key} 必须是非空字符串`);
+    return value.trim();
+  }
+
   private normalizeAttachments(value: unknown): AgentCreativeDocumentAttachmentDto[] {
     if (value === undefined || value === null) return [];
     if (!Array.isArray(value)) throw new BadRequestException('attachments 必须是数组');
@@ -171,14 +178,43 @@ export class AgentRunsService {
   private normalizePlanContext(value: unknown): CreateAgentPlanContextDto {
     if (value === undefined || value === null) return {};
     if (!this.isRecord(value)) throw new BadRequestException('context 必须是对象');
-    const { requestedAssetTypes, importPreviewMode, ...rest } = value;
+    const { requestedAssetTypes, importPreviewMode, passageRevision, ...rest } = value;
     const normalizedAssetTypes = this.normalizeRequestedAssetTypes(requestedAssetTypes);
     const normalizedImportPreviewMode = this.normalizeImportPreviewMode(importPreviewMode);
+    const normalizedPassageRevision = this.normalizePassageRevisionContext(passageRevision);
     return {
       ...rest,
+      ...(normalizedPassageRevision ? { passageRevision: normalizedPassageRevision } : {}),
       ...(normalizedAssetTypes.length ? { requestedAssetTypes: normalizedAssetTypes } : {}),
       ...(normalizedImportPreviewMode ? { importPreviewMode: normalizedImportPreviewMode } : {}),
     } as CreateAgentPlanContextDto;
+  }
+
+  private normalizePassageRevisionContext(value: unknown): PassageRevisionContextDto | undefined {
+    if (value === undefined || value === null) return undefined;
+    if (!this.isRecord(value)) throw new BadRequestException('context.passageRevision 必须是对象');
+
+    const previewId = this.readOptionalContextString(value, 'previewId');
+    const previousReplacementText = this.readOptionalContextString(value, 'previousReplacementText');
+    const previousEditSummary = this.readOptionalContextString(value, 'previousEditSummary');
+    let previousRisks: string[] | undefined;
+    if (value.previousRisks !== undefined) {
+      if (!Array.isArray(value.previousRisks)) throw new BadRequestException('context.passageRevision.previousRisks 必须是数组');
+      previousRisks = value.previousRisks.map((item, index) => {
+        if (typeof item !== 'string' || !item.trim()) {
+          throw new BadRequestException(`context.passageRevision.previousRisks[${index}] 必须是非空字符串`);
+        }
+        return item.trim();
+      });
+    }
+
+    const normalized: PassageRevisionContextDto = {
+      ...(previewId ? { previewId } : {}),
+      ...(previousReplacementText ? { previousReplacementText } : {}),
+      ...(previousEditSummary ? { previousEditSummary } : {}),
+      ...(previousRisks?.length ? { previousRisks } : {}),
+    };
+    return Object.keys(normalized).length ? normalized : undefined;
   }
 
   private normalizeRequestedAssetTypes(value: unknown): ImportAssetTypeDto[] {
@@ -341,6 +377,24 @@ export class AgentRunsService {
     const run = await this.prisma.agentRun.findUnique({ where: { id } });
     if (!run) throw new NotFoundException(`AgentRun 不存在：${id}`);
     if (run.status === 'acting') throw new BadRequestException('acting 状态不能重新规划，请等待执行结束或取消');
+
+    const contextPatch = this.normalizePlanContext(dto.contextPatch);
+    if (Object.keys(contextPatch).length) {
+      const input = this.isRecord(run.input) ? run.input : {};
+      const currentContext = this.isRecord(input.context) ? input.context : {};
+      await this.prisma.agentRun.update({
+        where: { id },
+        data: {
+          input: {
+            ...input,
+            context: {
+              ...currentContext,
+              ...contextPatch,
+            },
+          } as unknown as Prisma.InputJsonValue,
+        },
+      });
+    }
 
     const regenerationAssetType = dto.importTargetRegeneration?.assetType;
     if (dto.importTargetRegeneration !== undefined) {
