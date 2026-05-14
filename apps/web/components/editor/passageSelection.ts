@@ -29,6 +29,15 @@ export type PassageSelectionSnapshot = {
   popoverPosition?: { top: number; left: number };
 };
 
+export type PassagePopoverAnchorRect = {
+  top: number;
+  right: number;
+  bottom: number;
+  left: number;
+  width: number;
+  height: number;
+};
+
 export interface PassageAgentContext extends AgentPageContext {
   sourcePage: 'editor_passage_agent';
   selectionIntent: 'chapter_passage_revision';
@@ -103,6 +112,40 @@ export function computeSelectedParagraphRange(content: string, selectedRange: Se
 
 export function formatParagraphRangeLabel(range: SelectedParagraphRange) {
   return range.start === range.end ? `第 ${range.start} 段` : `第 ${range.start}-${range.end} 段`;
+}
+
+export function computePassagePopoverPosition(
+  anchorRect: PassagePopoverAnchorRect,
+  viewport: { width: number; height: number },
+  options?: {
+    popoverWidth?: number;
+    popoverHeight?: number;
+    viewportPadding?: number;
+    anchorGap?: number;
+  },
+) {
+  const popoverWidth = options?.popoverWidth ?? 336;
+  const popoverHeight = options?.popoverHeight ?? 320;
+  const viewportPadding = options?.viewportPadding ?? 16;
+  const anchorGap = options?.anchorGap ?? 12;
+
+  const maxLeft = Math.max(viewportPadding, viewport.width - popoverWidth - viewportPadding);
+  const left = clampNumber(
+    anchorRect.left + (anchorRect.width / 2) - (popoverWidth / 2),
+    viewportPadding,
+    maxLeft,
+  );
+
+  const preferredTop = anchorRect.top - popoverHeight - anchorGap;
+  const fallbackTop = anchorRect.bottom + anchorGap;
+  const maxTop = Math.max(viewportPadding, viewport.height - popoverHeight - viewportPadding);
+  const fitsAbove = preferredTop >= viewportPadding;
+  const fitsBelow = fallbackTop + popoverHeight <= viewport.height - viewportPadding;
+  const top = fitsAbove || !fitsBelow
+    ? clampNumber(preferredTop, viewportPadding, maxTop)
+    : clampNumber(fallbackTop, viewportPadding, maxTop);
+
+  return { top, left };
 }
 
 export function buildPassageAgentContext(input: {

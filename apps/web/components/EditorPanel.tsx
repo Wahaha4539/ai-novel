@@ -393,6 +393,7 @@ export function EditorPanel({ selectedProject, selectedChapterId, chapters, volu
               onSelect={passageSelection.textareaSelectionProps.onSelect}
               onMouseUp={passageSelection.textareaSelectionProps.onMouseUp}
               onKeyUp={passageSelection.textareaSelectionProps.onKeyUp}
+              onTouchEnd={passageSelection.textareaSelectionProps.onTouchEnd}
               disabled={isGenerating}
             />
             {passageAgentContext && passageSelection.selection && (

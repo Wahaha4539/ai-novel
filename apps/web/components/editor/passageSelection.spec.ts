@@ -1,6 +1,7 @@
 import assert from 'node:assert/strict';
 import {
   buildPassageAgentContext,
+  computePassagePopoverPosition,
   computeSelectedParagraphRange,
   getPassageAgentDisabledReason,
   normalizeTextSelection,
@@ -84,6 +85,26 @@ test('getPassageAgentDisabledReason asks the user to save unsaved edits before s
   });
 
   assert.match(reason, /保存/);
+});
+
+test('computePassagePopoverPosition keeps the popover centered above the selection when space allows', () => {
+  const position = computePassagePopoverPosition(
+    { top: 420, right: 520, bottom: 444, left: 440, width: 80, height: 24 },
+    { width: 1440, height: 900 },
+    { popoverWidth: 336, popoverHeight: 320, viewportPadding: 16, anchorGap: 12 },
+  );
+
+  assert.deepEqual(position, { top: 88, left: 312 });
+});
+
+test('computePassagePopoverPosition falls back below the selection when there is no room above', () => {
+  const position = computePassagePopoverPosition(
+    { top: 72, right: 460, bottom: 96, left: 380, width: 80, height: 24 },
+    { width: 1280, height: 900 },
+    { popoverWidth: 336, popoverHeight: 320, viewportPadding: 16, anchorGap: 12 },
+  );
+
+  assert.deepEqual(position, { top: 108, left: 252 });
 });
 
 for (const item of tests) {
