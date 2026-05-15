@@ -275,7 +275,7 @@ async function run() {
 
   {
     const { service } = createService();
-    const controller = new ScoringController(service);
+    const controller = new ScoringController(service, {} as never);
     const result = await controller.createRun('project-1', { targetType, targetId: 'chapter-1', profileKey });
     assert.equal(result.id, 'scoring-run-1');
   }

@@ -152,7 +152,7 @@ async function run() {
     const service = {
       listAssets: async (projectId: string) => [{ targetType: 'project_outline', targetId: projectId, title: 'Project', source: 'Project.outline' }],
     };
-    const controller = new ScoringController(service as never);
+    const controller = new ScoringController(service as never, {} as never);
     const assets = await controller.listAssets('project-1');
     assert.equal(assets[0].targetId, 'project-1');
   }

@@ -2,11 +2,15 @@ import { Body, Controller, Get, Param, Post, Query } from '@nestjs/common';
 import { PLATFORM_SCORING_PROFILES } from './platform-scoring-profiles';
 import { CreateScoringRunDto } from './dto/create-scoring-run.dto';
 import { ListScoringRunsQueryDto } from './dto/list-scoring-runs-query.dto';
+import { ScoringRevisionService } from './scoring-revision.service';
 import { ScoringService } from './scoring.service';
 
 @Controller()
 export class ScoringController {
-  constructor(private readonly scoringService: ScoringService) {}
+  constructor(
+    private readonly scoringService: ScoringService,
+    private readonly scoringRevisionService: ScoringRevisionService,
+  ) {}
 
   @Get('scoring/platform-profiles')
   listProfiles() {
@@ -31,5 +35,10 @@ export class ScoringController {
   @Get('projects/:projectId/scoring/runs/:runId')
   getRun(@Param('projectId') projectId: string, @Param('runId') runId: string) {
     return this.scoringService.getRun(projectId, runId);
+  }
+
+  @Post('projects/:projectId/scoring/runs/:runId/revision')
+  createRevision(@Param('projectId') projectId: string, @Param('runId') runId: string, @Body() body: unknown) {
+    return this.scoringRevisionService.createRevision(projectId, runId, body);
   }
 }

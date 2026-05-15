@@ -223,7 +223,21 @@ test('ScoringCenterPanel renders asset selection, reports, errors, empty state, 
 
   const harness = createHarness(ScoringCenterPanel, { selectedProjectId: 'project-alpha', selectedProject: project() });
   harness.render();
-  assertIncludes(harness.html(), ['Scoring Center', 'Chapter 1 craft brief', 'Craft brief has a clear action chain.', 'Scene executability', 'continuity_handoff', 'Clarify the handoff clue']);
+  assertIncludes(harness.html(), ['Scoring Center', 'Chapter 1 craft brief', 'Craft brief has a clear action chain.', 'Scene executability', 'continuity_handoff', 'Clarify the handoff clue', 'Rewrite from report']);
+
+  await click(findButton(harness.tree, 'Rewrite from report'));
+  harness.render();
+  assertEqual(mockState.scoring.calls.createRevision.length, 1);
+  assertEqual(mockState.scoring.calls.createRevision[0].payload.entryPoint, 'report');
+  assertIncludes(harness.html(), ['Agent task agent-re', 'Direct asset persist: no']);
+
+  await click(findButton(harness.tree, 'Rewrite dimension'));
+  assertEqual(mockState.scoring.calls.createRevision.at(-1).payload.entryPoint, 'dimension');
+  assertEqual(mockState.scoring.calls.createRevision.at(-1).payload.selectedDimensions[0], 'scene_executability');
+
+  await click(findButton(harness.tree, 'Rewrite issue #1'));
+  assertEqual(mockState.scoring.calls.createRevision.at(-1).payload.entryPoint, 'issue');
+  assertEqual(mockState.scoring.calls.createRevision.at(-1).payload.selectedIssueIndexes[0], 0);
 
   await click(findButton(harness.tree, 'Chapter 1 draft v2'));
   harness.render();
@@ -559,7 +573,7 @@ function scoringMock() {
     loading: false,
     formLoading: false,
     error: '',
-    calls: { loadProfiles: 0, loadAssets: [], loadRuns: [], createRun: [] },
+    calls: { loadProfiles: 0, loadAssets: [], loadRuns: [], createRun: [], createRevision: [] },
   };
   state.setError = (value) => { state.error = value; };
   state.loadProfiles = async () => { state.calls.loadProfiles += 1; return state.profiles; };
@@ -570,6 +584,29 @@ function scoringMock() {
     const run = scoringRun({ id: `created-${state.calls.createRun.length}`, targetType: payload.targetType, targetId: payload.targetId, draftId: payload.draftId, platformProfile: payload.profileKey });
     state.runs = [run, ...state.runs];
     return run;
+  };
+  state.createRevision = async (projectId, runId, payload) => {
+    state.calls.createRevision.push({ projectId, runId, payload });
+    return {
+      scoringRunId: runId,
+      agentRunId: 'agent-revision-1',
+      artifactId: 'artifact-revision-1',
+      status: 'planning',
+      taskType: 'score_driven_revision',
+      targetType: 'chapter_craft_brief',
+      mapping: {
+        targetType: 'chapter_craft_brief',
+        agentTarget: 'chapter_craft_brief_preview',
+        recommendedPreviewAction: 'Generate a new chapter craftBrief preview; validate it before any persist step.',
+        expectedOutput: 'chapter craftBrief preview',
+      },
+      prompt: 'score driven revision prompt',
+      approvalBoundary: {
+        createsAgentTaskOnly: true,
+        directlyPersistsAssets: false,
+        requiresAgentPreviewValidationApprovalPersistFlow: true,
+      },
+    };
   };
   return state;
 }
@@ -635,6 +672,7 @@ function createScoringHookMocks(state) {
       loadAssets: state.scoring.loadAssets,
       loadRuns: state.scoring.loadRuns,
       createRun: state.scoring.createRun,
+      createRevision: state.scoring.createRevision,
     }),
   };
 }
@@ -713,6 +751,9 @@ function findAll(node, predicate, result = []) {
   }
   if (!React.isValidElement(node)) return result;
   if (predicate(node)) result.push(node);
+  if (typeof node.type === 'function') {
+    return findAll(node.type(node.props), predicate, result);
+  }
   childrenOf(node).forEach((child) => findAll(child, predicate, result));
   if (node.props?.children && !childrenOf(node).length) findAll(node.props.children, predicate, result);
   return result;

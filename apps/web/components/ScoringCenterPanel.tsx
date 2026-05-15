@@ -7,6 +7,7 @@ import {
   ScoringAssetOption,
   ScoringDimensionScore,
   ScoringIssue,
+  ScoringRevisionResult,
   ScoringRun,
   ScoringTargetType,
   useScoringActions,
@@ -28,15 +29,19 @@ interface Props {
 }
 
 export function ScoringCenterPanel({ selectedProject, selectedProjectId }: Props) {
-  const { profiles, assets, runs, loading, formLoading, error, setError, loadProfiles, loadAssets, loadRuns, createRun } = useScoringActions();
+  const { profiles, assets, runs, loading, formLoading, error, setError, loadProfiles, loadAssets, loadRuns, createRun, createRevision } = useScoringActions();
   const [targetFilter, setTargetFilter] = useState<ScoringTargetType | 'all'>('all');
   const [selectedAssetKey, setSelectedAssetKey] = useState('');
   const [profileKey, setProfileKey] = useState<PlatformProfileKey>('generic_longform');
   const [selectedRunId, setSelectedRunId] = useState('');
+  const [selectedIssueIndexes, setSelectedIssueIndexes] = useState<number[]>([]);
+  const [revisionResult, setRevisionResult] = useState<ScoringRevisionResult | null>(null);
 
   useEffect(() => {
     setSelectedAssetKey('');
     setSelectedRunId('');
+    setSelectedIssueIndexes([]);
+    setRevisionResult(null);
     setError('');
     if (!selectedProjectId) return;
     void Promise.all([loadProfiles(), loadAssets(selectedProjectId), loadRuns(selectedProjectId)]);
@@ -67,6 +72,11 @@ export function ScoringCenterPanel({ selectedProject, selectedProjectId }: Props
     [reportRuns, selectedRunId],
   );
 
+  useEffect(() => {
+    setSelectedIssueIndexes([]);
+    setRevisionResult(null);
+  }, [selectedRun?.id]);
+
   const refreshRunsForAsset = useCallback(async (asset: ScoringAssetOption) => {
     const filters = {
       targetType: asset.targetType,
@@ -80,6 +90,8 @@ export function ScoringCenterPanel({ selectedProject, selectedProjectId }: Props
   const handleSelectAsset = useCallback(async (asset: ScoringAssetOption) => {
     setSelectedAssetKey(assetKey(asset));
     setSelectedRunId('');
+    setSelectedIssueIndexes([]);
+    setRevisionResult(null);
     if (selectedProjectId) {
       await refreshRunsForAsset(asset);
     }
@@ -96,8 +108,24 @@ export function ScoringCenterPanel({ selectedProject, selectedProjectId }: Props
       profileKey,
     });
     setSelectedRunId(run.id);
+    setSelectedIssueIndexes([]);
+    setRevisionResult(null);
     await Promise.all([loadAssets(selectedProjectId), refreshRunsForAsset(selectedAsset)]);
   }, [createRun, loadAssets, profileKey, refreshRunsForAsset, selectedAsset, selectedProjectId]);
+
+  const handleCreateRevision = useCallback(async (payload: {
+    entryPoint: 'report' | 'dimension' | 'issue' | 'priority';
+    selectedIssueIndexes?: number[];
+    selectedDimensions?: string[];
+    selectedRevisionPriorities?: string[];
+  }) => {
+    if (!selectedProjectId || !selectedRun) return;
+    const result = await createRevision(selectedProjectId, selectedRun.id, {
+      scoringRunId: selectedRun.id,
+      ...payload,
+    });
+    setRevisionResult(result);
+  }, [createRevision, selectedProjectId, selectedRun]);
 
   return (
     <article className="flex flex-col h-full" style={{ background: 'var(--bg-deep)' }}>
@@ -217,7 +245,15 @@ export function ScoringCenterPanel({ selectedProject, selectedProjectId }: Props
                 ) : !selectedRun ? (
                   <div className="list-card-empty">当前资产暂无评分报告</div>
                 ) : (
-                  <ReportView run={selectedRun} profileName={profiles.find((profile) => profile.key === selectedRun.platformProfile)?.name ?? String(selectedRun.platformProfile)} />
+                  <ReportView
+                    run={selectedRun}
+                    profileName={profiles.find((profile) => profile.key === selectedRun.platformProfile)?.name ?? String(selectedRun.platformProfile)}
+                    formLoading={formLoading}
+                    selectedIssueIndexes={selectedIssueIndexes}
+                    revisionResult={revisionResult}
+                    onToggleIssue={(index) => setSelectedIssueIndexes((current) => (current.includes(index) ? current.filter((item) => item !== index) : [...current, index].sort((a, b) => a - b)))}
+                    onCreateRevision={handleCreateRevision}
+                  />
                 )}
               </div>
             </section>
@@ -249,7 +285,28 @@ function SelectedAssetSummary({ asset }: { asset: ScoringAssetOption | null }) {
   );
 }
 
-function ReportView({ run, profileName }: { run: ScoringRun; profileName: string }) {
+function ReportView({
+  run,
+  profileName,
+  formLoading,
+  selectedIssueIndexes,
+  revisionResult,
+  onToggleIssue,
+  onCreateRevision,
+}: {
+  run: ScoringRun;
+  profileName: string;
+  formLoading: boolean;
+  selectedIssueIndexes: number[];
+  revisionResult: ScoringRevisionResult | null;
+  onToggleIssue: (index: number) => void;
+  onCreateRevision: (payload: {
+    entryPoint: 'report' | 'dimension' | 'issue' | 'priority';
+    selectedIssueIndexes?: number[];
+    selectedDimensions?: string[];
+    selectedRevisionPriorities?: string[];
+  }) => void | Promise<void>;
+}) {
   const dimensions = safeArray<ScoringDimensionScore>(run.dimensions);
   const issues = safeArray<ScoringIssue>(run.issues);
   const priorities = safeStringArray(run.revisionPriorities);
@@ -271,6 +328,13 @@ function ReportView({ run, profileName }: { run: ScoringRun; profileName: string
               <TinyMeta>{formatDate(run.createdAt)}</TinyMeta>
             </div>
             <p className="text-sm" style={{ color: 'var(--text-main)', lineHeight: 1.7 }}>{run.summary}</p>
+            <div className="mt-3 flex flex-wrap items-center gap-2">
+              <button className="btn-secondary" type="button" disabled={formLoading} onClick={() => void onCreateRevision({ entryPoint: 'report' })} style={{ fontSize: '0.72rem', padding: '0.45rem 0.75rem' }}>
+                Rewrite from report
+              </button>
+              {revisionResult ? <TinyMeta>Agent task {revisionResult.agentRunId.slice(0, 8)} {'->'} {revisionResult.mapping.agentTarget}</TinyMeta> : null}
+            </div>
+            {revisionResult ? <RevisionBoundary result={revisionResult} /> : null}
           </div>
         </div>
       </section>
@@ -282,7 +346,14 @@ function ReportView({ run, profileName }: { run: ScoringRun; profileName: string
         </div>
         {dimensions.length ? (
           <div className="space-y-2">
-            {dimensions.map((dimension) => <DimensionRow key={dimension.key} dimension={dimension} />)}
+            {dimensions.map((dimension) => (
+              <DimensionRow
+                key={dimension.key}
+                dimension={dimension}
+                formLoading={formLoading}
+                onCreateRevision={() => onCreateRevision({ entryPoint: 'dimension', selectedDimensions: [dimension.key] })}
+              />
+            ))}
           </div>
         ) : (
           <JsonFallback label="dimensions JSON fallback" value={run.dimensions} />
@@ -293,11 +364,28 @@ function ReportView({ run, profileName }: { run: ScoringRun; profileName: string
         <div className="panel p-4" style={{ borderRadius: '0.65rem' }}>
           <div className="flex items-center justify-between gap-2 mb-3">
             <h3 className="text-sm font-bold text-heading">Issues</h3>
-            <span className="text-xs" style={{ color: issues.length ? '#fbbf24' : 'var(--text-dim)' }}>{issues.length}</span>
+            <div className="flex items-center gap-2">
+              {selectedIssueIndexes.length ? (
+                <button className="btn-secondary" type="button" disabled={formLoading} onClick={() => void onCreateRevision({ entryPoint: 'issue', selectedIssueIndexes })} style={{ fontSize: '0.68rem', padding: '0.35rem 0.65rem' }}>
+                  Rewrite selected issues
+                </button>
+              ) : null}
+              <span className="text-xs" style={{ color: issues.length ? '#fbbf24' : 'var(--text-dim)' }}>{issues.length}</span>
+            </div>
           </div>
           {issues.length ? (
             <div className="space-y-2">
-              {issues.map((issue, index) => <IssueCard key={`${issue.dimensionKey}-${index}`} issue={issue} />)}
+              {issues.map((issue, index) => (
+                <IssueCard
+                  key={`${issue.dimensionKey}-${index}`}
+                  issue={issue}
+                  index={index}
+                  checked={selectedIssueIndexes.includes(index)}
+                  formLoading={formLoading}
+                  onToggle={() => onToggleIssue(index)}
+                  onCreateRevision={() => onCreateRevision({ entryPoint: 'issue', selectedIssueIndexes: [index] })}
+                />
+              ))}
             </div>
           ) : Array.isArray(run.issues) ? (
             <div className="text-sm" style={{ color: 'var(--text-dim)' }}>未记录阻断问题</div>
@@ -311,7 +399,12 @@ function ReportView({ run, profileName }: { run: ScoringRun; profileName: string
           {priorities.length ? (
             <ol className="space-y-2" style={{ paddingLeft: '1.1rem' }}>
               {priorities.map((priority, index) => (
-                <li key={`${priority}-${index}`} className="text-sm" style={{ color: 'var(--text-muted)', lineHeight: 1.6 }}>{priority}</li>
+                <li key={`${priority}-${index}`} className="text-sm" style={{ color: 'var(--text-muted)', lineHeight: 1.6 }}>
+                  {priority}
+                  <button className="btn-secondary ml-2" type="button" disabled={formLoading} onClick={() => void onCreateRevision({ entryPoint: 'priority', selectedRevisionPriorities: [priority] })} style={{ fontSize: '0.66rem', padding: '0.25rem 0.5rem' }}>
+                    Rewrite
+                  </button>
+                </li>
               ))}
             </ol>
           ) : Array.isArray(run.revisionPriorities) ? (
@@ -327,7 +420,7 @@ function ReportView({ run, profileName }: { run: ScoringRun; profileName: string
   );
 }
 
-function DimensionRow({ dimension }: { dimension: ScoringDimensionScore }) {
+function DimensionRow({ dimension, formLoading, onCreateRevision }: { dimension: ScoringDimensionScore; formLoading: boolean; onCreateRevision: () => void | Promise<void> }) {
   const width = Math.max(0, Math.min(100, dimension.score));
   return (
     <div className="list-card" style={{ padding: '0.75rem', borderRadius: '0.55rem' }}>
@@ -336,7 +429,12 @@ function DimensionRow({ dimension }: { dimension: ScoringDimensionScore }) {
           <strong className="text-sm text-heading">{dimension.label || dimension.key}</strong>
           <div className="mt-1 text-xs" style={{ color: 'var(--text-dim)' }}>{dimension.key} · weight {dimension.weight} · {dimension.confidence}</div>
         </div>
-        <strong className="text-sm" style={{ color: scoreColor(dimension.score), fontVariantNumeric: 'tabular-nums' }}>{dimension.score.toFixed(1)}</strong>
+        <div className="flex items-center gap-2" style={{ flexShrink: 0 }}>
+          <button className="btn-secondary" type="button" disabled={formLoading} onClick={() => void onCreateRevision()} style={{ fontSize: '0.66rem', padding: '0.3rem 0.55rem' }}>
+            Rewrite dimension
+          </button>
+          <strong className="text-sm" style={{ color: scoreColor(dimension.score), fontVariantNumeric: 'tabular-nums' }}>{dimension.score.toFixed(1)}</strong>
+        </div>
       </div>
       <div className="mt-2" style={{ height: '0.45rem', borderRadius: 999, background: 'var(--bg-hover-subtle)', overflow: 'hidden' }}>
         <div style={{ width: `${width}%`, height: '100%', borderRadius: 999, background: scoreColor(dimension.score) }} />
@@ -350,17 +448,46 @@ function DimensionRow({ dimension }: { dimension: ScoringDimensionScore }) {
   );
 }
 
-function IssueCard({ issue }: { issue: ScoringIssue }) {
+function IssueCard({
+  issue,
+  index,
+  checked,
+  formLoading,
+  onToggle,
+  onCreateRevision,
+}: {
+  issue: ScoringIssue;
+  index: number;
+  checked: boolean;
+  formLoading: boolean;
+  onToggle: () => void;
+  onCreateRevision: () => void | Promise<void>;
+}) {
   return (
     <div className="list-card" style={{ padding: '0.75rem', borderRadius: '0.55rem' }}>
-      <div className="flex flex-wrap items-center gap-2">
-        <span className="badge" style={issueStyle(issue.severity)}>{issue.severity}</span>
-        <strong className="text-sm" style={{ color: 'var(--text-main)' }}>{issue.dimensionKey}</strong>
-        <span className="text-xs" style={{ color: 'var(--text-dim)' }}>{issue.path}</span>
+      <div className="flex flex-wrap items-center justify-between gap-2">
+        <label className="flex flex-wrap items-center gap-2" style={{ cursor: 'pointer' }}>
+          <input type="checkbox" checked={checked} onChange={onToggle} />
+          <span className="badge" style={issueStyle(issue.severity)}>{issue.severity}</span>
+          <strong className="text-sm" style={{ color: 'var(--text-main)' }}>{issue.dimensionKey}</strong>
+          <span className="text-xs" style={{ color: 'var(--text-dim)' }}>{issue.path}</span>
+        </label>
+        <button className="btn-secondary" type="button" disabled={formLoading} onClick={() => void onCreateRevision()} style={{ fontSize: '0.66rem', padding: '0.3rem 0.55rem' }}>
+          Rewrite issue #{index + 1}
+        </button>
       </div>
       <ScoreText label="evidence" value={issue.evidence} />
       <ScoreText label="reason" value={issue.reason} />
       <ScoreText label="suggestion" value={issue.suggestion} />
+    </div>
+  );
+}
+
+function RevisionBoundary({ result }: { result: ScoringRevisionResult }) {
+  return (
+    <div className="mt-3 text-xs" style={{ color: 'var(--text-dim)', lineHeight: 1.6 }}>
+      Agent preview entry created. Direct asset persist: {result.approvalBoundary.directlyPersistsAssets ? 'yes' : 'no'}.
+      Approval flow required: {result.approvalBoundary.requiresAgentPreviewValidationApprovalPersistFlow ? 'yes' : 'no'}.
     </div>
   );
 }

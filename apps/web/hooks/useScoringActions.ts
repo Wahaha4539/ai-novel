@@ -90,6 +90,38 @@ export interface CreateScoringRunPayload {
   profileKey: PlatformProfileKey;
 }
 
+export type ScoringRevisionEntryPoint = 'report' | 'dimension' | 'issue' | 'priority';
+
+export interface CreateScoringRevisionPayload {
+  scoringRunId: string;
+  entryPoint?: ScoringRevisionEntryPoint;
+  selectedIssueIndexes?: number[];
+  selectedDimensions?: string[];
+  selectedRevisionPriorities?: string[];
+  userInstruction?: string;
+}
+
+export interface ScoringRevisionResult {
+  scoringRunId: string;
+  agentRunId: string;
+  artifactId?: string;
+  status: string;
+  taskType?: string | null;
+  targetType: ScoringTargetType;
+  mapping: {
+    targetType: ScoringTargetType;
+    agentTarget: string;
+    recommendedPreviewAction: string;
+    expectedOutput: string;
+  };
+  prompt: string;
+  approvalBoundary: {
+    createsAgentTaskOnly: boolean;
+    directlyPersistsAssets: boolean;
+    requiresAgentPreviewValidationApprovalPersistFlow: boolean;
+  };
+}
+
 export interface ScoringRunFilters {
   targetType?: ScoringTargetType;
   targetId?: string | null;
@@ -201,6 +233,23 @@ export function useScoringActions() {
     }
   }, []);
 
+  const createRevision = useCallback(async (projectId: string, runId: string, payload: CreateScoringRevisionPayload) => {
+    setFormLoading(true);
+    setError('');
+    try {
+      return await apiFetch<ScoringRevisionResult>(`/projects/${projectId}/scoring/runs/${runId}/revision`, {
+        method: 'POST',
+        body: JSON.stringify(payload),
+      });
+    } catch (revisionError) {
+      const message = revisionError instanceof Error ? revisionError.message : 'Failed to create scoring revision task';
+      setError(message);
+      throw revisionError;
+    } finally {
+      setFormLoading(false);
+    }
+  }, []);
+
   return {
     profiles,
     assets,
@@ -213,5 +262,6 @@ export function useScoringActions() {
     loadAssets,
     loadRuns,
     createRun,
+    createRevision,
   };
 }
