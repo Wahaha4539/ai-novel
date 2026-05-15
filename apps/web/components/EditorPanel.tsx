@@ -1,5 +1,5 @@
-/**
- * EditorPanel — Chapter content editor with AI generation support.
+﻿/**
+ * EditorPanel - Chapter content editor with AI generation support.
  *
  * Features:
  *  - AI generate button in header (single chapter)
@@ -15,6 +15,7 @@ import { ProjectSummary, ChapterSummary, ChapterDraft, VolumeSummary } from '../
 import { useChapterGeneration } from '../hooks/useChapterGeneration';
 import { PassageAgentPopover } from './editor/PassageAgentPopover';
 import { buildDraftViewPair, isPolishedDraft, resolvePreferredDraftViewMode } from './editor/draftVersionState';
+import { useInlinePassageRevision } from './editor/useInlinePassageRevision';
 import { usePassageSelection } from './editor/usePassageSelection';
 import {
   buildPassageAgentContext,
@@ -59,8 +60,6 @@ export function EditorPanel({ selectedProject, selectedChapterId, chapters, volu
   const [savedDraftContent, setSavedDraftContent] = useState('');
   const [saveError, setSaveError] = useState('');
   const [saveNotice, setSaveNotice] = useState('');
-  const [isSubmittingPassageAgent, setIsSubmittingPassageAgent] = useState(false);
-  const [passageAgentError, setPassageAgentError] = useState('');
 
   const title = isGlobal
     ? selectedProject?.title || '未选择项目'
@@ -68,6 +67,23 @@ export function EditorPanel({ selectedProject, selectedChapterId, chapters, volu
 
   // Compute word count from current content
   const wordCount = content.replace(/\s/g, '').length;
+
+  const reloadDraftVersionsIntoEditor = useCallback(async (chapterId: string, fallbackContent = '') => {
+    const versions = await gen.loadDraftVersions(chapterId);
+    const pair = buildDraftViewPair(versions);
+    const nextMode: DraftViewMode = resolvePreferredDraftViewMode(pair);
+    const nextDraft = nextMode === 'polished' ? pair.polished : pair.draft;
+    const nextContent = nextDraft?.content ?? fallbackContent;
+
+    setDraftVersions(versions);
+    setActiveViewMode(nextMode);
+    setContent(nextContent);
+    setSavedDraftContent(nextContent);
+    setDraftLoaded(Boolean(nextContent));
+    setSaveError('');
+
+    return { versions, pair, nextMode, nextDraft };
+  }, [gen]);
 
   const viewPair = buildDraftViewPair(draftVersions);
   const activeDraft = activeViewMode === 'polished' ? viewPair.polished : viewPair.draft;
@@ -91,6 +107,23 @@ export function EditorPanel({ selectedProject, selectedChapterId, chapters, volu
         selection: passageSelection.selection,
       })
     : null;
+  const inlinePassageRevision = useInlinePassageRevision({
+    projectId: selectedProject?.id,
+    onApplied: async () => {
+      if (isGlobal || !selectedChapterId) return;
+      await reloadDraftVersionsIntoEditor(selectedChapterId);
+      setSaveNotice('已应用局部修订，正文已写入新的草稿版本。');
+      passageSelection.clearSelection();
+      await onChapterSaved?.(selectedChapterId);
+    },
+  });
+  const previewMatchesCurrentSelection = Boolean(
+    inlinePassageRevision.preview
+    && passageAgentContext
+    && inlinePassageRevision.preview.draftId === passageAgentContext.currentDraftId
+    && inlinePassageRevision.preview.selectedRange.start === passageAgentContext.selectedRange.start
+    && inlinePassageRevision.preview.selectedRange.end === passageAgentContext.selectedRange.end,
+  );
   const passageAgentDisabledReason = getPassageAgentDisabledReason({
     hasProject: Boolean(selectedProject?.id),
     hasChapter: Boolean(!isGlobal && chapter),
@@ -101,21 +134,26 @@ export function EditorPanel({ selectedProject, selectedChapterId, chapters, volu
     isAutoMaintaining,
     isSavingDraft,
     isMarkingComplete,
-    hasSubmitHandler: Boolean(onSubmitPassageAgent),
+    hasSubmitHandler: true,
   });
+  const passageAgentStatusMessage = inlinePassageRevision.isApplying
+    ? '正在把这次局部修订写入新的正文版本…'
+    : inlinePassageRevision.isGeneratingPreview
+      ? '正在生成这段的局部修订预览…'
+      : previewMatchesCurrentSelection && inlinePassageRevision.isPreviewReady
+        ? '预览已生成。你可以继续反馈，或直接应用到正文。'
+        : inlinePassageRevision.actionMessage;
   const handleSubmitPassageAgent = useCallback(async (message: string, context: PassageAgentContext) => {
-    if (!onSubmitPassageAgent || isSubmittingPassageAgent) return;
-    setIsSubmittingPassageAgent(true);
-    setPassageAgentError('');
     try {
-      await onSubmitPassageAgent({ message, context });
-      passageSelection.clearSelection();
-    } catch (error) {
-      setPassageAgentError(error instanceof Error ? error.message : '提交正文选区 Agent 任务失败');
-    } finally {
-      setIsSubmittingPassageAgent(false);
+      if (!selectedProject?.id && onSubmitPassageAgent) {
+        await onSubmitPassageAgent({ message, context });
+        return;
+      }
+      await inlinePassageRevision.submit(message, context, { forceNewSession: !previewMatchesCurrentSelection });
+    } catch {
+      // useInlinePassageRevision already exposes the surfaced error state for the popover.
     }
-  }, [isSubmittingPassageAgent, onSubmitPassageAgent, passageSelection]);
+  }, [inlinePassageRevision, onSubmitPassageAgent, previewMatchesCurrentSelection, selectedProject?.id]);
 
   // Auto-load draft when chapter selection changes. AI validation repair creates a
   // new current draft for the same chapter, so draftRefreshKey forces a reload.
@@ -132,17 +170,7 @@ export function EditorPanel({ selectedProject, selectedChapterId, chapters, volu
     }
     // Load existing drafts for this chapter. The version list lets us pair an
     // agent_polish result with its source draft via generationContext.originalDraftId.
-    void gen.loadDraftVersions(selectedChapterId).then((versions) => {
-      const pair = buildDraftViewPair(versions);
-      const initialMode: DraftViewMode = resolvePreferredDraftViewMode(pair);
-      const initialDraft = initialMode === 'polished' ? pair.polished : pair.draft;
-
-      setDraftVersions(versions);
-      setActiveViewMode(initialMode);
-      setContent(initialDraft?.content ?? '');
-      setSavedDraftContent(initialDraft?.content ?? '');
-      setDraftLoaded(Boolean(initialDraft?.content));
-      setSaveError('');
+    void reloadDraftVersionsIntoEditor(selectedChapterId).then(() => {
       setSaveNotice('');
     });
     // Reset generation state when switching chapters
@@ -152,26 +180,16 @@ export function EditorPanel({ selectedProject, selectedChapterId, chapters, volu
   // When generation completes, update editor content
   useEffect(() => {
     if (gen.state === 'completed' && gen.currentDraft?.content) {
-      void gen.loadDraftVersions(gen.currentDraft.chapterId).then((versions) => {
-        const pair = buildDraftViewPair(versions);
-        const nextMode: DraftViewMode = resolvePreferredDraftViewMode(pair);
-        const nextDraft = nextMode === 'polished' ? pair.polished : pair.draft;
-
-        setDraftVersions(versions);
-        setActiveViewMode(nextMode);
-        setContent(nextDraft?.content ?? gen.currentDraft?.content ?? '');
-        setSavedDraftContent(nextDraft?.content ?? gen.currentDraft?.content ?? '');
-        setDraftLoaded(true);
-        setSaveError('');
+      void reloadDraftVersionsIntoEditor(gen.currentDraft.chapterId, gen.currentDraft.content).then(() => {
         setSaveNotice('');
       });
     }
-  }, [gen.state, gen.currentDraft]);
+  }, [gen.currentDraft, gen.state, reloadDraftVersionsIntoEditor]);
 
   /** Switch the text area between the original generated draft and polished result. */
   const handleSwitchViewMode = useCallback((mode: DraftViewMode) => {
     if (mode === activeViewMode) return;
-    if (hasUnsavedChanges && !window.confirm('当前版本有未保存修改，切换后会放弃这些修改。继续切换？')) {
+    if (hasUnsavedChanges && !window.confirm('当前版本有未保存修改，切换后会放弃这些修改。继续切换吗？')) {
       return;
     }
 
@@ -205,7 +223,7 @@ export function EditorPanel({ selectedProject, selectedChapterId, chapters, volu
       setContent(nextDraft.content);
       setSavedDraftContent(nextDraft.content);
       setDraftLoaded(true);
-      setSaveNotice(isPolishedDraft(nextDraft) ? '已保存到润色版本，事实层待刷新。' : '已保存到草稿版本，事实层待刷新。');
+      setSaveNotice(isPolishedDraft(nextDraft) ? '已保存到 AI 润色稿版本，事实层待刷新。' : '已保存到当前稿版本，事实层待刷新。');
       await onChapterSaved?.(selectedChapterId);
     } catch (error) {
       setSaveError(error instanceof Error ? error.message : '保存正文失败');
@@ -220,7 +238,7 @@ export function EditorPanel({ selectedProject, selectedChapterId, chapters, volu
     if (!selectedProject?.id) return;
     const draft = await gen.generateSingle(selectedProject.id, selectedChapterId);
     if (draft) {
-      // 生成结果会先写入编辑器本地正文；随后刷新父级 dashboard，让侧栏状态和右侧事实面板同步更新。
+      // Refresh the parent dashboard after generation so chapter status and facts stay in sync.
       await onChapterGenerated?.(selectedChapterId);
     }
   }, [isGlobal, onChapterGenerated, selectedProject?.id, selectedChapterId, gen]);
@@ -255,7 +273,7 @@ export function EditorPanel({ selectedProject, selectedChapterId, chapters, volu
 
   return (
     <article className="flex flex-col h-full" style={{ background: 'var(--bg-deep)' }}>
-      {/* ── Header ── */}
+      {/* 鈹€鈹€ Header 鈹€鈹€ */}
       <header
         className="flex flex-col justify-center shrink-0"
         style={{
@@ -302,7 +320,7 @@ export function EditorPanel({ selectedProject, selectedChapterId, chapters, volu
         </div>
       </header>
 
-      {/* ── Generation status bar ── */}
+      {/* 鈹€鈹€ Generation status bar 鈹€鈹€ */}
       {isGenerating && (
         <div
           className="animate-fade-in"
@@ -326,14 +344,14 @@ export function EditorPanel({ selectedProject, selectedChapterId, chapters, volu
             }}
           />
           <span className="text-xs" style={{ color: 'var(--accent-cyan)' }}>
-            {gen.currentJob?.status === 'queued' && '⏳ 任务已创建，等待 API 同步处理…'}
-            {gen.currentJob?.status === 'running' && '✍️ AI 正在撰写章节内容…'}
-            {!gen.currentJob?.status && '🚀 正在提交生成请求…'}
+            {gen.currentJob?.status === 'queued' && '任务已创建，等待 API 开始处理...'}
+            {gen.currentJob?.status === 'running' && 'AI 正在生成本章正文...'}
+            {!gen.currentJob?.status && '正在提交生成请求...'}
           </span>
         </div>
       )}
 
-      {/* ── Error display ── */}
+      {/* 鈹€鈹€ Error display 鈹€鈹€ */}
       {gen.error && gen.state === 'failed' && (
         <div
           className="animate-fade-in"
@@ -349,7 +367,7 @@ export function EditorPanel({ selectedProject, selectedChapterId, chapters, volu
         </div>
       )}
 
-      {/* ── Editor body ── */}
+      {/* 鈹€鈹€ Editor body 鈹€鈹€ */}
       <div ref={editorBodyRef} className="flex-1 px-8 py-10" style={{ overflowY: 'auto', position: 'relative' }}>
         {isGlobal ? (
           <GlobalPlaceholder />
@@ -369,7 +387,7 @@ export function EditorPanel({ selectedProject, selectedChapterId, chapters, volu
                 disabled={!canSaveDraft || isSavingDraft || isGenerating || isAutoMaintaining || isMarkingComplete}
                 className="editor-inline-save-btn"
               >
-                {isSavingDraft ? '保存中…' : activeViewMode === 'polished' ? '保存润色' : '保存草稿'}
+                {isSavingDraft ? '保存中...' : activeViewMode === 'polished' ? '保存 AI 润色稿' : '保存当前稿'}
               </button>
             </div>
             {(saveError || saveNotice || hasUnsavedChanges) && (
@@ -383,14 +401,13 @@ export function EditorPanel({ selectedProject, selectedChapterId, chapters, volu
             <textarea
               ref={textareaRef}
               className="editor-textarea"
-              placeholder="在这里开始撰写属于你的章节故事…… 或点击「AI 生成」自动生成正文。"
+              placeholder="在这里开始撰写属于你的章节故事，或点击「AI 生成」自动生成正文。"
               style={{ minHeight: '600px' }}
               value={content}
               onChange={(e) => {
                 setContent(e.target.value);
                 setSaveError('');
                 setSaveNotice('');
-                setPassageAgentError('');
               }}
               onSelect={passageSelection.textareaSelectionProps.onSelect}
               onMouseUp={passageSelection.textareaSelectionProps.onMouseUp}
@@ -403,11 +420,24 @@ export function EditorPanel({ selectedProject, selectedChapterId, chapters, volu
                 context={passageAgentContext}
                 position={passageSelection.selection.popoverPosition}
                 disabledReason={passageAgentDisabledReason}
-                submitting={isSubmittingPassageAgent}
-                error={passageAgentError}
+                submitting={inlinePassageRevision.loading && !inlinePassageRevision.isApplying}
+                applying={inlinePassageRevision.isApplying}
+                error={inlinePassageRevision.error}
+                statusMessage={passageAgentStatusMessage}
+                preview={previewMatchesCurrentSelection ? inlinePassageRevision.preview : null}
+                canApplyPreview={
+                  previewMatchesCurrentSelection
+                  && inlinePassageRevision.canApply
+                  && !hasUnsavedChanges
+                  && !isGenerating
+                  && !isSavingDraft
+                  && !isAutoMaintaining
+                  && !isMarkingComplete
+                }
                 onSubmit={handleSubmitPassageAgent}
+                onApplyPreview={() => inlinePassageRevision.apply()}
                 onClose={() => {
-                  setPassageAgentError('');
+                  inlinePassageRevision.reset();
                   passageSelection.clearSelection();
                 }}
               />
@@ -416,7 +446,7 @@ export function EditorPanel({ selectedProject, selectedChapterId, chapters, volu
         )}
       </div>
 
-      {/* 章节详情页右下角操作组：完成、AI审核、AI生成 合并为横向紧凑按钮条 */}
+      {/* 绔犺妭璇︽儏椤靛彸涓嬭鎿嶄綔缁勶細瀹屾垚銆丄I瀹℃牳銆丄I鐢熸垚 鍚堝苟涓烘í鍚戠揣鍑戞寜閽潯 */}
       {showFloatingActions && (
         <div
           className="editor-fab-group animate-fade-in"
@@ -436,7 +466,7 @@ export function EditorPanel({ selectedProject, selectedChapterId, chapters, volu
             overflow: 'hidden',
           }}
         >
-          {/* 保存当前版本 */}
+          {/* 淇濆瓨褰撳墠鐗堟湰 */}
           <button
             type="button"
             onClick={handleSaveDraft}
@@ -446,11 +476,11 @@ export function EditorPanel({ selectedProject, selectedChapterId, chapters, volu
               color: isSavingDraft ? 'var(--text-muted)' : 'var(--text-main)',
             }}
           >
-            {isSavingDraft ? '保存中…' : activeViewMode === 'polished' ? '保存润色' : '保存草稿'}
+            {isSavingDraft ? '保存中...' : activeViewMode === 'polished' ? '保存 AI 润色稿' : '保存当前稿'}
           </button>
-          {/* 分隔线 */}
+          {/* 鍒嗛殧绾?*/}
           <span className="editor-fab-divider" />
-          {/* 完成 */}
+          {/* 瀹屾垚 */}
           <button
             type="button"
             onClick={handleMarkComplete}
@@ -460,11 +490,11 @@ export function EditorPanel({ selectedProject, selectedChapterId, chapters, volu
               color: isMarkingComplete ? 'var(--text-muted)' : '#10b981',
             }}
           >
-            {isMarkingComplete ? '✅ 标记中…' : '✅ 完成'}
+            {isMarkingComplete ? '标记中...' : '完成'}
           </button>
-          {/* 分隔线 */}
+          {/* 鍒嗛殧绾?*/}
           <span className="editor-fab-divider" />
-          {/* AI 审核 */}
+          {/* AI 瀹℃牳 */}
           <button
             type="button"
             onClick={handleRunAiReview}
@@ -474,11 +504,11 @@ export function EditorPanel({ selectedProject, selectedChapterId, chapters, volu
               color: isAutoMaintaining ? 'var(--text-muted)' : '#f59e0b',
             }}
           >
-            {isAutoMaintaining ? '🤖 审核中…' : '🤖 AI审核'}
+            {isAutoMaintaining ? '审核中...' : 'AI 审核'}
           </button>
-          {/* 分隔线 */}
+          {/* 鍒嗛殧绾?*/}
           <span className="editor-fab-divider" />
-          {/* AI 生成 */}
+          {/* AI 鐢熸垚 */}
           <button
             type="button"
             onClick={handleGenerate}
@@ -488,7 +518,7 @@ export function EditorPanel({ selectedProject, selectedChapterId, chapters, volu
               color: isGenerating ? 'var(--text-muted)' : 'var(--accent-cyan)',
             }}
           >
-            {isGenerating ? '🤖 生成中…' : '🤖 AI生成'}
+            {isGenerating ? '生成中...' : 'AI 生成'}
           </button>
         </div>
       )}
@@ -570,7 +600,7 @@ function ChapterPlanningBrief({ chapter }: { chapter: ChapterSummary }) {
         <PlanningField label="大纲" value={chapter.outline} multiline />
         <PlanningField label="可见目标" value={textValue(craftBrief.visibleGoal)} />
         <PlanningField label="隐性情绪" value={textValue(craftBrief.hiddenEmotion)} />
-        <PlanningField label="执行卡冲突" value={textValue(craftBrief.coreConflict)} multiline />
+        <PlanningField label="核心冲突" value={textValue(craftBrief.coreConflict)} multiline />
         <PlanningField label="主线任务" value={textValue(craftBrief.mainlineTask)} />
         <PlanningField label="支线任务" value={subplotTasks.slice(0, 5).join('；')} multiline />
         <PlanningField label="单元故事" value={[storyUnitTitle, storyUnitRangeText, textValue(storyUnit?.chapterRole)].filter(Boolean).join(' · ')} />
@@ -695,14 +725,14 @@ function formatCastMember(member: Record<string, unknown>) {
   if (!name) return '';
   const source = characterSourceLabel(member.source);
   const goal = textValue(member.visibleGoal ?? member.functionInChapter);
-  return `${name}${source ? `/${source}` : ''}${goal ? `：${goal}` : ''}`;
+  return `${name}${source ? `/${source}` : ''}${goal ? ` · ${goal}` : ''}`;
 }
 
 function formatRelationshipBeat(beat: Record<string, unknown>) {
   const participants = stringList(beat.participants).join('/');
   const shift = textValue(beat.shift ?? beat.publicStateAfter ?? beat.trigger);
   if (!participants && !shift) return '';
-  return [participants, shift].filter(Boolean).join('：');
+  return [participants, shift].filter(Boolean).join(' · ');
 }
 
 function formatMinorCharacter(character: Record<string, unknown>) {
@@ -721,7 +751,7 @@ function countDraftWords(draft?: ChapterDraft) {
   return draft?.content.replace(/\s/g, '').length ?? 0;
 }
 
-/** Compact tabs shown above the manuscript, matching the user's 草稿 / 润色 sketch. */
+/** Compact tabs shown above the manuscript for the current and AI-polished draft branches. */
 function DraftVersionTabs({
   activeMode,
   draft,
@@ -737,16 +767,16 @@ function DraftVersionTabs({
     <div className="draft-version-tabs" role="tablist" aria-label="章节正文版本">
       <DraftVersionTab
         mode="draft"
-        label="草稿"
-        hint="原稿"
+        label="当前稿"
+        hint="当前正文版本"
         active={activeMode === 'draft'}
         draft={draft}
         onSwitch={onSwitch}
       />
       <DraftVersionTab
         mode="polished"
-        label="润色"
-        hint="AI润色后"
+        label="AI润色稿"
+        hint="AI润色后的正文版本"
         active={activeMode === 'polished'}
         draft={polished}
         onSwitch={onSwitch}
@@ -813,7 +843,9 @@ function GlobalPlaceholder() {
           <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={1.5} d="M12 6.253v13m0-13C10.832 5.477 9.246 5 7.5 5S4.168 5.477 3 6.253v13C4.168 18.477 5.754 18 7.5 18s3.332.477 4.5 1.253m0-13C13.168 5.477 14.754 5 16.5 5c1.747 0 3.332.477 4.5 1.253v13C19.832 18.477 18.247 18 16.5 18c-1.746 0-3.332.477-4.5 1.253" />
         </svg>
       </div>
-      <p className="text-sm">请在左侧选择具体的章节进入撰写，或使用「AI 生成」自动生成正文。</p>
+      <p className="text-sm">请在左侧选择具体章节进入撰写，或使用「AI 生成」自动生成正文。</p>
     </div>
   );
 }
+
+

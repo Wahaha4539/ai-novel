@@ -1,6 +1,7 @@
 'use client';
 
 import { useEffect, useMemo, useState } from 'react';
+import type { ChapterPassageRevisionPreviewView } from '../agent/chapterPassageRevisionPreview';
 import {
   PASSAGE_QUICK_INTENTS,
   formatParagraphRangeLabel,
@@ -13,8 +14,13 @@ interface PassageAgentPopoverProps {
   position?: PassagePopoverPosition;
   disabledReason?: string;
   submitting?: boolean;
+  applying?: boolean;
   error?: string;
+  statusMessage?: string;
+  preview?: ChapterPassageRevisionPreviewView | null;
+  canApplyPreview?: boolean;
   onSubmit: (message: string, context: PassageAgentContext) => void | Promise<void>;
+  onApplyPreview?: () => void | Promise<void>;
   onClose: () => void;
 }
 
@@ -23,14 +29,32 @@ export function PassageAgentPopover({
   position,
   disabledReason,
   submitting = false,
+  applying = false,
   error,
+  statusMessage,
+  preview,
+  canApplyPreview = false,
   onSubmit,
+  onApplyPreview,
   onClose,
 }: PassageAgentPopoverProps) {
   const [instruction, setInstruction] = useState('');
+
   const paragraphLabel = formatParagraphRangeLabel(context.selectedParagraphRange);
   const selectedTextPreview = useMemo(() => context.selectedText.trim(), [context.selectedText]);
-  const canSubmit = Boolean(instruction.trim()) && !disabledReason && !submitting;
+  const canSubmit = Boolean(instruction.trim()) && !disabledReason && !submitting && !applying;
+  const hasPreview = Boolean(preview);
+  const submitLabel = hasPreview ? '继续调整' : '生成局部预览';
+  const summaryText = preview?.editSummary?.trim();
+  const previewText = preview?.replacementText?.trim();
+  const riskItems = [...(preview?.risks ?? []), ...(preview?.validation.issues ?? [])];
+  const draftViewModeLabel = context.currentDraftViewMode === 'polished'
+    ? 'AI润色稿'
+    : context.currentDraftViewMode === 'draft'
+      ? '当前稿'
+      : '';
+  const volumeLabel = context.currentVolumeNo ? `第 ${context.currentVolumeNo} 卷` : '未分卷';
+  const chapterLabel = `第 ${context.currentChapterNo} 章`;
 
   useEffect(() => {
     setInstruction('');
@@ -61,19 +85,48 @@ export function PassageAgentPopover({
       <dl className="passage-agent-popover__meta">
         <div>
           <dt>卷</dt>
-          <dd>{context.currentVolumeNo ? `第 ${context.currentVolumeNo} 卷` : '未分卷'}{context.currentVolumeTitle ? ` · ${context.currentVolumeTitle}` : ''}</dd>
+          <dd>
+            {volumeLabel}
+            {context.currentVolumeTitle ? ` · ${context.currentVolumeTitle}` : ''}
+          </dd>
         </div>
         <div>
           <dt>章</dt>
-          <dd>第 {context.currentChapterNo} 章{context.currentChapterTitle ? ` · ${context.currentChapterTitle}` : ''}</dd>
+          <dd>
+            {chapterLabel}
+            {context.currentChapterTitle ? ` · ${context.currentChapterTitle}` : ''}
+          </dd>
         </div>
         <div>
-          <dt>草稿</dt>
-          <dd>v{context.currentDraftVersion}{context.currentDraftViewMode ? ` · ${context.currentDraftViewMode}` : ''}</dd>
+          <dt>版本</dt>
+          <dd>
+            v{context.currentDraftVersion}
+            {draftViewModeLabel ? ` · ${draftViewModeLabel}` : ''}
+          </dd>
         </div>
       </dl>
 
       <blockquote className="passage-agent-popover__quote">{selectedTextPreview}</blockquote>
+
+      {hasPreview && (
+        <div className="passage-agent-popover__preview">
+          <div className="passage-agent-popover__preview-head">
+            <span>修订预览</span>
+            <strong>{previewText?.length ?? 0} 字</strong>
+          </div>
+          {summaryText && <div className="passage-agent-popover__summary">{summaryText}</div>}
+          {previewText && <div className="passage-agent-popover__preview-text">{previewText}</div>}
+          {riskItems.length > 0 && (
+            <div className="passage-agent-popover__risk-list">
+              {riskItems.map((item, index) => (
+                <span key={`${item}-${index}`} className="passage-agent-popover__risk-chip">
+                  {item}
+                </span>
+              ))}
+            </div>
+          )}
+        </div>
+      )}
 
       <div className="passage-agent-popover__quick" aria-label="快捷修订意图">
         {PASSAGE_QUICK_INTENTS.map((intent) => (
@@ -82,7 +135,7 @@ export function PassageAgentPopover({
             type="button"
             className={instruction === intent.instruction ? 'passage-agent-popover__chip passage-agent-popover__chip--active' : 'passage-agent-popover__chip'}
             onClick={() => setInstruction(intent.instruction)}
-            disabled={submitting}
+            disabled={submitting || applying}
           >
             {intent.label}
           </button>
@@ -91,27 +144,43 @@ export function PassageAgentPopover({
 
       <textarea
         className="passage-agent-popover__input"
-        rows={3}
+        rows={hasPreview ? 2 : 3}
         value={instruction}
         onChange={(event) => setInstruction(event.target.value)}
-        placeholder="告诉 Agent 这段要怎么改。"
-        disabled={submitting}
+        placeholder={hasPreview ? '继续告诉 Agent 这段还要怎么调。' : '告诉 Agent 这段要怎么改。'}
+        disabled={submitting || applying}
       />
 
-      {(disabledReason || error) && (
+      {(disabledReason || error || statusMessage) && (
         <div className={error ? 'passage-agent-popover__notice passage-agent-popover__notice--error' : 'passage-agent-popover__notice'}>
-          {error || disabledReason}
+          {error || disabledReason || statusMessage}
         </div>
       )}
 
-      <button
-        type="button"
-        className="passage-agent-popover__submit"
-        onClick={() => { void submit(); }}
-        disabled={!canSubmit}
-      >
-        {submitting ? '提交中…' : '发送给 Agent'}
-      </button>
+      <div className="passage-agent-popover__actions">
+        <button
+          type="button"
+          className="passage-agent-popover__submit"
+          onClick={() => {
+            void submit();
+          }}
+          disabled={!canSubmit}
+        >
+          {submitting ? '生成中...' : submitLabel}
+        </button>
+        {hasPreview && (
+          <button
+            type="button"
+            className="passage-agent-popover__apply"
+            onClick={() => {
+              void onApplyPreview?.();
+            }}
+            disabled={!canApplyPreview || applying || submitting}
+          >
+            {applying ? '应用中...' : '应用到正文'}
+          </button>
+        )}
+      </div>
     </div>
   );
 }
