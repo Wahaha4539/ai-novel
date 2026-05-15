@@ -17,9 +17,10 @@ interface UsePassageSelectionOptions {
   overlayContainerRef?: RefObject<HTMLElement>;
   text: string;
   enabled: boolean;
+  popoverSize?: { width: number; height: number };
 }
 
-export function usePassageSelection({ textareaRef, overlayContainerRef, text, enabled }: UsePassageSelectionOptions) {
+export function usePassageSelection({ textareaRef, overlayContainerRef, text, enabled, popoverSize }: UsePassageSelectionOptions) {
   const [selection, setSelection] = useState<PassageSelectionSnapshot | null>(null);
   const captureFrameRef = useRef<number | null>(null);
 
@@ -47,9 +48,9 @@ export function usePassageSelection({ textareaRef, overlayContainerRef, text, en
 
     setSelection({
       ...snapshot,
-      popoverPosition: getTextareaPopoverPosition(textarea, snapshot.selectedRange, text, overlayContainerRef?.current ?? null),
+      popoverPosition: getTextareaPopoverPosition(textarea, snapshot.selectedRange, text, overlayContainerRef?.current ?? null, popoverSize),
     });
-  }, [enabled, overlayContainerRef, text, textareaRef]);
+  }, [enabled, overlayContainerRef, popoverSize, text, textareaRef]);
 
   const scheduleCaptureSelection = useCallback(() => {
     if (typeof window === 'undefined') return;
@@ -77,12 +78,12 @@ export function usePassageSelection({ textareaRef, overlayContainerRef, text, en
             ...current,
             selectedParagraphRange: next.selectedParagraphRange,
             popoverPosition: textarea
-              ? getTextareaPopoverPosition(textarea, next.selectedRange, text, overlayContainerRef?.current ?? null)
+              ? getTextareaPopoverPosition(textarea, next.selectedRange, text, overlayContainerRef?.current ?? null, popoverSize)
               : current.popoverPosition,
           }
         : null;
     });
-  }, [enabled, overlayContainerRef, text, textareaRef]);
+  }, [enabled, overlayContainerRef, popoverSize, text, textareaRef]);
 
   useEffect(() => {
     if (!enabled) return;
@@ -145,10 +146,14 @@ function getTextareaPopoverPosition(
   selectedRange: SelectedTextRange,
   text: string,
   overlayContainer: HTMLElement | null,
+  popoverSize?: { width: number; height: number },
 ) {
   const anchorRect = getTextareaSelectionAnchorRect(textarea, selectedRange, text) ?? rectToAnchor(textarea.getBoundingClientRect());
   const viewportRect = getPassagePopoverViewportRect(textarea, overlayContainer);
-  const viewportPosition = computePassagePopoverPosition(anchorRect, viewportRect);
+  const viewportPosition = computePassagePopoverPosition(anchorRect, viewportRect, {
+    ...(popoverSize?.width ? { popoverWidth: popoverSize.width } : {}),
+    ...(popoverSize?.height ? { popoverHeight: popoverSize.height } : {}),
+  });
   if (overlayContainer) {
     return toAbsolutePassagePopoverPosition({
       viewportPosition,

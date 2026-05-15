@@ -4764,6 +4764,8 @@ textarea.input, textarea.input-field {
   z-index: 70;
   width: min(21rem, calc(100vw - 2rem));
   max-height: calc(100vh - 2rem);
+  display: flex;
+  flex-direction: column;
   overflow: auto;
   padding: 0.9rem;
   border: 1px solid color-mix(in srgb, var(--accent-cyan) 26%, var(--border-light));
@@ -4978,6 +4980,10 @@ textarea.input, textarea.input-field {
   margin-top: 0.75rem;
   display: grid;
   gap: 0.55rem;
+  position: sticky;
+  bottom: -0.1rem;
+  padding-top: 0.7rem;
+  background: linear-gradient(180deg, rgba(15, 23, 42, 0), color-mix(in srgb, var(--bg-card) 94%, #020617 6%) 34%);
 }
 .passage-agent-popover__apply {
   min-height: 2.2rem;

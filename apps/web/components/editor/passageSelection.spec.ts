@@ -119,6 +119,16 @@ test('computePassagePopoverPosition stays inside a bounded workspace area instea
   assert.deepEqual(position, { top: 356, left: 788 });
 });
 
+test('computePassagePopoverPosition keeps a tall preview popover inside the workspace so bottom actions stay visible', () => {
+  const position = computePassagePopoverPosition(
+    { top: 500, right: 760, bottom: 524, left: 680, width: 80, height: 24 },
+    { top: 0, left: 280, right: 1140, bottom: 700, width: 860, height: 700 },
+    { popoverWidth: 336, popoverHeight: 520, viewportPadding: 16, anchorGap: 12 },
+  );
+
+  assert.deepEqual(position, { top: 16, left: 552 });
+});
+
 test('pickPassageSelectionAnchorRect follows the active selection edge instead of pinning to the first line', () => {
   const rects = [
     { top: 480, right: 640, bottom: 504, left: 520, width: 120, height: 24 },

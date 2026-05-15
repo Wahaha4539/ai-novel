@@ -60,6 +60,7 @@ export function EditorPanel({ selectedProject, selectedChapterId, chapters, volu
   const [savedDraftContent, setSavedDraftContent] = useState('');
   const [saveError, setSaveError] = useState('');
   const [saveNotice, setSaveNotice] = useState('');
+  const [passagePopoverSize, setPassagePopoverSize] = useState<{ width: number; height: number } | undefined>(undefined);
 
   const title = isGlobal
     ? selectedProject?.title || '未选择项目'
@@ -96,6 +97,7 @@ export function EditorPanel({ selectedProject, selectedChapterId, chapters, volu
     overlayContainerRef: editorBodyRef,
     text: content,
     enabled: !isGlobal && Boolean(selectedProject?.id && chapter && activeDraft),
+    popoverSize: passagePopoverSize,
   });
   const passageAgentContext = selectedProject && chapter && activeDraft && passageSelection.selection
     ? buildPassageAgentContext({
@@ -436,8 +438,18 @@ export function EditorPanel({ selectedProject, selectedChapterId, chapters, volu
                 }
                 onSubmit={handleSubmitPassageAgent}
                 onApplyPreview={() => inlinePassageRevision.apply()}
+                onSizeChange={(size) => {
+                  setPassagePopoverSize((current) => (
+                    current
+                    && Math.abs(current.width - size.width) < 1
+                    && Math.abs(current.height - size.height) < 1
+                      ? current
+                      : size
+                  ));
+                }}
                 onClose={() => {
                   inlinePassageRevision.reset();
+                  setPassagePopoverSize(undefined);
                   passageSelection.clearSelection();
                 }}
               />

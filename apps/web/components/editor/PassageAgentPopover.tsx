@@ -1,6 +1,6 @@
 'use client';
 
-import { useEffect, useMemo, useState } from 'react';
+import { useEffect, useMemo, useRef, useState } from 'react';
 import type { ChapterPassageRevisionPreviewView } from '../agent/chapterPassageRevisionPreview';
 import {
   PASSAGE_QUICK_INTENTS,
@@ -21,6 +21,7 @@ interface PassageAgentPopoverProps {
   canApplyPreview?: boolean;
   onSubmit: (message: string, context: PassageAgentContext) => void | Promise<void>;
   onApplyPreview?: () => void | Promise<void>;
+  onSizeChange?: (size: { width: number; height: number }) => void;
   onClose: () => void;
 }
 
@@ -36,9 +37,11 @@ export function PassageAgentPopover({
   canApplyPreview = false,
   onSubmit,
   onApplyPreview,
+  onSizeChange,
   onClose,
 }: PassageAgentPopoverProps) {
   const [instruction, setInstruction] = useState('');
+  const popoverRef = useRef<HTMLDivElement>(null);
 
   const paragraphLabel = formatParagraphRangeLabel(context.selectedParagraphRange);
   const selectedTextPreview = useMemo(() => context.selectedText.trim(), [context.selectedText]);
@@ -60,6 +63,27 @@ export function PassageAgentPopover({
     setInstruction('');
   }, [context.currentDraftId, context.currentDraftVersion, context.selectedRange.start, context.selectedRange.end]);
 
+  useEffect(() => {
+    if (!onSizeChange || typeof window === 'undefined') return undefined;
+
+    const element = popoverRef.current;
+    if (!element) return undefined;
+
+    const emitSize = () => {
+      const rect = element.getBoundingClientRect();
+      onSizeChange({ width: rect.width, height: rect.height });
+    };
+
+    emitSize();
+
+    if (typeof ResizeObserver === 'undefined') return undefined;
+    const observer = new ResizeObserver(() => {
+      emitSize();
+    });
+    observer.observe(element);
+    return () => observer.disconnect();
+  }, [onSizeChange]);
+
   const submit = async () => {
     if (!canSubmit) return;
     await onSubmit(instruction.trim(), context);
@@ -67,6 +91,7 @@ export function PassageAgentPopover({
 
   return (
     <div
+      ref={popoverRef}
       className="passage-agent-popover animate-fade-in"
       style={position ? { position: position.strategy, top: position.top, left: position.left } : undefined}
       role="dialog"
@@ -177,7 +202,7 @@ export function PassageAgentPopover({
             }}
             disabled={!canApplyPreview || applying || submitting}
           >
-            {applying ? '应用中...' : '应用到正文'}
+            {applying ? '保存中...' : '保存到正文'}
           </button>
         )}
       </div>
