@@ -22,6 +22,10 @@ export class ScoringTargetLoaderService {
 
   async loadTarget(projectId: string, selector: ScoringTargetSelector): Promise<LoadedScoringTarget> {
     switch (selector.targetType) {
+      case 'project_outline':
+        return this.loadProjectOutline(projectId, selector);
+      case 'volume_outline':
+        return this.loadVolumeOutline(projectId, selector);
       case 'chapter_outline':
         return this.loadChapterOutline(projectId, selector);
       case 'chapter_craft_brief':
@@ -31,6 +35,177 @@ export class ScoringTargetLoaderService {
       default:
         throw new BadRequestException(`Scoring target is not implemented yet: ${selector.targetType}`);
     }
+  }
+
+  private async loadProjectOutline(projectId: string, selector: ScoringTargetSelector): Promise<LoadedScoringTarget> {
+    const requestedProjectId = selector.targetId ?? text(selector.targetRef?.projectId);
+    const effectiveProjectId = requestedProjectId || projectId;
+    if (effectiveProjectId !== projectId) {
+      throw new BadRequestException('project_outline targetId must match the current project.');
+    }
+    const [project, storyBible, volumes] = await Promise.all([
+      this.prisma.project.findUnique({
+        where: { id: projectId },
+        select: {
+          id: true,
+          title: true,
+          genre: true,
+          theme: true,
+          tone: true,
+          logline: true,
+          synopsis: true,
+          outline: true,
+          updatedAt: true,
+          creativeProfile: {
+            select: {
+              audienceType: true,
+              platformTarget: true,
+              sellingPoints: true,
+              pacingPreference: true,
+              contentRating: true,
+              centralConflict: true,
+              generationDefaults: true,
+              validationDefaults: true,
+            },
+          },
+        },
+      }),
+      this.prisma.lorebookEntry.findMany({
+        where: { projectId, status: { not: 'archived' } },
+        orderBy: [{ priority: 'desc' }, { updatedAt: 'desc' }],
+        take: 20,
+        select: { id: true, title: true, entryType: true, summary: true, content: true, priority: true, tags: true },
+      }),
+      this.prisma.volume.findMany({
+        where: { projectId },
+        orderBy: { volumeNo: 'asc' },
+        take: 12,
+        select: { id: true, volumeNo: true, title: true, synopsis: true, objective: true, narrativePlan: true, chapterCount: true, status: true },
+      }),
+    ]);
+    if (!project) throw new NotFoundException(`Project not found: ${projectId}`);
+    if (!text(project.outline)) throw new BadRequestException('project_outline scoring requires Project.outline.');
+
+    const sourceTrace = {
+      projectId,
+      source: 'Project.outline',
+    };
+    return {
+      targetType: 'project_outline',
+      targetId: project.id,
+      targetRef: selector.targetRef ?? null,
+      targetSnapshot: {
+        targetType: 'project_outline',
+        targetId: project.id,
+        targetRef: selector.targetRef ?? null,
+        assetSummary: {
+          targetType: 'project_outline',
+          title: project.title,
+          source: 'Project.outline',
+          updatedAt: project.updatedAt.toISOString(),
+        },
+        content: {
+          project,
+          storyBible: storyBible.map((entry) => ({
+            id: entry.id,
+            title: entry.title,
+            entryType: entry.entryType,
+            summary: entry.summary,
+            content: compactText(entry.content, 1200),
+            priority: entry.priority,
+            tags: entry.tags,
+          })),
+          volumes,
+        },
+        sourceTrace,
+      },
+      sourceTrace,
+    };
+  }
+
+  private async loadVolumeOutline(projectId: string, selector: ScoringTargetSelector): Promise<LoadedScoringTarget> {
+    const volumeId = selector.targetId ?? text(selector.targetRef?.volumeId);
+    const volumeNo = integer(selector.targetRef?.volumeNo);
+    if (!volumeId && !volumeNo) throw new BadRequestException('volume_outline scoring requires targetId, targetRef.volumeId, or targetRef.volumeNo.');
+    const volume = await this.prisma.volume.findFirst({
+      where: {
+        projectId,
+        ...(volumeId ? { id: volumeId } : { volumeNo }),
+      },
+      select: {
+        id: true,
+        projectId: true,
+        volumeNo: true,
+        title: true,
+        synopsis: true,
+        objective: true,
+        narrativePlan: true,
+        chapterCount: true,
+        status: true,
+        updatedAt: true,
+        project: this.projectSelect(),
+        chapters: {
+          orderBy: { chapterNo: 'asc' },
+          select: { id: true, chapterNo: true, title: true, objective: true, conflict: true, outline: true, status: true },
+        },
+      },
+    });
+    if (!volume) throw new NotFoundException(`Volume not found in project: ${volumeId ?? volumeNo}`);
+    if (volume.volumeNo <= 0) throw new BadRequestException('volume_outline scoring requires a positive volumeNo.');
+    if (volume.chapterCount === null || volume.chapterCount <= 0) {
+      throw new BadRequestException('volume_outline scoring requires a positive volume.chapterCount.');
+    }
+    if (!hasVolumeOutlineContent(volume)) {
+      throw new BadRequestException(`Volume ${volume.volumeNo} missing outline content for volume_outline scoring.`);
+    }
+
+    const adjacentVolumes = await this.prisma.volume.findMany({
+      where: { projectId, volumeNo: { in: [volume.volumeNo - 1, volume.volumeNo + 1] } },
+      orderBy: { volumeNo: 'asc' },
+      select: { id: true, volumeNo: true, title: true, synopsis: true, objective: true, narrativePlan: true, chapterCount: true, status: true },
+    });
+    const sourceTrace = {
+      projectId,
+      volumeId: volume.id,
+      volumeNo: volume.volumeNo,
+      chapterCount: volume.chapterCount,
+      source: 'Volume.narrativePlan',
+    };
+
+    return {
+      targetType: 'volume_outline',
+      targetId: volume.id,
+      targetRef: selector.targetRef ?? null,
+      targetSnapshot: {
+        targetType: 'volume_outline',
+        targetId: volume.id,
+        targetRef: selector.targetRef ?? null,
+        assetSummary: {
+          targetType: 'volume_outline',
+          title: volume.title ?? `Volume ${volume.volumeNo}`,
+          volumeNo: volume.volumeNo,
+          source: 'Volume.narrativePlan',
+          updatedAt: volume.updatedAt.toISOString(),
+        },
+        content: {
+          project: volume.project,
+          volume: {
+            id: volume.id,
+            volumeNo: volume.volumeNo,
+            title: volume.title,
+            synopsis: volume.synopsis,
+            objective: volume.objective,
+            narrativePlan: volume.narrativePlan,
+            chapterCount: volume.chapterCount,
+            status: volume.status,
+          },
+          chapters: volume.chapters,
+          adjacentVolumes,
+        },
+        sourceTrace,
+      },
+      sourceTrace,
+    };
   }
 
   private async loadChapterOutline(projectId: string, selector: ScoringTargetSelector): Promise<LoadedScoringTarget> {
@@ -366,6 +541,20 @@ export class ScoringTargetLoaderService {
 
 function text(value: unknown): string {
   return typeof value === 'string' ? value.trim() : '';
+}
+
+function integer(value: unknown): number | undefined {
+  return typeof value === 'number' && Number.isInteger(value) ? value : undefined;
+}
+
+function compactText(value: unknown, maxLength: number): string {
+  const content = text(value).replace(/\s+/g, ' ');
+  return content.length > maxLength ? content.slice(0, maxLength) : content;
+}
+
+function hasVolumeOutlineContent(volume: { synopsis: string | null; objective: string | null; narrativePlan: Prisma.JsonValue }) {
+  if (text(volume.synopsis) || text(volume.objective)) return true;
+  return Boolean(volume.narrativePlan && typeof volume.narrativePlan === 'object' && !Array.isArray(volume.narrativePlan) && Object.keys(volume.narrativePlan).length);
 }
 
 export type PrismaJson = Prisma.JsonValue;
