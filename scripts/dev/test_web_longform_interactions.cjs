@@ -224,6 +224,7 @@ test('ScoringCenterPanel renders asset selection, reports, errors, empty state, 
   const harness = createHarness(ScoringCenterPanel, { selectedProjectId: 'project-alpha', selectedProject: project() });
   harness.render();
   assertIncludes(harness.html(), ['Scoring Center', 'Chapter 1 craft brief', 'Craft brief has a clear action chain.', 'Scene executability', 'continuity_handoff', 'Clarify the handoff clue', 'Rewrite from report']);
+  assertIncludes(harness.html(), ['Platform comparison', 'Project-internal scoring profiles', 'qidian_like', 'Chapter trend']);
 
   await click(findButton(harness.tree, 'Rewrite from report'));
   harness.render();
@@ -238,6 +239,10 @@ test('ScoringCenterPanel renders asset selection, reports, errors, empty state, 
   await click(findButton(harness.tree, 'Rewrite issue #1'));
   assertEqual(mockState.scoring.calls.createRevision.at(-1).payload.entryPoint, 'issue');
   assertEqual(mockState.scoring.calls.createRevision.at(-1).payload.selectedIssueIndexes[0], 0);
+
+  await click(findButton(harness.tree, 'Score all profiles'));
+  assertEqual(mockState.scoring.calls.createBatchRuns.length, 1);
+  assertEqual(mockState.scoring.calls.createBatchRuns[0].payload.profileKeys.length, 2);
 
   await click(findButton(harness.tree, 'Chapter 1 draft v2'));
   harness.render();
@@ -570,10 +575,35 @@ function scoringMock() {
     ],
     assets: [],
     runs: [],
+    comparison: {
+      targetType: 'chapter_craft_brief',
+      targetId: 'chapter-1',
+      draftId: null,
+      baselineProfileKey: 'generic_longform',
+      profiles: [
+        { id: 'score-1', platformProfile: 'generic_longform', profileVersion: 'profile.generic_longform.v1', overallScore: 82, verdict: 'pass', summary: 'Generic summary', createdAt: '2026-05-05T12:00:00.000Z', dimensions: [] },
+        { id: 'score-qidian', platformProfile: 'qidian_like', profileVersion: 'profile.qidian_like.v1', overallScore: 76, verdict: 'warn', summary: 'Qidian summary', createdAt: '2026-05-05T12:00:00.000Z', dimensions: [] },
+      ],
+      keyDimensionDifferences: [
+        {
+          dimensionKey: 'scene_executability',
+          label: 'Scene executability',
+          spread: 6,
+          highest: { platformProfile: 'generic_longform', score: 82, label: 'Scene executability' },
+          lowest: { platformProfile: 'qidian_like', score: 76, label: 'Scene executability' },
+        },
+      ],
+    },
+    trends: {
+      points: [
+        { scoringRunId: 'score-1', chapterId: 'chapter-1', chapterNo: 1, chapterTitle: 'Chapter 1', targetType: 'chapter_craft_brief', platformProfile: 'generic_longform', overallScore: 82, verdict: 'pass', createdAt: '2026-05-05T12:00:00.000Z' },
+        { scoringRunId: 'score-2', chapterId: 'chapter-2', chapterNo: 2, chapterTitle: 'Chapter 2', targetType: 'chapter_craft_brief', platformProfile: 'generic_longform', overallScore: 74, verdict: 'warn', createdAt: '2026-05-05T12:00:00.000Z' },
+      ],
+    },
     loading: false,
     formLoading: false,
     error: '',
-    calls: { loadProfiles: 0, loadAssets: [], loadRuns: [], createRun: [], createRevision: [] },
+    calls: { loadProfiles: 0, loadAssets: [], loadRuns: [], createRun: [], createBatchRuns: [], createRevision: [], loadComparison: [], loadTrends: [] },
   };
   state.setError = (value) => { state.error = value; };
   state.loadProfiles = async () => { state.calls.loadProfiles += 1; return state.profiles; };
@@ -585,6 +615,14 @@ function scoringMock() {
     state.runs = [run, ...state.runs];
     return run;
   };
+  state.createBatchRuns = async (projectId, payload) => {
+    state.calls.createBatchRuns.push({ projectId, payload });
+    const created = payload.profileKeys.map((profileKey, index) => scoringRun({ id: `batch-${index + 1}`, targetType: payload.targetType, targetId: payload.targetId, draftId: payload.draftId, platformProfile: profileKey, overallScore: 80 - index }));
+    state.runs = [...created, ...state.runs];
+    return created;
+  };
+  state.loadComparison = async (projectId, filters) => { state.calls.loadComparison.push({ projectId, filters }); return state.comparison; };
+  state.loadTrends = async (projectId, filters) => { state.calls.loadTrends.push({ projectId, filters }); return state.trends; };
   state.createRevision = async (projectId, runId, payload) => {
     state.calls.createRevision.push({ projectId, runId, payload });
     return {
@@ -664,6 +702,8 @@ function createScoringHookMocks(state) {
       profiles: state.scoring.profiles,
       assets: state.scoring.assets,
       runs: state.scoring.runs,
+      comparison: state.scoring.comparison,
+      trends: state.scoring.trends,
       loading: state.scoring.loading,
       formLoading: state.scoring.formLoading,
       error: state.scoring.error,
@@ -672,6 +712,9 @@ function createScoringHookMocks(state) {
       loadAssets: state.scoring.loadAssets,
       loadRuns: state.scoring.loadRuns,
       createRun: state.scoring.createRun,
+      createBatchRuns: state.scoring.createBatchRuns,
+      loadComparison: state.scoring.loadComparison,
+      loadTrends: state.scoring.loadTrends,
       createRevision: state.scoring.createRevision,
     }),
   };

@@ -1,7 +1,9 @@
 import { Body, Controller, Get, Param, Post, Query } from '@nestjs/common';
 import { PLATFORM_SCORING_PROFILES } from './platform-scoring-profiles';
+import { CreateScoringBatchRunDto } from './dto/create-scoring-batch-run.dto';
 import { CreateScoringRunDto } from './dto/create-scoring-run.dto';
 import { ListScoringRunsQueryDto } from './dto/list-scoring-runs-query.dto';
+import { ScoringComparisonQueryDto, ScoringTrendQueryDto } from './dto/scoring-comparison-query.dto';
 import { ScoringRevisionService } from './scoring-revision.service';
 import { ScoringService } from './scoring.service';
 
@@ -25,6 +27,21 @@ export class ScoringController {
   @Get('projects/:projectId/scoring/assets')
   listAssets(@Param('projectId') projectId: string) {
     return this.scoringService.listAssets(projectId);
+  }
+
+  @Get('projects/:projectId/scoring/comparison')
+  getComparison(@Param('projectId') projectId: string, @Query() query: ScoringComparisonQueryDto) {
+    return this.scoringService.getPlatformComparison(projectId, query);
+  }
+
+  @Get('projects/:projectId/scoring/trends')
+  getTrends(@Param('projectId') projectId: string, @Query() query: ScoringTrendQueryDto) {
+    return this.scoringService.getChapterTrends(projectId, query);
+  }
+
+  @Post('projects/:projectId/scoring/runs/batch')
+  createBatchRun(@Param('projectId') projectId: string, @Body() dto: CreateScoringBatchRunDto) {
+    return this.scoringService.createBatchRuns(projectId, dto);
   }
 
   @Post('projects/:projectId/scoring/runs')

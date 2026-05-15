@@ -5,11 +5,13 @@ import type { ProjectSummary } from '../types/dashboard';
 import {
   PlatformProfileKey,
   ScoringAssetOption,
+  ScoringComparison,
   ScoringDimensionScore,
   ScoringIssue,
   ScoringRevisionResult,
   ScoringRun,
   ScoringTargetType,
+  ScoringTrends,
   useScoringActions,
 } from '../hooks/useScoringActions';
 
@@ -29,7 +31,7 @@ interface Props {
 }
 
 export function ScoringCenterPanel({ selectedProject, selectedProjectId }: Props) {
-  const { profiles, assets, runs, loading, formLoading, error, setError, loadProfiles, loadAssets, loadRuns, createRun, createRevision } = useScoringActions();
+  const { profiles, assets, runs, comparison, trends, loading, formLoading, error, setError, loadProfiles, loadAssets, loadRuns, createRun, createBatchRuns, loadComparison, loadTrends, createRevision } = useScoringActions();
   const [targetFilter, setTargetFilter] = useState<ScoringTargetType | 'all'>('all');
   const [selectedAssetKey, setSelectedAssetKey] = useState('');
   const [profileKey, setProfileKey] = useState<PlatformProfileKey>('generic_longform');
@@ -87,6 +89,16 @@ export function ScoringCenterPanel({ selectedProject, selectedProjectId }: Props
     return latest;
   }, [loadRuns, selectedProjectId]);
 
+  useEffect(() => {
+    if (!selectedProjectId || !selectedAsset) return;
+    void loadComparison(selectedProjectId, {
+      targetType: selectedAsset.targetType,
+      targetId: selectedAsset.targetId,
+      draftId: selectedAsset.draftId,
+    });
+    void loadTrends(selectedProjectId, { targetType: selectedAsset.targetType, profileKey });
+  }, [loadComparison, loadTrends, profileKey, selectedAsset, selectedProjectId]);
+
   const handleSelectAsset = useCallback(async (asset: ScoringAssetOption) => {
     setSelectedAssetKey(assetKey(asset));
     setSelectedRunId('');
@@ -112,6 +124,31 @@ export function ScoringCenterPanel({ selectedProject, selectedProjectId }: Props
     setRevisionResult(null);
     await Promise.all([loadAssets(selectedProjectId), refreshRunsForAsset(selectedAsset)]);
   }, [createRun, loadAssets, profileKey, refreshRunsForAsset, selectedAsset, selectedProjectId]);
+
+  const handleCreateBatchRuns = useCallback(async () => {
+    if (!selectedProjectId || !selectedAsset || selectedAsset.isScoreable === false || !profiles.length) return;
+    const created = await createBatchRuns(selectedProjectId, {
+      targetType: selectedAsset.targetType,
+      targetId: selectedAsset.targetId,
+      targetRef: selectedAsset.targetRef,
+      draftId: selectedAsset.draftId,
+      draftVersion: selectedAsset.draftVersion,
+      profileKeys: profiles.map((profile) => profile.key),
+    });
+    setSelectedRunId(created[0]?.id ?? '');
+    setSelectedIssueIndexes([]);
+    setRevisionResult(null);
+    await Promise.all([
+      loadAssets(selectedProjectId),
+      refreshRunsForAsset(selectedAsset),
+      loadComparison(selectedProjectId, {
+        targetType: selectedAsset.targetType,
+        targetId: selectedAsset.targetId,
+        draftId: selectedAsset.draftId,
+      }),
+      loadTrends(selectedProjectId, { targetType: selectedAsset.targetType, profileKey }),
+    ]);
+  }, [createBatchRuns, loadAssets, loadComparison, loadTrends, profileKey, profiles, refreshRunsForAsset, selectedAsset, selectedProjectId]);
 
   const handleCreateRevision = useCallback(async (payload: {
     entryPoint: 'report' | 'dimension' | 'issue' | 'priority';
@@ -233,6 +270,9 @@ export function ScoringCenterPanel({ selectedProject, selectedProjectId }: Props
                     <button className="btn-primary" onClick={() => void handleCreateRun()} disabled={!selectedAsset || selectedAsset.isScoreable === false || formLoading} style={{ fontSize: '0.78rem', padding: '0.55rem 0.9rem' }}>
                       {formLoading ? '评分中...' : '发起评分'}
                     </button>
+                    <button className="btn-secondary" onClick={() => void handleCreateBatchRuns()} disabled={!selectedAsset || selectedAsset.isScoreable === false || formLoading || profiles.length < 2} style={{ fontSize: '0.78rem', padding: '0.55rem 0.9rem' }}>
+                      Score all profiles
+                    </button>
                   </div>
                 </div>
               </div>
@@ -251,6 +291,8 @@ export function ScoringCenterPanel({ selectedProject, selectedProjectId }: Props
                     formLoading={formLoading}
                     selectedIssueIndexes={selectedIssueIndexes}
                     revisionResult={revisionResult}
+                    comparison={comparison}
+                    trends={trends}
                     onToggleIssue={(index) => setSelectedIssueIndexes((current) => (current.includes(index) ? current.filter((item) => item !== index) : [...current, index].sort((a, b) => a - b)))}
                     onCreateRevision={handleCreateRevision}
                   />
@@ -291,6 +333,8 @@ function ReportView({
   formLoading,
   selectedIssueIndexes,
   revisionResult,
+  comparison,
+  trends,
   onToggleIssue,
   onCreateRevision,
 }: {
@@ -299,6 +343,8 @@ function ReportView({
   formLoading: boolean;
   selectedIssueIndexes: number[];
   revisionResult: ScoringRevisionResult | null;
+  comparison: ScoringComparison | null;
+  trends: ScoringTrends | null;
   onToggleIssue: (index: number) => void;
   onCreateRevision: (payload: {
     entryPoint: 'report' | 'dimension' | 'issue' | 'priority';
@@ -338,6 +384,9 @@ function ReportView({
           </div>
         </div>
       </section>
+
+      <ComparisonPanel comparison={comparison} />
+      <TrendPanel trends={trends} />
 
       <section className="panel p-4" style={{ borderRadius: '0.65rem' }}>
         <div className="flex items-center justify-between gap-2 mb-3">
@@ -417,6 +466,83 @@ function ReportView({
 
       {hasJsonFallback ? <JsonFallback label="raw report JSON fallback" value={run} /> : null}
     </div>
+  );
+}
+
+function ComparisonPanel({ comparison }: { comparison: ScoringComparison | null }) {
+  if (!comparison || !comparison.profiles.length) {
+    return (
+      <section className="panel p-4" style={{ borderRadius: '0.65rem' }}>
+        <div className="flex items-center justify-between gap-2">
+          <h3 className="text-sm font-bold text-heading">Platform comparison</h3>
+          <span className="text-xs" style={{ color: 'var(--text-dim)' }}>Project-internal scoring profiles, not official standards.</span>
+        </div>
+        <div className="mt-3 text-sm" style={{ color: 'var(--text-dim)' }}>No multi-profile comparison reports yet.</div>
+      </section>
+    );
+  }
+  const maxScore = Math.max(...comparison.profiles.map((profile) => profile.overallScore), 100);
+  return (
+    <section className="panel p-4" style={{ borderRadius: '0.65rem' }}>
+      <div className="flex items-center justify-between gap-2 mb-3">
+        <h3 className="text-sm font-bold text-heading">Platform comparison</h3>
+        <span className="text-xs" style={{ color: 'var(--text-dim)' }}>Project-internal scoring profiles, not official standards.</span>
+      </div>
+      <div className="grid gap-2" style={{ gridTemplateColumns: 'repeat(auto-fit, minmax(12rem, 1fr))' }}>
+        {comparison.profiles.map((profile) => (
+          <div key={profile.id} className="list-card" style={{ padding: '0.75rem', borderRadius: '0.55rem' }}>
+            <div className="flex items-center justify-between gap-2">
+              <strong className="text-sm text-heading">{profile.platformProfile}</strong>
+              <span className="text-sm" style={{ color: scoreColor(profile.overallScore), fontVariantNumeric: 'tabular-nums' }}>{profile.overallScore.toFixed(1)}</span>
+            </div>
+            <div className="mt-2" style={{ height: '0.4rem', borderRadius: 999, background: 'var(--bg-hover-subtle)', overflow: 'hidden' }}>
+              <div style={{ width: `${Math.max(0, Math.min(100, (profile.overallScore / maxScore) * 100))}%`, height: '100%', background: scoreColor(profile.overallScore) }} />
+            </div>
+            <p className="mt-2 text-xs" style={{ color: 'var(--text-dim)', lineHeight: 1.5 }}>{profile.summary}</p>
+          </div>
+        ))}
+      </div>
+      {comparison.keyDimensionDifferences.length ? (
+        <div className="mt-3 grid gap-2" style={{ gridTemplateColumns: 'repeat(auto-fit, minmax(14rem, 1fr))' }}>
+          {comparison.keyDimensionDifferences.slice(0, 4).map((item) => (
+            <div key={item.dimensionKey} className="text-xs" style={{ color: 'var(--text-muted)', lineHeight: 1.5 }}>
+              <strong style={{ color: 'var(--text-main)' }}>{item.label}</strong>: spread {item.spread.toFixed(1)}; high {item.highest?.platformProfile ?? '-'} {item.highest?.score ?? '-'} / low {item.lowest?.platformProfile ?? '-'} {item.lowest?.score ?? '-'}
+            </div>
+          ))}
+        </div>
+      ) : null}
+    </section>
+  );
+}
+
+function TrendPanel({ trends }: { trends: ScoringTrends | null }) {
+  const points = trends?.points ?? [];
+  if (!points.length) {
+    return (
+      <section className="panel p-4" style={{ borderRadius: '0.65rem' }}>
+        <div className="flex items-center justify-between gap-2">
+          <h3 className="text-sm font-bold text-heading">Chapter trend</h3>
+          <span className="text-xs" style={{ color: 'var(--text-dim)' }}>Latest saved scores by chapter</span>
+        </div>
+        <div className="mt-3 text-sm" style={{ color: 'var(--text-dim)' }}>No chapter trend points yet.</div>
+      </section>
+    );
+  }
+  return (
+    <section className="panel p-4" style={{ borderRadius: '0.65rem' }}>
+      <div className="flex items-center justify-between gap-2 mb-3">
+        <h3 className="text-sm font-bold text-heading">Chapter trend</h3>
+        <span className="text-xs" style={{ color: 'var(--text-dim)' }}>{points.length} points</span>
+      </div>
+      <div className="flex items-end gap-2" style={{ minHeight: '5.5rem', overflowX: 'auto', paddingBottom: '0.25rem' }}>
+        {points.slice(0, 40).map((point) => (
+          <div key={point.scoringRunId} title={`${point.platformProfile} ${point.overallScore}`} style={{ width: '1.65rem', height: '5rem', display: 'flex', flexDirection: 'column', justifyContent: 'flex-end', flex: '0 0 1.65rem' }}>
+            <div style={{ height: `${Math.max(8, Math.min(88, point.overallScore))}%`, minHeight: '0.5rem', borderRadius: '0.35rem 0.35rem 0.15rem 0.15rem', background: scoreColor(point.overallScore) }} />
+            <div className="mt-1 text-center" style={{ color: 'var(--text-dim)', fontSize: '0.62rem', fontVariantNumeric: 'tabular-nums' }}>{point.chapterNo ?? '-'}</div>
+          </div>
+        ))}
+      </div>
+    </section>
   );
 }
 

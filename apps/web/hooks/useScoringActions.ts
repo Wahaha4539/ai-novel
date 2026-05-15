@@ -90,6 +90,15 @@ export interface CreateScoringRunPayload {
   profileKey: PlatformProfileKey;
 }
 
+export interface CreateScoringBatchRunPayload {
+  targetType: ScoringTargetType;
+  targetId?: string | null;
+  targetRef?: Record<string, unknown> | null;
+  draftId?: string | null;
+  draftVersion?: number | null;
+  profileKeys: PlatformProfileKey[];
+}
+
 export type ScoringRevisionEntryPoint = 'report' | 'dimension' | 'issue' | 'priority';
 
 export interface CreateScoringRevisionPayload {
@@ -130,6 +139,45 @@ export interface ScoringRunFilters {
   draftId?: string | null;
 }
 
+export interface ScoringComparison {
+  targetType: ScoringTargetType;
+  targetId?: string | null;
+  draftId?: string | null;
+  baselineProfileKey?: string | null;
+  profiles: Array<{
+    id: string;
+    platformProfile: string;
+    profileVersion: string;
+    overallScore: number;
+    verdict: string;
+    summary: string;
+    createdAt: string;
+    dimensions: ScoringDimensionScore[];
+  }>;
+  keyDimensionDifferences: Array<{
+    dimensionKey: string;
+    label: string;
+    spread: number;
+    highest: { platformProfile: string; score: number; label: string } | null;
+    lowest: { platformProfile: string; score: number; label: string } | null;
+  }>;
+}
+
+export interface ScoringTrends {
+  points: Array<{
+    scoringRunId: string;
+    chapterId?: string | null;
+    chapterNo?: number | null;
+    chapterTitle?: string | null;
+    targetType: ScoringTargetType | (string & {});
+    draftId?: string | null;
+    platformProfile: string;
+    overallScore: number;
+    verdict: string;
+    createdAt: string;
+  }>;
+}
+
 async function apiFetch<T>(path: string, init?: RequestInit): Promise<T> {
   const response = await fetch(`${API_BASE}${path}`, {
     ...init,
@@ -163,6 +211,8 @@ export function useScoringActions() {
   const [profiles, setProfiles] = useState<PlatformScoringProfile[]>([]);
   const [assets, setAssets] = useState<ScoringAssetOption[]>([]);
   const [runs, setRuns] = useState<ScoringRun[]>([]);
+  const [comparison, setComparison] = useState<ScoringComparison | null>(null);
+  const [trends, setTrends] = useState<ScoringTrends | null>(null);
   const [loading, setLoading] = useState(false);
   const [formLoading, setFormLoading] = useState(false);
   const [error, setError] = useState('');
@@ -233,6 +283,53 @@ export function useScoringActions() {
     }
   }, []);
 
+  const createBatchRuns = useCallback(async (projectId: string, payload: CreateScoringBatchRunPayload) => {
+    setFormLoading(true);
+    setError('');
+    try {
+      const created = await apiFetch<ScoringRun[]>(`/projects/${projectId}/scoring/runs/batch`, {
+        method: 'POST',
+        body: JSON.stringify(payload),
+      });
+      setRuns((current) => [...created, ...current.filter((item) => !created.some((createdRun) => createdRun.id === item.id))]);
+      return created;
+    } catch (createError) {
+      const message = createError instanceof Error ? createError.message : 'Failed to create platform comparison reports';
+      setError(message);
+      throw createError;
+    } finally {
+      setFormLoading(false);
+    }
+  }, []);
+
+  const loadComparison = useCallback(async (projectId: string, filters: { targetType: ScoringTargetType; targetId?: string | null; draftId?: string | null }) => {
+    if (!projectId || (!filters.targetId && !filters.draftId)) {
+      setComparison(null);
+      return null;
+    }
+    const params = new URLSearchParams();
+    params.set('targetType', filters.targetType);
+    if (filters.targetId) params.set('targetId', filters.targetId);
+    if (filters.draftId) params.set('draftId', filters.draftId);
+    const data = await apiFetch<ScoringComparison>(`/projects/${projectId}/scoring/comparison?${params.toString()}`);
+    setComparison(data);
+    return data;
+  }, []);
+
+  const loadTrends = useCallback(async (projectId: string, filters: { targetType?: ScoringTargetType; profileKey?: PlatformProfileKey } = {}) => {
+    if (!projectId) {
+      setTrends(null);
+      return null;
+    }
+    const params = new URLSearchParams();
+    if (filters.targetType) params.set('targetType', filters.targetType);
+    if (filters.profileKey) params.set('profileKey', filters.profileKey);
+    const query = params.toString();
+    const data = await apiFetch<ScoringTrends>(`/projects/${projectId}/scoring/trends${query ? `?${query}` : ''}`);
+    setTrends(data);
+    return data;
+  }, []);
+
   const createRevision = useCallback(async (projectId: string, runId: string, payload: CreateScoringRevisionPayload) => {
     setFormLoading(true);
     setError('');
@@ -254,6 +351,8 @@ export function useScoringActions() {
     profiles,
     assets,
     runs,
+    comparison,
+    trends,
     loading,
     formLoading,
     error,
@@ -262,6 +361,9 @@ export function useScoringActions() {
     loadAssets,
     loadRuns,
     createRun,
+    createBatchRuns,
+    loadComparison,
+    loadTrends,
     createRevision,
   };
 }
