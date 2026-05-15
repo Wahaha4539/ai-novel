@@ -19,6 +19,7 @@ import { PromptTemplatesModule } from './modules/prompt-templates/prompt-templat
 import { QualityReportsModule } from './modules/quality-reports/quality-reports.module';
 import { RelationshipsModule } from './modules/relationships/relationships.module';
 import { ScenesModule } from './modules/scenes/scenes.module';
+import { ScoringModule } from './modules/scoring/scoring.module';
 import { TimelineEventsModule } from './modules/timeline-events/timeline-events.module';
 import { UploadsModule } from './modules/uploads/uploads.module';
 import { ValidationModule } from './modules/validation/validation.module';
@@ -48,6 +49,7 @@ import { PrismaModule } from './prisma/prisma.module';
     WritingRulesModule,
     RelationshipsModule,
     ScenesModule,
+    ScoringModule,
     PacingBeatsModule,
     TimelineEventsModule,
     UploadsModule,

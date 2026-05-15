@@ -52,6 +52,7 @@ import { ResolveChapterTool } from './tools/resolve-chapter.tool';
 import { ResolveCharacterTool } from './tools/resolve-character.tool';
 import { RewriteChapterTool } from './tools/rewrite-chapter.tool';
 import { GenerateSceneCardsPreviewTool, ListSceneCardsTool, PersistSceneCardsTool, UpdateSceneCardTool, ValidateSceneCardsTool } from './tools/scene-card-tools.tool';
+import { ScoreChapterCraftBriefTool } from './tools/score-chapter-craft-brief.tool';
 import { ValidateGuidedStepPreviewTool } from './tools/validate-guided-step-preview.tool';
 import { ValidateImportedAssetsTool } from './tools/validate-imported-assets.tool';
 import { ValidateOutlineTool } from './tools/validate-outline.tool';
@@ -128,6 +129,7 @@ export class ToolRegistryService implements OnModuleInit {
     private readonly validateSceneCardsTool: ValidateSceneCardsTool,
     private readonly persistSceneCardsTool: PersistSceneCardsTool,
     private readonly updateSceneCardTool: UpdateSceneCardTool,
+    private readonly scoreChapterCraftBriefTool: ScoreChapterCraftBriefTool,
     private readonly readSourceDocumentTool: ReadSourceDocumentTool,
     private readonly analyzeSourceTextTool: AnalyzeSourceTextTool,
     private readonly buildImportBriefTool: BuildImportBriefTool,
@@ -202,6 +204,7 @@ export class ToolRegistryService implements OnModuleInit {
     this.register(this.validateSceneCardsTool);
     this.register(this.persistSceneCardsTool);
     this.register(this.updateSceneCardTool);
+    this.register(this.scoreChapterCraftBriefTool);
     this.register(this.readSourceDocumentTool);
     this.register(this.analyzeSourceTextTool);
     this.register(this.buildImportBriefTool);

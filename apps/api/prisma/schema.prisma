@@ -65,6 +65,7 @@ model Project {
   validationIssues      ValidationIssue[]
   qualityReports        QualityReport[]
   generationJobs        GenerationJob[]
+  scoringRuns           ScoringRun[]
   styleProfiles         StyleProfile[]
   modelProfiles         ModelProfile[]
   creativeProfile       ProjectCreativeProfile?
@@ -141,6 +142,7 @@ model AgentRun {
   artifacts   AgentArtifact[]
   approvals   AgentApproval[]
   qualityReports QualityReport[]
+  scoringRuns ScoringRun[]
 
   @@index([projectId, status, createdAt])
 }
@@ -352,6 +354,7 @@ model Chapter {
   pacingBeats       PacingBeat[]
   validationIssues  ValidationIssue[]
   qualityReports    QualityReport[]
+  scoringRuns        ScoringRun[]
   generationJobs    GenerationJob[]
 
   @@unique([projectId, chapterNo])
@@ -370,6 +373,7 @@ model ChapterDraft {
   createdAt         DateTime @default(now())
   chapter           Chapter  @relation(fields: [chapterId], references: [id], onDelete: Cascade)
   qualityReports    QualityReport[]
+  scoringRuns        ScoringRun[]
 
   @@unique([chapterId, versionNo])
   @@index([chapterId, isCurrent, versionNo], map: "ChapterDraft_chapter_current_version_idx")
@@ -678,6 +682,43 @@ model QualityReport {
   @@index([projectId, draftId], map: "QualityReport_project_draft_idx")
   @@index([projectId, agentRunId], map: "QualityReport_project_agentRun_idx")
   @@index([projectId, sourceType, reportType, verdict], map: "QualityReport_project_type_verdict_idx")
+}
+
+model ScoringRun {
+  id                 String        @id @default(uuid()) @db.Uuid
+  projectId          String        @db.Uuid
+  chapterId          String?       @db.Uuid
+  draftId            String?       @db.Uuid
+  agentRunId         String?       @db.Uuid
+  targetType         String        @db.VarChar(50)
+  targetId           String?       @db.VarChar(120)
+  targetRef          Json          @default("{}")
+  platformProfile    String        @db.VarChar(80)
+  profileVersion     String        @db.VarChar(80)
+  promptVersion      String        @db.VarChar(80)
+  rubricVersion      String        @db.VarChar(80)
+  overallScore       Float
+  verdict            String        @db.VarChar(20)
+  summary            String
+  dimensions         Json          @default("[]")
+  issues             Json          @default("[]")
+  revisionPriorities Json          @default("[]")
+  extractedElements  Json          @default("{}")
+  targetSnapshot     Json
+  sourceTrace        Json          @default("{}")
+  llmMetadata        Json          @default("{}")
+  createdAt          DateTime      @default(now())
+  updatedAt          DateTime      @updatedAt
+  project            Project       @relation(fields: [projectId], references: [id], onDelete: Cascade)
+  chapter            Chapter?      @relation(fields: [chapterId], references: [id], onDelete: SetNull)
+  draft              ChapterDraft? @relation(fields: [draftId], references: [id], onDelete: SetNull)
+  agentRun           AgentRun?     @relation(fields: [agentRunId], references: [id], onDelete: SetNull)
+
+  @@index([projectId, createdAt], map: "ScoringRun_project_created_idx")
+  @@index([projectId, targetType, targetId, platformProfile, createdAt], map: "ScoringRun_target_profile_created_idx")
+  @@index([projectId, chapterId, targetType, platformProfile], map: "ScoringRun_chapter_target_profile_idx")
+  @@index([projectId, draftId], map: "ScoringRun_project_draft_idx")
+  @@index([projectId, agentRunId], map: "ScoringRun_project_agentRun_idx")
 }
 
 model GenerationJob {
