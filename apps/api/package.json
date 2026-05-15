@@ -18,6 +18,8 @@
     "eval:agent:replan:report": "ts-node --project tsconfig.json ../../scripts/dev/eval_agent_replanner.ts --report ../../tmp/agent-replan-eval-report.json --history ../../tmp/agent-replan-eval-history.json",
     "eval:agent:experimental-replan": "ts-node --project tsconfig.json ../../scripts/dev/eval_agent_replanner.ts --experimental-llm-replanner-report --report ../../tmp/agent-eval-experimental-replanner-report.json --history ../../tmp/agent-eval-experimental-replanner-history.json",
     "eval:agent:gate": "pnpm run eval:agent:live:report && pnpm run eval:agent:retrieval:report && pnpm run eval:agent:replan:report",
+    "eval:scoring": "ts-node --project tsconfig.json ../../scripts/dev/eval_scoring.ts",
+    "eval:scoring:report": "ts-node --project tsconfig.json ../../scripts/dev/eval_scoring.ts --report ../../tmp/scoring-eval-report.json --history ../../tmp/scoring-eval-history.json",
     "prisma:seed": "ts-node --project tsconfig.seed.json prisma/seed.ts",
     "db:maintenance": "ts-node --project tsconfig.seed.json prisma/db-maintenance.ts"
   },

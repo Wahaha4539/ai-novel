@@ -1,0 +1,81 @@
+[
+  {
+    "id": "craft-brief-blocking-scene-executability",
+    "targetType": "chapter_craft_brief",
+    "profileKey": "generic_longform",
+    "promptVersion": "multidimensional_scoring.prompt.v1",
+    "rubricVersion": "multidimensional_scoring.rubric.v1",
+    "profileVersion": "profile.generic_longform.v1",
+    "expectedValid": true,
+    "expectedBlockingIssueDimensionKeys": ["scene_executability"],
+    "dimensionScoreOverrides": {
+      "scene_executability": 38,
+      "action_chain": 54
+    },
+    "blockingIssues": [
+      {
+        "dimensionKey": "scene_executability",
+        "severity": "blocking",
+        "path": "sceneBeats[1]",
+        "evidence": "The scene beat has no visible obstacle or result.",
+        "reason": "The craft brief cannot be used as an executable scene chain yet.",
+        "suggestion": "Add a concrete opposing action, turning point, and result for the scene beat."
+      }
+    ],
+    "revisionPriorities": ["Make the second scene beat executable before drafting."]
+  },
+  {
+    "id": "chapter-outline-clean-no-blocking",
+    "targetType": "chapter_outline",
+    "profileKey": "fanqie_like",
+    "promptVersion": "multidimensional_scoring.prompt.v1",
+    "rubricVersion": "multidimensional_scoring.rubric.v1",
+    "profileVersion": "profile.fanqie_like.v1",
+    "expectedValid": true,
+    "expectedBlockingIssueDimensionKeys": [],
+    "dimensionScoreOverrides": {
+      "chapter_goal": 86,
+      "reader_retention": 84
+    },
+    "blockingIssues": [],
+    "revisionPriorities": ["Keep the ending hook tied to the next concrete action."]
+  },
+  {
+    "id": "chapter-draft-blocking-plan-adherence",
+    "targetType": "chapter_draft",
+    "profileKey": "qidian_like",
+    "promptVersion": "multidimensional_scoring.prompt.v1",
+    "rubricVersion": "multidimensional_scoring.rubric.v1",
+    "profileVersion": "profile.qidian_like.v1",
+    "expectedValid": true,
+    "expectedBlockingIssueDimensionKeys": ["plan_adherence"],
+    "dimensionScoreOverrides": {
+      "plan_adherence": 32,
+      "plot_progress": 46
+    },
+    "blockingIssues": [
+      {
+        "dimensionKey": "plan_adherence",
+        "severity": "blocking",
+        "path": "draft.planAdherenceContext",
+        "evidence": "The draft omits the craftBrief turning point and changes the chapter result.",
+        "reason": "The draft cannot be approved as an execution of the selected outline and craftBrief.",
+        "suggestion": "Regenerate a draft preview that preserves the planned turning point and exit state."
+      }
+    ],
+    "revisionPriorities": ["Rebuild the draft around the approved craftBrief turning point."]
+  },
+  {
+    "id": "project-outline-structural-failure-missing-dimensions",
+    "targetType": "project_outline",
+    "profileKey": "published_literary",
+    "promptVersion": "multidimensional_scoring.prompt.v1",
+    "rubricVersion": "multidimensional_scoring.rubric.v1",
+    "profileVersion": "profile.published_literary.v1",
+    "expectedValid": false,
+    "expectedBlockingIssueDimensionKeys": [],
+    "structuralFault": "omit_dimensions",
+    "blockingIssues": [],
+    "revisionPriorities": ["This case must fail structure validation because dimensions are missing."]
+  }
+]

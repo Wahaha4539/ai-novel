@@ -4,6 +4,7 @@ dist/
 coverage/
 *.log
 logs/
+tmp/
 .env
 .env.local
 apps/api/.env
