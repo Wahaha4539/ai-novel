@@ -73,9 +73,47 @@ test('resolvePreferredDraftViewMode stays on current manuscript when a stale pol
   ]);
 
   assert.equal(pair.current?.id, 'draft-current');
-  assert.equal(pair.draft?.id, 'draft-raw');
+  assert.equal(pair.draft?.id, 'draft-current');
   assert.equal(pair.polished?.id, 'draft-polished');
   assert.equal(resolvePreferredDraftViewMode(pair), 'draft');
+});
+
+test('buildDraftViewPair keeps the current passage-revision draft as the editable manuscript surface', () => {
+  const pair = buildDraftViewPair([
+    createDraft({
+      id: 'draft-passage-current',
+      chapterId: 'chapter-1',
+      versionNo: 3,
+      content: '局部修订后的当前稿',
+      source: 'agent_passage_revision',
+      isCurrent: true,
+      createdAt: '2026-05-15T00:00:00.000Z',
+      generationContext: { type: 'passage_revision', originalDraftId: 'draft-polished' },
+    }),
+    createDraft({
+      id: 'draft-polished',
+      chapterId: 'chapter-1',
+      versionNo: 2,
+      content: '旧润色稿',
+      source: 'agent_polish',
+      isCurrent: false,
+      createdAt: '2026-05-14T00:00:00.000Z',
+      generationContext: { type: 'polish', originalDraftId: 'draft-raw' },
+    }),
+    createDraft({
+      id: 'draft-raw',
+      chapterId: 'chapter-1',
+      versionNo: 1,
+      content: '原始草稿',
+      source: 'agent_write',
+      isCurrent: false,
+      createdAt: '2026-05-13T00:00:00.000Z',
+    }),
+  ]);
+
+  assert.equal(pair.current?.id, 'draft-passage-current');
+  assert.equal(pair.draft?.id, 'draft-passage-current');
+  assert.equal(pair.polished?.id, 'draft-polished');
 });
 
 test('resolvePreferredDraftViewMode opens the polished tab only when the current row is itself polished', () => {

@@ -23,9 +23,11 @@ export function buildDraftViewPair(versions: ChapterDraft[]) {
 
   return {
     current,
-    draft: originalDraftId
-      ? sorted.find((item) => item.id === originalDraftId) ?? sorted.find((item) => !isPolishedDraft(item)) ?? current
-      : sorted.find((item) => !isPolishedDraft(item)) ?? current,
+    draft: current && !isPolishedDraft(current)
+      ? current
+      : originalDraftId
+        ? sorted.find((item) => item.id === originalDraftId) ?? sorted.find((item) => !isPolishedDraft(item)) ?? current
+        : sorted.find((item) => !isPolishedDraft(item)) ?? current,
     polished,
   };
 }
