@@ -2,7 +2,7 @@ import { BadRequestException, Injectable, NotFoundException } from '@nestjs/comm
 import { Prisma } from '@prisma/client';
 import { PrismaService } from '../../prisma/prisma.service';
 import { assertCompleteChapterCraftBrief } from '../agent-tools/tools/chapter-craft-brief-contracts';
-import { ScoringTargetSelector } from './scoring-targets';
+import { ScoringAssetOption, ScoringTargetSelector } from './scoring-targets';
 import { ScoringTargetSnapshot, ScoringTargetType } from './scoring-contracts';
 
 export interface LoadedScoringTarget {
@@ -19,6 +19,148 @@ export interface LoadedScoringTarget {
 @Injectable()
 export class ScoringTargetLoaderService {
   constructor(private readonly prisma: PrismaService) {}
+
+  async listAssets(projectId: string): Promise<ScoringAssetOption[]> {
+    const [project, volumes, chapters, drafts] = await Promise.all([
+      this.prisma.project.findUnique({
+        where: { id: projectId },
+        select: { id: true, title: true, outline: true, updatedAt: true },
+      }),
+      this.prisma.volume.findMany({
+        where: { projectId },
+        orderBy: { volumeNo: 'asc' },
+        select: {
+          id: true,
+          volumeNo: true,
+          title: true,
+          synopsis: true,
+          objective: true,
+          narrativePlan: true,
+          chapterCount: true,
+          updatedAt: true,
+        },
+      }),
+      this.prisma.chapter.findMany({
+        where: { projectId },
+        orderBy: { chapterNo: 'asc' },
+        select: {
+          id: true,
+          chapterNo: true,
+          title: true,
+          objective: true,
+          outline: true,
+          craftBrief: true,
+          updatedAt: true,
+          volume: { select: { volumeNo: true } },
+        },
+      }),
+      this.prisma.chapterDraft.findMany({
+        where: { chapter: { projectId } },
+        orderBy: [{ chapter: { chapterNo: 'asc' } }, { versionNo: 'desc' }],
+        select: {
+          id: true,
+          versionNo: true,
+          content: true,
+          source: true,
+          createdAt: true,
+          chapter: {
+            select: {
+              id: true,
+              chapterNo: true,
+              title: true,
+              outline: true,
+              craftBrief: true,
+              volume: { select: { volumeNo: true } },
+            },
+          },
+        },
+      }),
+    ]);
+
+    if (!project) throw new NotFoundException(`Project not found: ${projectId}`);
+
+    const assets: ScoringAssetOption[] = [
+      {
+        targetType: 'project_outline',
+        targetId: project.id,
+        targetRef: { projectId: project.id },
+        title: project.title,
+        source: 'Project.outline',
+        updatedAt: project.updatedAt.toISOString(),
+        isScoreable: Boolean(text(project.outline)),
+        unavailableReason: text(project.outline) ? null : 'Project.outline is empty.',
+      },
+    ];
+
+    for (const volume of volumes) {
+      const hasOutline = hasVolumeOutlineContent(volume);
+      const hasChapterCount = typeof volume.chapterCount === 'number' && volume.chapterCount > 0;
+      assets.push({
+        targetType: 'volume_outline',
+        targetId: volume.id,
+        targetRef: { volumeId: volume.id, volumeNo: volume.volumeNo },
+        title: volume.title ?? `Volume ${volume.volumeNo}`,
+        volumeNo: volume.volumeNo,
+        source: 'Volume.narrativePlan',
+        updatedAt: volume.updatedAt.toISOString(),
+        isScoreable: hasOutline && hasChapterCount,
+        unavailableReason: hasOutline ? (hasChapterCount ? null : 'Volume.chapterCount must be positive.') : 'Volume outline content is empty.',
+      });
+    }
+
+    for (const chapter of chapters) {
+      const craftBriefIssue = getCraftBriefIssue(chapter.craftBrief, `chapter ${chapter.chapterNo}`);
+      const outlineReady = Boolean(text(chapter.objective) && text(chapter.outline));
+      assets.push({
+        targetType: 'chapter_outline',
+        targetId: chapter.id,
+        targetRef: { chapterId: chapter.id, chapterNo: chapter.chapterNo },
+        title: chapter.title ?? `Chapter ${chapter.chapterNo} outline`,
+        volumeNo: chapter.volume?.volumeNo ?? null,
+        chapterNo: chapter.chapterNo,
+        source: 'Chapter.outline',
+        updatedAt: chapter.updatedAt.toISOString(),
+        isScoreable: outlineReady,
+        unavailableReason: outlineReady ? null : 'Chapter objective and outline are required.',
+      });
+      assets.push({
+        targetType: 'chapter_craft_brief',
+        targetId: chapter.id,
+        targetRef: { chapterId: chapter.id, chapterNo: chapter.chapterNo },
+        title: chapter.title ?? `Chapter ${chapter.chapterNo} craftBrief`,
+        volumeNo: chapter.volume?.volumeNo ?? null,
+        chapterNo: chapter.chapterNo,
+        source: 'Chapter.craftBrief',
+        updatedAt: chapter.updatedAt.toISOString(),
+        isScoreable: !craftBriefIssue,
+        unavailableReason: craftBriefIssue,
+      });
+    }
+
+    for (const draft of drafts) {
+      const craftBriefIssue = getCraftBriefIssue(draft.chapter.craftBrief, `chapter ${draft.chapter.chapterNo}`);
+      const missing: string[] = [];
+      if (!text(draft.content)) missing.push('draft content');
+      if (!text(draft.chapter.outline)) missing.push('chapter outline');
+      if (craftBriefIssue) missing.push('complete craftBrief');
+      assets.push({
+        targetType: 'chapter_draft',
+        targetId: draft.chapter.id,
+        targetRef: { chapterId: draft.chapter.id, chapterNo: draft.chapter.chapterNo },
+        title: `${draft.chapter.title ?? `Chapter ${draft.chapter.chapterNo}`} draft v${draft.versionNo}`,
+        volumeNo: draft.chapter.volume?.volumeNo ?? null,
+        chapterNo: draft.chapter.chapterNo,
+        draftId: draft.id,
+        draftVersion: draft.versionNo,
+        source: draft.source,
+        updatedAt: draft.createdAt.toISOString(),
+        isScoreable: missing.length === 0,
+        unavailableReason: missing.length ? `chapter_draft scoring requires ${missing.join(', ')}.` : null,
+      });
+    }
+
+    return assets;
+  }
 
   async loadTarget(projectId: string, selector: ScoringTargetSelector): Promise<LoadedScoringTarget> {
     switch (selector.targetType) {
@@ -555,6 +697,15 @@ function compactText(value: unknown, maxLength: number): string {
 function hasVolumeOutlineContent(volume: { synopsis: string | null; objective: string | null; narrativePlan: Prisma.JsonValue }) {
   if (text(volume.synopsis) || text(volume.objective)) return true;
   return Boolean(volume.narrativePlan && typeof volume.narrativePlan === 'object' && !Array.isArray(volume.narrativePlan) && Object.keys(volume.narrativePlan).length);
+}
+
+function getCraftBriefIssue(value: unknown, label: string): string | null {
+  try {
+    assertCompleteChapterCraftBrief(value, { label });
+    return null;
+  } catch (error) {
+    return error instanceof Error ? error.message : String(error);
+  }
 }
 
 export type PrismaJson = Prisma.JsonValue;

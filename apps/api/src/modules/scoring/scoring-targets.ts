@@ -19,7 +19,16 @@ export interface ScoringAssetOption {
   draftVersion?: number | null;
   source: string;
   updatedAt?: string | null;
+  isScoreable?: boolean;
+  unavailableReason?: string | null;
   hasScoringReports?: boolean;
+  latestRun?: {
+    id: string;
+    platformProfile: string;
+    overallScore: number;
+    verdict: string;
+    createdAt: string;
+  } | null;
 }
 
 export function assertScoringTargetSelector(value: unknown): ScoringTargetSelector {

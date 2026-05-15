@@ -27,6 +27,7 @@ require.extensions['.ts'] = require.extensions['.tsx'] = function compileTypeScr
 
 const continuityModulePath = path.join(repoRoot, 'apps/web/hooks/useContinuityActions.ts');
 const actualContinuityActions = require(continuityModulePath);
+const scoringModulePath = path.join(repoRoot, 'apps/web/hooks/useScoringActions.ts');
 
 const mockState = createMockState();
 require.cache[continuityModulePath] = {
@@ -35,9 +36,16 @@ require.cache[continuityModulePath] = {
   loaded: true,
   exports: createContinuityHookMocks(mockState),
 };
+require.cache[scoringModulePath] = {
+  id: scoringModulePath,
+  filename: scoringModulePath,
+  loaded: true,
+  exports: createScoringHookMocks(mockState),
+};
 
 const { AgentArtifactPanel } = require(path.join(repoRoot, 'apps/web/components/agent/AgentArtifactPanel.tsx'));
 const { QualityReportPanel } = require(path.join(repoRoot, 'apps/web/components/QualityReportPanel.tsx'));
+const { ScoringCenterPanel } = require(path.join(repoRoot, 'apps/web/components/ScoringCenterPanel.tsx'));
 const { SceneBankPanel } = require(path.join(repoRoot, 'apps/web/components/SceneBankPanel.tsx'));
 const { PacingPanel } = require(path.join(repoRoot, 'apps/web/components/PacingPanel.tsx'));
 const { ChapterPatternPanel } = require(path.join(repoRoot, 'apps/web/components/ChapterPatternPanel.tsx'));
@@ -188,6 +196,55 @@ test('QualityReportPanel renders list, details, metadata, empty, error, and JSON
   mockState.quality.error = '加载质量报告失败';
   assertIncludes(renderQualityReportPanel(), ['加载质量报告失败']);
   assertIncludes(renderComponent(QualityReportPanel, { selectedProjectId: '', selectedChapterId: 'all', chapters: [], selectedProject: undefined }), ['请先选择项目']);
+});
+
+test('ScoringCenterPanel renders asset selection, reports, errors, empty state, and JSON fallback', async () => {
+  resetMockState();
+  mockState.scoring.assets = [
+    scoringAsset({ targetType: 'chapter_craft_brief', targetId: 'chapter-1', title: 'Chapter 1 craft brief', chapterNo: 1, source: 'Chapter.craftBrief' }),
+    scoringAsset({ targetType: 'chapter_draft', targetId: 'chapter-1', title: 'Chapter 1 draft v2', chapterNo: 1, draftId: 'draft-1', draftVersion: 2, source: 'generation' }),
+    scoringAsset({ targetType: 'volume_outline', targetId: 'volume-2', title: 'Volume 2 outline', volumeNo: 2, source: 'Volume.narrativePlan', isScoreable: false, unavailableReason: 'Volume outline content is empty.' }),
+  ];
+  mockState.scoring.runs = [
+    scoringRun({
+      id: 'score-1',
+      targetType: 'chapter_craft_brief',
+      targetId: 'chapter-1',
+      summary: 'Craft brief has a clear action chain.',
+      dimensions: [
+        { key: 'scene_executability', label: 'Scene executability', score: 82, weight: 20, weightedScore: 16.4, confidence: 'high', evidence: 'gate scene', reason: 'visible actions', suggestion: 'tighten handoff' },
+      ],
+      issues: [
+        { dimensionKey: 'continuity_handoff', severity: 'warning', path: 'handoffToNextChapter', evidence: 'weak next clue', reason: 'handoff is vague', suggestion: 'name the next clue' },
+      ],
+      revisionPriorities: ['Clarify the handoff clue'],
+    }),
+  ];
+
+  const harness = createHarness(ScoringCenterPanel, { selectedProjectId: 'project-alpha', selectedProject: project() });
+  harness.render();
+  assertIncludes(harness.html(), ['Scoring Center', 'Chapter 1 craft brief', 'Craft brief has a clear action chain.', 'Scene executability', 'continuity_handoff', 'Clarify the handoff clue']);
+
+  await click(findButton(harness.tree, 'Chapter 1 draft v2'));
+  harness.render();
+  assertEqual(mockState.scoring.calls.loadRuns.at(-1).filters.draftId, 'draft-1');
+
+  await click(findExactButton(harness.tree, '发起评分'));
+  assertEqual(mockState.scoring.calls.createRun.length, 1);
+  assertEqual(mockState.scoring.calls.createRun[0].payload.targetType, 'chapter_draft');
+  assertEqual(mockState.scoring.calls.createRun[0].payload.draftVersion, 2);
+
+  mockState.scoring.runs = [scoringRun({ id: 'score-json', dimensions: { raw: 'dimension-json-fallback' }, issues: { raw: 'issue-json-fallback' }, revisionPriorities: { raw: 'priority-json-fallback' } })];
+  assertIncludes(renderScoringCenterPanel(), ['dimensions JSON fallback', 'dimension-json-fallback', 'raw report JSON fallback']);
+
+  mockState.scoring.runs = [];
+  assertIncludes(renderScoringCenterPanel(), ['当前资产暂无评分报告']);
+  mockState.scoring.error = 'scoring asset load failed';
+  assertIncludes(renderScoringCenterPanel(), ['scoring asset load failed']);
+  mockState.scoring.assets = [];
+  mockState.scoring.error = '';
+  assertIncludes(renderScoringCenterPanel(), ['暂无可显示资产']);
+  assertIncludes(renderComponent(ScoringCenterPanel, { selectedProjectId: '', selectedProject: undefined }), ['请先选择项目']);
 });
 
 test('SceneBankPanel covers filters, refresh, create, edit, archive, delete, and JSON validation', async () => {
@@ -419,9 +476,18 @@ function renderQualityReportPanel(extraProps = {}) {
   });
 }
 
+function renderScoringCenterPanel(extraProps = {}) {
+  return renderComponent(ScoringCenterPanel, {
+    selectedProjectId: 'project-alpha',
+    selectedProject: project(),
+    ...extraProps,
+  });
+}
+
 function createMockState() {
   return {
     quality: qualityMock(),
+    scoring: scoringMock(),
     scene: resourceMock(),
     pacing: resourceMock(),
     pattern: resourceMock(),
@@ -430,6 +496,7 @@ function createMockState() {
 
 function resetMockState() {
   Object.assign(mockState.quality, qualityMock());
+  Object.assign(mockState.scoring, scoringMock());
   Object.assign(mockState.scene, resourceMock());
   Object.assign(mockState.pacing, resourceMock());
   Object.assign(mockState.pattern, resourceMock());
@@ -462,6 +529,48 @@ function qualityMock() {
   state.setError = (value) => { state.error = value; };
   state.load = async (filters) => { state.calls.load.push(filters); return state.qualityReports; };
   state.delete = async (id) => { state.calls.delete.push(id); return true; };
+  return state;
+}
+
+function scoringMock() {
+  const state = {
+    profiles: [
+      {
+        key: 'generic_longform',
+        name: 'Generic longform',
+        version: 'profile.generic_longform.v1',
+        description: 'Project scoring profile.',
+        disclaimer: 'Project-internal scoring profile, not an official platform standard.',
+        emphasis: ['structure'],
+        weightMultipliers: {},
+      },
+      {
+        key: 'qidian_like',
+        name: 'Qidian-like',
+        version: 'profile.qidian_like.v1',
+        description: 'Long arc profile.',
+        disclaimer: 'Project-internal scoring profile, not an official platform standard.',
+        emphasis: ['mainline'],
+        weightMultipliers: {},
+      },
+    ],
+    assets: [],
+    runs: [],
+    loading: false,
+    formLoading: false,
+    error: '',
+    calls: { loadProfiles: 0, loadAssets: [], loadRuns: [], createRun: [] },
+  };
+  state.setError = (value) => { state.error = value; };
+  state.loadProfiles = async () => { state.calls.loadProfiles += 1; return state.profiles; };
+  state.loadAssets = async (projectId) => { state.calls.loadAssets.push(projectId); return state.assets; };
+  state.loadRuns = async (projectId, filters = {}) => { state.calls.loadRuns.push({ projectId, filters }); return state.runs; };
+  state.createRun = async (projectId, payload) => {
+    state.calls.createRun.push({ projectId, payload });
+    const run = scoringRun({ id: `created-${state.calls.createRun.length}`, targetType: payload.targetType, targetId: payload.targetId, draftId: payload.draftId, platformProfile: payload.profileKey });
+    state.runs = [run, ...state.runs];
+    return run;
+  };
   return state;
 }
 
@@ -508,6 +617,24 @@ function createContinuityHookMocks(state) {
       createChapterPattern: state.pattern.create,
       updateChapterPattern: state.pattern.update,
       deleteChapterPattern: state.pattern.delete,
+    }),
+  };
+}
+
+function createScoringHookMocks(state) {
+  return {
+    useScoringActions: () => ({
+      profiles: state.scoring.profiles,
+      assets: state.scoring.assets,
+      runs: state.scoring.runs,
+      loading: state.scoring.loading,
+      formLoading: state.scoring.formLoading,
+      error: state.scoring.error,
+      setError: state.scoring.setError,
+      loadProfiles: state.scoring.loadProfiles,
+      loadAssets: state.scoring.loadAssets,
+      loadRuns: state.scoring.loadRuns,
+      createRun: state.scoring.createRun,
     }),
   };
 }
@@ -717,6 +844,56 @@ function pattern(overrides) {
     conflictAdvice: {},
     status: 'active',
     metadata: {},
+    createdAt: '2026-05-05T12:00:00.000Z',
+    updatedAt: '2026-05-05T12:00:00.000Z',
+    ...overrides,
+  };
+}
+
+function scoringAsset(overrides) {
+  return {
+    targetType: 'chapter_craft_brief',
+    targetId: 'chapter-1',
+    targetRef: { chapterId: 'chapter-1' },
+    title: 'Chapter scoring asset',
+    volumeNo: 1,
+    chapterNo: 1,
+    draftId: null,
+    draftVersion: null,
+    source: 'Chapter.craftBrief',
+    updatedAt: '2026-05-05T12:00:00.000Z',
+    isScoreable: true,
+    unavailableReason: null,
+    hasScoringReports: false,
+    latestRun: null,
+    ...overrides,
+  };
+}
+
+function scoringRun(overrides) {
+  return {
+    id: 'score-x',
+    projectId: 'project-alpha',
+    chapterId: 'chapter-1',
+    draftId: null,
+    agentRunId: null,
+    targetType: 'chapter_craft_brief',
+    targetId: 'chapter-1',
+    targetRef: { chapterId: 'chapter-1' },
+    platformProfile: 'generic_longform',
+    profileVersion: 'profile.generic_longform.v1',
+    promptVersion: 'multidimensional_scoring.prompt.v1',
+    rubricVersion: 'multidimensional_scoring.rubric.v1',
+    overallScore: 82,
+    verdict: 'pass',
+    summary: 'Scoring report summary',
+    dimensions: [],
+    issues: [],
+    revisionPriorities: [],
+    extractedElements: {},
+    targetSnapshot: {},
+    sourceTrace: {},
+    llmMetadata: {},
     createdAt: '2026-05-05T12:00:00.000Z',
     updatedAt: '2026-05-05T12:00:00.000Z',
     ...overrides,

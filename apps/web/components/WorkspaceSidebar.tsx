@@ -3,7 +3,7 @@ import { ProjectSummary, ChapterSummary, VolumeSummary } from '../types/dashboar
 import { ThemeSwitcher } from './ThemeSwitcher';
 import { VolumeChapterTree } from './VolumeChapterTree';
 
-type ActiveView = 'editor' | 'outline' | 'lore' | 'story-bible' | 'writing-rules' | 'scene-bank' | 'pacing' | 'chapter-patterns' | 'quality-reports' | 'relationships' | 'timeline' | 'character-state' | 'generation-config' | 'projects' | 'volumes' | 'guided' | 'prompts' | 'foreshadow' | 'generate' | 'agent' | 'llm-config';
+type ActiveView = 'editor' | 'outline' | 'lore' | 'story-bible' | 'writing-rules' | 'scene-bank' | 'pacing' | 'chapter-patterns' | 'quality-reports' | 'scoring-center' | 'relationships' | 'timeline' | 'character-state' | 'generation-config' | 'projects' | 'volumes' | 'guided' | 'prompts' | 'foreshadow' | 'generate' | 'agent' | 'llm-config';
 
 interface Props {
   projects: ProjectSummary[];
@@ -24,6 +24,7 @@ interface Props {
   onNavigateToPacing: () => void;
   onNavigateToChapterPatterns: () => void;
   onNavigateToQualityReports: () => void;
+  onNavigateToScoringCenter: () => void;
   onNavigateToRelationships: () => void;
   onNavigateToTimeline: () => void;
   onNavigateToCharacterState: () => void;
@@ -58,6 +59,7 @@ export function WorkspaceSidebar({
   onNavigateToPacing,
   onNavigateToChapterPatterns,
   onNavigateToQualityReports,
+  onNavigateToScoringCenter,
   onNavigateToRelationships,
   onNavigateToTimeline,
   onNavigateToCharacterState,
@@ -125,6 +127,14 @@ export function WorkspaceSidebar({
                   isActive={activeView === 'outline'}
                   activeColor="#f59e0b"
                   onClick={onNavigateToOutline}
+                />
+              </li>
+              <li>
+                <NavButton
+                  label="Scoring Center"
+                  isActive={activeView === 'scoring-center'}
+                  activeColor="#22c55e"
+                  onClick={onNavigateToScoringCenter}
                 />
               </li>
               <li>

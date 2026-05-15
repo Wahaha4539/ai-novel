@@ -18,6 +18,11 @@ export class ScoringController {
     return this.scoringService.listRuns(projectId, query);
   }
 
+  @Get('projects/:projectId/scoring/assets')
+  listAssets(@Param('projectId') projectId: string) {
+    return this.scoringService.listAssets(projectId);
+  }
+
   @Post('projects/:projectId/scoring/runs')
   createRun(@Param('projectId') projectId: string, @Body() dto: CreateScoringRunDto) {
     return this.scoringService.createRun(projectId, dto);

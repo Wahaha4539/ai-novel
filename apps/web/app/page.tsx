@@ -24,15 +24,16 @@ import { SceneBankPanel } from '../components/SceneBankPanel';
 import { PacingPanel } from '../components/PacingPanel';
 import { ChapterPatternPanel } from '../components/ChapterPatternPanel';
 import { QualityReportPanel } from '../components/QualityReportPanel';
+import { ScoringCenterPanel } from '../components/ScoringCenterPanel';
 import { AgentFloatingOrb } from '../components/agent/AgentFloatingOrb';
 import { AgentWorkspace } from '../components/agent/AgentWorkspace';
 import { AgentPageContext } from '../hooks/useAgentRun';
 import type { PassageAgentContext } from '../components/editor/passageSelection';
 
-type ActiveView = 'editor' | 'outline' | 'lore' | 'story-bible' | 'writing-rules' | 'scene-bank' | 'pacing' | 'chapter-patterns' | 'quality-reports' | 'relationships' | 'timeline' | 'character-state' | 'generation-config' | 'projects' | 'volumes' | 'guided' | 'prompts' | 'foreshadow' | 'generate' | 'agent' | 'llm-config';
+type ActiveView = 'editor' | 'outline' | 'lore' | 'story-bible' | 'writing-rules' | 'scene-bank' | 'pacing' | 'chapter-patterns' | 'quality-reports' | 'scoring-center' | 'relationships' | 'timeline' | 'character-state' | 'generation-config' | 'projects' | 'volumes' | 'guided' | 'prompts' | 'foreshadow' | 'generate' | 'agent' | 'llm-config';
 
 const WORKSPACE_STATE_STORAGE_KEY = 'ai-novel:workspace-state';
-const ACTIVE_VIEWS: ActiveView[] = ['editor', 'outline', 'lore', 'story-bible', 'writing-rules', 'scene-bank', 'pacing', 'chapter-patterns', 'quality-reports', 'relationships', 'timeline', 'character-state', 'generation-config', 'projects', 'volumes', 'guided', 'prompts', 'foreshadow', 'generate', 'agent', 'llm-config'];
+const ACTIVE_VIEWS: ActiveView[] = ['editor', 'outline', 'lore', 'story-bible', 'writing-rules', 'scene-bank', 'pacing', 'chapter-patterns', 'quality-reports', 'scoring-center', 'relationships', 'timeline', 'character-state', 'generation-config', 'projects', 'volumes', 'guided', 'prompts', 'foreshadow', 'generate', 'agent', 'llm-config'];
 
 type WorkspaceState = {
   activeView: ActiveView;
@@ -192,6 +193,10 @@ export default function HomePage() {
     setActiveView('quality-reports');
   }, []);
 
+  const handleNavigateToScoringCenter = useCallback(() => {
+    setActiveView('scoring-center');
+  }, []);
+
   const handleNavigateToRelationships = useCallback(() => {
     setActiveView('relationships');
   }, []);
@@ -321,6 +326,7 @@ export default function HomePage() {
         onNavigateToPacing={handleNavigateToPacing}
         onNavigateToChapterPatterns={handleNavigateToChapterPatterns}
         onNavigateToQualityReports={handleNavigateToQualityReports}
+        onNavigateToScoringCenter={handleNavigateToScoringCenter}
         onNavigateToRelationships={handleNavigateToRelationships}
         onNavigateToTimeline={handleNavigateToTimeline}
         onNavigateToCharacterState={handleNavigateToCharacterState}
@@ -365,6 +371,8 @@ export default function HomePage() {
           <ChapterPatternPanel selectedProject={selectedProject} selectedProjectId={data.selectedProjectId} />
         ) : activeView === 'quality-reports' ? (
           <QualityReportPanel selectedProject={selectedProject} selectedProjectId={data.selectedProjectId} selectedChapterId={data.selectedChapterId} chapters={chapters} />
+        ) : activeView === 'scoring-center' ? (
+          <ScoringCenterPanel selectedProject={selectedProject} selectedProjectId={data.selectedProjectId} />
         ) : activeView === 'relationships' ? (
           <RelationshipMapPanel selectedProject={selectedProject} selectedProjectId={data.selectedProjectId} />
         ) : activeView === 'timeline' ? (

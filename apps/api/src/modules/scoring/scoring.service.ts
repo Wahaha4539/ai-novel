@@ -134,6 +134,51 @@ export class ScoringService {
     });
   }
 
+  async listAssets(projectId: string) {
+    await this.assertProjectExists(projectId);
+    const [assets, latestRuns] = await Promise.all([
+      this.targetLoader.listAssets(projectId),
+      this.prisma.scoringRun.findMany({
+        where: { projectId },
+        orderBy: { createdAt: 'desc' },
+        take: 500,
+        select: {
+          id: true,
+          targetType: true,
+          targetId: true,
+          draftId: true,
+          platformProfile: true,
+          overallScore: true,
+          verdict: true,
+          createdAt: true,
+        },
+      }),
+    ]);
+
+    const latestRunByAsset = new Map<string, typeof latestRuns[number]>();
+    for (const run of latestRuns) {
+      const key = scoringAssetKey(run.targetType, run.targetId, run.draftId);
+      if (!latestRunByAsset.has(key)) latestRunByAsset.set(key, run);
+    }
+
+    return assets.map((asset) => {
+      const run = latestRunByAsset.get(scoringAssetKey(asset.targetType, asset.targetId ?? null, asset.draftId ?? null));
+      return {
+        ...asset,
+        hasScoringReports: Boolean(run),
+        latestRun: run
+          ? {
+              id: run.id,
+              platformProfile: run.platformProfile,
+              overallScore: run.overallScore,
+              verdict: run.verdict,
+              createdAt: run.createdAt.toISOString(),
+            }
+          : null,
+      };
+    });
+  }
+
   async getRun(projectId: string, runId: string) {
     await this.assertProjectExists(projectId);
     const run = await this.prisma.scoringRun.findFirst({ where: { id: runId, projectId } });
@@ -149,6 +194,10 @@ export class ScoringService {
 
 function toJson(value: unknown): Prisma.InputJsonValue {
   return value as Prisma.InputJsonValue;
+}
+
+function scoringAssetKey(targetType: string, targetId?: string | null, draftId?: string | null) {
+  return `${targetType}:${targetId ?? ''}:${draftId ?? ''}`;
 }
 
 export type LoadedScoringTargetForTests = LoadedScoringTarget;
