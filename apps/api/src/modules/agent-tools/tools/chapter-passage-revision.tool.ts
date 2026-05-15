@@ -28,6 +28,9 @@ interface PreviousPassagePreview {
   replacementText?: string;
   editSummary?: string;
   risks?: string[];
+  previousReplacementText?: string;
+  previousEditSummary?: string;
+  previousRisks?: string[];
 }
 
 interface ReviseChapterPassagePreviewInput {
@@ -718,10 +721,30 @@ export class ReviseChapterPassagePreviewTool implements BaseTool<ReviseChapterPa
   private previousPreviewValue(value: PreviousPassagePreview | undefined) {
     if (!value) return undefined;
     const record = this.asRecord(value);
-    const replacementText = this.requiredString(record.replacementText, 'context.previousPreview.replacementText', { preserveWhitespace: true });
+    const replacementTextValue = record.replacementText ?? record.previousReplacementText;
+    const replacementTextField = record.replacementText !== undefined
+      ? 'context.previousPreview.replacementText'
+      : 'context.previousPreview.previousReplacementText';
+    const replacementText = this.requiredString(replacementTextValue, replacementTextField, { preserveWhitespace: true });
     const previewId = record.previewId === undefined ? undefined : this.requiredString(record.previewId, 'context.previousPreview.previewId');
-    const editSummary = record.editSummary === undefined ? undefined : this.requiredString(record.editSummary, 'context.previousPreview.editSummary');
-    const risks = record.risks === undefined ? [] : this.requiredStringArray(record.risks, 'context.previousPreview.risks');
+    const editSummaryValue = record.editSummary ?? record.previousEditSummary;
+    const editSummary = editSummaryValue === undefined
+      ? undefined
+      : this.requiredString(
+        editSummaryValue,
+        record.editSummary !== undefined
+          ? 'context.previousPreview.editSummary'
+          : 'context.previousPreview.previousEditSummary',
+      );
+    const risksValue = record.risks ?? record.previousRisks;
+    const risks = risksValue === undefined
+      ? []
+      : this.requiredStringArray(
+        risksValue,
+        record.risks !== undefined
+          ? 'context.previousPreview.risks'
+          : 'context.previousPreview.previousRisks',
+      );
     return {
       ...(previewId ? { previewId } : {}),
       replacementText,

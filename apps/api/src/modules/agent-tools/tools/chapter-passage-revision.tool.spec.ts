@@ -341,6 +341,29 @@ test('revise_chapter_passage_preview forwards previous preview context for follo
   });
 });
 
+test('revise_chapter_passage_preview accepts legacy previous preview aliases during follow-up feedback', async () => {
+  const { tool, llm } = createTool();
+  await tool.run({
+    ...baseInput,
+    context: {
+      previousPreview: {
+        previewId: 'preview-legacy',
+        previousReplacementText: '他没有立刻开门，钥匙在掌心里冰得生疑。',
+        previousEditSummary: '旧版预览。',
+        previousRisks: ['衔接偏冷'],
+      },
+    },
+  }, toolContext);
+
+  const payload = JSON.parse((llm.calls[0].messages as Array<{ role: string; content: string }>)[1].content) as Record<string, any>;
+  assert.deepEqual(payload.localContext.previousPreview, {
+    previewId: 'preview-legacy',
+    replacementText: '他没有立刻开门，钥匙在掌心里冰得生疑。',
+    editSummary: '旧版预览。',
+    risks: ['衔接偏冷'],
+  });
+});
+
 test('revise_chapter_passage_preview throws when LLM generation fails', async () => {
   const llm = createLlm([new Error('LLM timeout')]);
   const { tool } = createTool(createPrisma(), llm);
