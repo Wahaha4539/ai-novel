@@ -2,6 +2,7 @@ import assert from 'node:assert/strict';
 import {
   buildPassageAgentContext,
   computePassagePopoverPosition,
+  computePassageSelectionTriggerPosition,
   computeSelectedParagraphRange,
   getPassageAgentDisabledReason,
   normalizeTextSelection,
@@ -127,6 +128,26 @@ test('computePassagePopoverPosition keeps a tall preview popover inside the work
   );
 
   assert.deepEqual(position, { top: 16, left: 552 });
+});
+
+test('computePassageSelectionTriggerPosition anchors the small trigger to the tail of the selection', () => {
+  const position = computePassageSelectionTriggerPosition(
+    { top: 420, right: 520, bottom: 444, left: 440, width: 80, height: 24 },
+    { width: 1440, height: 900 },
+    { triggerSize: 32, viewportPadding: 12, anchorGap: 6 },
+  );
+
+  assert.deepEqual(position, { top: 450, left: 505.6 });
+});
+
+test('computePassageSelectionTriggerPosition flips above the selection and stays inside the workspace edge', () => {
+  const position = computePassageSelectionTriggerPosition(
+    { top: 668, right: 1130, bottom: 692, left: 1090, width: 40, height: 24 },
+    { top: 0, left: 280, right: 1140, bottom: 700, width: 860, height: 700 },
+    { triggerSize: 32, viewportPadding: 12, anchorGap: 6 },
+  );
+
+  assert.deepEqual(position, { top: 630, left: 1096 });
 });
 
 test('pickPassageSelectionAnchorRect follows the active selection edge instead of pinning to the first line', () => {

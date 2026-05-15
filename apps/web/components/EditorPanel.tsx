@@ -14,6 +14,7 @@ import React, { useEffect, useState, useCallback, useRef } from 'react';
 import { ProjectSummary, ChapterSummary, ChapterDraft, VolumeSummary } from '../types/dashboard';
 import { useChapterGeneration } from '../hooks/useChapterGeneration';
 import { PassageAgentPopover } from './editor/PassageAgentPopover';
+import { PassageSelectionTrigger } from './editor/PassageSelectionTrigger';
 import { buildDraftViewPair, isPolishedDraft, resolvePreferredDraftViewMode } from './editor/draftVersionState';
 import { useInlinePassageRevision } from './editor/useInlinePassageRevision';
 import { usePassageSelection } from './editor/usePassageSelection';
@@ -61,6 +62,9 @@ export function EditorPanel({ selectedProject, selectedChapterId, chapters, volu
   const [saveError, setSaveError] = useState('');
   const [saveNotice, setSaveNotice] = useState('');
   const [passagePopoverSize, setPassagePopoverSize] = useState<{ width: number; height: number } | undefined>(undefined);
+  const [isPassagePopoverOpen, setIsPassagePopoverOpen] = useState(false);
+  const passagePopoverHideTimerRef = useRef<number | null>(null);
+  const previousPassageSelectionKeyRef = useRef<string>('');
 
   const title = isGlobal
     ? selectedProject?.title || '未选择项目'
@@ -115,6 +119,9 @@ export function EditorPanel({ selectedProject, selectedChapterId, chapters, volu
       if (isGlobal || !selectedChapterId) return;
       await reloadDraftVersionsIntoEditor(selectedChapterId);
       setSaveNotice('已应用局部修订，正文已写入新的草稿版本。');
+      clearPassagePopoverHideTimer();
+      setIsPassagePopoverOpen(false);
+      setPassagePopoverSize(undefined);
       passageSelection.clearSelection();
       await onChapterSaved?.(selectedChapterId);
     },
@@ -156,11 +163,57 @@ export function EditorPanel({ selectedProject, selectedChapterId, chapters, volu
       // useInlinePassageRevision already exposes the surfaced error state for the popover.
     }
   }, [inlinePassageRevision, onSubmitPassageAgent, previewMatchesCurrentSelection, selectedProject?.id]);
+  const passageSelectionKey = passageAgentContext
+    ? `${passageAgentContext.currentDraftId}:${passageAgentContext.selectedRange.start}:${passageAgentContext.selectedRange.end}`
+    : '';
+  const clearPassagePopoverHideTimer = useCallback(() => {
+    if (passagePopoverHideTimerRef.current === null || typeof window === 'undefined') return;
+    window.clearTimeout(passagePopoverHideTimerRef.current);
+    passagePopoverHideTimerRef.current = null;
+  }, []);
+  const openPassagePopover = useCallback(() => {
+    clearPassagePopoverHideTimer();
+    setIsPassagePopoverOpen(true);
+  }, [clearPassagePopoverHideTimer]);
+  const schedulePassagePopoverHide = useCallback(() => {
+    if (typeof window === 'undefined') return;
+    if (inlinePassageRevision.loading || inlinePassageRevision.isApplying) return;
+    const activeElement = document.activeElement;
+    if (activeElement instanceof HTMLElement && activeElement.closest('.passage-agent-popover')) {
+      return;
+    }
+    clearPassagePopoverHideTimer();
+    passagePopoverHideTimerRef.current = window.setTimeout(() => {
+      setIsPassagePopoverOpen(false);
+      passagePopoverHideTimerRef.current = null;
+    }, 180);
+  }, [clearPassagePopoverHideTimer, inlinePassageRevision.isApplying, inlinePassageRevision.loading]);
+  const dismissPassageSelection = useCallback(() => {
+    clearPassagePopoverHideTimer();
+    setIsPassagePopoverOpen(false);
+    setPassagePopoverSize(undefined);
+    inlinePassageRevision.reset();
+    passageSelection.clearSelection();
+  }, [clearPassagePopoverHideTimer, inlinePassageRevision.reset, passageSelection.clearSelection]);
+  useEffect(() => {
+    if (previousPassageSelectionKeyRef.current === passageSelectionKey) return;
+    previousPassageSelectionKeyRef.current = passageSelectionKey;
+    clearPassagePopoverHideTimer();
+    setIsPassagePopoverOpen(false);
+    setPassagePopoverSize(undefined);
+    inlinePassageRevision.reset();
+  }, [clearPassagePopoverHideTimer, inlinePassageRevision.reset, passageSelectionKey]);
+  useEffect(() => () => {
+    clearPassagePopoverHideTimer();
+  }, [clearPassagePopoverHideTimer]);
 
   // Auto-load draft when chapter selection changes. AI validation repair creates a
   // new current draft for the same chapter, so draftRefreshKey forces a reload.
   useEffect(() => {
     if (isGlobal || !selectedChapterId) {
+      clearPassagePopoverHideTimer();
+      setIsPassagePopoverOpen(false);
+      setPassagePopoverSize(undefined);
       setContent('');
       setSavedDraftContent('');
       setDraftVersions([]);
@@ -418,41 +471,52 @@ export function EditorPanel({ selectedProject, selectedChapterId, chapters, volu
               disabled={isGenerating}
             />
             {passageAgentContext && passageSelection.selection && (
-              <PassageAgentPopover
-                context={passageAgentContext}
-                position={passageSelection.selection.popoverPosition}
-                disabledReason={passageAgentDisabledReason}
-                submitting={inlinePassageRevision.loading && !inlinePassageRevision.isApplying}
-                applying={inlinePassageRevision.isApplying}
-                error={inlinePassageRevision.error}
-                statusMessage={passageAgentStatusMessage}
-                preview={previewMatchesCurrentSelection ? inlinePassageRevision.preview : null}
-                canApplyPreview={
-                  previewMatchesCurrentSelection
-                  && inlinePassageRevision.canApply
-                  && !hasUnsavedChanges
-                  && !isGenerating
-                  && !isSavingDraft
-                  && !isAutoMaintaining
-                  && !isMarkingComplete
-                }
-                onSubmit={handleSubmitPassageAgent}
-                onApplyPreview={() => inlinePassageRevision.apply()}
-                onSizeChange={(size) => {
-                  setPassagePopoverSize((current) => (
-                    current
-                    && Math.abs(current.width - size.width) < 1
-                    && Math.abs(current.height - size.height) < 1
-                      ? current
-                      : size
-                  ));
-                }}
-                onClose={() => {
-                  inlinePassageRevision.reset();
-                  setPassagePopoverSize(undefined);
-                  passageSelection.clearSelection();
-                }}
-              />
+              <>
+                <PassageSelectionTrigger
+                  position={passageSelection.selection.triggerPosition ?? passageSelection.selection.popoverPosition}
+                  open={isPassagePopoverOpen}
+                  onMouseEnter={() => openPassagePopover()}
+                  onMouseLeave={() => schedulePassagePopoverHide()}
+                  onFocus={() => openPassagePopover()}
+                  onClick={() => openPassagePopover()}
+                />
+                {isPassagePopoverOpen && (
+                  <PassageAgentPopover
+                    context={passageAgentContext}
+                    position={passageSelection.selection.popoverPosition}
+                    disabledReason={passageAgentDisabledReason}
+                    submitting={inlinePassageRevision.loading && !inlinePassageRevision.isApplying}
+                    applying={inlinePassageRevision.isApplying}
+                    error={inlinePassageRevision.error}
+                    statusMessage={passageAgentStatusMessage}
+                    preview={previewMatchesCurrentSelection ? inlinePassageRevision.preview : null}
+                    canApplyPreview={
+                      previewMatchesCurrentSelection
+                      && inlinePassageRevision.canApply
+                      && !hasUnsavedChanges
+                      && !isGenerating
+                      && !isSavingDraft
+                      && !isAutoMaintaining
+                      && !isMarkingComplete
+                    }
+                    onSubmit={handleSubmitPassageAgent}
+                    onApplyPreview={() => inlinePassageRevision.apply()}
+                    onSizeChange={(size) => {
+                      setPassagePopoverSize((current) => (
+                        current
+                        && Math.abs(current.width - size.width) < 1
+                        && Math.abs(current.height - size.height) < 1
+                          ? current
+                          : size
+                      ));
+                    }}
+                    onMouseEnter={() => openPassagePopover()}
+                    onMouseLeave={() => schedulePassagePopoverHide()}
+                    onFocusCapture={() => openPassagePopover()}
+                    onClose={dismissPassageSelection}
+                  />
+                )}
+              </>
             )}
           </div>
         )}

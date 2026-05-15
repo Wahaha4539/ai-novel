@@ -3,6 +3,7 @@
 import { useCallback, useEffect, useMemo, useRef, useState, type KeyboardEvent, type MouseEvent, type RefObject, type SyntheticEvent } from 'react';
 import {
   computePassagePopoverPosition,
+  computePassageSelectionTriggerPosition,
   normalizeTextSelection,
   pickPassageSelectionAnchorRect,
   toAbsolutePassagePopoverPosition,
@@ -48,7 +49,7 @@ export function usePassageSelection({ textareaRef, overlayContainerRef, text, en
 
     setSelection({
       ...snapshot,
-      popoverPosition: getTextareaPopoverPosition(textarea, snapshot.selectedRange, text, overlayContainerRef?.current ?? null, popoverSize),
+      ...getTextareaSelectionOverlayPosition(textarea, snapshot.selectedRange, text, overlayContainerRef?.current ?? null, popoverSize),
     });
   }, [enabled, overlayContainerRef, popoverSize, text, textareaRef]);
 
@@ -77,9 +78,12 @@ export function usePassageSelection({ textareaRef, overlayContainerRef, text, en
         ? {
             ...current,
             selectedParagraphRange: next.selectedParagraphRange,
-            popoverPosition: textarea
-              ? getTextareaPopoverPosition(textarea, next.selectedRange, text, overlayContainerRef?.current ?? null, popoverSize)
-              : current.popoverPosition,
+            ...(textarea
+              ? getTextareaSelectionOverlayPosition(textarea, next.selectedRange, text, overlayContainerRef?.current ?? null, popoverSize)
+              : {
+                  popoverPosition: current.popoverPosition,
+                  triggerPosition: current.triggerPosition,
+                }),
           }
         : null;
     });
@@ -141,7 +145,7 @@ export function usePassageSelection({ textareaRef, overlayContainerRef, text, en
   };
 }
 
-function getTextareaPopoverPosition(
+function getTextareaSelectionOverlayPosition(
   textarea: HTMLTextAreaElement,
   selectedRange: SelectedTextRange,
   text: string,
@@ -154,15 +158,40 @@ function getTextareaPopoverPosition(
     ...(popoverSize?.width ? { popoverWidth: popoverSize.width } : {}),
     ...(popoverSize?.height ? { popoverHeight: popoverSize.height } : {}),
   });
+  const triggerViewportPosition = computePassageSelectionTriggerPosition(anchorRect, viewportRect);
   if (overlayContainer) {
-    return toAbsolutePassagePopoverPosition({
+    return toAbsoluteSelectionOverlayPosition({
       viewportPosition,
       containerRect: viewportRect,
       scrollTop: overlayContainer.scrollTop,
       scrollLeft: overlayContainer.scrollLeft,
-    });
+    }, triggerViewportPosition, viewportRect, overlayContainer);
   }
-  return toFixedPassagePopoverPosition(viewportPosition);
+  return {
+    popoverPosition: toFixedPassagePopoverPosition(viewportPosition),
+    triggerPosition: toFixedPassagePopoverPosition(triggerViewportPosition),
+  };
+}
+
+function toAbsoluteSelectionOverlayPosition(
+  input: {
+    viewportPosition: { top: number; left: number };
+    containerRect: { top: number; left: number };
+    scrollTop?: number;
+    scrollLeft?: number;
+  },
+  triggerViewportPosition: { top: number; left: number },
+  containerRect: { top: number; left: number },
+  overlayContainer: HTMLElement,
+) {
+  return {
+    popoverPosition: toAbsolutePassagePopoverPosition(input),
+    triggerPosition: {
+      top: triggerViewportPosition.top - containerRect.top + overlayContainer.scrollTop,
+      left: triggerViewportPosition.left - containerRect.left + overlayContainer.scrollLeft,
+      strategy: 'absolute' as const,
+    },
+  };
 }
 
 function getTextareaSelectionAnchorRect(

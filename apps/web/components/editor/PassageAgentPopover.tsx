@@ -1,6 +1,6 @@
 'use client';
 
-import { useEffect, useMemo, useRef, useState } from 'react';
+import { useEffect, useMemo, useRef, useState, type FocusEventHandler, type MouseEventHandler } from 'react';
 import type { ChapterPassageRevisionPreviewView } from '../agent/chapterPassageRevisionPreview';
 import {
   PASSAGE_QUICK_INTENTS,
@@ -22,6 +22,9 @@ interface PassageAgentPopoverProps {
   onSubmit: (message: string, context: PassageAgentContext) => void | Promise<void>;
   onApplyPreview?: () => void | Promise<void>;
   onSizeChange?: (size: { width: number; height: number }) => void;
+  onMouseEnter?: MouseEventHandler<HTMLDivElement>;
+  onMouseLeave?: MouseEventHandler<HTMLDivElement>;
+  onFocusCapture?: FocusEventHandler<HTMLDivElement>;
   onClose: () => void;
 }
 
@@ -38,6 +41,9 @@ export function PassageAgentPopover({
   onSubmit,
   onApplyPreview,
   onSizeChange,
+  onMouseEnter,
+  onMouseLeave,
+  onFocusCapture,
   onClose,
 }: PassageAgentPopoverProps) {
   const [instruction, setInstruction] = useState('');
@@ -52,7 +58,7 @@ export function PassageAgentPopover({
   const previewText = preview?.replacementText?.trim();
   const riskItems = [...(preview?.risks ?? []), ...(preview?.validation.issues ?? [])];
   const draftViewModeLabel = context.currentDraftViewMode === 'polished'
-    ? 'AI润色稿'
+    ? 'AI 润色稿'
     : context.currentDraftViewMode === 'draft'
       ? '当前稿'
       : '';
@@ -96,6 +102,9 @@ export function PassageAgentPopover({
       style={position ? { position: position.strategy, top: position.top, left: position.left } : undefined}
       role="dialog"
       aria-label="正文选区 Agent"
+      onMouseEnter={onMouseEnter}
+      onMouseLeave={onMouseLeave}
+      onFocusCapture={onFocusCapture}
     >
       <div className="passage-agent-popover__header">
         <div>

@@ -27,6 +27,7 @@ export type PassageSelectionSnapshot = {
   selectedParagraphRange: SelectedParagraphRange;
   selectedText: string;
   popoverPosition?: PassagePopoverPosition;
+  triggerPosition?: PassagePopoverPosition;
 };
 
 export type PassagePopoverAnchorRect = {
@@ -163,6 +164,43 @@ export function computePassagePopoverPosition(
   const fitsAbove = preferredTop >= minTop;
   const fitsBelow = fallbackTop + popoverHeight <= viewportBottom - viewportPadding;
   const top = fitsAbove || !fitsBelow
+    ? clampNumber(preferredTop, minTop, maxTop)
+    : clampNumber(fallbackTop, minTop, maxTop);
+
+  return { top, left };
+}
+
+export function computePassageSelectionTriggerPosition(
+  anchorRect: PassagePopoverAnchorRect,
+  viewport: PassagePopoverViewportRect,
+  options?: {
+    triggerSize?: number;
+    viewportPadding?: number;
+    anchorGap?: number;
+  },
+) {
+  const triggerSize = options?.triggerSize ?? 32;
+  const viewportPadding = options?.viewportPadding ?? 12;
+  const anchorGap = options?.anchorGap ?? 6;
+  const viewportLeft = viewport.left ?? 0;
+  const viewportTop = viewport.top ?? 0;
+  const viewportRight = viewport.right ?? (viewportLeft + viewport.width);
+  const viewportBottom = viewport.bottom ?? (viewportTop + viewport.height);
+
+  const minLeft = viewportLeft + viewportPadding;
+  const maxLeft = Math.max(minLeft, viewportRight - triggerSize - viewportPadding);
+  const left = clampNumber(
+    anchorRect.right - (triggerSize * 0.45),
+    minLeft,
+    maxLeft,
+  );
+
+  const preferredTop = anchorRect.bottom + anchorGap;
+  const fallbackTop = anchorRect.top - triggerSize - anchorGap;
+  const minTop = viewportTop + viewportPadding;
+  const maxTop = Math.max(minTop, viewportBottom - triggerSize - viewportPadding);
+  const fitsBelow = preferredTop + triggerSize <= viewportBottom - viewportPadding;
+  const top = fitsBelow
     ? clampNumber(preferredTop, minTop, maxTop)
     : clampNumber(fallbackTop, minTop, maxTop);
 
