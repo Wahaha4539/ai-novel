@@ -3,7 +3,28 @@ import { ProjectSummary, ChapterSummary, VolumeSummary } from '../types/dashboar
 import { ThemeSwitcher } from './ThemeSwitcher';
 import { VolumeChapterTree } from './VolumeChapterTree';
 
-type ActiveView = 'editor' | 'outline' | 'lore' | 'story-bible' | 'writing-rules' | 'scene-bank' | 'pacing' | 'chapter-patterns' | 'quality-reports' | 'scoring-center' | 'relationships' | 'timeline' | 'character-state' | 'generation-config' | 'projects' | 'volumes' | 'guided' | 'prompts' | 'foreshadow' | 'generate' | 'agent' | 'llm-config';
+type ActiveView =
+  | 'editor'
+  | 'outline'
+  | 'lore'
+  | 'story-bible'
+  | 'writing-rules'
+  | 'scene-bank'
+  | 'pacing'
+  | 'chapter-patterns'
+  | 'quality-reports'
+  | 'scoring-center'
+  | 'relationships'
+  | 'timeline'
+  | 'character-state'
+  | 'generation-config'
+  | 'projects'
+  | 'volumes'
+  | 'prompts'
+  | 'foreshadow'
+  | 'generate'
+  | 'agent'
+  | 'llm-config';
 
 interface Props {
   projects: ProjectSummary[];
@@ -16,6 +37,7 @@ interface Props {
   showProjectManagement: boolean;
   activeView: ActiveView;
   onNavigateToProjects: () => void;
+  onNavigateToEditor: () => void;
   onNavigateToOutline: () => void;
   onNavigateToLore: () => void;
   onNavigateToStoryBible: () => void;
@@ -30,7 +52,6 @@ interface Props {
   onNavigateToCharacterState: () => void;
   onNavigateToGenerationConfig: () => void;
   onNavigateToVolumes: () => void;
-  onNavigateToGuided: () => void;
   onNavigateToPrompts: () => void;
   onNavigateToForeshadow: () => void;
   onNavigateToGenerate: () => void;
@@ -39,6 +60,20 @@ interface Props {
   onSelectVolume: (id: string) => void;
   onDeleteChapters: (chapterIds: string[]) => Promise<boolean>;
 }
+
+type NavItem = {
+  view: ActiveView;
+  label: string;
+  detail: string;
+  accent: string;
+  onClick: () => void;
+  step?: string;
+};
+
+type NavSection = {
+  title: string;
+  items: NavItem[];
+};
 
 export function WorkspaceSidebar({
   projects,
@@ -51,6 +86,7 @@ export function WorkspaceSidebar({
   showProjectManagement,
   activeView,
   onNavigateToProjects,
+  onNavigateToEditor,
   onNavigateToOutline,
   onNavigateToLore,
   onNavigateToStoryBible,
@@ -65,7 +101,6 @@ export function WorkspaceSidebar({
   onNavigateToCharacterState,
   onNavigateToGenerationConfig,
   onNavigateToVolumes,
-  onNavigateToGuided,
   onNavigateToPrompts,
   onNavigateToForeshadow,
   onNavigateToGenerate,
@@ -76,311 +111,173 @@ export function WorkspaceSidebar({
 }: Props) {
   const selectedProject = projects.find((p) => p.id === selectedProjectId);
 
+  const workflowItems: NavItem[] = [
+    {
+      view: 'agent',
+      label: 'Agent 工作台',
+      detail: '任务 / 计划 / 审批',
+      accent: '#22c55e',
+      step: '01',
+      onClick: onNavigateToAgent,
+    },
+    {
+      view: 'volumes',
+      label: '卷与章节',
+      detail: '卷纲 / 章目 / 顺序',
+      accent: '#14b8a6',
+      step: '02',
+      onClick: onNavigateToVolumes,
+    },
+    {
+      view: 'editor',
+      label: '正文编辑',
+      detail: selectedChapterId === 'all' ? '选择章节后写作' : '当前章节正文',
+      accent: '#f59e0b',
+      step: '03',
+      onClick: onNavigateToEditor,
+    },
+    {
+      view: 'generate',
+      label: '批量生成',
+      detail: '章节正文生产',
+      accent: '#06b6d4',
+      step: '04',
+      onClick: onNavigateToGenerate,
+    },
+  ];
+
+  const navSections: NavSection[] = [
+    {
+      title: '故事规划',
+      items: [
+        { view: 'outline', label: '剧情大纲', detail: '主线 / 卷纲', accent: '#f97316', onClick: onNavigateToOutline },
+        { view: 'story-bible', label: '世界设定', detail: '规则 / 地点 / 势力', accent: '#10b981', onClick: onNavigateToStoryBible },
+        { view: 'lore', label: '角色与设定', detail: '人物 / 设定条目', accent: '#8b5cf6', onClick: onNavigateToLore },
+        { view: 'relationships', label: '人物关系', detail: '关系网 / 变化', accent: '#14b8a6', onClick: onNavigateToRelationships },
+        { view: 'timeline', label: '时间线', detail: '事件 / 因果', accent: '#6366f1', onClick: onNavigateToTimeline },
+      ],
+    },
+    {
+      title: '写作素材',
+      items: [
+        { view: 'scene-bank', label: '场景库', detail: '场景卡 / 冲突', accent: '#f97316', onClick: onNavigateToSceneBank },
+        { view: 'pacing', label: '节奏控制', detail: '节拍 / 密度', accent: '#22c55e', onClick: onNavigateToPacing },
+        { view: 'chapter-patterns', label: '章节模式', detail: '结构模板', accent: '#a855f7', onClick: onNavigateToChapterPatterns },
+        { view: 'foreshadow', label: '伏笔看板', detail: '埋设 / 回收', accent: '#ef4444', onClick: onNavigateToForeshadow },
+        { view: 'writing-rules', label: '写作规则', detail: '风格 / 禁写', accent: '#f43f5e', onClick: onNavigateToWritingRules },
+      ],
+    },
+    {
+      title: '质量与运营',
+      items: [
+        { view: 'scoring-center', label: '评分中心', detail: '多维评分', accent: '#22c55e', onClick: onNavigateToScoringCenter },
+        { view: 'quality-reports', label: '质量报告', detail: '审稿 / 问题', accent: '#0ea5e9', onClick: onNavigateToQualityReports },
+        { view: 'character-state', label: '角色状态', detail: '阶段状态', accent: '#38bdf8', onClick: onNavigateToCharacterState },
+      ],
+    },
+    {
+      title: '系统配置',
+      items: [
+        { view: 'generation-config', label: '生成配置', detail: '模型参数', accent: '#38bdf8', onClick: onNavigateToGenerationConfig },
+        { view: 'prompts', label: '提示词管理', detail: '模板 / 版本', accent: '#f59e0b', onClick: onNavigateToPrompts },
+      ],
+    },
+  ];
+
   return (
-    <aside className="workspace-sidebar flex flex-col shrink-0 h-full" style={{ background: 'var(--bg-sidebar)', backdropFilter: 'blur(24px)', overflow: 'hidden' }}>
-      {/* Project Header — clickable to open project management */}
-      <div
-        className="p-5"
-        style={{
-          borderBottom: '1px solid var(--border-dim)',
-          cursor: 'pointer',
-          transition: 'background 0.2s ease',
-        }}
+    <aside className="workspace-sidebar workspace-sidebar-redesign flex flex-col shrink-0 h-full">
+      <button
+        type="button"
+        className={`workspace-project-switcher ${showProjectManagement ? 'workspace-project-switcher--active' : ''}`}
         onClick={onNavigateToProjects}
-        onMouseEnter={(e) => { e.currentTarget.style.background = 'var(--bg-hover-subtle)'; }}
-        onMouseLeave={(e) => { e.currentTarget.style.background = 'transparent'; }}
       >
-        <h2
-          className="text-sm font-bold mb-1 flex items-center gap-2"
-          style={{
-            textTransform: 'uppercase',
-            letterSpacing: '0.1em',
-            color: showProjectManagement ? 'var(--accent-cyan)' : 'var(--text-dim)',
-          }}
-        >
-          <svg xmlns="http://www.w3.org/2000/svg" width="14" height="14" fill="none" viewBox="0 0 24 24" stroke="currentColor" style={{ opacity: 0.8 }}>
-            <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M3 7v10a2 2 0 002 2h14a2 2 0 002-2V9a2 2 0 00-2-2h-6l-2-2H5a2 2 0 00-2 2z" />
-          </svg>
-          项目
-        </h2>
-        {selectedProject ? (
-          <div className="text-sm font-medium truncate" style={{ color: 'var(--text-main)' }}>
-            {selectedProject.title}
-          </div>
-        ) : (
-          <div className="text-xs" style={{ color: 'var(--text-dim)' }}>
-            点击选择或管理项目
-          </div>
-        )}
-      </div>
+        <span className="workspace-project-switcher__eyebrow">项目</span>
+        <span className="workspace-project-switcher__title">
+          {selectedProject ? selectedProject.title : '选择或创建项目'}
+        </span>
+        <span className="workspace-project-switcher__meta">
+          {selectedProject ? `${volumes.length} 卷 / ${chapters.length} 章` : `${projects.length} 个项目`}
+        </span>
+      </button>
 
-      {/* Conditional nav — only show when a project is selected and not in project management mode */}
-      {selectedProjectId && !showProjectManagement && (
-        <nav className="flex-1 p-3 space-y-6" style={{ overflowY: 'auto' }}>
-          {/* Core Navigation Section */}
-          <div>
-            <div className="px-3 mb-2 font-bold text-slate-500" style={{ fontSize: '0.65rem', textTransform: 'uppercase', letterSpacing: '0.2em' }}>全局创作</div>
-            <ul className="space-y-1">
-              <li>
-                <NavButton
-                  label="剧情大纲 (Outline)"
-                  isActive={activeView === 'outline'}
-                  activeColor="#f59e0b"
-                  onClick={onNavigateToOutline}
-                />
-              </li>
-              <li>
-                <NavButton
-                  label="Scoring Center"
-                  isActive={activeView === 'scoring-center'}
-                  activeColor="#22c55e"
-                  onClick={onNavigateToScoringCenter}
-                />
-              </li>
-              <li>
-                <NavButton
-                  label="角色与设定 (Lore)"
-                  isActive={activeView === 'lore'}
-                  activeColor="#8b5cf6"
-                  onClick={onNavigateToLore}
-                />
-              </li>
-              <li>
-                <NavButton
-                  label="世界设定 (Story Bible)"
-                  isActive={activeView === 'story-bible'}
-                  activeColor="#10b981"
-                  onClick={onNavigateToStoryBible}
-                />
-              </li>
-              <li>
-                <NavButton
-                  label="写作规则 (Rules)"
-                  isActive={activeView === 'writing-rules'}
-                  activeColor="#f43f5e"
-                  onClick={onNavigateToWritingRules}
-                />
-              </li>
-              <li>
-                <NavButton
-                  label="场景库 (Scenes)"
-                  isActive={activeView === 'scene-bank'}
-                  activeColor="#f97316"
-                  onClick={onNavigateToSceneBank}
-                />
-              </li>
-              <li>
-                <NavButton
-                  label="节奏控制 (Pacing)"
-                  isActive={activeView === 'pacing'}
-                  activeColor="#22c55e"
-                  onClick={onNavigateToPacing}
-                />
-              </li>
-              <li>
-                <NavButton
-                  label="章节模式 (Patterns)"
-                  isActive={activeView === 'chapter-patterns'}
-                  activeColor="#a855f7"
-                  onClick={onNavigateToChapterPatterns}
-                />
-              </li>
-              <li>
-                <NavButton
-                  label="质量报告 (Quality)"
-                  isActive={activeView === 'quality-reports'}
-                  activeColor="#0ea5e9"
-                  onClick={onNavigateToQualityReports}
-                />
-              </li>
-              <li>
-                <NavButton
-                  label="人物关系 (Relationships)"
-                  isActive={activeView === 'relationships'}
-                  activeColor="#14b8a6"
-                  onClick={onNavigateToRelationships}
-                />
-              </li>
-              <li>
-                <NavButton
-                  label="时间线 (Timeline)"
-                  isActive={activeView === 'timeline'}
-                  activeColor="#6366f1"
-                  onClick={onNavigateToTimeline}
-                />
-              </li>
-              <li>
-                <NavButton
-                  label="角色状态 (State)"
-                  isActive={activeView === 'character-state'}
-                  activeColor="#38bdf8"
-                  onClick={onNavigateToCharacterState}
-                />
-              </li>
-              <li>
-                <NavButton
-                  label="生成配置 (Generation Config)"
-                  isActive={activeView === 'generation-config'}
-                  activeColor="#38bdf8"
-                  onClick={onNavigateToGenerationConfig}
-                />
-              </li>
-              <li>
-                <NavButton
-                  label="卷管理 (Volumes)"
-                  isActive={activeView === 'volumes'}
-                  activeColor="#14b8a6"
-                  onClick={onNavigateToVolumes}
-                />
-              </li>
-              <li>
-                <NavButton
-                  label="✨ 创作引导 (AI)"
-                  isActive={activeView === 'guided'}
-                  activeColor="#ec4899"
-                  onClick={onNavigateToGuided}
-                />
-              </li>
-              <li>
-                <NavButton
-                  label="🤖 AI 生成 (Generate)"
-                  isActive={activeView === 'generate'}
-                  activeColor="#06b6d4"
-                  onClick={onNavigateToGenerate}
-                />
-              </li>
-              <li>
-                <NavButton
-                  label="🧠 Agent 工作台"
-                  isActive={activeView === 'agent'}
-                  activeColor="#22c55e"
-                  onClick={onNavigateToAgent}
-                />
-              </li>
-              <li>
-                <NavButton
-                  label="提示词管理 (Prompts)"
-                  isActive={activeView === 'prompts'}
-                  activeColor="#f59e0b"
-                  onClick={onNavigateToPrompts}
-                />
-              </li>
-              <li>
-                <NavButton
-                  label="伏笔看板 (Foreshadow)"
-                  isActive={activeView === 'foreshadow'}
-                  activeColor="#ef4444"
-                  onClick={onNavigateToForeshadow}
-                />
-              </li>
+      {selectedProject && selectedProjectId && !showProjectManagement ? (
+        <nav className="workspace-nav" aria-label="创作流程导航">
+          <section className="workspace-nav-section workspace-nav-section--primary">
+            <div className="workspace-nav-section__title">开始创作</div>
+            <ul className="workspace-nav-list">
+              {workflowItems.map((item) => (
+                <li key={item.view}>
+                  <NavButton item={item} isActive={activeView === item.view} />
+                </li>
+              ))}
             </ul>
-          </div>
+          </section>
 
-          {/* Volume → Chapter Tree */}
-          <VolumeChapterTree
-            volumes={volumes}
-            chapters={chapters}
-            selectedChapterId={selectedChapterId}
-            selectedVolumeId={selectedVolumeId}
-            onSelectChapter={setSelectedChapterId}
-            onSelectVolume={onSelectVolume}
-            onDeleteChapters={onDeleteChapters}
-          />
+          {navSections.map((section) => (
+            <section key={section.title} className="workspace-nav-section">
+              <div className="workspace-nav-section__title">{section.title}</div>
+              <ul className="workspace-nav-list">
+                {section.items.map((item) => (
+                  <li key={item.view}>
+                    <NavButton item={item} isActive={activeView === item.view} />
+                  </li>
+                ))}
+              </ul>
+            </section>
+          ))}
+
+          <section className="workspace-nav-section workspace-nav-section--tree">
+            <div className="workspace-nav-section__title">卷章节树</div>
+            <VolumeChapterTree
+              volumes={volumes}
+              chapters={chapters}
+              selectedChapterId={selectedChapterId}
+              selectedVolumeId={selectedVolumeId}
+              onSelectChapter={setSelectedChapterId}
+              onSelectVolume={onSelectVolume}
+              onDeleteChapters={onDeleteChapters}
+            />
+          </section>
         </nav>
-      )}
-
-      {/* Empty space filler when nav is hidden */}
-      {(!selectedProjectId || showProjectManagement) && (
+      ) : (
         <div className="flex-1" />
       )}
 
-      {/* Footer Profile or Settings block */}
-      {/* Footer — always visible: LLM config + branding */}
-      <div className="p-4" style={{ borderTop: '1px solid var(--border-dim)', background: 'var(--bg-sidebar-footer)' }}>
-        {/* LLM Config — global, always accessible */}
+      <footer className="workspace-sidebar-footer">
         <button
+          type="button"
           onClick={onNavigateToLlmConfig}
-          className="flex items-center gap-2 w-full px-3 py-2 mb-3"
-          style={{
-            borderRadius: '0.5rem',
-            fontSize: '0.8rem',
-            fontWeight: activeView === 'llm-config' ? 700 : 500,
-            cursor: 'pointer',
-            border: `1px solid ${activeView === 'llm-config' ? 'rgba(245,158,11,0.4)' : 'var(--border-dim)'}`,
-            background: activeView === 'llm-config' ? 'rgba(245,158,11,0.08)' : 'transparent',
-            color: activeView === 'llm-config' ? '#f59e0b' : 'var(--text-muted)',
-            transition: 'all 0.2s ease',
-          }}
+          className={`workspace-llm-button ${activeView === 'llm-config' ? 'workspace-llm-button--active' : ''}`}
         >
-          🔧 LLM 配置
+          <span>LLM 配置</span>
+          <span className="workspace-llm-button__status">全局</span>
         </button>
 
-        <div className="flex items-center justify-between px-2">
-          <div className="flex items-center gap-3">
-            <div className="flex items-center justify-center shrink-0" style={{ width: '32px', height: '32px', borderRadius: '50%', background: 'var(--accent-cyan)', padding: '2px', boxShadow: '0 4px 10px var(--accent-cyan-glow)' }}>
-              <div className="w-full h-full flex items-center justify-center" style={{ borderRadius: '50%', background: 'var(--bg-deep)' }}>
-                <span style={{ fontSize: '10px', color: '#faf7f0', fontWeight: 'bold' }}>AI</span>
-              </div>
-            </div>
-            <div className="text-xs font-medium" style={{ color: 'var(--text-muted)' }}>小说辅写台</div>
-          </div>
+        <div className="workspace-sidebar-brand">
+          <div className="workspace-sidebar-brand__mark">AI</div>
+          <div className="workspace-sidebar-brand__copy">小说辅写台</div>
           <ThemeSwitcher />
         </div>
-      </div>
+      </footer>
     </aside>
   );
 }
 
-/** Reusable nav button to reduce duplication */
-function NavButton({
-  label,
-  isActive,
-  activeColor,
-  onClick,
-}: {
-  label: string;
-  isActive: boolean;
-  activeColor: string;
-  onClick: () => void;
-}) {
+function NavButton({ item, isActive }: { item: NavItem; isActive: boolean }) {
+  const style = { '--nav-accent': item.accent } as React.CSSProperties;
+
   return (
     <button
-      onClick={onClick}
-      className="w-full flex items-center gap-3 text-sm font-medium p-2"
-      style={{
-        borderRadius: '0.5rem',
-        transition: 'all 0.3s ease',
-        background: isActive ? `${activeColor}18` : 'transparent',
-        color: isActive ? activeColor : 'var(--text-muted)',
-        boxShadow: isActive ? `inset 2px 0 0 ${activeColor}` : 'none',
-        fontWeight: isActive ? 500 : 400,
-        border: 'none',
-        cursor: 'pointer',
-        textAlign: 'left',
-      }}
-      onMouseEnter={(e) => {
-        if (!isActive) {
-          e.currentTarget.style.background = 'var(--bg-hover-subtle)';
-          e.currentTarget.style.color = 'var(--text-main)';
-        }
-      }}
-      onMouseLeave={(e) => {
-        if (!isActive) {
-          e.currentTarget.style.background = 'transparent';
-          e.currentTarget.style.color = 'var(--text-muted)';
-        }
-      }}
+      type="button"
+      onClick={item.onClick}
+      className={`workspace-nav-button ${isActive ? 'workspace-nav-button--active' : ''} ${item.step ? 'workspace-nav-button--workflow' : ''}`}
+      style={style}
     >
-      <div
-        style={{
-          width: '6px',
-          height: '6px',
-          borderRadius: '50%',
-          background: activeColor,
-          boxShadow: `0 0 8px ${activeColor}80`,
-        }}
-      />
-      {label}
+      <span className="workspace-nav-button__rail">{item.step ?? ''}</span>
+      <span className="workspace-nav-button__copy">
+        <span className="workspace-nav-button__label">{item.label}</span>
+        <span className="workspace-nav-button__detail">{item.detail}</span>
+      </span>
     </button>
   );
 }

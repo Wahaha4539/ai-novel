@@ -154,7 +154,7 @@ const WRITE_TOOL_LABELS: Record<string, string> = {
   persist_story_bible: '故事圣经',
   persist_continuity_changes: '连续性资料',
   persist_timeline_events: '计划时间线',
-  persist_guided_step_result: '创作引导结果',
+  persist_guided_step_result: 'Agent 结构化结果',
   persist_volume_character_candidates: '卷级角色候选',
 };
 

@@ -47,7 +47,7 @@ function enrichArtifactsFromPlanSteps(run: AgentRun | null): NonNullable<AgentRu
       artifacts.push({
         id: `${run.id}:guided_step_preview:${previewStep.stepNo}`,
         artifactType: 'guided_step_preview',
-        title: '创作引导步骤预览',
+        title: 'Agent 结构化步骤预览',
         content: previewStep.output,
         createdAt: previewStep.finishedAt ?? previewStep.startedAt,
       });
@@ -1225,7 +1225,7 @@ function GuidedStepPreviewSummary({ content }: { content: unknown }) {
   return (
     <div className="space-y-3">
       <div className="grid gap-2 md:grid-cols-3">
-        <Metric label="步骤" value={stepInfo?.label ?? (stepKey || '创作引导')} />
+        <Metric label="步骤" value={stepInfo?.label ?? (stepKey || 'Agent 规划')} />
         <Metric label="字段数" value={Object.keys(structuredData).length} />
         <Metric label="警告" value={warnings.length} tone={warnings.length ? 'warn' : 'ok'} />
       </div>

@@ -11,7 +11,6 @@ import { LorePanel } from '../components/LorePanel';
 import { StoryBiblePanel } from '../components/StoryBiblePanel';
 import { GenerationConfigPanel } from '../components/GenerationConfigPanel';
 import { VolumePanel } from '../components/VolumePanel';
-import { GuidedWizard } from '../components/guided/GuidedWizard';
 import { PromptManagerPanel } from '../components/PromptManagerPanel';
 import { ForeshadowBoard } from '../components/ForeshadowBoard';
 import { BatchGeneratePanel } from '../components/BatchGeneratePanel';
@@ -30,10 +29,10 @@ import { AgentWorkspace } from '../components/agent/AgentWorkspace';
 import { AgentPageContext } from '../hooks/useAgentRun';
 import type { PassageAgentContext } from '../components/editor/passageSelection';
 
-type ActiveView = 'editor' | 'outline' | 'lore' | 'story-bible' | 'writing-rules' | 'scene-bank' | 'pacing' | 'chapter-patterns' | 'quality-reports' | 'scoring-center' | 'relationships' | 'timeline' | 'character-state' | 'generation-config' | 'projects' | 'volumes' | 'guided' | 'prompts' | 'foreshadow' | 'generate' | 'agent' | 'llm-config';
+type ActiveView = 'editor' | 'outline' | 'lore' | 'story-bible' | 'writing-rules' | 'scene-bank' | 'pacing' | 'chapter-patterns' | 'quality-reports' | 'scoring-center' | 'relationships' | 'timeline' | 'character-state' | 'generation-config' | 'projects' | 'volumes' | 'prompts' | 'foreshadow' | 'generate' | 'agent' | 'llm-config';
 
 const WORKSPACE_STATE_STORAGE_KEY = 'ai-novel:workspace-state';
-const ACTIVE_VIEWS: ActiveView[] = ['editor', 'outline', 'lore', 'story-bible', 'writing-rules', 'scene-bank', 'pacing', 'chapter-patterns', 'quality-reports', 'scoring-center', 'relationships', 'timeline', 'character-state', 'generation-config', 'projects', 'volumes', 'guided', 'prompts', 'foreshadow', 'generate', 'agent', 'llm-config'];
+const ACTIVE_VIEWS: ActiveView[] = ['editor', 'outline', 'lore', 'story-bible', 'writing-rules', 'scene-bank', 'pacing', 'chapter-patterns', 'quality-reports', 'scoring-center', 'relationships', 'timeline', 'character-state', 'generation-config', 'projects', 'volumes', 'prompts', 'foreshadow', 'generate', 'agent', 'llm-config'];
 
 type WorkspaceState = {
   activeView: ActiveView;
@@ -42,14 +41,25 @@ type WorkspaceState = {
   selectedVolumeId: string;
 };
 
+function isActiveView(value: string | undefined): value is ActiveView {
+  return ACTIVE_VIEWS.includes(value as ActiveView);
+}
+
 /** Read the last workspace route-like state from localStorage so refresh keeps the current editor context. */
 function readWorkspaceState(): Partial<WorkspaceState> {
   if (typeof window === 'undefined') return {};
 
   try {
-    const parsed = JSON.parse(window.localStorage.getItem(WORKSPACE_STATE_STORAGE_KEY) ?? '{}') as Partial<WorkspaceState>;
+    const parsed = JSON.parse(window.localStorage.getItem(WORKSPACE_STATE_STORAGE_KEY) ?? '{}') as {
+      activeView?: unknown;
+      selectedProjectId?: unknown;
+      selectedChapterId?: unknown;
+      selectedVolumeId?: unknown;
+    };
+    const storedActiveView = typeof parsed.activeView === 'string' ? parsed.activeView : undefined;
+    const activeView = storedActiveView === 'guided' ? 'agent' : storedActiveView;
     return {
-      activeView: ACTIVE_VIEWS.includes(parsed.activeView as ActiveView) ? parsed.activeView : undefined,
+      activeView: isActiveView(activeView) ? activeView : undefined,
       selectedProjectId: typeof parsed.selectedProjectId === 'string' ? parsed.selectedProjectId : undefined,
       selectedChapterId: typeof parsed.selectedChapterId === 'string' ? parsed.selectedChapterId : undefined,
       selectedVolumeId: typeof parsed.selectedVolumeId === 'string' ? parsed.selectedVolumeId : undefined,
@@ -69,8 +79,6 @@ export default function HomePage() {
   const data = useDashboardData();
   const [activeView, setActiveView] = useState<ActiveView>('projects');
   const [selectedVolumeId, setSelectedVolumeId] = useState('');
-  const [autoStartGuided, setAutoStartGuided] = useState(false);
-  const [guidedAgentContext, setGuidedAgentContext] = useState<AgentPageContext | undefined>();
   const [pendingAgentRequest, setPendingAgentRequest] = useState<{ id: string; message: string; pageContext: AgentPageContext } | undefined>();
   const [isToastVisible, setIsToastVisible] = useState(false);
   const [volumeRefreshSignal, setVolumeRefreshSignal] = useState(0);
@@ -126,7 +134,7 @@ export default function HomePage() {
   useEffect(() => {
     if (activeView !== 'foreshadow' || !data.selectedProjectId) return;
 
-    // 伏笔看板依赖全局 dashboard 缓存；从 AI 引导页写入后切换过来时，
+    // 伏笔看板依赖全局 dashboard 缓存；从 Agent 或其他写入页切换过来时，
     // 主数据可能尚未重新拉取，因此进入看板时主动刷新一次事实层伏笔。
     void loadProjectDataRef.current(data.selectedProjectId, data.selectedChapterId);
   }, [activeView, data.selectedChapterId, data.selectedProjectId]);
@@ -159,6 +167,10 @@ export default function HomePage() {
 
   const handleNavigateToProjects = useCallback(() => {
     setActiveView('projects');
+  }, []);
+
+  const handleNavigateToEditor = useCallback(() => {
+    setActiveView('editor');
   }, []);
 
   const handleNavigateToOutline = useCallback(() => {
@@ -215,10 +227,6 @@ export default function HomePage() {
 
   const handleNavigateToVolumes = useCallback(() => {
     setActiveView('volumes');
-  }, []);
-
-  const handleNavigateToGuided = useCallback(() => {
-    setActiveView('guided');
   }, []);
 
   const handleNavigateToPrompts = useCallback(() => {
@@ -282,16 +290,8 @@ export default function HomePage() {
     setActiveView('agent');
   }, []);
 
-  const handleGuidedCreate = useCallback((projectId: string) => {
-    data.setSelectedProjectId(projectId);
-    data.setSelectedChapterId('all');
-    setSelectedVolumeId('');
-    setAutoStartGuided(true);
-    setActiveView('guided');
-  }, [data]);
-
   const showProjectManagement = activeView === 'projects';
-  const hasProject = !!data.selectedProjectId;
+  const hasProject = !!selectedProject;
   const showInspector = hasProject && activeView === 'editor';
 
   if (!workspaceStateRestored) {
@@ -318,6 +318,7 @@ export default function HomePage() {
         showProjectManagement={showProjectManagement}
         activeView={activeView}
         onNavigateToProjects={handleNavigateToProjects}
+        onNavigateToEditor={handleNavigateToEditor}
         onNavigateToOutline={handleNavigateToOutline}
         onNavigateToLore={handleNavigateToLore}
         onNavigateToStoryBible={handleNavigateToStoryBible}
@@ -332,7 +333,6 @@ export default function HomePage() {
         onNavigateToCharacterState={handleNavigateToCharacterState}
         onNavigateToGenerationConfig={handleNavigateToGenerationConfig}
         onNavigateToVolumes={handleNavigateToVolumes}
-        onNavigateToGuided={handleNavigateToGuided}
         onNavigateToPrompts={handleNavigateToPrompts}
         onNavigateToForeshadow={handleNavigateToForeshadow}
         onNavigateToGenerate={handleNavigateToGenerate}
@@ -353,7 +353,6 @@ export default function HomePage() {
             selectedProjectId={data.selectedProjectId}
             onSelectProject={handleSelectProject}
             onProjectsChanged={handleProjectsChanged}
-            onGuidedCreate={handleGuidedCreate}
           />
         ) : activeView === 'outline' ? (
           <OutlinePanel selectedProject={selectedProject} />
@@ -393,14 +392,6 @@ export default function HomePage() {
           />
         ) : activeView === 'volumes' ? (
           <VolumePanel selectedProject={selectedProject} selectedProjectId={data.selectedProjectId} selectedVolumeId={selectedVolumeId} chapters={chapters} refreshSignal={volumeRefreshSignal} />
-        ) : activeView === 'guided' ? (
-          <GuidedWizard
-            selectedProject={selectedProject}
-            selectedProjectId={data.selectedProjectId}
-            autoStart={autoStartGuided}
-            onDataChanged={() => data.loadProjectData(data.selectedProjectId, data.selectedChapterId)}
-            onAgentContextChange={setGuidedAgentContext}
-          />
         ) : activeView === 'prompts' ? (
           <PromptManagerPanel selectedProject={selectedProject} selectedProjectId={data.selectedProjectId} />
         ) : activeView === 'foreshadow' ? (
@@ -501,7 +492,6 @@ export default function HomePage() {
         <AgentFloatingOrb
           projectId={data.selectedProjectId}
           selectedChapterId={data.selectedChapterId !== 'all' ? data.selectedChapterId : undefined}
-          pageContext={activeView === 'guided' ? guidedAgentContext : undefined}
           onRefresh={refreshSelectedProjectData}
         />
       )}

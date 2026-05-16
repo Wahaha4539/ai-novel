@@ -1,7 +1,7 @@
 /**
  * RoutingSection — Maps the 3 fixed app steps to LLM providers.
  *
- * Each step (guided/generate/polish) shows a dropdown to select
+ * Each step (Agent planning/generate/polish) shows a dropdown to select
  * a provider. Unset steps display a fallback warning.
  */
 'use client';
@@ -11,7 +11,7 @@ import { LlmProvider, LlmRoutingEntry, SetRoutingInput } from '../../types/llm-p
 
 /** Human-readable labels and descriptions for each app step */
 const STEP_META: Record<string, { label: string; emoji: string; desc: string }> = {
-  guided: { label: '创作引导', emoji: '📝', desc: 'AI 向导：世界观、角色、大纲等引导对话' },
+  guided: { label: 'Agent 规划', emoji: '▣', desc: '规划、结构化预览与审批前置任务' },
   generate: { label: '章节生成', emoji: '✍️', desc: '章节正文的 AI 生成' },
   polish: { label: '章节润色', emoji: '✨', desc: '已生成章节的深度润色' },
 };

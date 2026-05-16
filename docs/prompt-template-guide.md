@@ -231,8 +231,13 @@
 - 每章 `objective` 必须具体可检验，不能只写「推进剧情」或「调查线索」
 - 每章 `conflict` 必须写清阻力来源和阻力方式
 - 每章 `outline` 必须包含具体场景、关键行动和阶段结果
+- 每章必须内化章节设计维度，但不要新增顶层字段：主要事件链、主角表层目标、深层驱动力、外部/关系/认知阻碍、冲突升级、读者期待点、伏笔或情绪锚点、章末钩子
+- `outline`、`actionBeats`、`sceneBeats` 必须形成递进链：开场处境或目标 → 触发冲突 → 阻力升级或代价显形 → 转折/发现/失控 → 不可逆结果和下一章压力
+- `visibleGoal` 写主角眼前可执行目标；`hiddenEmotion` 写更深层恐惧、渴望、自我怀疑或认知裂缝；`characterShift` 写本章结束时人物发生的具体变化
+- `concreteClues` 可以是物证、小道具、异常行为、环境细节、台词误导或情绪锚点；`laterUse` 必须说明后续如何回收、反转或加压
+- `hook`、`handoffToNextChapter` 和 `continuityState.nextImmediatePressure` 必须制造具体翻页问题，不能只写「留下悬念」
 - 每章必须输出结构化 `craftBrief`，后端会写入 `Chapter.craftBrief`
-- `craftBrief` 必须包含：`visibleGoal`、`hiddenEmotion`、`coreConflict`、`mainlineTask`、`subplotTasks`、`storyUnit`、`actionBeats`、`concreteClues`、`dialogueSubtext`、`characterShift`、`irreversibleConsequence`、`progressTypes`
+- `craftBrief` 必须包含：`visibleGoal`、`hiddenEmotion`、`coreConflict`、`mainlineTask`、`subplotTasks`、`storyUnit`、`actionBeats`、`sceneBeats`、`concreteClues`、`dialogueSubtext`、`characterShift`、`irreversibleConsequence`、`progressTypes`、`entryState`、`exitState`、`openLoops`、`closedLoops`、`handoffToNextChapter`、`continuityState`
 - `craftBrief` 必须包含 `characterExecution`：`povCharacter`、`cast`、`relationshipBeats`、`newMinorCharacters`
 - `characterExecution.cast` 只能引用既有角色、上游卷纲 `characterPlan.newCharacterCandidates` 中的候选，或一次性 `minor_temporary`；`sceneBeats.participants` 和 `relationshipBeats.participants` 必须被 cast 覆盖
 - 章节细纲不得直接新增重要长期角色；若需要 protagonist / antagonist / supporting 等角色，先回到卷纲生成或修订 `characterPlan.newCharacterCandidates`
@@ -240,7 +245,7 @@
 - 每 3-4 章至少发生一次信息揭示、关系反转、资源得失、地位变化或规则升级
 - 卷末章节必须收束本卷主线，并留下清晰的下一卷交接
 
-完成时输出的 JSON 格式（必须包含上述 `craftBrief.characterExecution`，下方为结构示意）：
+完成时输出的 JSON 格式（必须包含上述所有 `craftBrief` 字段；下方为结构示意，可按上方规则补全字段）：
 `[STEP_COMPLETE]`{"chapters":[{"chapterNo":1,"volumeNo":1,"title":"章节标题","objective":"本章目标","conflict":"核心冲突","outline":"含主线任务/支线任务/单元故事/具体场景行动/阶段结果的章节大纲","craftBrief":{"visibleGoal":"表层目标","hiddenEmotion":"隐藏情绪","coreConflict":"核心冲突","mainlineTask":"本章主线任务","subplotTasks":["支线任务"],"storyUnit":{"unitId":"v1_unit_01","title":"单元故事名","chapterRange":{"start":1,"end":4},"chapterRole":"开局/升级/反转/收束","localGoal":"单元局部目标","localConflict":"单元核心阻力","serviceFunctions":["mainline","relationship_shift","foreshadow"],"mainlineContribution":"本章如何推进主线","characterContribution":"本章如何塑造人物","relationshipContribution":"本章如何改变关系","worldOrThemeContribution":"本章如何展开世界或主题","unitPayoff":"单元阶段结局","stateChangeAfterUnit":"单元结束后的状态变化"},"actionBeats":["行动链节点"],"characterExecution":{"povCharacter":"角色名","cast":[{"characterName":"角色名","source":"existing","functionInChapter":"本章功能","visibleGoal":"可见目标","pressure":"压力","actionBeatRefs":[1],"sceneBeatRefs":["scene_1"],"entryState":"入场状态","exitState":"离场状态"}],"relationshipBeats":[],"newMinorCharacters":[]},"concreteClues":[{"name":"物证或线索","sensoryDetail":"感官细节","laterUse":"后续用途"}],"dialogueSubtext":"对话潜台词","characterShift":"人物变化","irreversibleConsequence":"不可逆后果","progressTypes":["info"]}}]}
 ```
 

@@ -44,7 +44,7 @@ const SCOPE_ALIASES: Record<string, string> = {
 };
 
 const SOURCE_LABELS: Record<string, string> = {
-  guided: '引导生成',
+  guided: 'Agent 规划',
   auto_extracted: '自动提取',
   manual: '手动添加',
 };

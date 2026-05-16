@@ -115,9 +115,12 @@ export function buildChapterOutlineQualityReviewMessages(options: ChapterOutline
 export function buildChapterOutlineQualityRubric(): string[] {
   return [
     'Chapter outline: must contain a scene chain with who acts, where, visible action, resistance, turn/result, and chapter-end handoff. It may be concise, but cannot be only an intention or theme.',
+    'Chapter design dimensions: through existing fields, the outline should make clear the main event chain, protagonist surface goal, deeper pressure or self-question, concrete obstacles, escalation, reader-facing payoff or suspense, foreshadow/emotional anchor, and chapter-end hook. Do not require extra fields.',
     'Action beats: each beat should be executable as a drafting instruction. It needs a concrete actor plus visible action and object/target; at least one beat must show resistance and at least one must show resulting state change.',
     'Scene beats: each scene must be draftable without inventing its location, participants, visible action, obstacle, turning point, result, or sensory anchor.',
+    'Escalation: scenes and action beats should build pressure, cost, discovery, or consequence from one beat to the next instead of reading like unrelated errands. Warn for flatness; return error only when flatness makes the chapter hard to draft into a coherent turn.',
     'Conflict/obstacle: must identify who or what blocks the action and how the pressure appears on page.',
+    'Reader hook and foreshadow: hook, concreteClues, laterUse, handoffToNextChapter, and nextImmediatePressure should carry a concrete question, cost, clue, emotional sting, or rule/world change. Reject only if they are so generic that the next chapter cannot know what to carry forward.',
     'Continuity: entryState, exitState, handoffToNextChapter, openLoops, closedLoops, and continuityState must let adjacent chapters connect without guessing.',
     'Character execution: cast functions, actionBeatRefs, sceneBeatRefs, entryState, and exitState must match the chapter action. Temporary characters must remain one-off unless explicitly marked needs_approval upstream.',
     'Reject as error only for semantic gaps that would force the next writer/LLM to invent major missing plot action or continuity. Use warnings for weaker but still draftable writing.',

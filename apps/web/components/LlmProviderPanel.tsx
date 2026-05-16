@@ -3,7 +3,7 @@
  *
  * Two sections:
  *   1. Provider Management — CRUD + connectivity test
- *   2. Step Routing — Map guided/generate/polish to providers
+ *   2. Step Routing — Map Agent planning/generate/polish to providers
  */
 'use client';
 

@@ -203,6 +203,11 @@ ${INTERACTION_STYLE}
 - 每章 objective 必须具体可检验，不能只写「推进剧情」或「调查线索」
 - 每章 conflict 必须写清阻力来源和阻力方式
 - 每章 outline 必须写成 3-5 个连续场景段，包含具体地点、出场人物、可被镜头拍到的动作、阻力、阶段结果和下一章交接
+- 每章必须内化章节设计维度，但不要新增顶层字段：主要事件链、主角表层目标、深层驱动力、外部/关系/认知阻碍、冲突升级、读者期待点、伏笔或情绪锚点、章末钩子
+- outline、actionBeats、sceneBeats 必须形成递进链：开场处境或目标 -> 触发冲突 -> 阻力升级或代价显形 -> 转折/发现/失控 -> 不可逆结果和下一章压力；不能是并列流水账
+- visibleGoal 写主角眼前可执行目标；hiddenEmotion 写更深层恐惧、渴望、自我怀疑或认知裂缝；characterShift 写本章结束时主角或关键人物的具体变化
+- concreteClues 可以是物证、小道具、异常行为、环境细节、台词误导或情绪锚点；laterUse 必须说明后续如何回收、反转或加压
+- hook、handoffToNextChapter 和 continuityState.nextImmediatePressure 必须制造具体翻页问题，不能只写「留下悬念」
 - 每章必须输出 craftBrief 结构化对象，后端会写入 Chapter.craftBrief
 - craftBrief 必须包含 visibleGoal、hiddenEmotion、coreConflict、mainlineTask、subplotTasks、storyUnit、actionBeats、concreteClues、dialogueSubtext、characterShift、irreversibleConsequence、progressTypes
 - craftBrief 还必须包含 storyUnit、sceneBeats、entryState、exitState、openLoops、closedLoops、handoffToNextChapter、continuityState
@@ -1116,6 +1121,11 @@ newCharacterCandidates 可为空；若有候选，每个候选必须包含 candi
 - 每章 objective 必须具体可检验，不能只写「调查线索」「推进主线」
 - 每章 conflict 必须写清阻力来源和阻力方式，例如谁阻止、用什么手段、主角付出什么代价
 - 每章 outline 必须写成 3-5 个连续场景段，包含具体地点、出场人物、可被镜头拍到的动作、阻力、阶段结果和下一章交接，不能只写一句剧情摘要
+- 每章必须内化章节设计维度，但不要新增顶层字段：主要事件链、主角表层目标、深层驱动力、外部/关系/认知阻碍、冲突升级、读者期待点、伏笔或情绪锚点、章末钩子
+- outline、actionBeats、sceneBeats 必须形成递进链：开场处境或目标 -> 触发冲突 -> 阻力升级或代价显形 -> 转折/发现/失控 -> 不可逆结果和下一章压力；不能是并列流水账
+- visibleGoal 写主角眼前可执行目标；hiddenEmotion 写更深层恐惧、渴望、自我怀疑或认知裂缝；characterShift 写本章结束时主角或关键人物的具体变化
+- concreteClues 可以是物证、小道具、异常行为、环境细节、台词误导或情绪锚点；laterUse 必须说明后续如何回收、反转或加压
+- hook、handoffToNextChapter 和 continuityState.nextImmediatePressure 必须制造具体翻页问题，不能只写「留下悬念」
 - 章节不是场景边界，而是阅读节奏边界；一个大场景可以跨多个章节，但每章必须完成一个阶段动作，并把压力交接给下一章
 - craftBrief 必须额外包含 storyUnit、sceneBeats、entryState、exitState、openLoops、closedLoops、handoffToNextChapter、continuityState
 - craftBrief 必须额外包含 characterExecution：povCharacter、cast、relationshipBeats、newMinorCharacters
