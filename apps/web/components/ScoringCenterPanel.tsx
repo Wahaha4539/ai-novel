@@ -24,6 +24,28 @@ const TARGET_LABELS: Record<ScoringTargetType, string> = {
 };
 
 const TARGET_ORDER: ScoringTargetType[] = ['project_outline', 'volume_outline', 'chapter_outline', 'chapter_craft_brief', 'chapter_draft'];
+const CHAPTER_TARGETS = new Set<ScoringTargetType>(['chapter_outline', 'chapter_craft_brief', 'chapter_draft']);
+
+type AssetTreeSection =
+  | { kind: 'project'; key: string; assets: ScoringAssetOption[]; count: number }
+  | { kind: 'volume'; key: string; volumeNo: number | null; volumeAssets: ScoringAssetOption[]; chapters: ChapterAssetGroup[]; looseAssets: ScoringAssetOption[]; count: number }
+  | { kind: 'other'; key: string; assets: ScoringAssetOption[]; count: number };
+
+interface ChapterAssetGroup {
+  key: string;
+  volumeNo: number | null;
+  chapterNo: number | null;
+  title: string;
+  assets: ScoringAssetOption[];
+}
+
+interface MutableVolumeSection {
+  key: string;
+  volumeNo: number | null;
+  volumeAssets: ScoringAssetOption[];
+  chapters: Map<string, ChapterAssetGroup>;
+  looseAssets: ScoringAssetOption[];
+}
 
 interface Props {
   selectedProject?: ProjectSummary;
@@ -38,21 +60,31 @@ export function ScoringCenterPanel({ selectedProject, selectedProjectId }: Props
   const [selectedRunId, setSelectedRunId] = useState('');
   const [selectedIssueIndexes, setSelectedIssueIndexes] = useState<number[]>([]);
   const [revisionResult, setRevisionResult] = useState<ScoringRevisionResult | null>(null);
+  const [expandedVolumeKeys, setExpandedVolumeKeys] = useState<Set<string>>(() => new Set());
+  const [expandedChapterKeys, setExpandedChapterKeys] = useState<Set<string>>(() => new Set());
 
   useEffect(() => {
     setSelectedAssetKey('');
     setSelectedRunId('');
     setSelectedIssueIndexes([]);
     setRevisionResult(null);
+    setExpandedVolumeKeys(new Set());
+    setExpandedChapterKeys(new Set());
     setError('');
     if (!selectedProjectId) return;
     void Promise.all([loadProfiles(), loadAssets(selectedProjectId), loadRuns(selectedProjectId)]);
   }, [loadAssets, loadProfiles, loadRuns, selectedProjectId, setError]);
 
+  useEffect(() => {
+    setExpandedVolumeKeys(new Set());
+    setExpandedChapterKeys(new Set());
+  }, [targetFilter]);
+
   const filteredAssets = useMemo(
     () => assets.filter((asset) => targetFilter === 'all' || asset.targetType === targetFilter),
     [assets, targetFilter],
   );
+  const assetSections = useMemo(() => buildAssetTreeSections(filteredAssets), [filteredAssets]);
   const selectedAsset = useMemo(() => {
     const fromState = filteredAssets.find((asset) => assetKey(asset) === selectedAssetKey);
     return fromState ?? filteredAssets.find((asset) => asset.isScoreable !== false) ?? filteredAssets[0] ?? null;
@@ -164,6 +196,14 @@ export function ScoringCenterPanel({ selectedProject, selectedProjectId }: Props
     setRevisionResult(result);
   }, [createRevision, selectedProjectId, selectedRun]);
 
+  const handleToggleVolume = useCallback((key: string) => {
+    setExpandedVolumeKeys((current) => toggleSetValue(current, key));
+  }, []);
+
+  const handleToggleChapter = useCallback((key: string) => {
+    setExpandedChapterKeys((current) => toggleSetValue(current, key));
+  }, []);
+
   return (
     <article className="flex flex-col h-full" style={{ background: 'var(--bg-deep)' }}>
       <header className="flex items-center justify-between shrink-0" style={{ minHeight: '3.5rem', background: 'var(--bg-editor-header)', padding: '0 2rem', borderBottom: '1px solid var(--border-light)', backdropFilter: 'blur(12px)', zIndex: 10 }}>
@@ -215,42 +255,15 @@ export function ScoringCenterPanel({ selectedProject, selectedProjectId }: Props
                 ) : filteredAssets.length === 0 ? (
                   <div className="list-card-empty">暂无可显示资产</div>
                 ) : (
-                  <div className="space-y-2">
-                    {filteredAssets.map((asset) => (
-                      <button
-                        key={assetKey(asset)}
-                        type="button"
-                        onClick={() => void handleSelectAsset(asset)}
-                        className="list-card w-full"
-                        style={{
-                          padding: '0.8rem',
-                          textAlign: 'left',
-                          borderRadius: '0.55rem',
-                          borderColor: selectedAsset && assetKey(asset) === assetKey(selectedAsset) ? 'rgba(34,197,94,0.45)' : 'var(--border-dim)',
-                          background: selectedAsset && assetKey(asset) === assetKey(selectedAsset) ? 'rgba(34,197,94,0.08)' : 'var(--bg-card)',
-                          cursor: 'pointer',
-                        }}
-                      >
-                        <div className="flex items-center justify-between gap-2">
-                          <strong className="text-sm truncate" style={{ color: 'var(--text-main)' }}>{asset.title}</strong>
-                          <span className="badge" style={{ fontSize: '0.62rem', flexShrink: 0 }}>{TARGET_LABELS[asset.targetType]}</span>
-                        </div>
-                        <div className="mt-2 flex flex-wrap gap-1">
-                          {asset.volumeNo ? <TinyMeta>Vol.{asset.volumeNo}</TinyMeta> : null}
-                          {asset.chapterNo ? <TinyMeta>Ch.{asset.chapterNo}</TinyMeta> : null}
-                          {asset.draftVersion ? <TinyMeta>Draft v{asset.draftVersion}</TinyMeta> : null}
-                          <TinyMeta>{asset.source}</TinyMeta>
-                        </div>
-                        {asset.latestRun ? (
-                          <div className="mt-2 text-xs" style={{ color: scoreColor(asset.latestRun.overallScore) }}>
-                            最新评分 {asset.latestRun.overallScore.toFixed(1)} · {asset.latestRun.verdict}
-                          </div>
-                        ) : asset.unavailableReason ? (
-                          <div className="mt-2 text-xs" style={{ color: '#fbbf24' }}>{asset.unavailableReason}</div>
-                        ) : null}
-                      </button>
-                    ))}
-                  </div>
+                  <AssetTree
+                    sections={assetSections}
+                    selectedAsset={selectedAsset}
+                    expandedVolumeKeys={expandedVolumeKeys}
+                    expandedChapterKeys={expandedChapterKeys}
+                    onSelect={handleSelectAsset}
+                    onToggleVolume={handleToggleVolume}
+                    onToggleChapter={handleToggleChapter}
+                  />
                 )}
               </div>
             </aside>
@@ -304,6 +317,173 @@ export function ScoringCenterPanel({ selectedProject, selectedProjectId }: Props
       </div>
     </article>
   );
+}
+
+function AssetTree({
+  sections,
+  selectedAsset,
+  expandedVolumeKeys,
+  expandedChapterKeys,
+  onSelect,
+  onToggleVolume,
+  onToggleChapter,
+}: {
+  sections: AssetTreeSection[];
+  selectedAsset: ScoringAssetOption | null;
+  expandedVolumeKeys: Set<string>;
+  expandedChapterKeys: Set<string>;
+  onSelect: (asset: ScoringAssetOption) => void | Promise<void>;
+  onToggleVolume: (key: string) => void;
+  onToggleChapter: (key: string) => void;
+}) {
+  return (
+    <div className="scoring-asset-tree">
+      <div className="scoring-asset-tree__summary">
+        <span>资产结构</span>
+        <span>{sections.reduce((sum, section) => sum + section.count, 0)} 项</span>
+      </div>
+      {sections.map((section) => {
+        if (section.kind === 'project') {
+          return (
+            <div key={section.key} className="scoring-asset-section">
+              <div className="scoring-asset-section__header">
+                <span>项目级</span>
+                <span>{section.count}</span>
+              </div>
+              <div className="scoring-asset-section__body">
+                {section.assets.map((asset) => (
+                  <AssetTreeRow key={assetKey(asset)} asset={asset} selectedAsset={selectedAsset} onSelect={onSelect} />
+                ))}
+              </div>
+            </div>
+          );
+        }
+
+        if (section.kind === 'other') {
+          return (
+            <div key={section.key} className="scoring-asset-section">
+              <div className="scoring-asset-section__header">
+                <span>未归档资产</span>
+                <span>{section.count}</span>
+              </div>
+              <div className="scoring-asset-section__body">
+                {section.assets.map((asset) => (
+                  <AssetTreeRow key={assetKey(asset)} asset={asset} selectedAsset={selectedAsset} onSelect={onSelect} />
+                ))}
+              </div>
+            </div>
+          );
+        }
+
+        const volumeOpen = expandedVolumeKeys.has(section.key) || sectionContainsAsset(section, selectedAsset);
+        return (
+          <div key={section.key} className="scoring-asset-section">
+            <button
+              type="button"
+              className="scoring-asset-section__header"
+              aria-expanded={volumeOpen}
+              onClick={() => onToggleVolume(section.key)}
+            >
+              <span className="scoring-asset-section__title">
+                <span className="scoring-asset-toggle">{volumeOpen ? '-' : '+'}</span>
+                {section.volumeNo ? `第 ${section.volumeNo} 卷` : '未分卷'}
+              </span>
+              <span>{section.count}</span>
+            </button>
+            {volumeOpen ? (
+              <div className="scoring-asset-section__body">
+                {section.volumeAssets.map((asset) => (
+                  <AssetTreeRow key={assetKey(asset)} asset={asset} selectedAsset={selectedAsset} onSelect={onSelect} />
+                ))}
+                {section.chapters.map((chapter) => {
+                  const chapterOpen = expandedChapterKeys.has(chapter.key) || chapterContainsAsset(chapter, selectedAsset);
+                  return (
+                    <div key={chapter.key} className="scoring-chapter-group">
+                      <button
+                        type="button"
+                        className="scoring-chapter-group__header"
+                        aria-expanded={chapterOpen}
+                        onClick={() => onToggleChapter(chapter.key)}
+                      >
+                        <span className="scoring-chapter-group__no">
+                          <span className="scoring-asset-toggle">{chapterOpen ? '-' : '+'}</span>
+                          {chapter.chapterNo ? `第 ${chapter.chapterNo} 章` : '未编号章节'}
+                        </span>
+                        {chapter.title ? <span className="scoring-chapter-group__title">{chapter.title}</span> : null}
+                        <span className="scoring-chapter-group__count">{chapter.assets.length}</span>
+                      </button>
+                      {chapterOpen ? (
+                        <div className="scoring-chapter-group__items">
+                          {chapter.assets.map((asset) => (
+                            <AssetTreeRow key={assetKey(asset)} asset={asset} selectedAsset={selectedAsset} onSelect={onSelect} nested />
+                          ))}
+                        </div>
+                      ) : null}
+                    </div>
+                  );
+                })}
+                {section.looseAssets.map((asset) => (
+                  <AssetTreeRow key={assetKey(asset)} asset={asset} selectedAsset={selectedAsset} onSelect={onSelect} />
+                ))}
+              </div>
+            ) : null}
+          </div>
+        );
+      })}
+    </div>
+  );
+}
+
+function AssetTreeRow({
+  asset,
+  selectedAsset,
+  onSelect,
+  nested = false,
+}: {
+  asset: ScoringAssetOption;
+  selectedAsset: ScoringAssetOption | null;
+  onSelect: (asset: ScoringAssetOption) => void | Promise<void>;
+  nested?: boolean;
+}) {
+  const selected = selectedAsset ? assetKey(asset) === assetKey(selectedAsset) : false;
+  const primaryLabel = nested ? nestedAssetLabel(asset) : asset.title;
+  const secondaryLabel = nested && asset.title !== primaryLabel ? asset.title : '';
+
+  return (
+    <button
+      type="button"
+      onClick={() => void onSelect(asset)}
+      className={`scoring-asset-row${selected ? ' is-selected' : ''}${asset.isScoreable === false ? ' is-unavailable' : ''}${nested ? ' is-nested' : ''}`}
+      aria-current={selected ? 'true' : undefined}
+    >
+      <span className="scoring-asset-row__kind">{TARGET_LABELS[asset.targetType]}</span>
+      <span className="scoring-asset-row__content">
+        <span className="scoring-asset-row__title">{primaryLabel}</span>
+        {secondaryLabel ? <span className="scoring-asset-row__subtitle">{secondaryLabel}</span> : null}
+        <span className="scoring-asset-row__meta">
+          {asset.volumeNo ? <TinyMeta>VOL.{asset.volumeNo}</TinyMeta> : null}
+          {asset.chapterNo ? <TinyMeta>CH.{asset.chapterNo}</TinyMeta> : null}
+          {asset.draftVersion ? <TinyMeta>DRAFT V{asset.draftVersion}</TinyMeta> : null}
+          <TinyMeta>{asset.source}</TinyMeta>
+        </span>
+        <AssetStatusLine asset={asset} />
+      </span>
+    </button>
+  );
+}
+
+function AssetStatusLine({ asset }: { asset: ScoringAssetOption }) {
+  if (asset.latestRun) {
+    return (
+      <span className="scoring-asset-row__status" style={{ color: scoreColor(asset.latestRun.overallScore) }}>
+        最新评分 {asset.latestRun.overallScore.toFixed(1)} · {asset.latestRun.verdict}
+      </span>
+    );
+  }
+  if (asset.unavailableReason) {
+    return <span className="scoring-asset-row__status" style={{ color: '#fbbf24' }}>{asset.unavailableReason}</span>;
+  }
+  return null;
 }
 
 function SelectedAssetSummary({ asset }: { asset: ScoringAssetOption | null }) {
@@ -659,6 +839,174 @@ function MetaLine({ label, value }: { label: string; value?: string | null }) {
 
 function TinyMeta({ children }: { children: React.ReactNode }) {
   return <span className="badge" style={{ fontSize: '0.62rem', borderColor: 'var(--border-dim)', color: 'var(--text-dim)' }}>{children}</span>;
+}
+
+function toggleSetValue(current: Set<string>, value: string) {
+  const next = new Set(current);
+  if (next.has(value)) {
+    next.delete(value);
+  } else {
+    next.add(value);
+  }
+  return next;
+}
+
+function sectionContainsAsset(section: AssetTreeSection, asset: ScoringAssetOption | null) {
+  if (!asset) return false;
+  if (section.kind === 'project' || section.kind === 'other') {
+    return section.assets.some((item) => assetKey(item) === assetKey(asset));
+  }
+  return section.volumeAssets.some((item) => assetKey(item) === assetKey(asset))
+    || section.looseAssets.some((item) => assetKey(item) === assetKey(asset))
+    || section.chapters.some((chapter) => chapterContainsAsset(chapter, asset));
+}
+
+function chapterContainsAsset(chapter: ChapterAssetGroup, asset: ScoringAssetOption | null) {
+  if (!asset) return false;
+  return chapter.assets.some((item) => assetKey(item) === assetKey(asset));
+}
+
+function buildAssetTreeSections(assets: ScoringAssetOption[]): AssetTreeSection[] {
+  const projectAssets: ScoringAssetOption[] = [];
+  const volumeSections = new Map<string, MutableVolumeSection>();
+  const otherAssets: ScoringAssetOption[] = [];
+
+  for (const asset of [...assets].sort(compareAssets)) {
+    if (asset.targetType === 'project_outline') {
+      projectAssets.push(asset);
+      continue;
+    }
+
+    if (asset.targetType === 'volume_outline' || asset.volumeNo != null || asset.chapterNo != null) {
+      const volumeKey = `volume:${asset.volumeNo ?? asset.targetId ?? 'unknown'}`;
+      const volume = ensureVolumeSection(volumeSections, volumeKey, asset.volumeNo ?? null);
+
+      if (asset.targetType === 'volume_outline') {
+        volume.volumeAssets.push(asset);
+        continue;
+      }
+
+      if (asset.chapterNo != null || CHAPTER_TARGETS.has(asset.targetType)) {
+        const chapterKey = `chapter:${asset.volumeNo ?? 'unknown'}:${asset.chapterNo ?? 'unknown'}:${asset.targetId ?? 'unknown'}`;
+        const chapter = ensureChapterGroup(volume, chapterKey, asset);
+        chapter.assets.push(asset);
+        chapter.assets.sort(compareAssets);
+        continue;
+      }
+
+      volume.looseAssets.push(asset);
+      continue;
+    }
+
+    otherAssets.push(asset);
+  }
+
+  const sections: AssetTreeSection[] = [];
+  if (projectAssets.length) {
+    sections.push({ kind: 'project', key: 'project-assets', assets: projectAssets.sort(compareAssets), count: projectAssets.length });
+  }
+
+  [...volumeSections.values()]
+    .sort((left, right) => compareNullableNumbers(left.volumeNo, right.volumeNo) || left.key.localeCompare(right.key))
+    .forEach((volume) => {
+      const chapters = [...volume.chapters.values()]
+        .map((chapter) => ({ ...chapter, assets: [...chapter.assets].sort(compareAssets) }))
+        .sort((left, right) => compareNullableNumbers(left.chapterNo, right.chapterNo) || left.key.localeCompare(right.key));
+      const volumeAssets = [...volume.volumeAssets].sort(compareAssets);
+      const looseAssets = [...volume.looseAssets].sort(compareAssets);
+      sections.push({
+        kind: 'volume',
+        key: volume.key,
+        volumeNo: volume.volumeNo,
+        volumeAssets,
+        chapters,
+        looseAssets,
+        count: volumeAssets.length + looseAssets.length + chapters.reduce((sum, chapter) => sum + chapter.assets.length, 0),
+      });
+    });
+
+  if (otherAssets.length) {
+    sections.push({ kind: 'other', key: 'other-assets', assets: otherAssets.sort(compareAssets), count: otherAssets.length });
+  }
+
+  return sections;
+}
+
+function ensureVolumeSection(sections: Map<string, MutableVolumeSection>, key: string, volumeNo: number | null) {
+  const existing = sections.get(key);
+  if (existing) return existing;
+  const created: MutableVolumeSection = {
+    key,
+    volumeNo,
+    volumeAssets: [],
+    chapters: new Map<string, ChapterAssetGroup>(),
+    looseAssets: [],
+  };
+  sections.set(key, created);
+  return created;
+}
+
+function ensureChapterGroup(volume: MutableVolumeSection, key: string, asset: ScoringAssetOption) {
+  const existing = volume.chapters.get(key);
+  const title = chapterTitleFromAsset(asset);
+  if (existing) {
+    if ((!existing.title || chapterTitlePriority(asset.targetType) < chapterTitlePriority(existing.assets[0]?.targetType)) && title) {
+      existing.title = title;
+    }
+    return existing;
+  }
+  const created: ChapterAssetGroup = {
+    key,
+    volumeNo: asset.volumeNo ?? volume.volumeNo,
+    chapterNo: asset.chapterNo ?? null,
+    title,
+    assets: [],
+  };
+  volume.chapters.set(key, created);
+  return created;
+}
+
+function chapterTitleFromAsset(asset: ScoringAssetOption) {
+  if (asset.targetType === 'chapter_draft' && asset.draftVersion) {
+    const suffix = ` draft v${asset.draftVersion}`;
+    if (asset.title.toLowerCase().endsWith(suffix)) {
+      return asset.title.slice(0, -suffix.length).trim() || asset.title;
+    }
+  }
+  return asset.title;
+}
+
+function nestedAssetLabel(asset: ScoringAssetOption) {
+  if (asset.targetType === 'chapter_draft') return asset.draftVersion ? `正文版本 v${asset.draftVersion}` : '章节正文';
+  return TARGET_LABELS[asset.targetType];
+}
+
+function compareAssets(left: ScoringAssetOption, right: ScoringAssetOption) {
+  const typeDiff = TARGET_ORDER.indexOf(left.targetType) - TARGET_ORDER.indexOf(right.targetType);
+  if (typeDiff) return typeDiff;
+  const volumeDiff = compareNullableNumbers(left.volumeNo ?? null, right.volumeNo ?? null);
+  if (volumeDiff) return volumeDiff;
+  const chapterDiff = compareNullableNumbers(left.chapterNo ?? null, right.chapterNo ?? null);
+  if (chapterDiff) return chapterDiff;
+  if (left.targetType === 'chapter_draft' && right.targetType === 'chapter_draft') {
+    const draftDiff = (right.draftVersion ?? 0) - (left.draftVersion ?? 0);
+    if (draftDiff) return draftDiff;
+  }
+  return assetKey(left).localeCompare(assetKey(right));
+}
+
+function compareNullableNumbers(left: number | null, right: number | null) {
+  if (left == null && right == null) return 0;
+  if (left == null) return 1;
+  if (right == null) return -1;
+  return left - right;
+}
+
+function chapterTitlePriority(targetType?: ScoringTargetType) {
+  if (targetType === 'chapter_outline') return 0;
+  if (targetType === 'chapter_craft_brief') return 1;
+  if (targetType === 'chapter_draft') return 2;
+  return 3;
 }
 
 function safeArray<T>(value: unknown): T[] {

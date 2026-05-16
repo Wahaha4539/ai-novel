@@ -224,6 +224,7 @@ test('ScoringCenterPanel renders asset selection, reports, errors, empty state, 
   const harness = createHarness(ScoringCenterPanel, { selectedProjectId: 'project-alpha', selectedProject: project() });
   harness.render();
   assertIncludes(harness.html(), ['Scoring Center', 'Chapter 1 craft brief', 'Craft brief has a clear action chain.', 'Scene executability', 'continuity_handoff', 'Clarify the handoff clue', 'Rewrite from report']);
+  assertIncludes(harness.html(), ['资产结构', '第 1 卷', '第 1 章', '章节执行卡', '正文版本 v2', '第 2 卷']);
   assertIncludes(harness.html(), ['Platform comparison', 'Project-internal scoring profiles', 'qidian_like', 'Chapter trend']);
 
   await click(findButton(harness.tree, 'Rewrite from report'));
