@@ -7,7 +7,7 @@ import {
   validateScoringTargetSnapshot,
 } from './scoring-contracts';
 import { assertPlatformProfileCoversTarget } from './platform-scoring-profiles';
-import { buildScoringJsonSchema } from './scoring-prompts';
+import { buildScoringJsonSchema, buildScoringPromptMessages } from './scoring-prompts';
 
 const targetType = 'chapter_craft_brief' as const;
 const platformProfile = 'generic_longform' as const;
@@ -105,6 +105,8 @@ assert.equal(validateScoringReportPayload(validReport(), { targetType, platformP
 assert.equal(validateScoringTargetSnapshot(validSnapshot(), targetType).assetSummary.chapterNo, 1);
 assert.equal(validateScoringRunContractPayload(validRun(), { targetType, platformProfile, expectedDimensionWeights: weights }).report.verdict, 'warn');
 assertStrictObjectsDisallowAdditionalProperties(buildScoringJsonSchema().schema);
+assertExactRequestedSchemaEnums(buildScoringJsonSchema({ targetType, platformProfile }).schema, targetType, platformProfile);
+assertPromptLocksRequestedValuesAndScoreScale(buildScoringPromptMessages({ targetType, platformProfile, targetSnapshot: validSnapshot() }).user);
 
 expectContractError('missing required top-level field fails', () => {
   const report = validReport() as Record<string, unknown>;
@@ -186,4 +188,23 @@ function assertStrictObjectsDisallowAdditionalProperties(schema: unknown, path =
   if (record.items) {
     assertStrictObjectsDisallowAdditionalProperties(record.items, `${path}.items`);
   }
+}
+
+function assertExactRequestedSchemaEnums(schema: unknown, targetTypeValue: string, platformProfileValue: string) {
+  const record = schema as { properties?: Record<string, { enum?: string[] }> };
+  assert.deepEqual(record.properties?.targetType?.enum, [targetTypeValue]);
+  assert.deepEqual(record.properties?.platformProfile?.enum, [platformProfileValue]);
+}
+
+function assertPromptLocksRequestedValuesAndScoreScale(userPrompt: string) {
+  const payload = JSON.parse(userPrompt) as { outputContract?: Record<string, unknown> };
+  const outputContract = payload.outputContract as {
+    exactOutputValues?: Record<string, unknown>;
+    scoreScale?: string;
+    weightedScoreFormula?: string;
+  };
+  assert.equal(outputContract.exactOutputValues?.targetType, targetType);
+  assert.equal(outputContract.exactOutputValues?.platformProfile, platformProfile);
+  assert.match(outputContract.scoreScale ?? '', /0-100/);
+  assert.match(outputContract.weightedScoreFormula ?? '', /score \* dimension\.weight \/ 100/);
 }

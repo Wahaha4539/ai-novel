@@ -1,10 +1,12 @@
 import { getTargetDimensions } from './scoring-dimensions';
 import {
   PlatformProfileKey,
+  PLATFORM_PROFILE_KEYS,
   ScoringTargetSnapshot,
   ScoringTargetType,
   SCORING_PROMPT_VERSION,
   SCORING_RUBRIC_VERSION,
+  SCORING_TARGET_TYPES,
 } from './scoring-contracts';
 import { assertPlatformProfileCoversTarget, getPlatformProfile } from './platform-scoring-profiles';
 
@@ -79,6 +81,12 @@ export function buildScoringPromptMessages(input: {
       targetSnapshot: input.targetSnapshot,
       dimensions,
       outputContract: {
+        exactOutputValues: {
+          targetType: input.targetType,
+          platformProfile: profile.key,
+        },
+        scoreScale: 'Use 0-100 for overallScore and every dimension.score. Do not use a 0-10 scale.',
+        weightedScoreFormula: 'For each dimension, weightedScore must equal dimension.score * dimension.weight / 100.',
         requiredTopLevelFields: [
           'targetType',
           'platformProfile',
@@ -118,9 +126,17 @@ export function buildScoringPromptMessages(input: {
   };
 }
 
-export function buildScoringJsonSchema(name = 'multidimensional_scoring_report') {
+export function buildScoringJsonSchema(input: string | {
+  name?: string;
+  targetType?: ScoringTargetType;
+  platformProfile?: PlatformProfileKey;
+} = 'multidimensional_scoring_report') {
+  const options = typeof input === 'string' ? { name: input } : input;
+  const targetTypeEnum = options.targetType ? [options.targetType] : [...SCORING_TARGET_TYPES];
+  const platformProfileEnum = options.platformProfile ? [options.platformProfile] : [...PLATFORM_PROFILE_KEYS];
+
   return {
-    name,
+    name: options.name ?? 'multidimensional_scoring_report',
     description: 'Strict multidimensional fiction scoring report.',
     strict: true,
     schema: {
@@ -138,9 +154,9 @@ export function buildScoringJsonSchema(name = 'multidimensional_scoring_report')
         'revisionPriorities',
       ],
       properties: {
-        targetType: { type: 'string' },
-        platformProfile: { type: 'string' },
-        overallScore: { type: 'number' },
+        targetType: { type: 'string', enum: targetTypeEnum },
+        platformProfile: { type: 'string', enum: platformProfileEnum },
+        overallScore: { type: 'number', description: '0-100 overall score.' },
         verdict: { type: 'string', enum: ['pass', 'warn', 'fail'] },
         summary: { type: 'string' },
         extractedElements: {
@@ -165,9 +181,9 @@ export function buildScoringJsonSchema(name = 'multidimensional_scoring_report')
             properties: {
               key: { type: 'string' },
               label: { type: 'string' },
-              score: { type: 'number' },
+              score: { type: 'number', description: '0-100 dimension score. Do not use 0-10.' },
               weight: { type: 'number' },
-              weightedScore: { type: 'number' },
+              weightedScore: { type: 'number', description: 'score * weight / 100.' },
               confidence: { type: 'string', enum: ['low', 'medium', 'high'] },
               evidence: { type: 'string' },
               reason: { type: 'string' },

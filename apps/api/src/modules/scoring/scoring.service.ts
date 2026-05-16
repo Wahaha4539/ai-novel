@@ -253,7 +253,7 @@ export class ScoringService {
         maxTokens: 2400,
         timeoutMs: this.llmTimeoutMs,
         retries: 0,
-        jsonSchema: buildScoringJsonSchema(),
+        jsonSchema: buildScoringJsonSchema({ targetType: selector.targetType, platformProfile: profileKey }),
       },
     );
 
