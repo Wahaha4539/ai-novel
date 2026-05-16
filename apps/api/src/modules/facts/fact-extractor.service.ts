@@ -28,6 +28,30 @@ interface ExtractedForeshadow {
   detail: string;
   status?: string;
   scope?: string;
+  evidence?: string;
+}
+
+type ForeshadowLifecycleStatus = 'planned' | 'planted' | 'triggered' | 'resolved';
+
+interface ExistingForeshadowTrack {
+  id: string;
+  title: string;
+  detail: string | null;
+  status: string;
+  scope: string;
+  source: string;
+  chapterId: string | null;
+  chapterNo: number | null;
+  firstSeenChapterNo: number | null;
+  lastSeenChapterNo: number | null;
+  metadata: Prisma.JsonValue;
+}
+
+interface ForeshadowStatusAlignment {
+  foreshadowTrackId: string;
+  status: ForeshadowLifecycleStatus;
+  evidence: string;
+  note?: string;
 }
 
 type FirstAppearanceEntityType = ChapterFirstAppearanceMemoryInput['entityType'];
@@ -62,9 +86,11 @@ export interface FactExtractionResult {
   firstAppearanceCandidates: number;
   createdMemoryChunks: number;
   pendingReviewMemoryChunks: number;
+  updatedForeshadows: number;
   events: ExtractedEvent[];
   characterStates: ExtractedCharacterState[];
   foreshadows: ExtractedForeshadow[];
+  foreshadowAlignments: ForeshadowStatusAlignment[];
   firstAppearances: ExtractedFirstAppearance[];
   relationshipChanges: ExtractedRelationshipChange[];
 }
@@ -94,22 +120,28 @@ export class FactExtractorService {
       : await this.prisma.chapterDraft.findFirst({ where: { chapterId, isCurrent: true }, orderBy: { versionNo: 'desc' } });
     if (!draft) throw new NotFoundException(`章节 ${chapterId} 暂无可抽取事实的草稿`);
 
-    const [summary, events, characterStates, foreshadows, firstAppearances, relationshipChanges] = await Promise.all([
+    const foreshadowCandidates = await this.loadForeshadowAlignmentCandidates(projectId, chapter);
+    const [summary, events, characterStates, foreshadows, firstAppearances, relationshipChanges, foreshadowAlignments] = await Promise.all([
       this.summarizeChapter(chapter.project.title, chapter, draft.content),
       this.extractEvents(chapter.project.title, chapter, draft.content),
       this.extractCharacterStates(chapter.project.title, chapter, draft.content),
       this.extractForeshadows(chapter.project.title, chapter, draft.content),
       this.extractFirstAppearances(chapter.project.title, chapter, draft.content),
       this.extractRelationshipChanges(chapter.project.title, chapter, draft.content),
+      this.alignExistingForeshadows(chapter.project.title, chapter, draft.content, foreshadowCandidates),
     ]);
     const eventInputs = this.dedupeEvents([...events, ...this.relationshipChangesToEvents(relationshipChanges, chapter)]);
     const profiledFirstAppearances = this.applyGenerationProfileToFirstAppearances(firstAppearances, generationProfile);
-    const profiledForeshadows = this.applyGenerationProfileToForeshadows(foreshadows, generationProfile);
+    const profiledForeshadows = this.filterKnownForeshadows(
+      this.applyGenerationProfileToForeshadows(foreshadows, generationProfile),
+      foreshadowCandidates,
+    );
     const firstAppearanceWrite = await this.persistFirstAppearanceCandidates(projectId, chapter, draft.id, profiledFirstAppearances);
     if (firstAppearanceWrite.createdLorebookCandidates > 0 || firstAppearanceWrite.createdCharacters > 0 || firstAppearanceWrite.updatedCharacters > 0) {
       await this.cacheService?.deleteProjectRecallResults(projectId);
     }
 
+    const candidateById = new Map(foreshadowCandidates.map((item) => [item.id, item]));
     const created = await this.prisma.$transaction(async (tx) => {
       // 仅替换同一草稿由 Agent 自动抽取的事实，避免删除人工维护或其他草稿来源的事实层数据。
       await Promise.all([
@@ -117,6 +149,34 @@ export class FactExtractorService {
         tx.characterStateSnapshot.deleteMany({ where: { projectId, chapterId, metadata: { path: ['generatedBy'], equals: 'agent_fact_extractor' } } }),
         tx.foreshadowTrack.deleteMany({ where: { projectId, chapterId, metadata: { path: ['generatedBy'], equals: 'agent_fact_extractor' } } }),
       ]);
+
+      const updatedExistingForeshadows = foreshadowAlignments.length
+        ? await Promise.all(foreshadowAlignments
+            .filter((alignment) => alignment.status !== 'planned')
+            .map((alignment) => {
+              const existing = candidateById.get(alignment.foreshadowTrackId);
+              const data: Prisma.ForeshadowTrackUpdateManyMutationInput = {
+                status: alignment.status,
+                metadata: this.mergeJsonObject(existing?.metadata, {
+                  lastLifecycleUpdate: {
+                    generatedBy: 'agent_fact_extractor',
+                    draftId: draft.id,
+                    chapterNo: chapter.chapterNo,
+                    status: alignment.status,
+                    evidence: alignment.evidence,
+                    note: alignment.note,
+                  },
+                }) as Prisma.InputJsonValue,
+              };
+              if (alignment.status === 'resolved') {
+                data.lastSeenChapterNo = chapter.chapterNo;
+              }
+              return tx.foreshadowTrack.updateMany({
+                where: { projectId, id: alignment.foreshadowTrackId },
+                data,
+              });
+            }))
+        : [];
 
       // 批量写入可显著缩短 interactive transaction 时间，避免 Prisma 默认事务超时后 tx 被关闭。
       const createdEvents = eventInputs.length
@@ -179,7 +239,12 @@ export class FactExtractorService {
           })
         : { count: 0 };
 
-      return { createdEvents, createdStates, createdForeshadows };
+      return {
+        createdEvents,
+        createdStates,
+        createdForeshadows,
+        updatedForeshadows: updatedExistingForeshadows.reduce((total, item) => total + item.count, 0),
+      };
     }, { timeout: 30_000, maxWait: 10_000 });
 
     // 与旧 Worker rebuild/generate 链路保持一致：事实抽取后同步生成 MemoryChunk。
@@ -203,6 +268,7 @@ export class FactExtractorService {
       createdEvents: created.createdEvents.count,
       createdCharacterStates: created.createdStates.count,
       createdForeshadows: created.createdForeshadows.count,
+      updatedForeshadows: created.updatedForeshadows,
       createdCharacters: firstAppearanceWrite.createdCharacters,
       createdLorebookCandidates: firstAppearanceWrite.createdLorebookCandidates,
       firstAppearanceCandidates: profiledFirstAppearances.length,
@@ -211,9 +277,131 @@ export class FactExtractorService {
       events: eventInputs,
       characterStates,
       foreshadows: profiledForeshadows,
+      foreshadowAlignments,
       firstAppearances: profiledFirstAppearances,
       relationshipChanges,
     };
+  }
+
+  private async loadForeshadowAlignmentCandidates(
+    projectId: string,
+    chapter: { id: string; chapterNo: number },
+  ): Promise<ExistingForeshadowTrack[]> {
+    const client = (this.prisma as unknown as { foreshadowTrack?: { findMany(args: unknown): Promise<ExistingForeshadowTrack[]> } }).foreshadowTrack;
+    if (!client?.findMany) return [];
+    return client.findMany({
+      where: {
+        projectId,
+        status: { in: ['planned', 'planted', 'triggered'] },
+        OR: [
+          { chapterId: chapter.id },
+          { firstSeenChapterNo: { lte: chapter.chapterNo }, lastSeenChapterNo: { gte: chapter.chapterNo } },
+          { firstSeenChapterNo: { lte: chapter.chapterNo }, lastSeenChapterNo: null },
+          { firstSeenChapterNo: null, lastSeenChapterNo: null, scope: { in: ['book', 'cross_volume', 'volume'] } },
+        ],
+        NOT: {
+          AND: [
+            { chapterId: chapter.id },
+            { source: 'auto_extracted' },
+          ],
+        },
+      },
+      orderBy: [{ status: 'asc' }, { updatedAt: 'asc' }],
+      take: 40,
+    });
+  }
+
+  private async alignExistingForeshadows(
+    projectTitle: string,
+    chapter: { chapterNo: number; title: string | null },
+    text: string,
+    candidates: ExistingForeshadowTrack[],
+  ): Promise<ForeshadowStatusAlignment[]> {
+    if (!candidates.length) return [];
+    const compactCandidates = candidates.map((item) => ({
+      id: item.id,
+      title: item.title,
+      detail: item.detail,
+      currentStatus: item.status,
+      scope: item.scope,
+      firstSeenChapterNo: item.firstSeenChapterNo,
+      lastSeenChapterNo: item.lastSeenChapterNo,
+    }));
+    const { data } = await this.llm.chatJson<unknown>(
+      [
+        {
+          role: 'system',
+          content: [
+            '你是小说伏笔生命周期审阅器。只输出 JSON 数组。',
+            '任务：只判断候选 ForeshadowTrack 在本章正文中的生命周期状态，不要创造新伏笔。',
+            '必须为每个候选 ForeshadowTrack 输出一条判断；没有在正文中使用的候选也要输出 planned。',
+            'status 只能是 planned、planted、triggered、resolved。',
+            'planned：本章正文没有可见使用该伏笔。',
+            'planted：本章明确埋设或再次强化该伏笔，但答案/后果仍未揭开。',
+            'triggered：本章使用或推进了既有伏笔，读者获得部分解释、风险升级或新指向，但最终回收尚未完成。',
+            'resolved：本章揭开伏笔含义、完成回收、给出答案/后果，或关闭该悬念。',
+            '如果 scope=chapter，且正文在同一章内完成铺垫与回收，必须标为 resolved，不要标为 planted。',
+            '每条非 planned 结果必须提供 evidence，引用正文中的具体可见动作、信息或揭示结果。',
+            '输出字段：foreshadowTrackId,status,evidence,note。',
+          ].join('\n'),
+        },
+        {
+          role: 'user',
+          content: [
+            `作品：《${projectTitle}》`,
+            `章节：第${chapter.chapterNo}章《${chapter.title ?? ''}》`,
+            `候选 ForeshadowTrack：${JSON.stringify(compactCandidates)}`,
+            `--- 正文 ---\n${text.slice(0, MAX_TEXT_CHARS)}\n--- 正文结束 ---`,
+          ].join('\n\n'),
+        },
+      ],
+      { appStep: 'fact_extractor.foreshadow_alignment', maxTokens: 1800, timeoutMs: DEFAULT_LLM_TIMEOUT_MS, retries: 1, temperature: 0.1 },
+    );
+    if (!Array.isArray(data)) throw new Error('fact_extractor.foreshadow_alignment 未返回 JSON 数组，已拒绝跳过伏笔状态判断。');
+    const candidateIds = new Set(candidates.map((item) => item.id));
+    const candidateById = new Map(candidates.map((item) => [item.id, item]));
+    const normalized = data.map((item, index): ForeshadowStatusAlignment => {
+      const record = this.asRecord(item);
+      const foreshadowTrackId = this.cleanText(record.foreshadowTrackId ?? record.id, 80);
+      if (!candidateIds.has(foreshadowTrackId)) {
+        throw new Error(`fact_extractor.foreshadow_alignment[${index}].foreshadowTrackId 未引用候选伏笔。`);
+      }
+      const candidate = candidateById.get(foreshadowTrackId);
+      const status = this.normalizeForeshadowLifecycleStatus(record.status);
+      if (!status) throw new Error(`fact_extractor.foreshadow_alignment[${index}].status 不合法。`);
+      const evidence = this.cleanText(record.evidence, 500);
+      if (status !== 'planned' && !evidence) {
+        throw new Error(`fact_extractor.foreshadow_alignment[${index}].evidence 缺失。`);
+      }
+      const mustResolveInCurrentChapter =
+        candidate?.lastSeenChapterNo === chapter.chapterNo ||
+        (candidate?.scope === 'chapter' && (
+          candidate.chapterNo === chapter.chapterNo ||
+          candidate.firstSeenChapterNo === chapter.chapterNo
+        ));
+      if (mustResolveInCurrentChapter && status !== 'resolved') {
+        throw new Error(`fact_extractor.foreshadow_alignment[${index}]「${candidate?.title ?? foreshadowTrackId}」属于本章回收窗口，但 LLM 判断为 ${status}，未完成章节内伏笔回收。`);
+      }
+      return {
+        foreshadowTrackId,
+        status,
+        evidence,
+        note: this.cleanText(record.note, 300),
+      };
+    });
+    const deduped = this.dedupeBy(normalized, (item) => item.foreshadowTrackId);
+    const returnedIds = new Set(deduped.map((item) => item.foreshadowTrackId));
+    const missingCandidates = candidates.filter((item) => !returnedIds.has(item.id));
+    if (missingCandidates.length) {
+      throw new Error(`fact_extractor.foreshadow_alignment 缺少候选伏笔判断：${missingCandidates.map((item) => item.title || item.id).join('、')}。`);
+    }
+    return deduped;
+  }
+
+  private filterKnownForeshadows(foreshadows: ExtractedForeshadow[], candidates: ExistingForeshadowTrack[]): ExtractedForeshadow[] {
+    const knownTitles = new Set(candidates.map((item) => this.normalizeTitleKey(item.title)).filter(Boolean));
+    if (!knownTitles.size) return foreshadows;
+    return foreshadows.filter((item) => !knownTitles.has(this.normalizeTitleKey(item.title)));
   }
 
   private applyGenerationProfileToFirstAppearances(
@@ -270,12 +458,29 @@ export class FactExtractorService {
   }
 
   private async extractForeshadows(projectTitle: string, chapter: { chapterNo: number; title: string | null }, text: string): Promise<ExtractedForeshadow[]> {
-    return this.extractJsonArray<ExtractedForeshadow>('fact_extractor.foreshadows', '你是小说伏笔分析专家。只输出 JSON 数组，识别 2~5 个本章已埋设但尚未解决的伏笔。字段：title,detail,status。status 固定 planted。', projectTitle, chapter, text, (item, index) => ({
-      title: item.title || `伏笔 ${index + 1}`,
-      detail: item.detail || '',
-      status: item.status || 'planted',
-      scope: normalizeForeshadowScope(item.scope, 'cross_chapter'),
-    }));
+    const foreshadowExtractionPrompt = [
+      '你是小说伏笔分析专家。只输出 JSON 数组，识别 0~5 个本章正文中新增或显著推进的伏笔。',
+      '字段：title,detail,status,scope,evidence。',
+      'status 只能是 planted、triggered、resolved：planted=只埋设未揭开；triggered=被使用或部分解释但未最终回收；resolved=含义/答案/后果已在本章揭开。',
+      'scope 只能是 book、cross_volume、volume、cross_chapter、chapter。',
+      '如果伏笔只在本章内铺垫并回收，scope 必须是 chapter，status 必须是 resolved。',
+      'scope=chapter 只能用于本章内完成回收的短线索；只埋不收或需要后文解释时不得使用 chapter，应选择 cross_chapter、volume、cross_volume 或 book。',
+      '不要把已经完整解释的章节内线索标成 planted。',
+    ].join('\n');
+    return this.extractJsonArray<ExtractedForeshadow>('fact_extractor.foreshadows', foreshadowExtractionPrompt, projectTitle, chapter, text, (item, index) => {
+      const status = this.normalizeExtractedForeshadowStatus(item.status);
+      const scope = normalizeForeshadowScope(item.scope, 'cross_chapter');
+      if (scope === 'chapter' && status !== 'resolved') {
+        throw new Error(`fact_extractor.foreshadows[${index}] scope=chapter 必须对应 resolved，不能写入章节内但未回收的伏笔。`);
+      }
+      return {
+        title: item.title || `伏笔 ${index + 1}`,
+        detail: item.detail || '',
+        status,
+        scope,
+        evidence: this.cleanText(item.evidence, 300),
+      };
+    });
   }
 
   private async extractFirstAppearances(projectTitle: string, chapter: { chapterNo: number; title: string | null }, text: string): Promise<ExtractedFirstAppearance[]> {
@@ -500,6 +705,20 @@ export class FactExtractorService {
 
   private normalizeSignificance(value: unknown): ExtractedFirstAppearance['significance'] {
     return value === 'key' || value === 'major' || value === 'minor' ? value : 'minor';
+  }
+
+  private normalizeForeshadowLifecycleStatus(value: unknown): ForeshadowLifecycleStatus | undefined {
+    return value === 'planned' || value === 'planted' || value === 'triggered' || value === 'resolved'
+      ? value
+      : undefined;
+  }
+
+  private normalizeExtractedForeshadowStatus(value: unknown): Exclude<ForeshadowLifecycleStatus, 'planned'> {
+    return value === 'triggered' || value === 'resolved' ? value : 'planted';
+  }
+
+  private normalizeTitleKey(value: string): string {
+    return value.trim().toLowerCase().replace(/\s+/g, '');
   }
 
   private mapFirstAppearanceEntryType(entityType: FirstAppearanceEntityType): string {

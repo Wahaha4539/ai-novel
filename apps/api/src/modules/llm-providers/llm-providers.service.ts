@@ -8,7 +8,7 @@ import { buildProviderChatParams } from '../llm/llm-chat-params';
 import { DEFAULT_LLM_TIMEOUT_MS } from '../llm/llm-timeout.constants';
 
 /** Allowed app steps for LLM routing — Agent-Centric API 内链路会复用这些步骤做模型路由。 */
-const VALID_APP_STEPS = ['guided', 'agent_planner', 'generate', 'polish', 'summary', 'memory_review', 'fact_extractor.events', 'fact_extractor.states', 'fact_extractor.foreshadows'] as const;
+const VALID_APP_STEPS = ['guided', 'agent_planner', 'generate', 'polish', 'summary', 'memory_review', 'fact_extractor.events', 'fact_extractor.states', 'fact_extractor.foreshadows', 'fact_extractor.foreshadow_alignment'] as const;
 const CONFIG_CACHE_STARTUP_RETRY_DELAYS_MS = [500, 1000, 2000, 4000, 8000] as const;
 
 function delay(ms: number): Promise<void> {

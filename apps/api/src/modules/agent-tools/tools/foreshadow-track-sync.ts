@@ -25,6 +25,7 @@ interface VolumeForeshadowSyncInput {
   volumeNo: number;
   chapterCount: number;
   narrativePlan: unknown;
+  chapterNoByLocalNo?: Record<number, number>;
   source?: VolumeForeshadowSource;
 }
 
@@ -182,6 +183,11 @@ function buildVolumeOutlineForeshadowTracks(
     const recoverRange = readChapterRange(recoverRangeKey ? record[recoverRangeKey] : undefined);
     const recoveryMethod = recoveryMethodKey ? scalarText(record[recoveryMethodKey]) : '';
     const scope = normalizeForeshadowScope(record.scope, 'volume');
+    const firstSeenChapterNo = mapLocalChapterNo(input.chapterNoByLocalNo, setupRange.start);
+    const lastSeenChapterNo = mapLocalChapterNo(
+      input.chapterNoByLocalNo,
+      recoverRange.end ?? recoverRange.start ?? setupRange.end ?? setupRange.start,
+    );
     const detail = compactText(
       scalarText(record.detail)
         || scalarText(record.description)
@@ -196,9 +202,9 @@ function buildVolumeOutlineForeshadowTracks(
       status: 'planned',
       scope,
       source,
-      chapterNo: setupRange.start,
-      firstSeenChapterNo: setupRange.start,
-      lastSeenChapterNo: recoverRange.end ?? recoverRange.start ?? setupRange.end ?? setupRange.start,
+      chapterNo: firstSeenChapterNo,
+      firstSeenChapterNo,
+      lastSeenChapterNo,
       metadata: jsonObject({
         sourceKind: source,
         sourceTrace: {
@@ -211,6 +217,8 @@ function buildVolumeOutlineForeshadowTracks(
         },
         setupRange: setupRange.raw,
         recoverRange: recoverRange.raw,
+        localSetupRange: setupRange.raw,
+        localRecoverRange: recoverRange.raw,
         recoveryMethod,
         rawPlan: itemText || record,
       }),
@@ -236,6 +244,16 @@ function buildChapterOutlineForeshadowTracks(
     const sensoryDetail = scalarText(clue.sensoryDetail);
     const laterUse = scalarText(clue.laterUse);
     const scope = normalizeForeshadowScope(clue.scope, 'cross_chapter');
+    const firstSeenChapterNo = positiveInt(clue.firstSeenChapterNo)
+      ?? positiveInt(clue.plantChapterNo)
+      ?? readChapterRange(firstPresentKey(clue, FORESHADOW_SETUP_RANGE_KEYS) ? clue[firstPresentKey(clue, FORESHADOW_SETUP_RANGE_KEYS)!] : undefined).start
+      ?? chapter.chapterNo;
+    const explicitLastSeenChapterNo = positiveInt(clue.lastSeenChapterNo)
+      ?? positiveInt(clue.revealChapterNo)
+      ?? positiveInt(clue.recoverChapterNo)
+      ?? positiveInt(clue.payoffChapterNo)
+      ?? readChapterRange(firstPresentKey(clue, FORESHADOW_RECOVER_RANGE_KEYS) ? clue[firstPresentKey(clue, FORESHADOW_RECOVER_RANGE_KEYS)!] : undefined).end;
+    const lastSeenChapterNo = explicitLastSeenChapterNo ?? (scope === 'chapter' ? firstSeenChapterNo : undefined);
     const detail = compactText([sensoryDetail, laterUse ? `later use: ${laterUse}` : ''].filter(Boolean).join('; ') || title, 4000);
 
     tracks.push({
@@ -247,8 +265,8 @@ function buildChapterOutlineForeshadowTracks(
       status: 'planned',
       scope,
       source,
-      firstSeenChapterNo: chapter.chapterNo,
-      lastSeenChapterNo: chapter.chapterNo,
+      firstSeenChapterNo,
+      lastSeenChapterNo,
       metadata: jsonObject({
         sourceKind: source,
         sourceTrace: {
@@ -261,6 +279,7 @@ function buildChapterOutlineForeshadowTracks(
         },
         sensoryDetail,
         laterUse,
+        explicitLastSeenChapterNo,
       }),
     });
   }
@@ -297,6 +316,11 @@ function readChapterRange(value: unknown): { start?: number; end?: number; raw?:
 
   const text = scalarText(value);
   return text ? { raw: text } : {};
+}
+
+function mapLocalChapterNo(chapterNoByLocalNo: Record<number, number> | undefined, localChapterNo: number | undefined): number | undefined {
+  if (!localChapterNo) return undefined;
+  return chapterNoByLocalNo?.[localChapterNo] ?? localChapterNo;
 }
 
 function formatRange(label: string, range: { start?: number; end?: number }): string {

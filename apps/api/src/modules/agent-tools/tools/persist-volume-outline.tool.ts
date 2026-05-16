@@ -129,6 +129,7 @@ export class PersistVolumeOutlineTool implements BaseTool<PersistVolumeOutlineIn
         volumeNo,
         chapterCount,
         narrativePlan: narrativePlanForUpdate,
+        chapterNoByLocalNo: await this.resolveChapterNoByLocalNo(tx, context.projectId, saved.id, volumeNo, chapterCount),
       });
 
       return {
@@ -163,6 +164,60 @@ export class PersistVolumeOutlineTool implements BaseTool<PersistVolumeOutlineIn
       select: { narrativePlan: true },
     });
     return this.asRecord(existing?.narrativePlan);
+  }
+
+  private async resolveChapterNoByLocalNo(
+    client: unknown,
+    projectId: string,
+    volumeId: string,
+    volumeNo: number,
+    chapterCount: number,
+  ): Promise<Record<number, number> | undefined> {
+    const scopedClient = client as {
+      chapter?: {
+        findMany?: (args: unknown) => Promise<Array<{ chapterNo: number }>>;
+        aggregate?: (args: unknown) => Promise<{ _max?: { chapterNo?: number | null } }>;
+      };
+      volume?: {
+        findMany?: (args: unknown) => Promise<Array<{ id: string }>>;
+      };
+    };
+    const existingTargetChapters = await scopedClient.chapter?.findMany?.({
+      where: { projectId, volumeId },
+      orderBy: { chapterNo: 'asc' },
+      select: { chapterNo: true },
+    });
+    const targetMap = this.chapterRowsToLocalMap(existingTargetChapters, chapterCount);
+    if (targetMap) return targetMap;
+
+    const previousVolumes = await scopedClient.volume?.findMany?.({
+      where: { projectId, volumeNo: { lt: volumeNo } },
+      select: { id: true },
+    });
+    const previousVolumeIds = previousVolumes?.map((volume) => volume.id).filter(Boolean) ?? [];
+    if (!previousVolumeIds.length) return undefined;
+
+    const previousMax = await scopedClient.chapter?.aggregate?.({
+      where: { projectId, volumeId: { in: previousVolumeIds } },
+      _max: { chapterNo: true },
+    });
+    const startChapterNo = Number(previousMax?._max?.chapterNo ?? 0) + 1;
+    if (!Number.isInteger(startChapterNo) || startChapterNo < 1) return undefined;
+
+    const map: Record<number, number> = {};
+    for (let localNo = 1; localNo <= chapterCount; localNo += 1) {
+      map[localNo] = startChapterNo + localNo - 1;
+    }
+    return map;
+  }
+
+  private chapterRowsToLocalMap(rows: Array<{ chapterNo: number }> | undefined, chapterCount: number): Record<number, number> | undefined {
+    if (!rows?.length) return undefined;
+    const map: Record<number, number> = {};
+    rows.slice(0, chapterCount).forEach((chapter, index) => {
+      if (Number.isInteger(chapter.chapterNo) && chapter.chapterNo > 0) map[index + 1] = chapter.chapterNo;
+    });
+    return Object.keys(map).length ? map : undefined;
   }
 
   private preserveExistingStoryUnitPlan(narrativePlan: Record<string, unknown>, existingNarrativePlan: Record<string, unknown>): Prisma.InputJsonObject {

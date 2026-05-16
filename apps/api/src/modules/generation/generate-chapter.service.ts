@@ -246,7 +246,22 @@ export class GenerateChapterService {
       this.loadStyleProfile(projectId, chapter.project.defaultStyleProfileId),
       this.prisma.character.findMany({ where: { projectId }, orderBy: { createdAt: 'asc' }, take: 20 }),
       this.prisma.foreshadowTrack.findMany({
-        where: { projectId, OR: [{ chapterId }, { firstSeenChapterNo: { lte: chapter.chapterNo }, lastSeenChapterNo: { gte: chapter.chapterNo } }] },
+        where: {
+          projectId,
+          status: { in: ['planned', 'planted', 'triggered'] },
+          OR: [
+            { chapterId },
+            { firstSeenChapterNo: { lte: chapter.chapterNo }, lastSeenChapterNo: { gte: chapter.chapterNo } },
+            { firstSeenChapterNo: { lte: chapter.chapterNo }, lastSeenChapterNo: null },
+            { firstSeenChapterNo: null, lastSeenChapterNo: null, scope: { in: ['book', 'cross_volume', 'volume'] } },
+          ],
+          NOT: {
+            AND: [
+              { chapterId },
+              { source: 'auto_extracted' },
+            ],
+          },
+        },
         orderBy: [{ status: 'asc' }, { createdAt: 'asc' }],
         take: 12,
       }),
@@ -331,7 +346,7 @@ export class GenerateChapterService {
       styleProfile,
       chapter: { chapterNo: chapter.chapterNo, title: chapter.title, objective: chapter.objective, conflict: chapter.conflict, outline: chapter.outline, craftBrief: chapter.craftBrief, revealPoints: chapter.revealPoints, foreshadowPlan: chapter.foreshadowPlan, expectedWordCount: chapter.expectedWordCount },
       characters: characters.map((item) => ({ name: item.name, roleType: item.roleType, personalityCore: item.personalityCore, motivation: item.motivation, speechStyle: item.speechStyle })),
-      plannedForeshadows: plannedForeshadows.map((item) => ({ title: item.title, detail: item.detail, status: item.status, firstSeenChapterNo: item.firstSeenChapterNo, lastSeenChapterNo: item.lastSeenChapterNo })),
+      plannedForeshadows: plannedForeshadows.map((item) => ({ title: item.title, detail: item.detail, status: item.status, scope: item.scope, firstSeenChapterNo: item.firstSeenChapterNo, lastSeenChapterNo: item.lastSeenChapterNo })),
       previousChapters,
       hardFacts,
       contextPack,

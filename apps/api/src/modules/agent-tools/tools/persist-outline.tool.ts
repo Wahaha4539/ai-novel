@@ -117,12 +117,14 @@ export class PersistOutlineTool implements BaseTool<PersistOutlineInput, Record<
         }
       }
 
+      const chapterNoByLocalNo = await this.buildChapterNoByLocalNo(tx, context.projectId, volume.id, preview.volume.chapterCount);
       const volumeForeshadows = await replaceVolumeOutlineForeshadowTracks(tx, {
         projectId: context.projectId,
         volumeId: volume.id,
         volumeNo: preview.volume.volumeNo,
         chapterCount: preview.volume.chapterCount,
         narrativePlan,
+        chapterNoByLocalNo,
       });
       const chapterForeshadows = await replaceChapterOutlineForeshadowTracks(tx, {
         projectId: context.projectId,
@@ -211,6 +213,26 @@ export class PersistOutlineTool implements BaseTool<PersistOutlineInput, Record<
       existingCharacterNames: characters.map((character) => character.name).filter(Boolean),
       existingCharacterAliases,
     };
+  }
+
+  private async buildChapterNoByLocalNo(
+    client: unknown,
+    projectId: string,
+    volumeId: string,
+    chapterCount: number,
+  ): Promise<Record<number, number> | undefined> {
+    const chapterClient = (client as { chapter?: { findMany?: (args: unknown) => Promise<Array<{ chapterNo: number }>> } })?.chapter;
+    const rows = await chapterClient?.findMany?.({
+      where: { projectId, volumeId },
+      orderBy: { chapterNo: 'asc' },
+      select: { chapterNo: true },
+    });
+    if (!rows?.length) return undefined;
+    const map: Record<number, number> = {};
+    rows.slice(0, chapterCount).forEach((chapter, index) => {
+      if (Number.isInteger(chapter.chapterNo) && chapter.chapterNo > 0) map[index + 1] = chapter.chapterNo;
+    });
+    return Object.keys(map).length ? map : undefined;
   }
 
   private asRecord(value: unknown): Record<string, unknown> {

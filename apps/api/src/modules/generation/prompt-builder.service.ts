@@ -11,7 +11,7 @@ export interface ChapterPromptContext {
   styleProfile?: { pov?: string | null; tense?: string | null; proseStyle?: string | null; pacing?: string | null } | null;
   chapter: { chapterNo: number; title: string | null; objective: string | null; conflict: string | null; outline: string | null; craftBrief?: Prisma.JsonValue | null; revealPoints?: string | null; foreshadowPlan?: string | null; expectedWordCount: number | null };
   characters: Array<{ name: string; roleType: string | null; personalityCore: string | null; motivation: string | null; speechStyle: string | null }>;
-  plannedForeshadows: Array<{ title: string; detail: string | null; status: string; firstSeenChapterNo: number | null; lastSeenChapterNo: number | null }>;
+  plannedForeshadows: Array<{ title: string; detail: string | null; status: string; scope?: string | null; firstSeenChapterNo: number | null; lastSeenChapterNo: number | null }>;
   previousChapters: Array<{ chapterNo: number; title: string | null; content: string }>;
   hardFacts: string[];
   contextPack: ChapterContextPack;
@@ -363,7 +363,20 @@ export class PromptBuilderService {
 
   private buildForeshadowSection(data: ChapterPromptContext): string {
     if (!data.plannedForeshadows.length) return '【本章伏笔计划】\n- 无特定伏笔要求';
-    return ['【本章伏笔计划】', ...data.plannedForeshadows.map((item) => `- ${item.title}：${item.detail || item.status}`)].join('\n');
+    const currentChapterNo = data.chapter.chapterNo;
+    return [
+      '【本章伏笔计划】',
+      '说明：以下 ForeshadowTrack 是本章必须检查的伏笔执行项。写正文时要按 status/scope/章节窗口决定是埋设、推进还是回收。',
+      '- scope=chapter 表示章节内伏笔：如果在本章使用，必须在本章内完成铺垫和回收，不要留到后文。',
+      '- 如果 lastSeenChapterNo 等于本章章节号，本章就是回收窗口；正文必须给出可见 payoff、答案、后果或情绪回响。',
+      ...data.plannedForeshadows.map((item) => {
+        const range = [item.firstSeenChapterNo, item.lastSeenChapterNo]
+          .filter((value): value is number => typeof value === 'number')
+          .join('-');
+        const due = item.lastSeenChapterNo === currentChapterNo ? '；本章为回收窗口' : '';
+        return `- ${item.title}：status=${item.status}；scope=${item.scope ?? 'unknown'}${range ? `；章节窗口=${range}` : ''}${due}；${item.detail || '无细节'}`;
+      }),
+    ].join('\n');
   }
 
   private buildFactsSection(data: ChapterPromptContext): string {
