@@ -102,6 +102,14 @@ export function buildScoringPromptMessages(input: {
           'suggestion',
         ],
         issueRequiredFields: ['dimensionKey', 'severity', 'path', 'evidence', 'reason', 'suggestion'],
+        extractedElementsRequiredFields: [
+          'mainCharacters',
+          'coreEvents',
+          'keyScenes',
+          'keyInformation',
+          'continuityAnchors',
+          'marketSignals',
+        ],
       },
     }),
     promptVersion: SCORING_PROMPT_VERSION,
@@ -135,7 +143,19 @@ export function buildScoringJsonSchema(name = 'multidimensional_scoring_report')
         overallScore: { type: 'number' },
         verdict: { type: 'string', enum: ['pass', 'warn', 'fail'] },
         summary: { type: 'string' },
-        extractedElements: { type: 'object' },
+        extractedElements: {
+          type: 'object',
+          additionalProperties: false,
+          required: ['mainCharacters', 'coreEvents', 'keyScenes', 'keyInformation', 'continuityAnchors', 'marketSignals'],
+          properties: {
+            mainCharacters: { type: 'array', items: { type: 'string' } },
+            coreEvents: { type: 'array', items: { type: 'string' } },
+            keyScenes: { type: 'array', items: { type: 'string' } },
+            keyInformation: { type: 'array', items: { type: 'string' } },
+            continuityAnchors: { type: 'array', items: { type: 'string' } },
+            marketSignals: { type: 'array', items: { type: 'string' } },
+          },
+        },
         dimensions: {
           type: 'array',
           items: {

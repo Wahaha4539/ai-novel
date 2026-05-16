@@ -7,6 +7,7 @@ import {
   validateScoringTargetSnapshot,
 } from './scoring-contracts';
 import { assertPlatformProfileCoversTarget } from './platform-scoring-profiles';
+import { buildScoringJsonSchema } from './scoring-prompts';
 
 const targetType = 'chapter_craft_brief' as const;
 const platformProfile = 'generic_longform' as const;
@@ -23,6 +24,9 @@ function validReport() {
       mainCharacters: ['主角'],
       coreEvents: ['主角追查线索'],
       keyScenes: ['黑市入口'],
+      keyInformation: ['new clue'],
+      continuityAnchors: ['handoff state'],
+      marketSignals: ['platform hook'],
     },
     dimensions: Object.entries(weights).map(([key, weight]) => ({
       key,
@@ -100,6 +104,7 @@ function expectContractError(
 assert.equal(validateScoringReportPayload(validReport(), { targetType, platformProfile, expectedDimensionWeights: weights }).dimensions.length, Object.keys(weights).length);
 assert.equal(validateScoringTargetSnapshot(validSnapshot(), targetType).assetSummary.chapterNo, 1);
 assert.equal(validateScoringRunContractPayload(validRun(), { targetType, platformProfile, expectedDimensionWeights: weights }).report.verdict, 'warn');
+assertStrictObjectsDisallowAdditionalProperties(buildScoringJsonSchema().schema);
 
 expectContractError('missing required top-level field fails', () => {
   const report = validReport() as Record<string, unknown>;
@@ -163,3 +168,22 @@ expectContractError('empty target snapshot content fails', () => {
 }, (value) => validateScoringTargetSnapshot(value, targetType));
 
 console.log('scoring contracts: ok');
+
+function assertStrictObjectsDisallowAdditionalProperties(schema: unknown, path = 'schema') {
+  if (!schema || typeof schema !== 'object' || Array.isArray(schema)) return;
+  const record = schema as Record<string, unknown>;
+
+  if (record.type === 'object') {
+    assert.equal(record.additionalProperties, false, `${path} must set additionalProperties: false`);
+  }
+
+  if (record.properties && typeof record.properties === 'object' && !Array.isArray(record.properties)) {
+    for (const [key, value] of Object.entries(record.properties)) {
+      assertStrictObjectsDisallowAdditionalProperties(value, `${path}.properties.${key}`);
+    }
+  }
+
+  if (record.items) {
+    assertStrictObjectsDisallowAdditionalProperties(record.items, `${path}.items`);
+  }
+}
