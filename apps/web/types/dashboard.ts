@@ -290,7 +290,8 @@ export type QualityReport = {
 
 export type ForeshadowItem = {
   id: string;
-  chapterId: string;
+  projectId?: string;
+  chapterId?: string | null;
   chapterNo?: number | null;
   title: string;
   detail?: string | null;
@@ -301,6 +302,9 @@ export type ForeshadowItem = {
   foreshadowStatus?: string;
   firstSeenChapterNo?: number | null;
   lastSeenChapterNo?: number | null;
+  metadata?: Record<string, unknown> | null;
+  createdAt?: string;
+  updatedAt?: string;
 };
 
 export type ReviewItem = {

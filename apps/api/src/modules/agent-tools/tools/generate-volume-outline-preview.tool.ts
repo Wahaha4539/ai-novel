@@ -406,6 +406,7 @@ export class GenerateVolumeOutlinePreviewTool implements BaseTool<GenerateVolume
       'existingCharacterArcs 只能写上下文“既有角色白名单”中的角色名或别名；任何不在白名单中的人物，即使是本卷重要管事、反派、工匠、亲属或势力代理人，也必须写入 newCharacterCandidates，不能伪装成既有角色。',
       '遇到白名单外人物时，先判断它是否只是一次性功能角色，还是本卷需要承载登场、反派压力、人物情感、背景故事、支线推进或关系变化的重要新人物；重要新人物必须新增为 newCharacterCandidates。',
       '重要新增角色只能作为 narrativePlan.characterPlan.newCharacterCandidates 候选进入预览，不能在章节细纲里临时发明 supporting/protagonist/antagonist 等重要角色。',
+      '角色扩充必须结构化返回：不要只在 synopsis、risks、subStoryLines 或自然语言说明里写“新增角色”；每个重要新增角色都必须进入 newCharacterCandidates[] 并补齐固定字段。',
       'newCharacterCandidates.name 可以被 subStoryLines.relatedCharacters、relationshipArcs.participants、roleCoverage 和后续单元故事引用，但不得同时出现在 existingCharacterArcs。',
       '角色内容失败即失败：不要生成占位角色、未命名角色或模板角色；如果缺上下文，把风险写入 risks，但仍必须返回完整合法 characterPlan。',
       '短卷输出体量控制：若 chapterCount 不超过 5，synopsis 每个 Markdown 小节写 1-2 句；mainlineMilestones 3-5 项；subStoryLines 2-3 条；foreshadowPlan 3-5 项；existingCharacterArcs 只写本卷关键既有角色；newCharacterCandidates 和 relationshipArcs 只写必要项。',

@@ -1,4 +1,4 @@
-import { Injectable, Logger, NotFoundException, ServiceUnavailableException } from '@nestjs/common';
+import { BadRequestException, Injectable, Logger, NotFoundException, ServiceUnavailableException } from '@nestjs/common';
 import { Prisma } from '@prisma/client';
 import { NovelCacheService } from '../../common/cache/novel-cache.service';
 import { PrismaService } from '../../prisma/prisma.service';
@@ -8,8 +8,12 @@ import { MemoryWriterService } from './memory-writer.service';
 import { RetrievalService } from './retrieval.service';
 
 const REVIEW_STATUSES = ['pending_review', 'user_confirmed', 'rejected'] as const;
+const FORESHADOW_STATUSES = ['planned', 'planted', 'triggered', 'resolved'] as const;
+const FORESHADOW_SCOPES = ['book', 'cross_volume', 'volume', 'cross_chapter', 'chapter'] as const;
 
 type ReviewStatus = (typeof REVIEW_STATUSES)[number];
+type ForeshadowStatus = (typeof FORESHADOW_STATUSES)[number];
+type ForeshadowScope = (typeof FORESHADOW_SCOPES)[number];
 
 const isRecord = (value: unknown): value is Record<string, unknown> =>
   Boolean(value) && typeof value === 'object' && !Array.isArray(value);
@@ -49,11 +53,13 @@ type CharacterStateSnapshotRow = {
 type ForeshadowTrackRow = {
   id: string;
   projectId: string;
-  chapterId: string;
+  chapterId: string | null;
   chapterNo: number | null;
   title: string;
   detail: string | null;
   status: string;
+  scope: string;
+  source: string;
   firstSeenChapterNo: number | null;
   lastSeenChapterNo: number | null;
   metadata: unknown;
@@ -487,6 +493,108 @@ export class MemoryService {
     return this.runPrismaRead('读取伏笔轨迹', () => this.findForeshadowTracks(projectId, chapterId, status, query, take));
   }
 
+  async createForeshadowTrack(projectId: string, dto: unknown) {
+    await this.assertProjectExists(projectId);
+    const record = this.asRecord(dto);
+    const title = this.normalizeRequiredText(record.title, 'title', 255);
+    const status = this.normalizeForeshadowStatus(record.status, 'planned');
+    const scope = this.normalizeForeshadowScope(record.scope, 'chapter');
+    const chapterRef = await this.resolveForeshadowChapterRef(projectId, record.chapterId, record.chapterNo);
+    const firstSeenChapterNo = this.normalizeOptionalInteger(record.firstSeenChapterNo, 'firstSeenChapterNo');
+    const lastSeenChapterNo = this.normalizeOptionalInteger(record.lastSeenChapterNo, 'lastSeenChapterNo');
+    this.assertValidForeshadowRange(firstSeenChapterNo ?? null, lastSeenChapterNo ?? null);
+
+    const track = await this.prisma.foreshadowTrack.create({
+      data: {
+        projectId,
+        chapterId: chapterRef.chapterId,
+        chapterNo: chapterRef.chapterNo,
+        title,
+        detail: this.normalizeNullableText(record.detail, 'detail'),
+        status,
+        scope,
+        source: this.normalizeSource(record.source, 'manual'),
+        firstSeenChapterNo: firstSeenChapterNo ?? null,
+        lastSeenChapterNo: lastSeenChapterNo ?? null,
+        metadata: this.normalizeJsonObject(record.metadata, 'metadata') as Prisma.InputJsonValue,
+      },
+    });
+
+    await this.cacheService.deleteProjectRecallResults(projectId);
+    return {
+      ...track,
+      ...this.normalizeForeshadow(track),
+    };
+  }
+
+  async updateForeshadowTrack(projectId: string, trackId: string, dto: unknown) {
+    const existing = await this.prisma.foreshadowTrack.findFirst({
+      where: { id: trackId, projectId },
+      select: {
+        id: true,
+        projectId: true,
+        chapterId: true,
+        chapterNo: true,
+        firstSeenChapterNo: true,
+        lastSeenChapterNo: true,
+      },
+    });
+    if (!existing) {
+      throw new NotFoundException(`ForeshadowTrack not found: ${trackId}`);
+    }
+
+    const record = this.asRecord(dto);
+    const data: Prisma.ForeshadowTrackUncheckedUpdateInput = {};
+
+    if (record.title !== undefined) data.title = this.normalizeRequiredText(record.title, 'title', 255);
+    if (record.detail !== undefined) data.detail = this.normalizeNullableText(record.detail, 'detail');
+    if (record.status !== undefined) data.status = this.normalizeForeshadowStatus(record.status, 'planned');
+    if (record.scope !== undefined) data.scope = this.normalizeForeshadowScope(record.scope, 'chapter');
+    if (record.source !== undefined) data.source = this.normalizeSource(record.source, 'manual');
+    if (record.metadata !== undefined) data.metadata = this.normalizeJsonObject(record.metadata, 'metadata') as Prisma.InputJsonValue;
+
+    if (record.chapterId !== undefined || record.chapterNo !== undefined) {
+      const chapterRef = await this.resolveForeshadowChapterRef(projectId, record.chapterId, record.chapterNo);
+      data.chapterId = chapterRef.chapterId;
+      data.chapterNo = chapterRef.chapterNo;
+    }
+
+    const nextFirstSeenChapterNo = record.firstSeenChapterNo !== undefined
+      ? this.normalizeOptionalInteger(record.firstSeenChapterNo, 'firstSeenChapterNo') ?? null
+      : existing.firstSeenChapterNo;
+    const nextLastSeenChapterNo = record.lastSeenChapterNo !== undefined
+      ? this.normalizeOptionalInteger(record.lastSeenChapterNo, 'lastSeenChapterNo') ?? null
+      : existing.lastSeenChapterNo;
+    this.assertValidForeshadowRange(nextFirstSeenChapterNo, nextLastSeenChapterNo);
+    if (record.firstSeenChapterNo !== undefined) data.firstSeenChapterNo = nextFirstSeenChapterNo;
+    if (record.lastSeenChapterNo !== undefined) data.lastSeenChapterNo = nextLastSeenChapterNo;
+
+    const updated = await this.prisma.foreshadowTrack.update({
+      where: { id: trackId },
+      data,
+    });
+
+    await this.cacheService.deleteProjectRecallResults(projectId);
+    return {
+      ...updated,
+      ...this.normalizeForeshadow(updated),
+    };
+  }
+
+  async deleteForeshadowTrack(projectId: string, trackId: string) {
+    const existing = await this.prisma.foreshadowTrack.findFirst({
+      where: { id: trackId, projectId },
+      select: { id: true },
+    });
+    if (!existing) {
+      throw new NotFoundException(`ForeshadowTrack not found: ${trackId}`);
+    }
+
+    await this.prisma.foreshadowTrack.delete({ where: { id: trackId } });
+    await this.cacheService.deleteProjectRecallResults(projectId);
+    return { deleted: true, id: trackId };
+  }
+
   private async findReviewQueue(projectId: string, status = 'pending_review', memoryType?: string, chapterId?: string, query?: string) {
     const items = (await this.prisma.memoryChunk.findMany({
       where: {
@@ -680,6 +788,117 @@ export class MemoryService {
         foreshadowTrackCount,
       },
     };
+  }
+
+  private normalizeRequiredText(value: unknown, field: string, maxLength?: number) {
+    if (typeof value !== 'string') {
+      throw new BadRequestException(`${field} must be a non-empty string.`);
+    }
+    const trimmed = value.trim();
+    if (!trimmed) {
+      throw new BadRequestException(`${field} must be a non-empty string.`);
+    }
+    if (maxLength && trimmed.length > maxLength) {
+      throw new BadRequestException(`${field} must be at most ${maxLength} characters.`);
+    }
+    return trimmed;
+  }
+
+  private normalizeNullableText(value: unknown, field: string) {
+    if (value === undefined || value === null) return null;
+    if (typeof value !== 'string') {
+      throw new BadRequestException(`${field} must be a string or null.`);
+    }
+    return value.trim() || null;
+  }
+
+  private normalizeOptionalInteger(value: unknown, field: string) {
+    if (value === undefined) return undefined;
+    if (value === null || value === '') return null;
+    const numeric = Number(value);
+    if (!Number.isInteger(numeric) || numeric < 1) {
+      throw new BadRequestException(`${field} must be a positive integer or null.`);
+    }
+    return numeric;
+  }
+
+  private normalizeForeshadowStatus(value: unknown, fallback: ForeshadowStatus): ForeshadowStatus {
+    if (value === undefined || value === null || value === '') return fallback;
+    if (typeof value !== 'string' || !FORESHADOW_STATUSES.includes(value as ForeshadowStatus)) {
+      throw new BadRequestException(`status must be one of: ${FORESHADOW_STATUSES.join(', ')}.`);
+    }
+    return value as ForeshadowStatus;
+  }
+
+  private normalizeForeshadowScope(value: unknown, fallback: ForeshadowScope): ForeshadowScope {
+    if (value === undefined || value === null || value === '') return fallback;
+    if (typeof value !== 'string' || !FORESHADOW_SCOPES.includes(value as ForeshadowScope)) {
+      throw new BadRequestException(`scope must be one of: ${FORESHADOW_SCOPES.join(', ')}.`);
+    }
+    return value as ForeshadowScope;
+  }
+
+  private normalizeSource(value: unknown, fallback: string) {
+    if (value === undefined || value === null || value === '') return fallback;
+    if (typeof value !== 'string') {
+      throw new BadRequestException('source must be a string.');
+    }
+    const trimmed = value.trim();
+    if (!trimmed || trimmed.length > 30) {
+      throw new BadRequestException('source must be 1-30 characters.');
+    }
+    return trimmed;
+  }
+
+  private normalizeJsonObject(value: unknown, field: string): Record<string, unknown> {
+    if (value === undefined || value === null) return {};
+    if (!value || typeof value !== 'object' || Array.isArray(value)) {
+      throw new BadRequestException(`${field} must be a JSON object.`);
+    }
+    return value as Record<string, unknown>;
+  }
+
+  private assertValidForeshadowRange(firstSeenChapterNo: number | null, lastSeenChapterNo: number | null) {
+    if (firstSeenChapterNo != null && lastSeenChapterNo != null && firstSeenChapterNo > lastSeenChapterNo) {
+      throw new BadRequestException('firstSeenChapterNo must be <= lastSeenChapterNo.');
+    }
+  }
+
+  private async resolveForeshadowChapterRef(projectId: string, chapterIdValue: unknown, chapterNoValue: unknown) {
+    const chapterId = typeof chapterIdValue === 'string' ? chapterIdValue.trim() : chapterIdValue;
+    const chapterNo = this.normalizeOptionalInteger(chapterNoValue, 'chapterNo');
+
+    if (chapterId && typeof chapterId === 'string') {
+      const chapter = await this.prisma.chapter.findFirst({
+        where: { id: chapterId, projectId },
+        select: { id: true, chapterNo: true },
+      });
+      if (!chapter) {
+        throw new NotFoundException(`Chapter not found in project: ${chapterId}`);
+      }
+      return { chapterId: chapter.id, chapterNo: chapter.chapterNo };
+    }
+
+    if (chapterId !== undefined && chapterId !== null && chapterId !== '') {
+      throw new BadRequestException('chapterId must be a string or null.');
+    }
+
+    if (chapterNo != null) {
+      const chapter = await this.prisma.chapter.findFirst({
+        where: { projectId, chapterNo },
+        select: { id: true },
+      });
+      return { chapterId: chapter?.id ?? null, chapterNo };
+    }
+
+    return { chapterId: null, chapterNo: null };
+  }
+
+  private async assertProjectExists(projectId: string) {
+    const project = await this.prisma.project.findUnique({ where: { id: projectId }, select: { id: true } });
+    if (!project) {
+      throw new NotFoundException(`Project not found: ${projectId}`);
+    }
   }
 
   async rebuild(projectId: string, chapterId?: string, dryRun = false) {

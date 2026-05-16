@@ -40,6 +40,10 @@ export class OutlineSupervisor {
       return route('chapter_outline', 'split_volume_to_chapters', 0.9, ['目标明确要求章节细纲、卷细纲或拆分成多章。'], { volumeNo, routeHints, needsApproval: true, needsPersistence: true });
     }
 
+    if (isRoleExpansionGoal(normalized)) {
+      return route('volume_outline', 'generate_volume_outline', 0.9, ['目标是扩充卷级角色规划或新增角色候选。'], { volumeNo, routeHints, needsApproval: true, needsPersistence: true });
+    }
+
     if (isVolumeOutlineGoal(normalized)) {
       return route('volume_outline', 'generate_volume_outline', 0.9, ['目标只要求卷级大纲，没有要求章节细纲或正文。'], { volumeNo, routeHints, needsApproval: true, needsPersistence: true });
     }
@@ -92,6 +96,45 @@ function isStoryUnitsGoal(goal: string): boolean {
   if (hasNegatedStoryUnitsGoal(goal)) return false;
   return includesAny(goal, ['单元故事', '故事单元', '支线故事', '人物登场', '人物情感', '人物刻画', '背景故事', '丰富单元', '单元分类', 'storyunit', 'story unit'])
     && !isChapterOutlineGoal(goal);
+}
+
+function isRoleExpansionGoal(goal: string): boolean {
+  if (includesAny(goal, ['检查', '审稿', '一致性', '人设崩', '质量'])) return false;
+  return includesAny(goal, [
+    '增加角色',
+    '新增角色',
+    '添加角色',
+    '补充角色',
+    '扩充角色',
+    '扩展角色',
+    '丰富角色',
+    '加角色',
+    '增加人物',
+    '新增人物',
+    '添加人物',
+    '补充人物',
+    '扩充人物',
+    '扩展人物',
+    '丰富人物',
+    '加人物',
+    '角色太少',
+    '人物太少',
+    '角色不够',
+    '人物不够',
+    '缺角色',
+    '缺人物',
+    '角色撑不起',
+    '人物撑不起',
+    '撑不起整本书',
+    '撑不起全书',
+    '撑不起长篇',
+    '扩充角色阵容',
+    '丰富角色阵容',
+    '补充角色阵容',
+    '扩充人物阵容',
+    '丰富人物阵容',
+    '补充人物阵容',
+  ]) || (includesAny(goal, ['角色', '人物']) && includesAny(goal, ['增加', '新增', '添加', '补充', '扩充', '扩展']));
 }
 
 function hasNegatedStoryUnitsGoal(goal: string): boolean {

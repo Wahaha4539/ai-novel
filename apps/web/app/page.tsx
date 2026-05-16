@@ -399,6 +399,7 @@ export default function HomePage() {
             selectedProject={selectedProject}
             selectedProjectId={data.selectedProjectId}
             foreshadowTracks={data.foreshadowTracks}
+            chapters={chapters}
             onRefresh={() => data.loadProjectData(data.selectedProjectId, data.selectedChapterId)}
           />
         ) : activeView === 'generate' ? (

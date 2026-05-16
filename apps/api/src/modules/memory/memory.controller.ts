@@ -1,4 +1,4 @@
-import { Body, Controller, Get, Param, Post, Query } from '@nestjs/common';
+import { Body, Controller, Delete, Get, Param, Patch, Post, Query } from '@nestjs/common';
 import { MemoryService } from './memory.service';
 
 @Controller()
@@ -38,6 +38,25 @@ export class MemoryController {
     @Query('q') q?: string,
   ) {
     return this.memoryService.listForeshadowTracks(projectId, chapterId, status, q);
+  }
+
+  @Post('projects/:projectId/foreshadow-tracks')
+  createForeshadowTrack(@Param('projectId') projectId: string, @Body() dto: unknown) {
+    return this.memoryService.createForeshadowTrack(projectId, dto);
+  }
+
+  @Patch('projects/:projectId/foreshadow-tracks/:trackId')
+  updateForeshadowTrack(
+    @Param('projectId') projectId: string,
+    @Param('trackId') trackId: string,
+    @Body() dto: unknown,
+  ) {
+    return this.memoryService.updateForeshadowTrack(projectId, trackId, dto);
+  }
+
+  @Delete('projects/:projectId/foreshadow-tracks/:trackId')
+  deleteForeshadowTrack(@Param('projectId') projectId: string, @Param('trackId') trackId: string) {
+    return this.memoryService.deleteForeshadowTrack(projectId, trackId);
   }
 
   @Get('projects/:projectId/memory/reviews')

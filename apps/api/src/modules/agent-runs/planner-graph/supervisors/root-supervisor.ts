@@ -182,8 +182,48 @@ function isVolumeOutlineGoal(goal: string): boolean {
 
 function isOutlineGoal(goal: string): boolean {
   return includesAny(goal, ['推进卡', '执行卡', 'craftbrief', 'craft brief', '行动链', '场景卡', 'scenecard', 'scene card', '拆成场景', '单元故事', '故事单元', '支线故事', '人物登场', '人物情感', '人物刻画', '背景故事', '单元分类'])
+    || isRoleExpansionGoal(goal)
     || isChapterOutlineGoal(goal)
     || isVolumeOutlineGoal(goal);
+}
+
+function isRoleExpansionGoal(goal: string): boolean {
+  if (includesAny(goal, ['检查', '审稿', '一致性', '人设崩', '质量'])) return false;
+  return includesAny(goal, [
+    '增加角色',
+    '新增角色',
+    '添加角色',
+    '补充角色',
+    '扩充角色',
+    '扩展角色',
+    '丰富角色',
+    '加角色',
+    '增加人物',
+    '新增人物',
+    '添加人物',
+    '补充人物',
+    '扩充人物',
+    '扩展人物',
+    '丰富人物',
+    '加人物',
+    '角色太少',
+    '人物太少',
+    '角色不够',
+    '人物不够',
+    '缺角色',
+    '缺人物',
+    '角色撑不起',
+    '人物撑不起',
+    '撑不起整本书',
+    '撑不起全书',
+    '撑不起长篇',
+    '扩充角色阵容',
+    '丰富角色阵容',
+    '补充角色阵容',
+    '扩充人物阵容',
+    '丰富人物阵容',
+    '补充人物阵容',
+  ]) || (includesAny(goal, ['角色', '人物']) && includesAny(goal, ['增加', '新增', '添加', '补充', '扩充', '扩展']));
 }
 
 function isWritingGoal(goal: string): boolean {

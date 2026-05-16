@@ -425,6 +425,68 @@ function createVccCharacterPlanForChapterCount(chapterCount: number, overrides: 
   });
 }
 
+function createVccCharacterProfileCard(name: string, roleType = 'supporting') {
+  return {
+    name,
+    roleType,
+    oneLinePositioning: `${name} one-line positioning`,
+    detailedProfile: {
+      age: 'thirty-ish',
+      identity: `${name} witness inside the sealed archive system`,
+      appearanceKeywords: ['ink-stained cuffs', 'quiet eyes', 'plain badge'],
+      personalityCore: `${name} cautious but unable to ignore old guilt`,
+      surfaceGoal: 'hand over usable evidence without exposing family risk',
+      deepNeed: 'stop measuring safety only by silence',
+      coreFear: 'the case will consume another innocent family member',
+      majorFlaw: 'delays every hard choice until pressure becomes dangerous',
+      hiddenSecret: 'kept a copied registry page from the original sealing night',
+      moralBoundary: 'will not frame an uninvolved clerk to save himself',
+    },
+    characterArc: {
+      initialState: 'keeps evidence close and speaks only in hints',
+      falseBelief: 'survival depends on never becoming visible',
+      keyBlow: 'his indirect warning causes the protagonist to walk into a trap',
+      turningPoint: 'chooses to sign his real name on the testimony copy',
+      finalChange: 'becomes a visible witness instead of a hidden source',
+      failedEnding: 'burns the copy and remains protected but useless',
+      growthEnding: 'submits the copy and accepts the cost of testimony',
+    },
+    relationships: {
+      withProtagonist: 'starts as a guarded source and becomes a reluctant ally',
+      withAntagonist: 'has procedural knowledge that threatens the pressure faction',
+      withWorldForces: 'knows how the inspection office hides records behind forms',
+      conflictMakers: ['林澈'],
+      misunderstandingMakers: ['沈栖'],
+      foreshadowLinks: ['the missing registry page', 'the old sealing signature'],
+    },
+    voiceProfile: {
+      commonSentencePatterns: ['I can only say this once', 'Check the stamp before the name'],
+      rhythm: 'short clauses with careful pauses',
+      emotionalExposure: 'keeps fear under bureaucratic wording',
+      addressHabits: ['uses surnames', 'avoids intimate nicknames'],
+      forbiddenExpressions: ['I am fearless'],
+      sampleDialogues: [
+        'Look at the stamp, not the clerk who filed it.',
+        'If I knew nothing, I would not be standing here.',
+        'Do not ask me that in this room.',
+        'Some pages are missing because someone wanted them remembered.',
+        'I will not lie for you, but I can point to the drawer.',
+      ],
+    },
+    storyUsage: {
+      plotDrivers: ['opens the sealed registry route', 'forces a witness-protection choice'],
+      foreshadowSuitability: ['registry copy', 'family exposure risk'],
+      suggestedAppearanceChapters: [1],
+      possibleProblems: ['may delay evidence', 'may misdirect the protagonist'],
+      laterPayoffSettings: ['copied registry page', 'signature habit'],
+    },
+    usableForeshadows: ['ink on cuffs', 'avoids one office corridor'],
+    conflictEngines: ['needs protection before testimony', 'hides evidence location'],
+    debutSceneSuggestions: ['archives corridor encounter', 'interrupted file request', 'silent handoff at closing time'],
+    lateTwistPossibilities: ['the copy contains his family name', 'his first warning was edited', 'he knows the antagonist by an old title'],
+  };
+}
+
 function createVccNarrativePlanForChapterCount(chapterCount: number, overrides: Record<string, unknown> = {}) {
   return createVccNarrativePlan({
     storyUnits: createVccStoryUnitsForChapterCount(chapterCount),
@@ -1693,6 +1755,7 @@ test('VCC volume outline preview preserves complete characterPlan', async () => 
   assert.match(receivedMessages[0].content, /protagonist, antagonist, supporting, minor/);
   assert.match(receivedMessages[0].content, /key_missing_family/);
   assert.match(receivedMessages[0].content, /重要新人物必须新增为 newCharacterCandidates/);
+  assert.match(receivedMessages[0].content, /角色扩充必须结构化返回/);
   assert.match(receivedMessages[0].content, /newCharacterCandidates\.name 可以被/);
   assert.match(receivedMessages[1].content, /已有角色摘要/);
   assert.match(receivedMessages[1].content, /既有角色白名单/);
@@ -8105,6 +8168,8 @@ test('VCC persist_volume_character_candidates creates skips existing characters 
   const updatedCharacters: Array<Record<string, unknown>> = [];
   const createdRelationships: Array<Record<string, unknown>> = [];
   const invalidatedProjectIds: string[] = [];
+  const llmCalls: Array<{ messages: Array<{ role: string; content: string }>; options: Record<string, unknown> }> = [];
+  const profileCard = createVccCharacterProfileCard(String(candidateNew.name), String(baseCandidate.roleType));
   const existingCharacters = [
     { id: 'char-lin', name: '林澈', alias: [], source: 'manual', metadata: {} },
     { id: 'char-shen', name: '沈栖', alias: [], source: 'manual', metadata: {} },
@@ -8112,6 +8177,9 @@ test('VCC persist_volume_character_candidates creates skips existing characters 
     { id: 'char-agent-fang', name: '方迟', alias: [], source: 'agent_outline', metadata: { old: true } },
   ];
   const prisma = {
+    character: {
+      async findMany() { return existingCharacters; },
+    },
     async $transaction(callback: (tx: Record<string, unknown>) => Promise<unknown>) {
       const tx = {
         character: {
@@ -8137,7 +8205,13 @@ test('VCC persist_volume_character_candidates creates skips existing characters 
     },
   };
   const cache = { async deleteProjectRecallResults(projectId: string) { invalidatedProjectIds.push(projectId); } };
-  const tool = new PersistVolumeCharacterCandidatesTool(prisma as never, cache as never);
+  const llm = {
+    async chatJson(messages: Array<{ role: string; content: string }>, options: Record<string, unknown>) {
+      llmCalls.push({ messages, options });
+      return { data: profileCard, result: { model: 'mock-character-profile-model', rawPayloadSummary: {}, usage: { total_tokens: 321 } } };
+    },
+  };
+  const tool = new PersistVolumeCharacterCandidatesTool(prisma as never, cache as never, llm as never);
 
   const result = await tool.run(
     { preview, approveAll: true, includeRelationshipArcs: true },
@@ -8148,11 +8222,23 @@ test('VCC persist_volume_character_candidates creates skips existing characters 
   assert.equal(result.updatedCount, 0);
   assert.equal(result.skippedCount, 2);
   assert.equal(result.relationshipCreatedCount, 1);
+  assert.equal(result.profileGeneratedCount, 1);
+  assert.equal(llmCalls.length, 1);
+  assert.equal(llmCalls[0].options.appStep, 'agent_volume_character_profile');
+  assert.equal(llmCalls[0].options.timeoutMs, DEFAULT_LLM_TIMEOUT_MS);
+  assert.equal((llmCalls[0].options.jsonSchema as Record<string, unknown>).name, 'volume_character_profile_card');
+  assert.equal(llmCalls[0].messages.some((message) => message.content.includes(String(candidateNew.name))), true);
   assert.equal(createdCharacters[0].name, '顾临');
   assert.equal(createdCharacters[0].source, 'agent_outline');
   assert.equal(createdCharacters[0].scope, 'volume');
   assert.equal(createdCharacters[0].activeFromChapter, 2);
+  assert.equal(createdCharacters[0].personalityCore, profileCard.detailedProfile.personalityCore);
+  assert.match(String(createdCharacters[0].motivation), /深层需求/);
+  assert.match(String(createdCharacters[0].speechStyle), /对白样例/);
+  assert.match(String(createdCharacters[0].backstory), /隐藏秘密/);
+  assert.match(String(createdCharacters[0].growthArc), /转折点/);
   assert.equal((createdCharacters[0].metadata as Record<string, unknown>).candidateId, 'cand_gulin');
+  assert.equal(((createdCharacters[0].metadata as Record<string, unknown>).characterProfile as Record<string, unknown>).oneLinePositioning, profileCard.oneLinePositioning);
   assert.equal(updatedCharacters.length, 0);
   assert.equal(updatedCharacters.some((item) => item.id === 'char-manual-shao'), false);
   assert.equal(result.characterResults.find((item) => item.name === '邵衡')?.action, 'skipped');
@@ -8162,6 +8248,95 @@ test('VCC persist_volume_character_candidates creates skips existing characters 
   assert.equal(createdRelationships[0].sourceType, 'agent_outline');
   assert.match(result.approvalMessage, /minor_temporary characters are not written/);
   assert.deepEqual(invalidatedProjectIds, ['p1']);
+});
+
+test('VCC persist_volume_character_candidates rejects new candidates when LLM is unavailable', async () => {
+  let transactionCalled = false;
+  const preview = createVccOutlinePreview(1);
+  const existingCharacters = [
+    { id: 'char-lin', name: '林澈', alias: [], source: 'manual', metadata: {} },
+    { id: 'char-shen', name: '沈栖', alias: [], source: 'manual', metadata: {} },
+  ];
+  const prisma = {
+    character: { async findMany() { return existingCharacters; } },
+    async $transaction() {
+      transactionCalled = true;
+      return {};
+    },
+  };
+  const tool = new PersistVolumeCharacterCandidatesTool(prisma as never, {} as never);
+
+  await assert.rejects(
+    () => tool.run(
+      { preview, approveAll: true },
+      { agentRunId: 'run-vcc-character-no-llm', projectId: 'p1', mode: 'act', approved: true, outputs: {}, policy: {} },
+    ),
+    /requires LLM/,
+  );
+  assert.equal(transactionCalled, false);
+});
+
+test('VCC persist_volume_character_candidates rejects incomplete LLM character profile before writing', async () => {
+  let transactionCalled = false;
+  const preview = createVccOutlinePreview(1);
+  const existingCharacters = [
+    { id: 'char-lin', name: '林澈', alias: [], source: 'manual', metadata: {} },
+    { id: 'char-shen', name: '沈栖', alias: [], source: 'manual', metadata: {} },
+  ];
+  const prisma = {
+    character: { async findMany() { return existingCharacters; } },
+    async $transaction() {
+      transactionCalled = true;
+      return {};
+    },
+  };
+  const llm = {
+    async chatJson() {
+      return {
+        data: { name: '邵衡', roleType: 'supporting', oneLinePositioning: 'too short' },
+        result: { model: 'mock-character-profile-model', rawPayloadSummary: {} },
+      };
+    },
+  };
+  const tool = new PersistVolumeCharacterCandidatesTool(prisma as never, {} as never, llm as never);
+
+  await assert.rejects(
+    () => tool.run(
+      { preview, approveAll: true },
+      { agentRunId: 'run-vcc-character-bad-profile', projectId: 'p1', mode: 'act', approved: true, outputs: {}, policy: {} },
+    ),
+    /detailedProfile\.age/,
+  );
+  assert.equal(transactionCalled, false);
+});
+
+test('VCC persist_volume_character_candidates can skip existing candidates without LLM', async () => {
+  const preview = createVccOutlinePreview(1);
+  const existingCharacters = [
+    { id: 'char-lin', name: '林澈', alias: [], source: 'manual', metadata: {} },
+    { id: 'char-shen', name: '沈栖', alias: [], source: 'manual', metadata: {} },
+    { id: 'char-shao', name: '邵衡', alias: [], source: 'manual', metadata: {} },
+  ];
+  const prisma = {
+    character: { async findMany() { return existingCharacters; } },
+    async $transaction(callback: (tx: Record<string, unknown>) => Promise<unknown>) {
+      return callback({
+        character: { async findMany() { return existingCharacters; } },
+        relationshipEdge: { async findMany() { return []; } },
+      });
+    },
+  };
+  const cache = { async deleteProjectRecallResults() { throw new Error('cache should not be invalidated'); } };
+  const tool = new PersistVolumeCharacterCandidatesTool(prisma as never, cache as never);
+
+  const result = await tool.run(
+    { preview, approveAll: true },
+    { agentRunId: 'run-vcc-character-skip-no-llm', projectId: 'p1', mode: 'act', approved: true, outputs: {}, policy: {} },
+  );
+
+  assert.equal(result.createdCount, 0);
+  assert.equal(result.skippedCount, 1);
+  assert.equal(result.profileGeneratedCount, 0);
 });
 
 test('VCC persist_volume_character_candidates rejects incomplete candidate', async () => {
@@ -8174,10 +8349,14 @@ test('VCC persist_volume_character_candidates rejects incomplete candidate', asy
   const preview = createVccOutlinePreview(1, {
     volume: { narrativePlan: createVccNarrativePlanForChapterCount(1, { characterPlan: incompletePlan }) },
   });
+  const existingCharacters = [{ id: 'char-lin', name: '林澈', alias: [], source: 'manual', metadata: {} }, { id: 'char-shen', name: '沈栖', alias: [], source: 'manual', metadata: {} }];
+  let transactionCalled = false;
   const prisma = {
+    character: { async findMany() { return existingCharacters; } },
     async $transaction(callback: (tx: Record<string, unknown>) => Promise<unknown>) {
+      transactionCalled = true;
       return callback({
-        character: { async findMany() { return [{ id: 'char-lin', name: '林澈', alias: [], source: 'manual', metadata: {} }, { id: 'char-shen', name: '沈栖', alias: [], source: 'manual', metadata: {} }]; } },
+        character: { async findMany() { return existingCharacters; } },
         relationshipEdge: { async findMany() { return []; } },
       });
     },
@@ -8191,6 +8370,7 @@ test('VCC persist_volume_character_candidates rejects incomplete candidate', asy
     ),
     /motivation/,
   );
+  assert.equal(transactionCalled, false);
 });
 
 test('PersistOutlineTool 写入新建和 planned 章节 craftBrief 并跳过 drafted', async () => {
@@ -12311,6 +12491,8 @@ test('RootSupervisor classifies planner domains without tool manifests', () => {
   const cases: Array<{ goal: string; domain: string; intent: string }> = [
     { goal: '帮我重写第一卷大纲。', domain: 'outline', intent: 'outline' },
     { goal: '把第一卷拆成 30 章。', domain: 'outline', intent: 'outline' },
+    { goal: '角色太少，帮我扩充角色阵容。', domain: 'outline', intent: 'outline' },
+    { goal: '重写第一卷章节细纲，同时增加角色。', domain: 'outline', intent: 'outline' },
     { goal: '帮我写第十二章正文。', domain: 'writing', intent: 'chapter_write' },
     { goal: '重写第十二章，不沿用旧稿。', domain: 'revision', intent: 'chapter_rewrite' },
     { goal: '导入文档，只要故事大纲。', domain: 'import', intent: 'project_import_preview' },
@@ -12395,6 +12577,8 @@ test('ASP-P6-001 OutlineSupervisor classifies outline sub-intents without tools'
     { goal: '请只完成第 2 卷《盐风峡路》的卷大纲。不要生成 storyUnitPlan、不要生成章节细纲、不要写正文。', outlineIntent: 'volume_outline', intent: 'generate_volume_outline' },
     { goal: '请完成第 2 卷《盐风峡路》的卷大纲和故事单元。', outlineIntent: 'story_units', intent: 'story_units' },
     { goal: '把第一卷拆成 30 章。', outlineIntent: 'chapter_outline', intent: 'split_volume_to_chapters' },
+    { goal: '角色太少，帮我扩充角色阵容。', outlineIntent: 'volume_outline', intent: 'generate_volume_outline' },
+    { goal: '重写第一卷章节细纲，同时增加角色。', outlineIntent: 'chapter_outline', intent: 'split_volume_to_chapters' },
     { goal: '给第十二章补一张 Chapter.craftBrief 推进卡。', outlineIntent: 'craft_brief', intent: 'chapter_craft_brief' },
     { goal: '把第十二章拆成场景卡。', outlineIntent: 'scene_card', intent: 'scene_card_planning' },
   ];
@@ -12461,6 +12645,19 @@ test('ASP-P6-002 selectToolBundleNode refines outline route through outline subg
   assert.equal(result.selectedBundle?.bundleName, 'outline.chapter');
   assert.ok(result.selectedTools?.some((tool) => tool.name === 'generate_chapter_outline_preview'));
   assert.deepEqual(result.diagnostics?.nodes.map((node) => node.name), ['outlineSupervisor', 'selectToolBundle']);
+
+  const roleGoal = '角色太少，帮我扩充角色阵容。';
+  const roleRootRoute = new RootSupervisor().classify({ goal: roleGoal });
+  const roleResult = await node({
+    goal: roleGoal,
+    route: roleRootRoute,
+    context: { volumes: [{ id: 'v1', volumeNo: 1, title: '第一卷', chapterCount: 30, hasNarrativePlan: true, hasStoryUnitPlan: true, hasLegacyStoryUnits: false }] } as AgentContextV2,
+    defaults: { taskType: 'general', summary: 'smoke', assumptions: [], risks: [] },
+    diagnostics: { graphVersion: 'test', nodes: [] },
+  });
+  assert.equal(roleRootRoute.intent, 'outline');
+  assert.equal(roleResult.route?.intent, 'generate_volume_outline');
+  assert.equal(roleResult.selectedBundle?.bundleName, 'outline.volume');
 });
 
 test('Planner prompt compacts tool manifests without losing callable input schema', async () => {
@@ -19279,6 +19476,7 @@ test('generate_chapter_outline_preview 未传 volumeOutline 时承接 inspect_pr
   assert.match(receivedMessages[1].content, /旧闸棚账册入局/);
   assert.equal(receivedMessages[1].content.includes('characterExecution.cast source whitelist'), true);
   assert.equal(receivedMessages[1].content.includes('volume_candidate'), true);
+  assert.equal(receivedMessages[1].content.includes('结构化返回要求'), true);
   assert.equal(receivedMessages[1].content.includes(createVccCharacterPlan().newCharacterCandidates[0].name), true);
 });
 

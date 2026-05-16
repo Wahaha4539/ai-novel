@@ -10,6 +10,8 @@ export const outlineToolBundles: ToolBundleDefinition[] = [
     deniedToolNames: ['segment_chapter_outline_batches', 'generate_chapter_outline_batch_preview', 'merge_chapter_outline_batch_previews', 'generate_chapter_outline_preview', 'merge_chapter_outline_previews', 'persist_outline', 'write_chapter', 'write_chapter_series'],
     plannerGuidance: [
       'Only create or rewrite the volume-level outline.',
+      'Generate or refresh volume.narrativePlan.characterPlan.newCharacterCandidates together with the volume outline so important new roles are planned as candidates, not invented later as chapter-only temporary characters.',
+      'Do not persist volume character candidates to the official Character table unless the user explicitly asks to save all or selected candidates; then persist_volume_character_candidates must include approveAll=true or approvedCandidateIds/approvedCandidateNames.',
       'Do not split into chapter outlines unless the route explicitly asks for chapter planning.',
     ],
   },
@@ -23,6 +25,8 @@ export const outlineToolBundles: ToolBundleDefinition[] = [
     plannerGuidance: [
       'For ordinary chapter-outline generation or rewrite, reuse the existing target volume narrativePlan/storyUnitPlan from inspect_project_context.',
       'Only generate_volume_outline_preview and generate_story_units_preview when the user explicitly asks to rebuild volume planning, re-split the volume, change chapterCount, or plan from scratch.',
+      'If the chapter-outline request explicitly asks to add/expand roles or says the current cast is too small for the book, first generate_volume_outline_preview to refresh characterPlan.newCharacterCandidates, then generate_story_units_preview, and pass the generated volumeOutline/storyUnitPlan into every generate_chapter_outline_preview step.',
+      'Chapter outlines may reference important new roles only as characterExecution.cast.source=volume_candidate from volume.narrativePlan.characterPlan.newCharacterCandidates; do not let important long-running roles appear as minor_temporary.',
       'Use one generate_chapter_outline_preview step per target chapter for every chapter-outline plan, including long 60-chapter volumes, then merge_chapter_outline_previews.',
       'If target chapterCount differs from the target volume chapterCount in context, rebuild generate_volume_outline_preview and generate_story_units_preview first, then pass volumeOutline and storyUnitPlan into every single-chapter preview step and merge_chapter_outline_previews.',
       'Do not use segmented batch tools for planner-generated chapter outlines; the per-chapter calls keep each LLM JSON response small enough for dense craftBrief data.',
