@@ -84,11 +84,12 @@ export function ScoringCenterPanel({ selectedProject, selectedProjectId }: Props
     () => assets.filter((asset) => targetFilter === 'all' || asset.targetType === targetFilter),
     [assets, targetFilter],
   );
-  const assetSections = useMemo(() => buildAssetTreeSections(filteredAssets), [filteredAssets]);
+  const displayAssets = useMemo(() => keepFinalDraftAssetsForDisplay(filteredAssets), [filteredAssets]);
+  const assetSections = useMemo(() => buildAssetTreeSections(displayAssets), [displayAssets]);
   const selectedAsset = useMemo(() => {
-    const fromState = filteredAssets.find((asset) => assetKey(asset) === selectedAssetKey);
-    return fromState ?? filteredAssets.find((asset) => asset.isScoreable !== false) ?? filteredAssets[0] ?? null;
-  }, [filteredAssets, selectedAssetKey]);
+    const fromState = displayAssets.find((asset) => assetKey(asset) === selectedAssetKey);
+    return fromState ?? displayAssets.find((asset) => asset.isScoreable !== false) ?? displayAssets[0] ?? null;
+  }, [displayAssets, selectedAssetKey]);
 
   useEffect(() => {
     if (selectedAsset && selectedAssetKey !== assetKey(selectedAsset)) {
@@ -250,9 +251,9 @@ export function ScoringCenterPanel({ selectedProject, selectedProjectId }: Props
 
               <div className="flex-1 min-h-0" style={{ overflowY: 'auto', padding: '0.75rem' }}>
                 {error ? <Notice tone="error">{error}</Notice> : null}
-                {loading && !filteredAssets.length ? (
+                {loading && !displayAssets.length ? (
                   <div className="list-card-empty">评分资产加载中...</div>
-                ) : filteredAssets.length === 0 ? (
+                ) : displayAssets.length === 0 ? (
                   <div className="list-card-empty">暂无可显示资产</div>
                 ) : (
                   <AssetTree
@@ -839,6 +840,46 @@ function MetaLine({ label, value }: { label: string; value?: string | null }) {
 
 function TinyMeta({ children }: { children: React.ReactNode }) {
   return <span className="badge" style={{ fontSize: '0.62rem', borderColor: 'var(--border-dim)', color: 'var(--text-dim)' }}>{children}</span>;
+}
+
+function keepFinalDraftAssetsForDisplay(assets: ScoringAssetOption[]) {
+  const finalDrafts = new Map<string, ScoringAssetOption>();
+  const result: ScoringAssetOption[] = [];
+
+  for (const asset of assets) {
+    if (asset.targetType !== 'chapter_draft') {
+      result.push(asset);
+      continue;
+    }
+
+    const key = finalDraftGroupKey(asset);
+    const current = finalDrafts.get(key);
+    if (!current || compareDraftRecency(asset, current) > 0) {
+      finalDrafts.set(key, asset);
+    }
+  }
+
+  result.push(...finalDrafts.values());
+  return result.sort(compareAssets);
+}
+
+function finalDraftGroupKey(asset: ScoringAssetOption) {
+  if (asset.targetId) return `chapter:${asset.targetId}`;
+  return `chapter:${asset.volumeNo ?? 'unknown'}:${asset.chapterNo ?? 'unknown'}`;
+}
+
+function compareDraftRecency(left: ScoringAssetOption, right: ScoringAssetOption) {
+  const versionDiff = (left.draftVersion ?? -1) - (right.draftVersion ?? -1);
+  if (versionDiff) return versionDiff;
+  const updatedDiff = timestampOf(left.updatedAt) - timestampOf(right.updatedAt);
+  if (updatedDiff) return updatedDiff;
+  return assetKey(left).localeCompare(assetKey(right));
+}
+
+function timestampOf(value?: string | null) {
+  if (!value) return 0;
+  const time = new Date(value).getTime();
+  return Number.isNaN(time) ? 0 : time;
 }
 
 function toggleSetValue(current: Set<string>, value: string) {

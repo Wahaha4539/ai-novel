@@ -202,6 +202,7 @@ test('ScoringCenterPanel renders asset selection, reports, errors, empty state, 
   resetMockState();
   mockState.scoring.assets = [
     scoringAsset({ targetType: 'chapter_craft_brief', targetId: 'chapter-1', title: 'Chapter 1 craft brief', chapterNo: 1, source: 'Chapter.craftBrief' }),
+    scoringAsset({ targetType: 'chapter_draft', targetId: 'chapter-1', title: 'Chapter 1 draft v1', chapterNo: 1, draftId: 'draft-old', draftVersion: 1, source: 'agent_generate_service' }),
     scoringAsset({ targetType: 'chapter_draft', targetId: 'chapter-1', title: 'Chapter 1 draft v2', chapterNo: 1, draftId: 'draft-1', draftVersion: 2, source: 'generation' }),
     scoringAsset({ targetType: 'volume_outline', targetId: 'volume-2', title: 'Volume 2 outline', volumeNo: 2, source: 'Volume.narrativePlan', isScoreable: false, unavailableReason: 'Volume outline content is empty.' }),
   ];
@@ -225,6 +226,7 @@ test('ScoringCenterPanel renders asset selection, reports, errors, empty state, 
   harness.render();
   assertIncludes(harness.html(), ['Scoring Center', 'Chapter 1 craft brief', 'Craft brief has a clear action chain.', 'Scene executability', 'continuity_handoff', 'Clarify the handoff clue', 'Rewrite from report']);
   assertIncludes(harness.html(), ['资产结构', '第 1 卷', '第 1 章', '章节执行卡', '正文版本 v2', '第 2 卷']);
+  assertNotIncludes(harness.html(), ['Chapter 1 draft v1', '正文版本 v1']);
   assertIncludes(harness.html(), ['Platform comparison', 'Project-internal scoring profiles', 'qidian_like', 'Chapter trend']);
 
   await click(findButton(harness.tree, 'Rewrite from report'));
