@@ -8,6 +8,7 @@ import { UpdateGuidedStepDto } from './dto/update-guided-step.dto';
 import { GuidedChatDto } from './dto/guided-chat.dto';
 import { GenerateStepDto } from './dto/generate-step.dto';
 import {
+  GUIDED_OUTLINE_FORESHADOW_SCHEMA,
   GUIDED_SINGLE_CHAPTER_REFINEMENT_SCHEMA,
   getGuidedStepJsonSchema,
 } from './guided-step-schemas';
@@ -16,6 +17,7 @@ import {
   VolumeCharacterPlan,
 } from '../agent-tools/tools/outline-character-contracts';
 import { assertVolumeNarrativePlan } from '../agent-tools/tools/outline-narrative-contracts';
+import { normalizeForeshadowScope, replaceChapterOutlineForeshadowTracks, replaceProjectOutlineForeshadowTracks, replaceVolumeOutlineForeshadowTracks } from '../agent-tools/tools/foreshadow-track-sync';
 
 const DEFAULT_FIRST_STEP = 'guided_setup';
 
@@ -253,10 +255,11 @@ ${INTERACTION_STYLE}
 ## 伏笔设计规则（严格遵守）
 
 ### 1. 分层布局
-- **主线伏笔**（1-2条）：横跨全书的核心悬念，影响结局走向
-- **卷级伏笔**（每卷1-2条）：在一卷内埋设、在后续1-2卷揭开
-- **章节伏笔**（适量）：短距离呼应，2-5章内闭合
-- 三个层级的伏笔数量比例建议为 1:2:3
+- **全书伏笔**（scope=book，2-3条）：横跨全书的核心悬念，影响结局走向
+- **跨卷伏笔**（scope=cross_volume，约卷数-1条）：埋设和回收发生在不同卷，用来连接卷与卷
+- **卷内伏笔**（scope=volume，每卷1-2条）：只服务本卷内部的阶段悬念、转折或回收
+- **跨章节伏笔**（scope=cross_chapter，适量）：短距离呼应，跨多个章节但不跨卷
+- **章节内伏笔**（scope=chapter，少量）：同章内埋设和回收，服务局部反转
 
 ### 2. 时间分布
 - 前 30% 的章节是伏笔高密度埋设区
@@ -283,7 +286,7 @@ ${INTERACTION_STYLE}
 
 ${INTERACTION_STYLE}
 完成时输出的 JSON 格式：
-\`[STEP_COMPLETE]\`{"foreshadowTracks":[{"title":"伏笔标题","detail":"伏笔内容详细描述","scope":"arc/volume/chapter","technique":"道具型/对话型/行为型/环境型/叙事型/象征型/结构型","plantChapter":"埋设时机(如:第1卷第3章)","revealChapter":"揭开时机(如:第3卷第8章)","involvedCharacters":"涉及角色","payoff":"揭开后的影响和情感冲击"}]}`,
+\`[STEP_COMPLETE]\`{"foreshadowTracks":[{"title":"伏笔标题","detail":"伏笔内容详细描述","scope":"book/cross_volume/volume/cross_chapter/chapter","technique":"道具型/对话型/行为型/环境型/叙事型/象征型/结构型","plantChapter":"埋设时机(如:第1卷第3章)","revealChapter":"揭开时机(如:第3卷第8章)","involvedCharacters":"涉及角色","payoff":"揭开后的影响和情感冲击"}]}`,
 };
 
 @Injectable()
@@ -1154,14 +1157,16 @@ newCharacterCandidates 可为空；若有候选，每个候选必须包含 candi
 - 每个 chapter 必须输出 craftBrief 对象，包含 visibleGoal、hiddenEmotion、coreConflict、mainlineTask、subplotTasks、storyUnit、actionBeats、sceneBeats、characterExecution、concreteClues、dialogueSubtext、characterShift、irreversibleConsequence、progressTypes、entryState、exitState、openLoops、closedLoops、handoffToNextChapter、continuityState
 - 不生成正文，不写单章执行卡；这里生成的是整卷章节细纲`,
       guided_foreshadow: `请根据已完成的卷纲和章节细纲，设计一套完整的伏笔体系。
-伏笔数量公式：主线 2-3 条 + 每卷 1-2 条卷级伏笔 + 适量章节级伏笔。
+伏笔数量公式：全书 2-3 条 + 跨卷约卷数-1条 + 每卷 1-2 条卷内伏笔 + 适量跨章节/章节内伏笔。
 具体数量会在下方「伏笔数量约束」中指定，必须严格遵守。
 
 ## 强制创意规则（必须遵守）
 ### 分层要求
-- 至少 2 条「主线伏笔」（scope=arc）：横跨全书，影响最终结局
-- 每卷至少 1 条「卷级伏笔」（scope=volume）：跨卷呼应
-- 适量「章节伏笔」（scope=chapter）：短距离闭合
+- 至少 2 条「全书伏笔」（scope=book）：横跨全书，影响最终结局
+- 至少 1 条「跨卷伏笔」（scope=cross_volume）：埋设和回收发生在不同卷
+- 每卷至少 1 条「卷内伏笔」（scope=volume）：只在本卷内完成埋设、推进或回收
+- 适量「跨章节伏笔」（scope=cross_chapter）：跨多个章节但不跨卷
+- 少量「章节内伏笔」（scope=chapter）：同一章内埋设和回收，服务局部反转
 
 ### 手法多样性
 - 至少使用 3 种不同的伏笔手法（technique）
@@ -1322,7 +1327,7 @@ ${singleChapterContext.chapterPositionContext}`;
     }
 
     // For guided_foreshadow, compute dynamic foreshadow count based on volume count
-    // Formula: arc-level 2-3 + volume-level 1-2 per volume + a few chapter-level
+    // Formula: book-level 2-3 + cross-volume bridges + volume-level 1-2 per volume + local clue tiers.
     if (dto.currentStep === 'guided_foreshadow') {
       let volumeCount = 3; // default assumption
       let volumeSummary = '';
@@ -1340,14 +1345,16 @@ ${singleChapterContext.chapterPositionContext}`;
         }
       } catch { /* non-critical */ }
 
-      // Compute target counts by tier
-      const arcCount = volumeCount <= 3 ? 2 : 3;
-      const volumeLevelCount = volumeCount; // ~1 per volume
-      const chapterLevelCount = Math.max(2, Math.floor(volumeCount * 0.5));
-      const totalMin = arcCount + volumeLevelCount + chapterLevelCount;
-      const totalMax = totalMin + Math.floor(volumeCount * 0.5);
+      // Compute target counts by tier.
+      const bookCount = volumeCount <= 3 ? 2 : 3;
+      const crossVolumeCount = Math.max(1, volumeCount - 1);
+      const volumeLevelCount = volumeCount;
+      const crossChapterCount = Math.max(2, Math.floor(volumeCount * 0.5));
+      const chapterLevelCount = Math.max(1, Math.floor(volumeCount * 0.25));
+      const totalMin = bookCount + crossVolumeCount + volumeLevelCount + crossChapterCount + chapterLevelCount;
+      const totalMax = totalMin + Math.floor(volumeCount * 0.75);
 
-      systemPrompt += `\n\n## ⚠️ 伏笔数量约束（最高优先级）\n本书共 **${volumeCount}** 卷，请生成 **${totalMin}-${totalMax}** 条伏笔线索：\n- 主线伏笔（scope=arc）：**${arcCount}** 条\n- 卷级伏笔（scope=volume）：**${volumeLevelCount}-${volumeLevelCount + 2}** 条（约每卷 1-2 条）\n- 章节伏笔（scope=chapter）：**${chapterLevelCount}-${chapterLevelCount + 2}** 条`;
+      systemPrompt += `\n\n## ⚠️ 伏笔数量约束（最高优先级）\n本书共 **${volumeCount}** 卷，请生成 **${totalMin}-${totalMax}** 条伏笔线索：\n- 全书伏笔（scope=book）：**${bookCount}** 条\n- 跨卷伏笔（scope=cross_volume）：**${crossVolumeCount}-${crossVolumeCount + 1}** 条\n- 卷内伏笔（scope=volume）：**${volumeLevelCount}-${volumeLevelCount + 2}** 条（约每卷 1-2 条）\n- 跨章节伏笔（scope=cross_chapter）：**${crossChapterCount}-${crossChapterCount + 2}** 条\n- 章节内伏笔（scope=chapter）：**${chapterLevelCount}-${chapterLevelCount + 1}** 条`;
 
       if (volumeSummary) {
         systemPrompt += `\n\n## 各卷概要（伏笔应分布在这些卷中）\n${volumeSummary}`;
@@ -1384,6 +1391,10 @@ ${singleChapterContext.chapterPositionContext}`;
 
     let structuredData = JSON.parse(jsonStr) as Record<string, unknown>;
     const warnings: string[] = [];
+
+    if (dto.currentStep === 'guided_outline') {
+      structuredData = await this.attachOutlineForeshadowsToGuidedOutline(projectId, dto, structuredData);
+    }
 
     if (isSingleChapterRefinement) {
       const normalized = this.normalizeSingleChapterResult(
@@ -1491,13 +1502,24 @@ ${singleChapterContext.chapterPositionContext}`;
 
       case 'guided_outline': {
         // Write to Project.outline
-        await this.prisma.project.update({
-          where: { id: projectId },
-          data: {
-            outline: asString(structuredData.outline),
-          },
+        const outline = asString(structuredData.outline);
+        const foreshadowSync = await this.prisma.$transaction(async (tx) => {
+          await tx.project.update({
+            where: { id: projectId },
+            data: {
+              outline,
+            },
+          });
+          return replaceProjectOutlineForeshadowTracks(tx, {
+            projectId,
+            outline,
+            foreshadowTracks: structuredData.foreshadowTracks,
+          });
         });
         written.push('Project(outline)');
+        if (foreshadowSync.createdCount || foreshadowSync.deletedCount) {
+          written.push(`ForeshadowTrack × ${foreshadowSync.createdCount}`);
+        }
         break;
       }
 
@@ -1509,23 +1531,51 @@ ${singleChapterContext.chapterPositionContext}`;
         }
         if (volumes?.length) {
           await this.assertGuidedVolumesCharacterPlans(projectId, volumes);
+          const normalizedVolumes = volumes.map((vol, index) => ({
+            raw: vol,
+            volumeNo: requireGuidedPositiveInt(vol.volumeNo, `第 ${index + 1} 个卷纲 volumeNo`),
+            chapterCount: requireGuidedPositiveInt(vol.chapterCount, `第 ${index + 1} 个卷纲 chapterCount`),
+            narrativePlan: normalizeVolumeNarrativePlan(vol),
+            data: {
+              projectId,
+              volumeNo: requireGuidedPositiveInt(vol.volumeNo, `第 ${index + 1} 个卷纲 volumeNo`),
+              chapterCount: requireGuidedPositiveInt(vol.chapterCount, `第 ${index + 1} 个卷纲 chapterCount`),
+              title: asString(vol.title),
+              synopsis: asString(vol.synopsis),
+              objective: asString(vol.objective),
+              narrativePlan: normalizeVolumeNarrativePlan(vol),
+              status: 'planned' as const,
+            },
+          }));
           // 先删除再批量写入，并放在同一事务里，避免中途失败留下空卷纲。
-          await this.prisma.$transaction([
-            this.prisma.volume.deleteMany({ where: { projectId } }),
-            this.prisma.volume.createMany({
-              data: volumes.map((vol, index) => ({
+          const foreshadowSync = await this.prisma.$transaction(async (tx) => {
+            await tx.volume.deleteMany({ where: { projectId } });
+            await tx.volume.createMany({ data: normalizedVolumes.map((volume) => volume.data) });
+            const savedVolumes = await tx.volume.findMany({
+              where: { projectId },
+              select: { id: true, volumeNo: true },
+            });
+            const savedByNo = new Map(savedVolumes.map((volume) => [volume.volumeNo, volume]));
+            let createdCount = 0;
+            let deletedCount = 0;
+            for (const volume of normalizedVolumes) {
+              const saved = savedByNo.get(volume.volumeNo);
+              const sync = await replaceVolumeOutlineForeshadowTracks(tx, {
                 projectId,
-                volumeNo: requireGuidedPositiveInt(vol.volumeNo, `第 ${index + 1} 个卷纲 volumeNo`),
-                chapterCount: requireGuidedPositiveInt(vol.chapterCount, `第 ${index + 1} 个卷纲 chapterCount`),
-                title: asString(vol.title),
-                synopsis: asString(vol.synopsis),
-                objective: asString(vol.objective),
-                narrativePlan: normalizeVolumeNarrativePlan(vol),
-                status: 'planned',
-              })),
-            }),
-          ]);
+                volumeId: saved?.id,
+                volumeNo: volume.volumeNo,
+                chapterCount: volume.chapterCount,
+                narrativePlan: volume.narrativePlan,
+              });
+              createdCount += sync.createdCount;
+              deletedCount += sync.deletedCount;
+            }
+            return { createdCount, deletedCount };
+          });
           written.push(`Volume × ${volumes.length}`);
+          if (foreshadowSync.createdCount || foreshadowSync.deletedCount) {
+            written.push(`ForeshadowTrack × ${foreshadowSync.createdCount}`);
+          }
         }
         break;
       }
@@ -1548,6 +1598,7 @@ ${singleChapterContext.chapterPositionContext}`;
             select: { id: true, volumeNo: true },
           });
           const volumeNoToId = new Map(existingVolumes.map((v) => [v.volumeNo, v.id]));
+          let chapterForeshadowSync: { createdCount: number; deletedCount: number } = { createdCount: 0, deletedCount: 0 };
 
           if (volumeNo) {
             // Per-volume save: preserve existing chapterNo values instead of deleting and re-creating
@@ -1622,6 +1673,11 @@ ${singleChapterContext.chapterPositionContext}`;
             if (operations.length > 0) {
               await this.prisma.$transaction(operations);
             }
+            chapterForeshadowSync = await this.syncGuidedChapterForeshadowTracks(projectId, chapters, {
+              volumeId: targetVolumeId,
+              volumeNo,
+              singleChapterNo,
+            });
           } else {
             // Full save: replace all chapters for this project and create globally sequential numbers.
             const referencedVolumeNos = chapters
@@ -1651,8 +1707,12 @@ ${singleChapterContext.chapterPositionContext}`;
                 };
               }),
             });
+            chapterForeshadowSync = await this.syncGuidedChapterForeshadowTracks(projectId, chapters, {});
           }
           written.push(`Chapter × ${chapters.length}`);
+          if (chapterForeshadowSync.createdCount || chapterForeshadowSync.deletedCount) {
+            written.push(`ForeshadowTrack × ${chapterForeshadowSync.createdCount}`);
+          }
         }
         break;
       }
@@ -1674,7 +1734,7 @@ ${singleChapterContext.chapterPositionContext}`;
                 title: asString(track.title) ?? '未命名伏笔',
                 detail: asString(track.detail),
                 status: 'planned',
-                scope: asString(track.scope) ?? 'arc',
+                scope: normalizeForeshadowScope(track.scope, 'book'),
                 source: 'guided',
                 metadata: {
                   technique: asString(track.technique),
@@ -1763,6 +1823,125 @@ ${singleChapterContext.chapterPositionContext}`;
 
     return { written };
   }
+
+  private async attachOutlineForeshadowsToGuidedOutline(
+    _projectId: string,
+    dto: GenerateStepDto,
+    structuredData: Record<string, unknown>,
+  ): Promise<Record<string, unknown>> {
+    const outline = asString(structuredData.outline);
+    if (!outline) {
+      throw new Error('guided_outline 缺少 outline，无法生成大纲级伏笔。');
+    }
+
+    const reply = await this.llm.chat([
+      {
+        role: 'system',
+        content: [
+          '你是小说伏笔规划助手。只输出 JSON，不要 Markdown，不要解释。',
+          '任务：基于已经生成的故事总纲，单独规划大纲级伏笔。',
+          '不要从文本里机械摘词；要根据总纲做创作判断，并输出结构化字段。',
+          '大纲级伏笔以 book、cross_volume、volume 为主；不要生成 chapter 或 cross_chapter，章节细纲阶段会负责短距离伏笔。',
+          `输出结构必须符合：${GUIDED_OUTLINE_FORESHADOW_SCHEMA}`,
+        ].join('\n'),
+      },
+      {
+        role: 'user',
+        content: [
+          '请生成 3-5 条大纲级伏笔。',
+          '数量建议：book 2 条；cross_volume 1-2 条；如果总纲已有明确阶段或卷感，可以补 1 条 volume。',
+          '每条必须包含 title、detail、scope、technique、plantStage、revealStage、involvedCharacters、payoff。',
+          `用户提示：${dto.userHint ?? ''}`,
+          `聊天摘要：${dto.chatSummary ?? ''}`,
+          `项目上下文：\n${dto.projectContext ?? ''}`,
+          `故事总纲：\n${outline}`,
+        ].join('\n\n'),
+      },
+    ], {
+      temperature: 0.7,
+      maxTokens: 8000,
+      appStep: 'guided_outline.foreshadows',
+    });
+
+    const jsonStr = this.extractJsonFromGuidedReply(reply);
+    const foreshadowData = JSON.parse(jsonStr) as Record<string, unknown>;
+    return {
+      ...structuredData,
+      foreshadowTracks: normalizeOutlineForeshadowTracks(foreshadowData.foreshadowTracks),
+    };
+  }
+
+  private extractJsonFromGuidedReply(reply: string): string {
+    const codeBlockMatch = reply.match(/```json\s*([\s\S]*?)```/);
+    const jsonStr = codeBlockMatch
+      ? codeBlockMatch[1].trim()
+      : (reply.match(/\{[\s\S]*\}/)?.[0] ?? '');
+    if (!jsonStr) {
+      throw new Error('AI 未返回有效的 JSON 数据');
+    }
+    return jsonStr;
+  }
+
+  private async syncGuidedChapterForeshadowTracks(
+    projectId: string,
+    chapters: Array<Record<string, unknown>>,
+    options: { volumeId?: string; volumeNo?: number; singleChapterNo?: number },
+  ): Promise<{ createdCount: number; deletedCount: number }> {
+    const savedChapters = await this.prisma.chapter.findMany({
+      where: {
+        projectId,
+        ...(options.volumeId ? { volumeId: options.volumeId } : {}),
+      },
+      select: { id: true, chapterNo: true },
+      orderBy: { chapterNo: 'asc' },
+    });
+    const savedByNo = new Map(savedChapters.map((chapter) => [chapter.chapterNo, chapter]));
+    const syncChapters = chapters
+      .map((chapter, index) => {
+        const requestedChapterNo = asNumber(chapter.chapterNo);
+        const saved = options.singleChapterNo !== undefined && requestedChapterNo !== undefined
+          ? savedByNo.get(requestedChapterNo)
+          : savedChapters[index];
+        if (!saved) return null;
+        return {
+          id: saved.id,
+          chapterNo: saved.chapterNo,
+          volumeNo: options.volumeNo ?? asNumber(chapter.volumeNo) ?? null,
+          craftBrief: chapter.craftBrief,
+        };
+      })
+      .filter((chapter): chapter is { id: string; chapterNo: number; volumeNo: number | null; craftBrief: unknown } => Boolean(chapter));
+
+    if (!syncChapters.length) return { createdCount: 0, deletedCount: 0 };
+    return replaceChapterOutlineForeshadowTracks(this.prisma, {
+      projectId,
+      chapters: syncChapters,
+    });
+  }
+}
+
+const OUTLINE_FORESHADOW_SCOPES = new Set(['book', 'cross_volume', 'volume']);
+
+function normalizeOutlineForeshadowTracks(value: unknown): Array<Record<string, unknown>> {
+  const tracks = asRecordArray(value);
+  if (!tracks.length) {
+    throw new Error('guided_outline 伏笔二次生成失败：缺少非空 foreshadowTracks。');
+  }
+
+  tracks.forEach((track, index) => {
+    const label = `guided_outline.foreshadowTracks[${index}]`;
+    const scope = asString(track.scope);
+    for (const field of ['title', 'detail', 'scope', 'technique', 'plantStage', 'revealStage', 'involvedCharacters', 'payoff']) {
+      if (!asString(track[field])) {
+        throw new Error(`${label}.${field} 缺失，未生成完整大纲级伏笔。`);
+      }
+    }
+    if (!scope || !OUTLINE_FORESHADOW_SCOPES.has(scope)) {
+      throw new Error(`${label}.scope 必须是 book、cross_volume 或 volume。`);
+    }
+  });
+
+  return tracks;
 }
 
 /** Safely extract a string value, returning undefined for non-strings */

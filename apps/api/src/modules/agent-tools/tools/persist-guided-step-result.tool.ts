@@ -64,6 +64,7 @@ export class PersistGuidedStepResultTool implements BaseTool<PersistGuidedStepRe
     'create_or_update_style_profile',
     'create_or_update_characters',
     'update_project_outline',
+    'replace_project_outline_foreshadows',
     'create_or_update_volumes',
     'create_or_update_planned_chapters',
     'create_or_update_foreshadow_tracks',

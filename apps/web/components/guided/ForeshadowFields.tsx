@@ -14,9 +14,30 @@ export interface ForeshadowTrackData {
 
 /** Scope display labels and colors */
 const SCOPE_LABELS: Record<string, { label: string; color: string }> = {
-  arc: { label: '主线伏笔', color: '#ec4899' },
-  volume: { label: '卷级伏笔', color: '#f59e0b' },
-  chapter: { label: '章节伏笔', color: '#14b8a6' },
+  book: { label: '全书伏笔', color: '#ec4899' },
+  cross_volume: { label: '跨卷伏笔', color: '#8b5cf6' },
+  volume: { label: '卷内伏笔', color: '#f59e0b' },
+  cross_chapter: { label: '跨章节伏笔', color: '#0ea5e9' },
+  chapter: { label: '章节内伏笔', color: '#14b8a6' },
+};
+
+const SCOPE_OPTIONS = [
+  { value: 'book', label: '全书伏笔' },
+  { value: 'cross_volume', label: '跨卷伏笔' },
+  { value: 'volume', label: '卷内伏笔' },
+  { value: 'cross_chapter', label: '跨章节伏笔' },
+  { value: 'chapter', label: '章节内伏笔' },
+];
+
+const SCOPE_ALIASES: Record<string, string> = {
+  arc: 'book',
+  global: 'book',
+  whole_book: 'book',
+  full_book: 'book',
+  cross_arc: 'cross_volume',
+  volume_arc: 'volume',
+  chapter_arc: 'cross_chapter',
+  local: 'chapter',
 };
 
 /** Technique display labels */
@@ -42,6 +63,26 @@ const emptyTrack = (scope = 'volume'): ForeshadowTrackData => ({
   payoff: '',
 });
 
+const defaultTracks = () => [
+  emptyTrack('book'),
+  emptyTrack('cross_volume'),
+  emptyTrack('volume'),
+  emptyTrack('cross_chapter'),
+  emptyTrack('chapter'),
+];
+
+function normalizeScope(scope?: string) {
+  if (!scope) return 'volume';
+  return SCOPE_ALIASES[scope] ?? scope;
+}
+
+function normalizeTracks(tracks: ForeshadowTrackData[]) {
+  return tracks.map((track) => ({
+    ...track,
+    scope: normalizeScope(track.scope),
+  }));
+}
+
 interface Props {
   data: Record<string, unknown>;
   onChange: (field: string, value: string) => void;
@@ -55,12 +96,12 @@ export function ForeshadowFields({ data, onChange }: Props) {
   // Parse foreshadow tracks from stepData
   const parseTracks = (): ForeshadowTrackData[] => {
     const raw = data.foreshadowTracks;
-    if (!raw) return [emptyTrack('arc'), emptyTrack('volume'), emptyTrack('chapter')];
+    if (!raw) return defaultTracks();
     try {
-      if (typeof raw === 'string') return JSON.parse(raw) as ForeshadowTrackData[];
-      if (Array.isArray(raw)) return raw as ForeshadowTrackData[];
+      if (typeof raw === 'string') return normalizeTracks(JSON.parse(raw) as ForeshadowTrackData[]);
+      if (Array.isArray(raw)) return normalizeTracks(raw as ForeshadowTrackData[]);
     } catch { /* ignore parse errors */ }
-    return [emptyTrack('arc'), emptyTrack('volume'), emptyTrack('chapter')];
+    return defaultTracks();
   };
 
   const tracks = parseTracks();
@@ -110,7 +151,8 @@ export function ForeshadowFields({ data, onChange }: Props) {
 
       {/* Track cards */}
       {tracks.map((track, idx) => {
-        const scopeInfo = SCOPE_LABELS[track.scope] ?? SCOPE_LABELS.volume;
+        const scope = normalizeScope(track.scope);
+        const scopeInfo = SCOPE_LABELS[scope] ?? SCOPE_LABELS.volume;
         const accentColor = scopeInfo.color;
 
         return (
@@ -179,13 +221,15 @@ export function ForeshadowFields({ data, onChange }: Props) {
             <div className="flex gap-2" style={{ marginBottom: '0.4rem' }}>
               <select
                 className="input-field"
-                value={track.scope}
+                value={scope}
                 onChange={(e) => updateTrack(idx, 'scope', e.target.value)}
                 style={{ fontSize: '0.8rem', padding: '0.3rem 0.5rem', flex: 1 }}
               >
-                <option value="arc">主线伏笔 (全书)</option>
-                <option value="volume">卷级伏笔 (跨卷)</option>
-                <option value="chapter">章节伏笔 (短距离)</option>
+                {SCOPE_OPTIONS.map((opt) => (
+                  <option key={opt.value} value={opt.value}>
+                    {opt.label}
+                  </option>
+                ))}
               </select>
               <select
                 className="input-field"

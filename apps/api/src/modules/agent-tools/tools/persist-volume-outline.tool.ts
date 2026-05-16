@@ -1,8 +1,10 @@
 import { BadRequestException, Injectable } from '@nestjs/common';
 import { Prisma } from '@prisma/client';
+import { NovelCacheService } from '../../../common/cache/novel-cache.service';
 import { PrismaService } from '../../../prisma/prisma.service';
 import { BaseTool, ToolContext } from '../base-tool';
 import type { ToolManifestV2 } from '../tool-manifest.types';
+import { replaceVolumeOutlineForeshadowTracks } from './foreshadow-track-sync';
 import type { VolumeOutlinePreviewOutput } from './generate-volume-outline-preview.tool';
 import { assertVolumeNarrativePlan } from './outline-narrative-contracts';
 
@@ -48,7 +50,7 @@ export class PersistVolumeOutlineTool implements BaseTool<PersistVolumeOutlineIn
   allowedModes: Array<'act'> = ['act'];
   riskLevel: 'high' = 'high';
   requiresApproval = true;
-  sideEffects = ['upsert_volume'];
+  sideEffects = ['upsert_volume', 'replace_volume_outline_foreshadows'];
   manifest: ToolManifestV2 = {
     name: this.name,
     displayName: '写入卷大纲',
@@ -72,7 +74,7 @@ export class PersistVolumeOutlineTool implements BaseTool<PersistVolumeOutlineIn
     sideEffects: this.sideEffects,
   };
 
-  constructor(private readonly prisma: PrismaService) {}
+  constructor(private readonly prisma: PrismaService, private readonly cacheService?: NovelCacheService) {}
 
   async run(args: PersistVolumeOutlineInput, context: ToolContext) {
     if (context.mode !== 'act') throw new BadRequestException('persist_volume_outline must run in act mode.');
@@ -100,34 +102,52 @@ export class PersistVolumeOutlineTool implements BaseTool<PersistVolumeOutlineIn
     const narrativePlanForUpdate = this.preserveExistingStoryUnitPlan(narrativePlan, existingNarrativePlan);
     const preservedStoryUnitPlan = !this.hasOwn(narrativePlan, 'storyUnitPlan') && this.hasOwn(existingNarrativePlan, 'storyUnitPlan');
 
-    const saved = await this.prisma.volume.upsert({
-      where: { projectId_volumeNo: { projectId: context.projectId, volumeNo } },
-      update: {
-        title: this.requiredText(volume.title, 'volume.title'),
-        synopsis: this.requiredText(volume.synopsis, 'volume.synopsis'),
-        objective: this.requiredText(volume.objective, 'volume.objective'),
+    const result = await this.prisma.$transaction(async (tx) => {
+      const saved = await tx.volume.upsert({
+        where: { projectId_volumeNo: { projectId: context.projectId, volumeNo } },
+        update: {
+          title: this.requiredText(volume.title, 'volume.title'),
+          synopsis: this.requiredText(volume.synopsis, 'volume.synopsis'),
+          objective: this.requiredText(volume.objective, 'volume.objective'),
+          chapterCount,
+          narrativePlan: narrativePlanForUpdate,
+        },
+        create: {
+          projectId: context.projectId,
+          volumeNo,
+          title: this.requiredText(volume.title, 'volume.title'),
+          synopsis: this.requiredText(volume.synopsis, 'volume.synopsis'),
+          objective: this.requiredText(volume.objective, 'volume.objective'),
+          chapterCount,
+          narrativePlan: narrativePlan as Prisma.InputJsonObject,
+        },
+      });
+
+      const foreshadowTracks = await replaceVolumeOutlineForeshadowTracks(tx, {
+        projectId: context.projectId,
+        volumeId: saved.id,
+        volumeNo,
         chapterCount,
         narrativePlan: narrativePlanForUpdate,
-      },
-      create: {
-        projectId: context.projectId,
+      });
+
+      return {
+        volumeId: saved.id,
         volumeNo,
-        title: this.requiredText(volume.title, 'volume.title'),
-        synopsis: this.requiredText(volume.synopsis, 'volume.synopsis'),
-        objective: this.requiredText(volume.objective, 'volume.objective'),
         chapterCount,
-        narrativePlan: narrativePlan as Prisma.InputJsonObject,
-      },
+        updatedVolumeOnly: true,
+        preservedStoryUnitPlan,
+        foreshadowTrackCreatedCount: foreshadowTracks.createdCount,
+        foreshadowTrackDeletedCount: foreshadowTracks.deletedCount,
+        risks: preview.risks ?? [],
+      };
     });
 
-    return {
-      volumeId: saved.id,
-      volumeNo,
-      chapterCount,
-      updatedVolumeOnly: true,
-      preservedStoryUnitPlan,
-      risks: preview.risks ?? [],
-    };
+    if (result.foreshadowTrackCreatedCount > 0 || result.foreshadowTrackDeletedCount > 0) {
+      await this.cacheService?.deleteProjectRecallResults(context.projectId);
+    }
+
+    return result;
   }
 
   private async loadExistingNarrativePlan(projectId: string, volumeNo: number): Promise<Record<string, unknown>> {

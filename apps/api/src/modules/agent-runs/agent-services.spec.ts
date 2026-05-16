@@ -5195,6 +5195,57 @@ test('VCC legacy guided finalize-step endpoint rejects direct writes', () => {
   assert.equal(serviceCalled, false);
 });
 
+test('VCC guided_outline finalize writes project outline foreshadows', async () => {
+  const createdForeshadows: Array<Record<string, unknown>> = [];
+  let savedStepData: Record<string, unknown> | undefined;
+  const invalidatedProjectIds: string[] = [];
+  const prisma = {
+    async $transaction(callback: (tx: unknown) => Promise<unknown>) {
+      return callback({
+        project: { async update() { return { id: 'p1' }; } },
+        foreshadowTrack: {
+          async deleteMany() { return { count: 0 }; },
+          async createMany(args: { data: Array<Record<string, unknown>> }) {
+            createdForeshadows.push(...args.data);
+            return { count: args.data.length };
+          },
+        },
+      });
+    },
+    guidedSession: {
+      async findUnique() { return { stepData: {} }; },
+      async update(args: { data: { stepData: Record<string, unknown> } }) {
+        savedStepData = args.data.stepData;
+        return {};
+      },
+    },
+  };
+  const cache = { async deleteProjectRecallResults(projectId: string) { invalidatedProjectIds.push(projectId); } };
+  const service = new GuidedService(prisma as never, {} as never, cache as never);
+
+  const result = await service.finalizeStep('p1', 'guided_outline', {
+    outline: '旧档案牵出城市记忆篡改，最终证明主角也是证据。',
+    foreshadowTracks: [{
+      title: '缺页编号',
+      detail: '总纲前段反复出现缺页编号，结尾证明编号对应仍活着的证人。',
+      scope: 'book',
+      technique: '道具型',
+      plantStage: '开篇档案馆',
+      revealStage: '终局审判',
+      involvedCharacters: '许知微',
+      payoff: '让读者重新理解所有缺页。',
+    }],
+  });
+
+  assert.deepEqual(result.written, ['Project(outline)', 'ForeshadowTrack × 1']);
+  assert.equal(createdForeshadows.length, 1);
+  assert.equal(createdForeshadows[0].source, 'project_outline');
+  assert.equal(createdForeshadows[0].scope, 'book');
+  assert.equal((createdForeshadows[0].metadata as Record<string, unknown>).sourceKind, 'project_outline');
+  assert.equal(((savedStepData?.guided_outline_result as Record<string, unknown>).foreshadowTracks as unknown[]).length, 1);
+  assert.deepEqual(invalidatedProjectIds, ['p1']);
+});
+
 test('VCC guided finalize rejects empty volume and chapter results without saving session data', async () => {
   let sessionTouched = false;
   let writeTouched = false;
@@ -5574,6 +5625,7 @@ test('GenerateGuidedStepPreviewTool 生成全部 guided 步骤预览且保持只
     { pov: '第三人称有限视角', tense: '过去时', proseStyle: '冷静、克制、细节驱动', pacing: '缓慢加压' },
     { characters: [{ name: '许知微', roleType: 'protagonist', personalityCore: '谨慎但害怕失控', motivation: '查清父亲旧案', backstory: '旧档案馆长大的调查员' }] },
     { outline: '旧档案牵出一座城市的集体记忆篡改，主角逐步发现自己也是证据之一。' },
+    { foreshadowTracks: [{ title: 'missing page index', detail: 'The outline plants repeated missing-page numbers before revealing they map to living witnesses.', scope: 'book', technique: 'prop', plantStage: 'opening archive search', revealStage: 'final memory trial', involvedCharacters: 'Xu Zhiwei', payoff: 'The reader reinterprets every missing page as a hidden witness.' }] },
     { volumes: [{ volumeNo: 1, title: '灰楼旧灯', synopsis: '## 全书主线阶段\n发现异常', objective: '确认旧案存在', narrativePlan: { globalMainlineStage: '发现异常' } }] },
     { chapters: [{ chapterNo: 1, volumeNo: 1, title: '失踪的页码', objective: '发现档案缺页', conflict: '馆方阻止调阅', outline: '主角夜查档案库。', craftBrief: { visibleGoal: '查档案' } }], supportingCharacters: [{ name: '周砚', roleType: 'supporting', personalityCore: '沉默但执拗', motivation: '保护旧馆', firstAppearChapter: 1 }] },
     { foreshadowTracks: [{ title: '缺页编号', detail: '每次缺页都对应一个仍活着的人。', scope: 'arc', technique: '道具型', plantChapter: '第1卷第1章', revealChapter: '第3卷第8章', involvedCharacters: '许知微', payoff: '证明记忆篡改是真实机制。' }] },
@@ -5610,6 +5662,7 @@ test('GenerateGuidedStepPreviewTool 生成全部 guided 步骤预览且保持只
   assert.equal(style.structuredData.pov, '第三人称有限视角');
   assert.equal((characters.structuredData.characters as unknown[]).length, 1);
   assert.match(outline.summary, /故事总纲/);
+  assert.equal((outline.structuredData.foreshadowTracks as unknown[]).length, 1);
   assert.equal((volume.structuredData.volumes as unknown[]).length, 1);
   assert.match(chapter.summary, /1 章细纲/);
   assert.equal((foreshadow.structuredData.foreshadowTracks as unknown[]).length, 1);
@@ -5621,9 +5674,10 @@ test('GenerateGuidedStepPreviewTool 生成全部 guided 步骤预览且保持只
   assert.equal(calls[0].options.timeoutMs, DEFAULT_LLM_TIMEOUT_MS);
   assert.equal(calls[0].options.retries, 1);
   assert.match(calls[1].messages[0].content, /"pov"/);
-  assert.match(calls[5].messages[0].content, /"chapters"/);
-  assert.match(calls[6].messages[0].content, /"foreshadowTracks"/);
-  assert.equal(tool.executionTimeoutMs, DEFAULT_LLM_TIMEOUT_MS * 2 + 5_000 + 60_000);
+  assert.match(calls[4].messages[0].content, /outline-level foreshadow title/);
+  assert.match(calls[6].messages[0].content, /"chapters"/);
+  assert.match(calls[7].messages[0].content, /"foreshadowTracks"/);
+  assert.equal(tool.executionTimeoutMs, (DEFAULT_LLM_TIMEOUT_MS * 2 + 5_000) * 2 + 60_000);
   assert.equal(progress.some((item) => item.phase === 'calling_llm' && item.timeoutMs === DEFAULT_LLM_TIMEOUT_MS * 2 + 5_000), true);
   assert.equal(progress.some((item) => item.phase === 'validating'), true);
 });
@@ -7751,6 +7805,7 @@ test('VCC persist_outline rejects self-declared existing characters without cata
 test('VCC persist_outline does not create Character', async () => {
   const createdChapters: Array<Record<string, unknown>> = [];
   const characterCreates: Array<Record<string, unknown>> = [];
+  const createdForeshadowTracks: Array<Record<string, unknown>> = [];
   const prisma = {
     character: {
       async findMany() { return [{ name: '林澈', alias: [] }, { name: '沈栖', alias: [] }]; },
@@ -7776,6 +7831,13 @@ test('VCC persist_outline does not create Character', async () => {
             throw new Error('planned chapter should be created, not updated');
           },
         },
+        foreshadowTrack: {
+          async deleteMany() { return { count: 0 }; },
+          async createMany(args: { data: Array<Record<string, unknown>> }) {
+            createdForeshadowTracks.push(...args.data);
+            return { count: args.data.length };
+          },
+        },
       });
     },
   };
@@ -7793,6 +7855,7 @@ test('VCC persist_outline does not create Character', async () => {
 
 test('persist_volume_outline writes only Volume narrativePlan after approval', async () => {
   const upserts: Array<Record<string, unknown>> = [];
+  const createdForeshadowTracks: Array<Record<string, unknown>> = [];
   const prisma = {
     character: {
       async findMany() { return [{ name: '林澈', alias: [] }, { name: '沈栖', alias: [] }]; },
@@ -7803,6 +7866,18 @@ test('persist_volume_outline writes only Volume narrativePlan after approval', a
         upserts.push(args);
         return { id: 'v1' };
       },
+    },
+    async $transaction(callback: (tx: Record<string, unknown>) => Promise<unknown>) {
+      return callback({
+        volume: prisma.volume,
+        foreshadowTrack: {
+          async deleteMany() { return { count: 0 }; },
+          async createMany(args: { data: Array<Record<string, unknown>> }) {
+            createdForeshadowTracks.push(...args.data);
+            return { count: args.data.length };
+          },
+        },
+      });
     },
   };
   const tool = new PersistVolumeOutlineTool(prisma as never);
@@ -7828,6 +7903,9 @@ test('persist_volume_outline writes only Volume narrativePlan after approval', a
   assert.equal(upserts.length, 1);
   assert.deepEqual(upserts[0].where, { projectId_volumeNo: { projectId: 'p1', volumeNo: 1 } });
   assert.equal((upserts[0].update as Record<string, unknown>).chapterCount, 4);
+  assert.equal(result.foreshadowTrackCreatedCount, 1);
+  assert.equal(createdForeshadowTracks[0].source, 'volume_outline');
+  assert.equal(createdForeshadowTracks[0].scope, 'volume');
 });
 
 test('persist_volume_outline preserves existing storyUnitPlan on update', async () => {
@@ -7850,6 +7928,15 @@ test('persist_volume_outline preserves existing storyUnitPlan on update', async 
         upserts.push(args);
         return { id: 'v1' };
       },
+    },
+    async $transaction(callback: (tx: Record<string, unknown>) => Promise<unknown>) {
+      return callback({
+        volume: prisma.volume,
+        foreshadowTrack: {
+          async deleteMany() { return { count: 0 }; },
+          async createMany(args: { data: unknown[] }) { return { count: args.data.length }; },
+        },
+      });
     },
   };
   const tool = new PersistVolumeOutlineTool(prisma as never);
@@ -8046,6 +8133,7 @@ test('PersistOutlineTool 写入新建和 planned 章节 craftBrief 并跳过 dra
   const upsertedVolumes: Array<{ create: Record<string, unknown>; update: Record<string, unknown> }> = [];
   const createdChapters: Array<Record<string, unknown>> = [];
   const updatedChapters: Array<Record<string, unknown>> = [];
+  const createdForeshadowTracks: Array<Record<string, unknown>> = [];
   const prisma = {
     character: { async findMany() { return [{ name: '林澈', alias: [] }, { name: '沈栖', alias: [] }]; } },
     async $transaction(callback: (tx: Record<string, unknown>) => Promise<unknown>) {
@@ -8074,11 +8162,18 @@ test('PersistOutlineTool 写入新建和 planned 章节 craftBrief 并跳过 dra
           },
           async create(args: { data: Record<string, unknown> }) {
             createdChapters.push(args.data);
-            return { id: 'c1' };
+            return { id: 'c1', ...args.data };
           },
           async update(args: { where: { id: string }; data: Record<string, unknown> }) {
             updatedChapters.push({ id: args.where.id, ...args.data });
-            return { id: args.where.id };
+            return { id: args.where.id, chapterNo: 2, ...args.data };
+          },
+        },
+        foreshadowTrack: {
+          async deleteMany() { return { count: 0 }; },
+          async createMany(args: { data: Array<Record<string, unknown>> }) {
+            createdForeshadowTracks.push(...args.data);
+            return { count: args.data.length };
           },
         },
       });
@@ -8102,6 +8197,9 @@ test('PersistOutlineTool 写入新建和 planned 章节 craftBrief 并跳过 dra
   assert.equal((createdChapters[0].craftBrief as Record<string, unknown>).visibleGoal, '拿到旧档案');
   assert.equal((updatedChapters[0].craftBrief as Record<string, unknown>).visibleGoal, '确认档案被换');
   assert.equal(updatedChapters.some((chapter) => chapter.id === 'c3'), false);
+  assert.equal(result.foreshadowTrackCreatedCount, 3);
+  assert.equal(createdForeshadowTracks.filter((track) => track.source === 'chapter_outline').length, 2);
+  assert.equal(createdForeshadowTracks.some((track) => track.chapterId === 'c3'), false);
 });
 
 test('PersistOutlineTool 拒绝旧 outline_preview 缺 craftBrief', async () => {
@@ -8154,6 +8252,10 @@ test('PersistOutlineTool creates later-volume chapters after current max project
             return { id: `c${args.data.chapterNo}` };
           },
           async update() { throw new Error('should not update existing volume 1 chapters'); },
+        },
+        foreshadowTrack: {
+          async deleteMany() { return { count: 0 }; },
+          async createMany(args: { data: unknown[] }) { return { count: args.data.length }; },
         },
       });
     },

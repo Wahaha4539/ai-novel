@@ -38,6 +38,7 @@ export interface ValidateGuidedStepPreviewOutput {
 }
 
 const GUIDED_STEP_KEYS = Object.keys(GUIDED_STEP_JSON_SCHEMAS) as GuidedStepSchemaKey[];
+const FORESHADOW_SCOPES = new Set(['book', 'cross_volume', 'volume', 'cross_chapter', 'chapter', 'arc', 'global', 'volume_arc', 'chapter_arc', 'local']);
 
 /**
  * 创作引导步骤预览校验工具：只读检查结构化预览是否适合进入审批写入。
@@ -152,6 +153,7 @@ export class ValidateGuidedStepPreviewTool implements BaseTool<ValidateGuidedSte
         break;
       case 'guided_outline':
         this.validateOutline(data, issues);
+        this.validateOutlineForeshadows(data, issues);
         break;
       case 'guided_volume':
         this.validateVolumes(data, issues, characterContext);
@@ -205,6 +207,15 @@ export class ValidateGuidedStepPreviewTool implements BaseTool<ValidateGuidedSte
     if (!this.text(data.outline)) {
       issues.push({ severity: 'error', message: '故事总纲预览缺少 outline。', path: 'structuredData.outline' });
     }
+  }
+
+  private validateOutlineForeshadows(data: Record<string, unknown>, issues: GuidedStepValidationIssue[]) {
+    const tracks = this.arrayOfRecords(data.foreshadowTracks);
+    if (!tracks.length) {
+      issues.push({ severity: 'error', message: '故事总纲预览缺少大纲级 foreshadowTracks。', path: 'structuredData.foreshadowTracks' });
+      return;
+    }
+    this.validateForeshadowTracks(tracks, 'structuredData.foreshadowTracks', issues);
   }
 
   private validateVolumes(data: Record<string, unknown>, issues: GuidedStepValidationIssue[], characterContext: GuidedCharacterValidationContext) {
@@ -434,6 +445,24 @@ export class ValidateGuidedStepPreviewTool implements BaseTool<ValidateGuidedSte
     });
   }
 
+  private validateForeshadowTracks(tracks: Array<Record<string, unknown>>, basePath: string, issues: GuidedStepValidationIssue[]) {
+    this.findDuplicatedStrings(tracks.map((track) => this.text(track.title))).forEach((title) => {
+      issues.push({ severity: 'warning', message: `预览中存在重复伏笔标题：${title}。`, path: basePath });
+    });
+
+    tracks.forEach((track, index) => {
+      const path = `${basePath}[${index}]`;
+      const label = this.text(track.title) || `第 ${index + 1} 条伏笔`;
+      if (!this.text(track.title)) issues.push({ severity: 'error', message: `${label} 缺少 title。`, path: `${path}.title` });
+      if (!this.text(track.detail)) issues.push({ severity: 'warning', message: `${label} 缺少 detail。`, path: `${path}.detail` });
+      if (!this.text(track.payoff)) issues.push({ severity: 'warning', message: `${label} 缺少 payoff。`, path: `${path}.payoff` });
+      const scope = this.text(track.scope);
+      if (scope && !FORESHADOW_SCOPES.has(scope)) {
+        issues.push({ severity: 'error', message: `${label} scope 不合法：${scope}。`, path: `${path}.scope` });
+      }
+    });
+  }
+
   private async buildWritePreview(stepKey: GuidedStepSchemaKey, data: Record<string, unknown>, volumeNo: number | undefined, context: ToolContext): Promise<Record<string, unknown>> {
     switch (stepKey) {
       case 'guided_setup':
@@ -443,7 +472,7 @@ export class ValidateGuidedStepPreviewTool implements BaseTool<ValidateGuidedSte
       case 'guided_characters':
         return this.buildCharacterWritePreview(data, context);
       case 'guided_outline':
-        return this.buildProjectWritePreview(stepKey, ['outline'], data, 'update_project_outline');
+        return this.buildOutlineWritePreview(data);
       case 'guided_volume':
         return this.buildVolumeWritePreview(data, context);
       case 'guided_chapter':
@@ -461,6 +490,26 @@ export class ValidateGuidedStepPreviewTool implements BaseTool<ValidateGuidedSte
       summary: { updateFieldCount: writableFields.length },
       fields: writableFields,
       approvalMessage: '校验通过后仍需用户审批；后续写入将更新项目或风格资料。',
+    };
+  }
+
+  private buildOutlineWritePreview(data: Record<string, unknown>): Record<string, unknown> {
+    const tracks = this.arrayOfRecords(data.foreshadowTracks);
+    const writableFields = this.text(data.outline) ? ['outline'] : [];
+    return {
+      stepKey: 'guided_outline',
+      action: 'update_project_outline_and_project_outline_foreshadows',
+      summary: {
+        updateFieldCount: writableFields.length,
+        foreshadowTrackCount: tracks.filter((track) => this.text(track.title)).length,
+      },
+      fields: writableFields,
+      foreshadowTracks: tracks.map((track) => ({
+        title: this.text(track.title),
+        scope: this.text(track.scope) || 'book',
+        action: this.text(track.title) ? 'replace_project_outline_create' : 'skip_invalid',
+      })),
+      approvalMessage: '校验通过后仍需用户审批；后续写入会更新项目总纲，并替换 project_outline 来源的大纲级伏笔。',
     };
   }
 
@@ -598,7 +647,7 @@ export class ValidateGuidedStepPreviewTool implements BaseTool<ValidateGuidedSte
       const title = this.text(track.title);
       return {
         title,
-        scope: this.text(track.scope) || 'arc',
+        scope: this.text(track.scope) || 'book',
         action: !title ? 'skip_invalid' : duplicatedTitles.has(title) ? 'duplicate_in_preview' : 'replace_all_create',
       };
     });

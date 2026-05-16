@@ -138,6 +138,19 @@ export const GUIDED_SINGLE_CHAPTER_REFINEMENT_SCHEMA = JSON.stringify({
   }],
 });
 
+export const GUIDED_OUTLINE_FORESHADOW_SCHEMA = JSON.stringify({
+  foreshadowTracks: [{
+    title: 'outline-level foreshadow title',
+    detail: 'concrete setup, concealment, and future payoff',
+    scope: 'book/cross_volume/volume',
+    technique: 'prop/dialogue/behavior/environment/narrative/symbol/structure',
+    plantStage: 'where it is planted in the whole-story outline',
+    revealStage: 'where it is revealed in the whole-story outline',
+    involvedCharacters: 'related existing character names',
+    payoff: 'plot, character, or reader-recognition effect after reveal',
+  }],
+});
+
 export const GUIDED_STEP_JSON_SCHEMAS = {
   guided_setup: JSON.stringify({
     genre: '小说类型',
@@ -225,7 +238,7 @@ export const GUIDED_STEP_JSON_SCHEMAS = {
     foreshadowTracks: [{
       title: '伏笔标题',
       detail: '伏笔内容详细描述',
-      scope: 'arc/volume/chapter',
+      scope: 'book/cross_volume/volume/cross_chapter/chapter',
       technique: '伏笔手法类型',
       plantChapter: '埋设时机',
       revealChapter: '揭开时机',

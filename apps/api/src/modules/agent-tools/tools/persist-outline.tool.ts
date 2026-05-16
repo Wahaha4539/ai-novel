@@ -1,8 +1,10 @@
 import { BadRequestException, Injectable } from '@nestjs/common';
 import { Prisma } from '@prisma/client';
+import { NovelCacheService } from '../../../common/cache/novel-cache.service';
 import { PrismaService } from '../../../prisma/prisma.service';
 import { BaseTool, ToolContext } from '../base-tool';
 import { assertCompleteChapterCraftBrief } from './chapter-craft-brief-contracts';
+import { replaceChapterOutlineForeshadowTracks, replaceVolumeOutlineForeshadowTracks } from './foreshadow-track-sync';
 import { OutlinePreviewOutput } from './generate-outline-preview.tool';
 import { assertChapterCharacterExecution, VolumeCharacterPlan } from './outline-character-contracts';
 import { assertVolumeNarrativePlan } from './outline-narrative-contracts';
@@ -40,9 +42,9 @@ export class PersistOutlineTool implements BaseTool<PersistOutlineInput, Record<
   allowedModes: Array<'plan' | 'act'> = ['act'];
   riskLevel: 'high' = 'high';
   requiresApproval = true;
-  sideEffects = ['upsert_volume', 'create_or_update_planned_chapters'];
+  sideEffects = ['upsert_volume', 'create_or_update_planned_chapters', 'replace_volume_outline_foreshadows', 'replace_chapter_outline_foreshadows'];
 
-  constructor(private readonly prisma: PrismaService) {}
+  constructor(private readonly prisma: PrismaService, private readonly cacheService?: NovelCacheService) {}
 
   async run(args: PersistOutlineInput, context: ToolContext) {
     if (context.mode !== 'act') throw new BadRequestException('persist_outline must run in act mode.');
@@ -85,6 +87,7 @@ export class PersistOutlineTool implements BaseTool<PersistOutlineInput, Record<
       let createdCount = 0;
       let updatedCount = 0;
       let skippedCount = 0;
+      const persistedChapters: Array<{ id: string; chapterNo: number; volumeNo?: number | null; craftBrief?: unknown }> = [];
       for (const [index, chapter] of preview.chapters.entries()) {
         const existing = usesGlobalChapterNo
           ? existingChapters[index]
@@ -101,18 +104,44 @@ export class PersistOutlineTool implements BaseTool<PersistOutlineInput, Record<
           ...(craftBrief ? { craftBrief } : {}),
         };
         if (!existing) {
-          await tx.chapter.create({ data: { projectId: context.projectId, chapterNo: nextChapterNo++, ...data } });
+          const saved = await tx.chapter.create({ data: { projectId: context.projectId, chapterNo: nextChapterNo++, ...data } });
+          persistedChapters.push({ id: saved.id, chapterNo: saved.chapterNo, volumeNo: preview.volume.volumeNo, craftBrief: chapter.craftBrief });
           createdCount += 1;
         } else if (existing.status === 'planned') {
-          await tx.chapter.update({ where: { id: existing.id }, data });
+          const saved = await tx.chapter.update({ where: { id: existing.id }, data });
+          persistedChapters.push({ id: saved.id, chapterNo: saved.chapterNo, volumeNo: preview.volume.volumeNo, craftBrief: chapter.craftBrief });
           updatedCount += 1;
         } else {
           // 已起草/已审阅章节不自动覆盖，避免 Agent 破坏用户确认过的正文和事实。
           skippedCount += 1;
         }
       }
-      return { volumeId: volume.id, createdCount, updatedCount, skippedCount };
+
+      const volumeForeshadows = await replaceVolumeOutlineForeshadowTracks(tx, {
+        projectId: context.projectId,
+        volumeId: volume.id,
+        volumeNo: preview.volume.volumeNo,
+        chapterCount: preview.volume.chapterCount,
+        narrativePlan,
+      });
+      const chapterForeshadows = await replaceChapterOutlineForeshadowTracks(tx, {
+        projectId: context.projectId,
+        chapters: persistedChapters,
+      });
+
+      return {
+        volumeId: volume.id,
+        createdCount,
+        updatedCount,
+        skippedCount,
+        foreshadowTrackCreatedCount: volumeForeshadows.createdCount + chapterForeshadows.createdCount,
+        foreshadowTrackDeletedCount: volumeForeshadows.deletedCount + chapterForeshadows.deletedCount,
+      };
     });
+
+    if (result.createdCount > 0 || result.updatedCount > 0 || result.foreshadowTrackCreatedCount > 0 || result.foreshadowTrackDeletedCount > 0) {
+      await this.cacheService?.deleteProjectRecallResults(context.projectId);
+    }
 
     return { ...result, chapterCount: preview.chapters.length, risks: preview.risks };
   }

@@ -6,6 +6,7 @@ import { buildGenerationProfileSnapshot, GenerationProfileSnapshot } from '../ge
 import { LlmGatewayService } from '../llm/llm-gateway.service';
 import { DEFAULT_LLM_TIMEOUT_MS } from '../llm/llm-timeout.constants';
 import { ChapterFirstAppearanceMemoryInput, MemoryWriterService } from '../memory/memory-writer.service';
+import { normalizeForeshadowScope } from '../agent-tools/tools/foreshadow-track-sync';
 
 interface ExtractedEvent {
   title: string;
@@ -26,6 +27,7 @@ interface ExtractedForeshadow {
   title: string;
   detail: string;
   status?: string;
+  scope?: string;
 }
 
 type FirstAppearanceEntityType = ChapterFirstAppearanceMemoryInput['entityType'];
@@ -168,7 +170,7 @@ export class FactExtractorService {
               title: item.title,
               detail: item.detail,
               status: item.status ?? 'planted',
-              scope: 'chapter',
+              scope: normalizeForeshadowScope(item.scope, 'cross_chapter'),
               source: 'auto_extracted',
               firstSeenChapterNo: chapter.chapterNo,
               lastSeenChapterNo: chapter.chapterNo,
@@ -272,6 +274,7 @@ export class FactExtractorService {
       title: item.title || `伏笔 ${index + 1}`,
       detail: item.detail || '',
       status: item.status || 'planted',
+      scope: normalizeForeshadowScope(item.scope, 'cross_chapter'),
     }));
   }
 

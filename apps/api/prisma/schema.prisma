@@ -461,8 +461,8 @@ model ForeshadowTrack {
   title            String   @db.VarChar(255)
   detail           String?
   status           String   @default("planned") @db.VarChar(50)
-  scope            String   @default("chapter") @db.VarChar(20) // "arc" | "volume" | "chapter"
-  source           String   @default("manual") @db.VarChar(30)  // "guided" | "auto_extracted" | "manual"
+  scope            String   @default("chapter") @db.VarChar(20) // "book" | "cross_volume" | "volume" | "cross_chapter" | "chapter"
+  source           String   @default("manual") @db.VarChar(30)  // "guided" | "auto_extracted" | "manual" | outline sync sources
   firstSeenChapterNo Int?
   lastSeenChapterNo  Int?
   metadata         Json     @default("{}")

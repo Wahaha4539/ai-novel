@@ -15,10 +15,32 @@ const STATUS_COLUMNS = [
   { key: 'resolved', label: '已揭示', color: '#6366f1', icon: '✅' },
 ];
 
-const SCOPE_COLORS: Record<string, string> = {
-  arc: '#ec4899',
-  volume: '#14b8a6',
-  chapter: '#f97316',
+const SCOPE_OPTIONS = [
+  { value: '', label: '全部' },
+  { value: 'book', label: '全书' },
+  { value: 'cross_volume', label: '跨卷' },
+  { value: 'volume', label: '卷内' },
+  { value: 'cross_chapter', label: '跨章节' },
+  { value: 'chapter', label: '章节内' },
+];
+
+const SCOPE_INFO: Record<string, { label: string; color: string }> = {
+  book: { label: '全书', color: '#ec4899' },
+  cross_volume: { label: '跨卷', color: '#8b5cf6' },
+  volume: { label: '卷内', color: '#14b8a6' },
+  cross_chapter: { label: '跨章节', color: '#0ea5e9' },
+  chapter: { label: '章节内', color: '#f97316' },
+};
+
+const SCOPE_ALIASES: Record<string, string> = {
+  arc: 'book',
+  global: 'book',
+  whole_book: 'book',
+  full_book: 'book',
+  cross_arc: 'cross_volume',
+  volume_arc: 'volume',
+  chapter_arc: 'cross_chapter',
+  local: 'chapter',
 };
 
 const SOURCE_LABELS: Record<string, string> = {
@@ -27,12 +49,17 @@ const SOURCE_LABELS: Record<string, string> = {
   manual: '手动添加',
 };
 
+function normalizeScope(scope?: string | null) {
+  if (!scope) return 'chapter';
+  return SCOPE_ALIASES[scope] ?? scope;
+}
+
 export function ForeshadowBoard({ selectedProject, selectedProjectId, foreshadowTracks, onRefresh }: Props) {
   const [filterScope, setFilterScope] = useState<string>('');
 
   const filtered = useMemo(() => {
     if (!filterScope) return foreshadowTracks;
-    return foreshadowTracks.filter((t) => t.scope === filterScope);
+    return foreshadowTracks.filter((t) => normalizeScope(t.scope) === filterScope);
   }, [foreshadowTracks, filterScope]);
 
   // Group by status
@@ -82,12 +109,7 @@ export function ForeshadowBoard({ selectedProject, selectedProjectId, foreshadow
       >
         <div className="flex items-center gap-2">
           <span className="text-xs font-medium" style={{ color: 'var(--text-dim)' }}>范围筛选：</span>
-          {[
-            { value: '', label: '全部' },
-            { value: 'arc', label: '全局(Arc)' },
-            { value: 'volume', label: '卷级' },
-            { value: 'chapter', label: '章节级' },
-          ].map((opt) => (
+          {SCOPE_OPTIONS.map((opt) => (
             <button
               key={opt.value}
               onClick={() => setFilterScope(opt.value)}
@@ -176,7 +198,9 @@ export function ForeshadowBoard({ selectedProject, selectedProjectId, foreshadow
 }
 
 function ForeshadowCard({ track }: { track: ForeshadowItem }) {
-  const scopeColor = SCOPE_COLORS[track.scope ?? 'chapter'] ?? '#f97316';
+  const normalizedScope = normalizeScope(track.scope);
+  const scopeInfo = SCOPE_INFO[normalizedScope];
+  const scopeColor = scopeInfo?.color ?? '#f97316';
   const sourceLabel = SOURCE_LABELS[track.source ?? 'manual'] ?? '手动';
 
   return (
@@ -210,7 +234,7 @@ function ForeshadowCard({ track }: { track: ForeshadowItem }) {
               padding: '1px 5px',
             }}
           >
-            {track.scope}
+            {scopeInfo?.label ?? track.scope}
           </span>
         )}
         <span

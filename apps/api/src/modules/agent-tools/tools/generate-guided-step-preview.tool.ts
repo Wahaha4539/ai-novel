@@ -1,5 +1,6 @@
 import { BadRequestException, Injectable, NotFoundException } from '@nestjs/common';
 import {
+  GUIDED_OUTLINE_FORESHADOW_SCHEMA,
   GUIDED_SINGLE_CHAPTER_REFINEMENT_SCHEMA,
   GUIDED_STEP_JSON_SCHEMAS,
   getGuidedStepJsonSchema,
@@ -32,6 +33,8 @@ const GUIDED_STEP_KEYS = Object.keys(GUIDED_STEP_JSON_SCHEMAS) as GuidedStepSche
 const GUIDED_STEP_PREVIEW_LLM_TIMEOUT_MS = DEFAULT_LLM_TIMEOUT_MS;
 const GUIDED_STEP_PREVIEW_LLM_RETRIES = 1;
 const GUIDED_STEP_PREVIEW_PHASE_TIMEOUT_MS = GUIDED_STEP_PREVIEW_LLM_TIMEOUT_MS * (GUIDED_STEP_PREVIEW_LLM_RETRIES + 1) + 5_000;
+const GUIDED_STEP_PREVIEW_MAX_PHASE_TIMEOUT_MS = GUIDED_STEP_PREVIEW_PHASE_TIMEOUT_MS * 2;
+const OUTLINE_FORESHADOW_SCOPES = new Set(['book', 'cross_volume', 'volume']);
 
 const SUPPORTED_STEP_INSTRUCTIONS: Record<GuidedStepSchemaKey, string> = {
   guided_setup: '生成小说基础设定，字段覆盖 genre/theme/tone/logline/synopsis。',
@@ -77,7 +80,7 @@ export class GenerateGuidedStepPreviewTool implements BaseTool<GenerateGuidedSte
   riskLevel: 'low' = 'low';
   requiresApproval = false;
   sideEffects: string[] = [];
-  executionTimeoutMs = GUIDED_STEP_PREVIEW_PHASE_TIMEOUT_MS + 60_000;
+  executionTimeoutMs = GUIDED_STEP_PREVIEW_MAX_PHASE_TIMEOUT_MS + 60_000;
   manifest: ToolManifestV2 = {
     name: this.name,
     displayName: '生成创作引导步骤预览',
@@ -158,12 +161,15 @@ export class GenerateGuidedStepPreviewTool implements BaseTool<GenerateGuidedSte
       { appStep: 'planner', maxTokens: 8000, timeoutMs: GUIDED_STEP_PREVIEW_LLM_TIMEOUT_MS, retries: GUIDED_STEP_PREVIEW_LLM_RETRIES },
     );
 
-    await context.updateProgress?.({ phase: 'validating', phaseMessage: '正在校验创作引导步骤预览', progressCurrent: 1, progressTotal: 1 });
     const normalized = this.normalizeStructuredData(data);
+    const structuredData = stepKey === 'guided_outline'
+      ? await this.attachOutlineForeshadows(normalized.structuredData, projectContext, args, context)
+      : normalized.structuredData;
+    await context.updateProgress?.({ phase: 'validating', phaseMessage: '正在校验创作引导步骤预览', progressCurrent: 1, progressTotal: 1 });
     return {
       stepKey,
-      structuredData: normalized.structuredData,
-      summary: this.buildSummary(stepKey, normalized.structuredData),
+      structuredData,
+      summary: this.buildSummary(stepKey, structuredData),
       warnings: [...inputWarnings, ...normalized.warnings],
     };
   }
@@ -351,6 +357,79 @@ export class GenerateGuidedStepPreviewTool implements BaseTool<GenerateGuidedSte
       return { structuredData: data as Record<string, unknown>, warnings: [] };
     }
     throw new Error('generate_guided_step_preview LLM 返回不是 JSON 对象，未生成可审批的步骤预览。请重试、缩小范围或补充上下文。');
+  }
+
+  private async attachOutlineForeshadows(
+    structuredData: Record<string, unknown>,
+    projectContext: Record<string, unknown>,
+    args: GenerateGuidedStepPreviewInput,
+    context: ToolContext,
+  ): Promise<Record<string, unknown>> {
+    const outline = this.text(structuredData.outline);
+    if (!outline) {
+      throw new Error('guided_outline is missing outline; cannot generate outline-level foreshadows.');
+    }
+
+    await context.updateProgress?.({
+      phase: 'calling_outline_foreshadow_llm',
+      phaseMessage: '正在根据故事总纲生成大纲级伏笔',
+      timeoutMs: GUIDED_STEP_PREVIEW_PHASE_TIMEOUT_MS,
+    });
+    const { data } = await this.llm.chatJson<Record<string, unknown>>(
+      [
+        {
+          role: 'system',
+          content: [
+            '你是小说伏笔规划助手。只输出 JSON，不要 Markdown，不要解释。',
+            '任务：基于已经生成的故事总纲，单独规划大纲级伏笔。',
+            '不要从文本里机械摘词；要根据总纲做创作判断，并输出结构化字段。',
+            '大纲级伏笔以 book、cross_volume、volume 为主；不要生成 chapter 或 cross_chapter，章节细纲阶段会负责短距离伏笔。',
+            `输出结构必须符合：${GUIDED_OUTLINE_FORESHADOW_SCHEMA}`,
+          ].join('\n'),
+        },
+        {
+          role: 'user',
+          content: [
+            '请生成 3-5 条大纲级伏笔。',
+            '数量建议：book 2 条；cross_volume 1-2 条；如果总纲已有明确阶段或卷感，可以补 1 条 volume。',
+            '每条必须包含 title、detail、scope、technique、plantStage、revealStage、involvedCharacters、payoff。',
+            `用户提示：${args.userHint ?? ''}`,
+            `聊天摘要：${args.chatSummary ?? ''}`,
+            `项目上下文：\n${JSON.stringify(projectContext, null, 2).slice(0, 12000)}`,
+            `故事总纲：\n${outline}`,
+          ].join('\n\n'),
+        },
+      ],
+      { appStep: 'guided_outline.foreshadows', maxTokens: 4000, timeoutMs: GUIDED_STEP_PREVIEW_LLM_TIMEOUT_MS, retries: GUIDED_STEP_PREVIEW_LLM_RETRIES },
+    );
+
+    return {
+      ...structuredData,
+      foreshadowTracks: this.normalizeOutlineForeshadows(data),
+    };
+  }
+
+  private normalizeOutlineForeshadows(data: unknown): Array<Record<string, unknown>> {
+    const record = this.asRecord(data);
+    const tracks = this.array(record.foreshadowTracks).map((item) => this.asRecord(item));
+    if (!tracks.length) {
+      throw new Error('guided_outline foreshadow generation failed: foreshadowTracks must be a non-empty array.');
+    }
+
+    tracks.forEach((track, index) => {
+      const label = `guided_outline.foreshadowTracks[${index}]`;
+      const scope = this.text(track.scope);
+      for (const field of ['title', 'detail', 'scope', 'technique', 'plantStage', 'revealStage', 'involvedCharacters', 'payoff']) {
+        if (!this.text(track[field])) {
+          throw new Error(`${label}.${field} is required.`);
+        }
+      }
+      if (!OUTLINE_FORESHADOW_SCOPES.has(scope)) {
+        throw new Error(`${label}.scope must be book, cross_volume, or volume.`);
+      }
+    });
+
+    return tracks;
   }
 
   private buildSummary(stepKey: string, data: Record<string, unknown>): string {
